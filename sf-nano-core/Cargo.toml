@@ -18,6 +18,7 @@ wasi = []
 fusion = []
 spectest = []
 profile = []
+micro-jit = []
 tos-stats = ["std"]
 std = []
 

@@ -19,6 +19,9 @@ fn main() {
     // Generate fast interpreter code from handlers.toml
     fast_interp::generate(&out_path);
 
+    // Verify preserve_none ABI (micro-jit only, aarch64 only)
+    compile::verify_preserve_none_abi();
+
     // Compile fast interpreter C trampoline
     compile::compile_fast_trampoline(&out_dir);
 }

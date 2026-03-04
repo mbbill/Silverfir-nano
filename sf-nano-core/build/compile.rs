@@ -21,6 +21,117 @@ fn track_c_files_in_dir(dir: &str) {
     }
 }
 
+/// Verify preserve_none register mapping matches JIT's Reg enum.
+/// Only runs for micro-jit feature on aarch64 targets.
+pub fn verify_preserve_none_abi() {
+    if env::var("CARGO_FEATURE_MICRO_JIT").is_err() {
+        return;
+    }
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64") {
+        return;
+    }
+
+    let c_root = "src/vm/interp/fast/trampoline";
+    let src = format!("{}/verify_abi.c", c_root);
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+    let asm_path = PathBuf::from(&out_dir).join("verify_abi.s");
+
+    println!("cargo:rerun-if-changed={}", src);
+
+    let target = env::var("TARGET").unwrap_or_default();
+
+    let status = std::process::Command::new("clang")
+        .args([
+            "-target", &target,
+            "-S", "-O2",
+            "-I", c_root,
+            "-o", asm_path.to_str().unwrap(),
+            &src,
+        ])
+        .status()
+        .expect("Failed to run clang for ABI verification");
+
+    if !status.success() {
+        panic!("Failed to compile ABI verification probe");
+    }
+
+    let asm = fs::read_to_string(&asm_path)
+        .expect("Failed to read ABI verification assembly");
+
+    // Expected mapping: arg[i] → register
+    let expected = ["x20", "x21", "x22", "x23", "x24", "x25",
+                    "x26", "x27", "x28", "x0", "x1"];
+    let arg_names = ["ctx", "pc", "fp", "l0", "l1", "l2",
+                     "t0", "t1", "t2", "t3", "nh"];
+
+    // Extract str instructions from the probe function
+    let mut in_probe = false;
+    let mut str_regs: Vec<String> = Vec::new();
+
+    for line in asm.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("__jit_abi_probe") && trimmed.contains(':') {
+            in_probe = true;
+            continue;
+        }
+        if in_probe && (trimmed == "ret" || trimmed.starts_with(".cfi_endproc")) {
+            break;
+        }
+        if in_probe {
+            if let Some(reg) = parse_str_reg(trimmed) {
+                str_regs.push(reg);
+            }
+        }
+    }
+
+    if str_regs.len() < expected.len() {
+        panic!(
+            "\n\npreserve_none ABI VERIFICATION FAILED\n\
+             Expected {} str instructions in __jit_abi_probe, found {}.\n\
+             Assembly output: {}\n",
+            expected.len(), str_regs.len(), asm_path.display()
+        );
+    }
+
+    for (i, (got, want)) in str_regs.iter().zip(expected.iter()).enumerate() {
+        if got != want {
+            panic!(
+                "\n\npreserve_none ABI CHANGED — BUILD ABORTED\n\n\
+                 Argument '{}' (index {}): expected register {}, got {}.\n\n\
+                 The preserve_none calling convention register assignment has changed.\n\
+                 Update jit/reg.rs Reg enum values to match the new mapping.\n\
+                 See docs/MICRO_JIT.md §ARM64 Register Map.\n\
+                 Assembly output: {}\n",
+                arg_names[i], i, want, got, asm_path.display()
+            );
+        }
+    }
+
+    println!("cargo:warning=preserve_none ABI verified: register mapping matches Reg enum");
+}
+
+/// Parse a `str xN, [...]` instruction and return the source register name.
+fn parse_str_reg(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("str\t") && !trimmed.starts_with("str ") {
+        return None;
+    }
+    let after_str = trimmed[3..].trim();
+    let reg_end = after_str.find(',')?;
+    let reg = after_str[..reg_end].trim();
+    if reg.starts_with('x') || reg.starts_with('w') {
+        // Normalize wN to xN for comparison
+        let normalized = if reg.starts_with('w') {
+            format!("x{}", &reg[1..])
+        } else {
+            reg.to_string()
+        };
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
 /// Compile the fast interpreter trampoline
 pub fn compile_fast_trampoline(out_dir: &str) {
     let c_root = "src/vm/interp/fast/trampoline";

@@ -56,3 +56,6 @@ pub mod profiler;
 pub mod pattern_trie;
 #[cfg(feature = "profile")]
 pub mod fusion_discovery;
+
+#[cfg(feature = "micro-jit")]
+pub mod jit;
