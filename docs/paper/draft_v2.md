@@ -41,7 +41,7 @@ This paper makes four novel contributions:
 
 2. **TOS register window with compile-time depth tracking** (Section 4.3).
    We map four stack slots to hardware registers via `preserve_none` [17] and `musttail` tail-call dispatch, scaling beyond the 1–2 registers used in prior work [4, 22].
-   Compile-time knowledge of Wasm's static stack heights selects among five depth-variant handlers per instruction (D0 through D4, representing zero to four cached values), replacing the finite state machines of prior TOS caching schemes.
+   Compile-time knowledge of Wasm's static stack heights selects among four depth-variant handlers per instruction (D1 through D4, cycling modulo four as stack depth grows), replacing the finite state machines of prior TOS caching schemes.
    Combined with fusion, intermediate stack operations within fused handlers compile to pure register arithmetic with zero memory traffic.
 
 3. **Hot-local register cache with hotness-based index swap** (Section 4.4).
@@ -264,7 +264,7 @@ This is why every register-based interpreter that performs fusion uses a small n
 WebAssembly's static stack heights allow us to map the top N stack slots to hardware registers at compile time.
 Silverfir-nano uses a window of four registers (t0–t3), passed as function arguments under `preserve_none`.
 At each instruction, the compiler knows which TOS register holds each operand and generates a handler variant specific to the current stack depth.
-With four registers, there are five depth levels: D0 (window empty, all values on the frame) through D4 (window full, four values cached).
+With four registers, there are four depth variants (D1 through D4) that cycle as stack depth grows: depth 0 and 1 both map to D1, depth 2 to D2, depth 3 to D3, depth 4 to D4, depth 5 back to D1, and so on.
 A `pop2_push1` operation like `i32.add` at depth 2 compiles to a single `add` instruction operating directly on register arguments.
 
 When operations push or pop values outside the current window, the system emits spill (register→frame) or fill (frame→register) instructions.
