@@ -15,4 +15,4 @@ default = []
 profile = ["sf-nano-core/profile"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["wasi", "fusion"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }

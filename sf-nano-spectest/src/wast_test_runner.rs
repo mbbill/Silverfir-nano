@@ -597,29 +597,18 @@ impl WastTestRunner {
         match self.compile_quote_wat(quote_wat) {
             Ok(compiled) => {
                 let bytes = compiled.wasm_bytes.clone();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Module::new("test_malformed", &bytes)
-                }));
-                match result {
-                    Ok(Ok(module)) => {
-                        // Module parsed OK — also try instantiation which runs
-                        // validator + precompile and catches binary-level issues
-                        // (overlong LEB128, bad alignment, etc.)
+                match Module::new("test_malformed", &bytes) {
+                    Ok(module) => {
                         let imports = self.build_imports(&bytes);
-                        let inst_result = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                Instance::from_module(module, &imports)
-                            }),
-                        );
-                        match inst_result {
-                            Ok(Ok(_)) => Err(TestError::infrastructure(format!(
+                        match Instance::from_module(module, &imports) {
+                            Ok(_) => Err(TestError::infrastructure(format!(
                                 "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
                                 expected_message, compiled.wasm_bytes.len()
                             ))),
-                            Ok(Err(_)) | Err(_) => Ok(()),
+                            Err(_) => Ok(()),
                         }
                     }
-                    Ok(Err(_)) | Err(_) => Ok(()),
+                    Err(_) => Ok(()),
                 }
             }
             Err(_) => Ok(()),
@@ -878,14 +867,7 @@ impl WastTestRunner {
     fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         let imports = self.build_imports(wasm_bytes);
-        // Use catch_unwind to handle panics from invalid modules (e.g., out-of-bounds table access)
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Instance::new(wasm_bytes, &imports)
-        }));
-        match result {
-            Ok(r) => r,
-            Err(_) => Err(WasmError::invalid("instantiation panicked (invalid module)".to_string())),
-        }
+        Instance::new(wasm_bytes, &imports)
     }
 
     /// Build imports for a module by providing spectest imports plus exports

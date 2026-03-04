@@ -60,6 +60,10 @@ pub struct TempInst {
     /// BR_TABLE entries - special case, not part of PatternData
     /// because entries need to be converted to inline instruction data
     pub br_table_entries: Option<Vec<BrTableEntry>>,
+    /// Stack height before this instruction executes.
+    /// Used by JIT group compiler to set initial register window state.
+    #[cfg(feature = "micro-jit")]
+    pub pre_height: u16,
 }
 
 impl TempInst {
@@ -73,6 +77,8 @@ impl TempInst {
             has_target: false,
             wasm_op,
             br_table_entries: None,
+            #[cfg(feature = "micro-jit")]
+            pre_height: 0,
         }
     }
 

@@ -49,6 +49,36 @@ impl<'a> JitEmitter<'a> {
         self.start_offset
     }
 
+    /// Finish with a br_if_simple conditional dispatch.
+    ///
+    /// Pops the condition from TOS top (i32). If nonzero, branches to target
+    /// (loaded from pc->imm0 via nonlinear dispatch). If zero, falls through
+    /// (linear dispatch to pc+1).
+    ///
+    /// The group's Instruction must have imm0 set to the branch target pointer.
+    ///
+    /// Emitted sequence (10 instructions = 40 bytes):
+    /// ```text
+    /// cbz  w_cond, +6           ; if cond == 0, skip to fallthrough
+    /// <nonlinear dispatch: 5>   ; branch taken path
+    /// <linear dispatch: 4>      ; fallthrough path
+    /// ```
+    pub fn finish_br_if_simple(self) -> usize {
+        let d = depth_variant(self.height);
+        let cond = tos_reg(d, 1);
+
+        // CBZ w_cond, +6: if cond == 0, skip 5 taken-path instructions
+        self.buf.emit(arm64_enc::cbz_32(cond, 6));
+
+        // Branch taken: nonlinear dispatch (5 instructions)
+        emit::emit_dispatch_nonlinear(self.buf);
+
+        // Fallthrough: linear dispatch (4 instructions)
+        emit::emit_dispatch_linear(self.buf);
+
+        self.start_offset
+    }
+
     /// Emit a raw u32 instruction (for test helpers).
     pub fn emit_raw(&mut self, inst: u32) {
         self.buf.emit(inst);
@@ -930,5 +960,236 @@ mod tests {
             0, 0, 0, 0, 0, 5, 5, 0,
         );
         assert_eq!(result, 1);
+    }
+
+    // ==================== Step 9: br_if_simple tests ====================
+
+    #[test]
+    fn test_br_if_simple_fallthrough() {
+        // Condition = 0 → fallthrough (linear dispatch to inst[1]).
+        // height=2, D=2: pos1(top)=T1(cond=0), pos2=T0(value=42)
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start;
+        {
+            let mut e = JitEmitter::new(&mut buf, 2);
+            let val_reg = tos_reg(e.dv(), 2); // T0 = value
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start = e.finish_br_if_simple();
+        }
+        buf.finish_write(0, buf.len());
+
+        let jit_handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit_handler), // [0] JIT
+            Instruction::new_handler_only(term),         // [1] fallthrough
+            Instruction::new_handler_only(term),         // [2] for nh
+            Instruction::new_handler_only(term),         // [3] target (not reached)
+            Instruction::new_handler_only(term),         // [4] for target nh
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0,
+                42, 0, 0, 0, // t0=42(value), t1=0(cond=0 → fallthrough)
+                nh,
+            );
+        }
+        assert_eq!(frame[0], 42, "value should be stored to fp[0]");
+    }
+
+    #[test]
+    fn test_br_if_simple_taken() {
+        // Condition = 1 → branch taken (nonlinear dispatch to imm0 target).
+        // height=2, D=2: pos1(top)=T1(cond=1), pos2=T0(value=42)
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start;
+        {
+            let mut e = JitEmitter::new(&mut buf, 2);
+            let val_reg = tos_reg(e.dv(), 2);
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start = e.finish_br_if_simple();
+        }
+        buf.finish_write(0, buf.len());
+
+        let jit_handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit_handler), // [0] JIT
+            Instruction::new_handler_only(term),         // [1] fallthrough (not reached)
+            Instruction::new_handler_only(term),         // [2]
+            Instruction::new_handler_only(term),         // [3] target
+            Instruction::new_handler_only(term),         // [4] for target nh
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0,
+                42, 1, 0, 0, // t0=42(value), t1=1(cond=1 → branch taken)
+                nh,
+            );
+        }
+        assert_eq!(frame[0], 42);
+        // Returned without crashing: nonlinear dispatch to target worked.
+    }
+
+    #[test]
+    fn test_br_if_simple_taken_multi_group() {
+        // Group 1: const 42, const 1(cond), store value, br_if → branches to inst[3]
+        // Group 2 (at inst[3]): const 99, store to fp[1], linear dispatch → term
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start1;
+        {
+            let mut e = JitEmitter::new(&mut buf, 0);
+            e.i32_const(42);  // height=1: value
+            e.i32_const(1);   // height=2: condition=1 → branch taken
+            let val_reg = tos_reg(e.dv(), 2); // value at pos2
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start1 = e.finish_br_if_simple();
+        }
+
+        let start2 = buf.len();
+        {
+            let mut e = JitEmitter::new(&mut buf, 1); // height=1 after br_if pop
+            e.i32_const(99);
+            let top = tos_reg(e.dv(), 1);
+            e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1)); // fp[1] = 99
+            e.finish();
+        }
+
+        buf.finish_write(0, buf.len());
+
+        let jit1: OpHandler = unsafe { buf.fn_ptr(start1) };
+        let jit2: OpHandler = unsafe { buf.fn_ptr(start2) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit1),  // [0] group1 (br_if)
+            Instruction::new_handler_only(term),  // [1] fallthrough (not reached)
+            Instruction::new_handler_only(term),  // [2]
+            Instruction::new_handler_only(jit2),  // [3] target → group2
+            Instruction::new_handler_only(term),  // [4] group2 fallthrough
+            Instruction::new_handler_only(term),  // [5] for nh
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0, 0, 0, 0, 0, nh,
+            );
+        }
+
+        assert_eq!(frame[0], 42, "group1 stored value");
+        assert_eq!(frame[1], 99, "group2 at target stored value");
+    }
+
+    #[test]
+    fn test_br_if_simple_fallthrough_multi_group() {
+        // Group 1: const 42, const 0(cond=0), store value, br_if → falls through
+        // Group 2 (at inst[1]): const 88, store to fp[1], linear dispatch → term
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start1;
+        {
+            let mut e = JitEmitter::new(&mut buf, 0);
+            e.i32_const(42);
+            e.i32_const(0);  // condition=0 → fallthrough
+            let val_reg = tos_reg(e.dv(), 2);
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start1 = e.finish_br_if_simple();
+        }
+
+        let start2 = buf.len();
+        {
+            let mut e = JitEmitter::new(&mut buf, 1);
+            e.i32_const(88);
+            let top = tos_reg(e.dv(), 1);
+            e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1));
+            e.finish();
+        }
+
+        buf.finish_write(0, buf.len());
+
+        let jit1: OpHandler = unsafe { buf.fn_ptr(start1) };
+        let jit2: OpHandler = unsafe { buf.fn_ptr(start2) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit1),  // [0] group1 (br_if)
+            Instruction::new_handler_only(jit2),  // [1] fallthrough → group2
+            Instruction::new_handler_only(term),  // [2] group2 fallthrough
+            Instruction::new_handler_only(term),  // [3] for nh
+            Instruction::new_handler_only(term),  // [4] target (not reached)
+            Instruction::new_handler_only(term),  // [5]
+        ];
+        insts[0].imm0 = &insts[4] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0, 0, 0, 0, 0, nh,
+            );
+        }
+
+        assert_eq!(frame[0], 42, "group1 stored value");
+        assert_eq!(frame[1], 88, "group2 at fallthrough stored value");
     }
 }

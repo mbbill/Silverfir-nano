@@ -25,7 +25,7 @@ mod temp_inst;
 pub use context::CompileContext;
 pub use emitter::CodeEmitter;
 pub use stack::{BlockKind, ControlFrame, StackTracker, HOT_LOCAL_COUNT};
-pub use temp_inst::TempInst;
+pub use temp_inst::{Handler, TempInst};
 
 use crate::{
     module::entities::FunctionSpec,
@@ -112,14 +112,48 @@ pub fn build_for_function(
     // Decode and dispatch (includes fusion at decode time)
     dispatch::decode_and_dispatch(code, &ctx, &mut stack, &mut emitter)?;
 
+    // Take temps for optional JIT pass + finalize
+    let mut temps = emitter.take_temps();
+
+    // JIT group compilation (ARM64 only, micro-jit feature)
+    #[cfg(feature = "micro-jit")]
+    let jit_buf = {
+        use super::jit::code_buf::CodeBuffer;
+        use super::jit::group;
+
+        let hot_mask = [
+            hot_locals[0].is_some(),
+            hot_locals[1].is_some(),
+            hot_locals[2].is_some(),
+        ];
+
+        match CodeBuffer::with_capacity(65536) {
+            Ok(mut buf) => {
+                group::compile_jit_groups(&mut temps, &mut buf, hot_mask);
+                Some(buf)
+            }
+            Err(_) => None,
+        }
+    };
+
     // Finalize (br_table data is now stored inline in the instruction stream)
-    let code_box = finalizer::finalize(emitter.take_temps(), &mut stack);
+    let code_box = finalizer::finalize(temps, &mut stack);
 
     // Store in function spec
-    use crate::vm::interp::fast::fast_code::{FastCode, create_fast_code};
-    let (fast_code, fast_cache) = create_fast_code(code_box, params_count, locals_count, results_count);
-    let entry = fast_cache.entry();
-    function.set_fast_code(fast_code, fast_cache);
-
-    Ok(entry)
+    #[cfg(not(feature = "micro-jit"))]
+    {
+        use crate::vm::interp::fast::fast_code::{FastCode, create_fast_code};
+        let (fast_code, fast_cache) = create_fast_code(code_box, params_count, locals_count, results_count);
+        let entry = fast_cache.entry();
+        function.set_fast_code(fast_code, fast_cache);
+        Ok(entry)
+    }
+    #[cfg(feature = "micro-jit")]
+    {
+        use crate::vm::interp::fast::fast_code::create_fast_code_with_jit;
+        let (fast_code, fast_cache) = create_fast_code_with_jit(code_box, jit_buf, params_count, locals_count, results_count);
+        let entry = fast_cache.entry();
+        function.set_fast_code(fast_code, fast_cache);
+        Ok(entry)
+    }
 }

@@ -31,8 +31,11 @@ pub const INST_SIZE: u32 = 32;
 /// Byte offset of handler field within Instruction (always 0).
 pub const INST_HANDLER_OFFSET: u32 = 0;
 
+/// Byte offset of imm0 within Instruction (after 8-byte handler).
+pub const INST_IMM0_OFFSET: u32 = 8;
+
 // ---------------------------------------------------------------------------
-// Dispatch stub
+// Dispatch stubs
 // ---------------------------------------------------------------------------
 
 /// Emit the universal dispatch stub (JIT group exit sequence).
@@ -58,6 +61,31 @@ pub fn emit_dispatch_linear(buf: &mut CodeBuffer) -> usize {
     start
 }
 
+/// Emit nonlinear dispatch: load branch target from pc->imm0, dispatch to it.
+///
+/// Used for branch-taken paths (br, br_if when condition is true).
+/// Loads target pointer from imm0, then loads handler and nh from target.
+///
+/// Emitted instructions (5):
+/// ```text
+/// ldr  x3,  [x21, #8]      ; TMP1 = pc->imm0 (target instruction ptr)
+/// ldr  x2,  [x3]           ; handler = target->handler
+/// ldr  x1,  [x3, #0x20]    ; nh = (target+1)->handler
+/// mov  x21, x3             ; pc = target
+/// br   x2                  ; jump to handler
+/// ```
+///
+/// Returns the byte offset where the stub starts in the buffer.
+pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
+    let start = buf.len();
+    buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::PC, INST_IMM0_OFFSET / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::TMP1, INST_HANDLER_OFFSET / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::TMP1, INST_SIZE / 8));
+    buf.emit(arm64_enc::mov_reg_64(Reg::PC, Reg::TMP1));
+    buf.emit(arm64_enc::br(Reg::TMP0));
+    start
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -67,7 +95,7 @@ mod offset_checks {
     use super::ctx_offset;
     use crate::vm::interp::fast::context::Context;
     use crate::vm::interp::fast::instruction::Instruction;
-    use super::{INST_SIZE, INST_HANDLER_OFFSET};
+    use super::{INST_SIZE, INST_HANDLER_OFFSET, INST_IMM0_OFFSET};
 
     #[test]
     fn verify_context_offsets() {
@@ -83,6 +111,7 @@ mod offset_checks {
     fn verify_instruction_layout() {
         assert_eq!(core::mem::size_of::<Instruction>(), INST_SIZE as usize);
         assert_eq!(core::mem::offset_of!(Instruction, handler), INST_HANDLER_OFFSET as usize);
+        assert_eq!(core::mem::offset_of!(Instruction, imm0), INST_IMM0_OFFSET as usize);
     }
 }
 
@@ -203,5 +232,73 @@ mod tests {
             );
         }
         // Reached here: dispatch chain worked through TWO JIT stubs → op_term.
+    }
+
+    #[test]
+    fn test_dispatch_nonlinear_encoding() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+        let off = emit_dispatch_nonlinear(&mut buf);
+        buf.finish_write(off, 20);
+
+        let base = buf.base_ptr() as *const u32;
+        unsafe {
+            // ldr x3, [x21, #8]
+            assert_eq!(*base.add(0), arm64_enc::ldr_64(Reg::TMP1, Reg::PC, 1));
+            // ldr x2, [x3, #0]
+            assert_eq!(*base.add(1), arm64_enc::ldr_64(Reg::TMP0, Reg::TMP1, 0));
+            // ldr x1, [x3, #0x20]
+            assert_eq!(*base.add(2), arm64_enc::ldr_64(Reg::NH, Reg::TMP1, INST_SIZE / 8));
+            // mov x21, x3
+            assert_eq!(*base.add(3), arm64_enc::mov_reg_64(Reg::PC, Reg::TMP1));
+            // br x2
+            assert_eq!(*base.add(4), arm64_enc::br(Reg::TMP0));
+        }
+    }
+
+    #[test]
+    fn test_dispatch_nonlinear_integration() {
+        // Proves nonlinear dispatch jumps to the target specified in imm0.
+        //
+        // inst[0].handler = JIT nonlinear dispatch (reads imm0 → jumps to target)
+        // inst[0].imm0 = &inst[2] (target)
+        // inst[1] = op_term (fallthrough — should NOT be reached)
+        // inst[2] = op_term (target — reached via nonlinear dispatch)
+        // inst[3] = op_term (for nh preload at target)
+
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+        let off = emit_dispatch_nonlinear(&mut buf);
+        buf.finish_write(off, 20);
+
+        let jit_handler: OpHandler = unsafe { buf.fn_ptr(off) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit_handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+
+        // Patch imm0 to point to inst[2]
+        insts[0].imm0 = &insts[2] as *const Instruction as u64;
+
+        let mut stack = [0u64; 16];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            stack.as_mut_ptr().wrapping_add(16),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        // If this returns, nonlinear dispatch to inst[2] worked correctly.
+        unsafe {
+            run_trampoline(&mut ctx, pc, stack.as_mut_ptr(),
+                0, 0, 0, 0, 0, 0, 0, nh);
+        }
     }
 }

@@ -5,7 +5,7 @@ mod wast_test_runner;
 
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
-use std::{env, path::Path, time::Instant};
+use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
 use structopt::StructOpt;
 use summary::print_summary;
 use types::TestStats;
@@ -151,6 +151,32 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
 
     let mut stats = TestStats::new();
 
+    // Install a panic hook that captures messages instead of printing to stderr.
+    // This prevents expected panics (from assert_invalid/assert_unlinkable catch_unwind)
+    // from cluttering the output, while still making messages available for unexpected panics.
+    let last_panic: std::sync::Arc<Mutex<Option<String>>> =
+        std::sync::Arc::new(Mutex::new(None));
+    let last_panic_hook = last_panic.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<unknown>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!(" at {}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_default();
+        let full_msg = format!("{}{}", msg, location);
+        // Print backtrace if RUST_BACKTRACE is set (for debugging)
+        if std::env::var("RUST_BACKTRACE").is_ok() {
+            eprintln!("panic: {}\n{}", full_msg, std::backtrace::Backtrace::force_capture());
+        }
+        *last_panic_hook.lock().unwrap() = Some(full_msg);
+    }));
+
     for wast_file in filtered_files {
         let test_name = wast_file
             .file_stem()
@@ -170,10 +196,25 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
 
         let test_start = Instant::now();
 
-        let mut runner = WastTestRunner::new();
-        let result = runner.run_wast_file(&wast_file);
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut runner = WastTestRunner::new();
+            runner.run_wast_file(&wast_file)
+        }));
 
         let duration = test_start.elapsed();
+
+        // Convert panics to Error results
+        let result = match result {
+            Ok(r) => r,
+            Err(_) => {
+                let msg = last_panic
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                TestResult::Error(format!("panic: {}", msg))
+            }
+        };
 
         match result {
             TestResult::Pass => {

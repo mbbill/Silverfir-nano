@@ -8,3 +8,4 @@ pub mod arm64_enc;
 pub mod code_buf;
 pub mod emit;
 pub mod codegen;
+pub mod group;

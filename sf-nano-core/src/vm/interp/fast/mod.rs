@@ -9,23 +9,26 @@
 //! - `builder/`: Modular IR builder components.
 //! - `encoding`: Generated instruction encoding/decoding.
 
+#[cfg(all(feature = "micro-jit", feature = "fusion"))]
+compile_error!("Features `micro-jit` and `fusion` are mutually exclusive. Enable only one.");
+
 /// Number of TOS (Top-of-Stack) registers in the fast interpreter.
 pub const TOS_REGISTER_COUNT: usize = 4;
 
 /// Runtime override to disable fusion (used by discover-fusion profiling).
 #[cfg(feature = "fusion")]
-static FUSION_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FUSION_DISABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Disable fusion at runtime (e.g., for profiling the raw instruction stream).
 #[cfg(feature = "fusion")]
 pub fn set_fusion_disabled(disabled: bool) {
-    FUSION_DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
+    FUSION_DISABLED.store(disabled, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Check whether instruction fusion is currently disabled.
 #[cfg(feature = "fusion")]
 pub fn is_fusion_disabled() -> bool {
-    FUSION_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+    FUSION_DISABLED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(not(feature = "fusion"))]

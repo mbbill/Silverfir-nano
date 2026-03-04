@@ -42,6 +42,9 @@ fn emit_spill_if_needed(stack: &mut StackTracker, emitter: &mut CodeEmitter) {
 
         stack.record_spill(1);
         emitter.emit_spill(slot, 1, variant);
+        // Update JIT height after spill so the next TempInst gets the correct pre_height.
+        #[cfg(feature = "micro-jit")]
+        emitter.set_current_height(stack.height() as u16);
     }
 }
 
@@ -57,6 +60,8 @@ fn emit_fill_if_needed(stack: &mut StackTracker, emitter: &mut CodeEmitter) {
         let slot = (stack.operand_base() + old_spill_depth - 1) as u16;
         let variant = ((old_spill_depth - 1) % TOS_REGISTER_COUNT) as u8;
         emitter.emit_fill(slot, fill_count as u8, variant);
+        #[cfg(feature = "micro-jit")]
+        emitter.set_current_height(stack.height() as u16);
     }
 }
 
@@ -78,6 +83,8 @@ fn emit_fill_for_operands(stack: &mut StackTracker, emitter: &mut CodeEmitter, o
 
         stack.record_fill(fill_count);
         emitter.emit_fill(slot, fill_count as u8, variant);
+        #[cfg(feature = "micro-jit")]
+        emitter.set_current_height(stack.height() as u16);
     }
 }
 
@@ -238,6 +245,9 @@ fn dispatch_opcode(
 ) {
     use Opcode::*;
     use WasmOpcode::{FC, OP};
+
+    #[cfg(feature = "micro-jit")]
+    emitter.set_current_height(stack.height() as u16);
 
     match op {
         // =====================================================================

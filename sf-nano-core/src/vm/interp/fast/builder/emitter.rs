@@ -20,13 +20,24 @@ use crate::opcodes::Opcode::*;
 /// Emitter for building instructions.
 pub struct CodeEmitter {
     temps: Vec<TempInst>,
+    /// Current TOS height, tracked for micro-JIT group compilation.
+    #[cfg(feature = "micro-jit")]
+    current_height: u16,
 }
 
 impl CodeEmitter {
     pub fn new() -> Self {
         Self {
             temps: Vec::with_capacity(256),
+            #[cfg(feature = "micro-jit")]
+            current_height: 0,
         }
+    }
+
+    /// Set the current TOS height (called before each opcode dispatch).
+    #[cfg(feature = "micro-jit")]
+    pub fn set_current_height(&mut self, h: u16) {
+        self.current_height = h;
     }
 
     /// Current instruction index.
@@ -48,13 +59,17 @@ impl CodeEmitter {
     pub(super) fn emit(&mut self, mut inst: TempInst) -> usize {
         let idx = self.temps.len();
         inst.fallthrough_idx = Some(idx + 1);
+        #[cfg(feature = "micro-jit")]
+        { inst.pre_height = self.current_height; }
         self.temps.push(inst);
         idx
     }
 
     /// Emit a TempInst without fallthrough (for terminal instructions).
-    fn emit_terminal(&mut self, inst: TempInst) -> usize {
+    fn emit_terminal(&mut self, mut inst: TempInst) -> usize {
         let idx = self.temps.len();
+        #[cfg(feature = "micro-jit")]
+        { inst.pre_height = self.current_height; }
         self.temps.push(inst);
         idx
     }

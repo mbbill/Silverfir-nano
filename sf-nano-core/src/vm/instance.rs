@@ -382,6 +382,11 @@ impl Instance {
         for (i, element) in mod_elements.iter().enumerate() {
             match element {
                 Element::Active { table_index, offset_expr, init } => {
+                    if *table_index >= store.module().tables.len() {
+                        return Err(WasmError::unlinkable(
+                            "unknown table".to_string(),
+                        ));
+                    }
                     let offset = eval_offset(offset_expr, store.module())?;
                     let refs = materialize_element_init(init, store.module())?;
 
