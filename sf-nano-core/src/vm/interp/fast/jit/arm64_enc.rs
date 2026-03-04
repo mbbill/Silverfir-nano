@@ -707,6 +707,16 @@ pub fn sxtb_32(rd: Reg, rn: Reg) -> u32 {
     sbfm(0, 0, rd, rn, 0, 7)
 }
 
+/// SXTB Xd, Xn (sign-extend 8→64)
+pub fn sxtb_64(rd: Reg, rn: Reg) -> u32 {
+    sbfm(1, 1, rd, rn, 0, 7)
+}
+
+/// SXTH Xd, Xn (sign-extend 16→64)
+pub fn sxth_64(rd: Reg, rn: Reg) -> u32 {
+    sbfm(1, 1, rd, rn, 0, 15)
+}
+
 /// UXTH Wd, Wn (zero-extend 16→32, = UBFM Wd, Wn, #0, #15)
 pub fn uxth_32(rd: Reg, rn: Reg) -> u32 {
     ubfm(0, 0, rd, rn, 0, 15)

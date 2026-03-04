@@ -4,6 +4,7 @@
 //! supported Wasm opcode. Depth-variant register selection matches the
 //! interpreter's TOS register window convention.
 
+use alloc::vec::Vec;
 use super::code_buf::CodeBuffer;
 use super::reg::Reg;
 use super::arm64_enc::{self, Cond};
@@ -14,6 +15,9 @@ const TOS_REGS: [Reg; 4] = [Reg::T0, Reg::T1, Reg::T2, Reg::T3];
 
 /// Hot local registers: L0=x23, L1=x24, L2=x25.
 const LOCAL_REGS: [Reg; 3] = [Reg::L0, Reg::L1, Reg::L2];
+
+/// Static OOB trap message (null-terminated C string).
+const OOB_MSG: &[u8; 28] = b"out of bounds memory access\0";
 
 /// Compute depth variant from stack height.
 pub fn depth_variant(height: usize) -> u8 {
@@ -31,21 +35,24 @@ pub struct JitEmitter<'a> {
     height: usize,
     /// Byte offset where this group's code starts.
     pub start_offset: usize,
+    /// Byte offsets of B.HI instructions to patch to the OOB trap stub.
+    trap_patches: Vec<usize>,
 }
 
 impl<'a> JitEmitter<'a> {
     pub fn new(buf: &'a mut CodeBuffer, initial_height: usize) -> Self {
         let start_offset = buf.len();
-        Self { buf, height: initial_height, start_offset }
+        Self { buf, height: initial_height, start_offset, trap_patches: Vec::new() }
     }
 
     pub fn height(&self) -> usize { self.height }
 
     fn dv(&self) -> u8 { depth_variant(self.height) }
 
-    /// Finish the group: emit dispatch stub. Returns start offset.
-    pub fn finish(self) -> usize {
+    /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
+    pub fn finish(mut self) -> usize {
         emit::emit_dispatch_linear(self.buf);
+        self.emit_trap_stub_if_needed();
         self.start_offset
     }
 
@@ -63,7 +70,7 @@ impl<'a> JitEmitter<'a> {
     /// <nonlinear dispatch: 5>   ; branch taken path
     /// <linear dispatch: 4>      ; fallthrough path
     /// ```
-    pub fn finish_br_if_simple(self) -> usize {
+    pub fn finish_br_if_simple(mut self) -> usize {
         let d = depth_variant(self.height);
         let cond = tos_reg(d, 1);
 
@@ -76,7 +83,37 @@ impl<'a> JitEmitter<'a> {
         // Fallthrough: linear dispatch (4 instructions)
         emit::emit_dispatch_linear(self.buf);
 
+        self.emit_trap_stub_if_needed();
         self.start_offset
+    }
+
+    /// Emit the OOB trap stub and patch all B.HI branches to it.
+    fn emit_trap_stub_if_needed(&mut self) {
+        if self.trap_patches.is_empty() {
+            return;
+        }
+        let trap_offset = self.buf.len();
+
+        // Materialize OOB message pointer into TMP1
+        let msg_addr = OOB_MSG.as_ptr() as u64;
+        materialize_u64(self.buf, Reg::TMP1, msg_addr);
+
+        // Store to ctx.trap_message
+        self.buf.emit(arm64_enc::str_64(Reg::TMP1, Reg::CTX,
+            emit::ctx_offset::TRAP_MESSAGE / 8));
+
+        // Dispatch to term_inst
+        self.buf.emit(arm64_enc::ldr_64(Reg::PC, Reg::CTX,
+            emit::ctx_offset::TERM_INST / 8));
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, 0));
+        self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::PC, emit::INST_SIZE / 8));
+        self.buf.emit(arm64_enc::br(Reg::TMP0));
+
+        // Patch all B.HI branches to point to the trap stub
+        for &patch_off in &self.trap_patches {
+            let delta = (trap_offset - patch_off) as i32 / 4;
+            self.buf.patch_u32(patch_off, arm64_enc::b_cond(Cond::HI, delta));
+        }
     }
 
     /// Emit a raw u32 instruction (for test helpers).
@@ -285,6 +322,191 @@ impl<'a> JitEmitter<'a> {
         self.height -= 1;
         // No code emitted — value is simply forgotten
     }
+
+    // ==================== Memory bounds check (shared) ====================
+
+    /// Emit bounds check prologue for a memory access.
+    ///
+    /// Computes effective address `ea = u32(addr_reg) + offset`, checks
+    /// `ea + byte_count <= mem0_size`, and branches to the trap stub on OOB.
+    ///
+    /// After this: TMP0 = ea, NH (x1) = mem0_base.
+    fn emit_mem_bounds_check(&mut self, addr_reg: Reg, offset: u32, byte_count: u32) {
+        // Truncate addr to u32 (zero-extends to 64-bit)
+        self.buf.emit(arm64_enc::mov_reg_32(Reg::TMP0, addr_reg));
+
+        // Add wasm memarg offset
+        if offset > 0 {
+            if offset <= 4095 {
+                self.buf.emit(arm64_enc::add_imm_64(Reg::TMP0, Reg::TMP0, offset));
+            } else {
+                materialize_u32(self.buf, Reg::TMP1, offset);
+                self.buf.emit(arm64_enc::add_reg_64(Reg::TMP0, Reg::TMP0, Reg::TMP1));
+            }
+        }
+
+        // ea_end = ea + byte_count
+        self.buf.emit(arm64_enc::add_imm_64(Reg::TMP1, Reg::TMP0, byte_count));
+
+        // Load mem0_size
+        self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::CTX,
+            emit::ctx_offset::MEM0_SIZE / 8));
+
+        // CMP ea_end, mem0_size (sets flags for unsigned comparison)
+        self.buf.emit(arm64_enc::subs_reg_64(Reg::XZR, Reg::TMP1, Reg::NH));
+
+        // B.HI to trap stub (placeholder offset, patched by emit_trap_stub_if_needed)
+        let patch_off = self.buf.emit(arm64_enc::b_cond(Cond::HI, 0));
+        self.trap_patches.push(patch_off);
+
+        // Load mem0_base
+        self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::CTX,
+            emit::ctx_offset::MEM0_BASE / 8));
+    }
+
+    // ==================== Memory loads (pop1_push1) ====================
+
+    pub fn i32_load(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 4);
+        self.buf.emit(arm64_enc::ldr_32_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i32_load8_u(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 1);
+        self.buf.emit(arm64_enc::ldrb_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i32_load8_s(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 1);
+        self.buf.emit(arm64_enc::ldrb_reg(reg, Reg::NH, Reg::TMP0));
+        self.buf.emit(arm64_enc::sxtb_32(reg, reg));
+    }
+
+    pub fn i32_load16_u(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 2);
+        self.buf.emit(arm64_enc::ldrh_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i32_load16_s(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 2);
+        self.buf.emit(arm64_enc::ldrh_reg(reg, Reg::NH, Reg::TMP0));
+        self.buf.emit(arm64_enc::sxth_32(reg, reg));
+    }
+
+    pub fn i64_load(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 8);
+        self.buf.emit(arm64_enc::ldr_64_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i64_load8_u(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 1);
+        self.buf.emit(arm64_enc::ldrb_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i64_load8_s(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 1);
+        self.buf.emit(arm64_enc::ldrb_reg(reg, Reg::NH, Reg::TMP0));
+        self.buf.emit(arm64_enc::sxtb_64(reg, reg));
+    }
+
+    pub fn i64_load16_u(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 2);
+        self.buf.emit(arm64_enc::ldrh_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i64_load16_s(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 2);
+        self.buf.emit(arm64_enc::ldrh_reg(reg, Reg::NH, Reg::TMP0));
+        self.buf.emit(arm64_enc::sxth_64(reg, reg));
+    }
+
+    pub fn i64_load32_u(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 4);
+        self.buf.emit(arm64_enc::ldr_32_reg(reg, Reg::NH, Reg::TMP0));
+    }
+
+    pub fn i64_load32_s(&mut self, offset: u32) {
+        let reg = tos_reg(self.dv(), 1);
+        self.emit_mem_bounds_check(reg, offset, 4);
+        self.buf.emit(arm64_enc::ldr_32_reg(reg, Reg::NH, Reg::TMP0));
+        self.buf.emit(arm64_enc::sxtw(reg, reg));
+    }
+
+    // ==================== Memory stores (pop2_push0) ====================
+
+    pub fn i32_store(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 4);
+        self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i32_store8(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 1);
+        self.buf.emit(arm64_enc::strb_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i32_store16(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 2);
+        self.buf.emit(arm64_enc::strh_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i64_store(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 8);
+        self.buf.emit(arm64_enc::str_64_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i64_store8(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 1);
+        self.buf.emit(arm64_enc::strb_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i64_store16(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 2);
+        self.buf.emit(arm64_enc::strh_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
+
+    pub fn i64_store32(&mut self, offset: u32) {
+        let d = self.dv();
+        let val_reg = tos_reg(d, 1);
+        let addr_reg = tos_reg(d, 2);
+        self.emit_mem_bounds_check(addr_reg, offset, 4);
+        self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
+        self.height -= 2;
+    }
 }
 
 // ==================== Constant materialization ====================
@@ -333,6 +555,7 @@ fn materialize_u64(buf: &mut CodeBuffer, dst: Reg, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use crate::vm::interp::fast::instruction::Instruction;
     use crate::vm::interp::fast::handlers::{self, OpHandler, NextHandler, run_trampoline};
     use crate::vm::interp::fast::context::Context;
@@ -364,11 +587,10 @@ mod tests {
 
         // Store TOS top to fp[0] for verification
         let result_reg = tos_reg(emitter.dv(), 1);
-        let start = emitter.start_offset;
-        buf.emit(arm64_enc::str_64(result_reg, Reg::FP, 0));
+        emitter.emit_raw(arm64_enc::str_64(result_reg, Reg::FP, 0));
 
-        // Dispatch stub
-        emit::emit_dispatch_linear(&mut buf);
+        // Finish: dispatch stub + trap stub if needed
+        let start = emitter.finish();
 
         let total_len = buf.len();
         buf.finish_write(0, total_len);
@@ -420,11 +642,10 @@ mod tests {
         let mut emitter = JitEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
 
-        let start = emitter.start_offset;
         // Store the local register to fp[0] for verification
-        buf.emit(arm64_enc::str_64(local_reg, Reg::FP, 0));
+        emitter.emit_raw(arm64_enc::str_64(local_reg, Reg::FP, 0));
 
-        emit::emit_dispatch_linear(&mut buf);
+        let start = emitter.finish();
 
         let total_len = buf.len();
         buf.finish_write(0, total_len);
@@ -459,6 +680,108 @@ mod tests {
         }
 
         frame[0]
+    }
+
+    /// Run a JIT group with linear memory and return TOS top.
+    fn run_jit_mem_test(
+        setup_fn: impl FnOnce(&mut JitEmitter),
+        initial_height: usize,
+        t0: u64, t1: u64, t2: u64, t3: u64,
+        l0: u64, l1: u64, l2: u64,
+        mem: &mut [u8],
+    ) -> u64 {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        setup_fn(&mut emitter);
+
+        let result_reg = tos_reg(emitter.dv(), 1);
+        emitter.emit_raw(arm64_enc::str_64(result_reg, Reg::FP, 0));
+        let start = emitter.finish();
+
+        let total_len = buf.len();
+        buf.finish_write(0, total_len);
+
+        let handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            mem.as_mut_ptr(), mem.len() as u64,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                l0, l1, l2,
+                t0, t1, t2, t3,
+                nh,
+            );
+        }
+
+        frame[0]
+    }
+
+    /// Run a JIT group with linear memory. Returns (frame[0], trap_message_ptr).
+    fn run_jit_mem_store_test(
+        setup_fn: impl FnOnce(&mut JitEmitter),
+        initial_height: usize,
+        t0: u64, t1: u64, t2: u64, t3: u64,
+        mem: &mut [u8],
+    ) -> *const core::ffi::c_char {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        setup_fn(&mut emitter);
+        let start = emitter.finish();
+
+        let total_len = buf.len();
+        buf.finish_write(0, total_len);
+
+        let handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            mem.as_mut_ptr(), mem.len() as u64,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0,
+                t0, t1, t2, t3,
+                nh,
+            );
+        }
+
+        ctx.trap_message
     }
 
     // ==================== Unit tests: depth_variant / tos_reg ====================
@@ -1191,5 +1514,192 @@ mod tests {
 
         assert_eq!(frame[0], 42, "group1 stored value");
         assert_eq!(frame[1], 88, "group2 at fallthrough stored value");
+    }
+
+    // ==================== Step 10: Memory load/store tests ====================
+
+    #[test]
+    fn test_i32_load_basic() {
+        let mut mem = [0u8; 1024];
+        mem[0..4].copy_from_slice(&42u32.to_le_bytes());
+
+        // addr=0 in TOS, load 4 bytes → should get 42
+        let result = run_jit_mem_test(
+            |e| e.i32_load(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_i32_load_with_offset() {
+        let mut mem = [0u8; 1024];
+        mem[8..12].copy_from_slice(&99u32.to_le_bytes());
+
+        // addr=0, offset=8 → loads from byte 8
+        let result = run_jit_mem_test(
+            |e| e.i32_load(8),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 99);
+    }
+
+    #[test]
+    fn test_i32_load_large_offset() {
+        let mut mem = vec![0u8; 8192];
+        let off: u32 = 5000;
+        mem[off as usize..off as usize + 4].copy_from_slice(&77u32.to_le_bytes());
+
+        // addr=0, offset=5000 (> 4095, uses materialize path)
+        let result = run_jit_mem_test(
+            |e| e.i32_load(off),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 77);
+    }
+
+    #[test]
+    fn test_i64_load_basic() {
+        let mut mem = [0u8; 1024];
+        let val: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        mem[0..8].copy_from_slice(&val.to_le_bytes());
+
+        let result = run_jit_mem_test(
+            |e| e.i64_load(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, val);
+    }
+
+    #[test]
+    fn test_i32_load8_u() {
+        let mut mem = [0u8; 1024];
+        mem[0] = 0xFF;
+
+        let result = run_jit_mem_test(
+            |e| e.i32_load8_u(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 0xFF);
+    }
+
+    #[test]
+    fn test_i32_load8_s() {
+        let mut mem = [0u8; 1024];
+        mem[0] = 0x80; // -128 as signed byte
+
+        let result = run_jit_mem_test(
+            |e| e.i32_load8_s(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        // Sign-extended: 0x80 → 0xFFFFFF80 as u32 = 4294967168
+        assert_eq!(result as u32, (-128i32) as u32);
+    }
+
+    #[test]
+    fn test_i32_load16_s() {
+        let mut mem = [0u8; 1024];
+        mem[0..2].copy_from_slice(&0x8000u16.to_le_bytes()); // -32768
+
+        let result = run_jit_mem_test(
+            |e| e.i32_load16_s(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result as u32, (-32768i32) as u32);
+    }
+
+    #[test]
+    fn test_i64_load8_s() {
+        let mut mem = [0u8; 1024];
+        mem[0] = 0xFE; // -2 as signed byte
+
+        let result = run_jit_mem_test(
+            |e| e.i64_load8_s(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, (-2i64) as u64);
+    }
+
+    #[test]
+    fn test_i64_load32_s() {
+        let mut mem = [0u8; 1024];
+        mem[0..4].copy_from_slice(&0x80000000u32.to_le_bytes()); // -2147483648
+
+        let result = run_jit_mem_test(
+            |e| e.i64_load32_s(0),
+            1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, (-2147483648i64) as u64);
+    }
+
+    #[test]
+    fn test_i32_store_basic() {
+        let mut mem = [0u8; 1024];
+
+        // D2: pos2=T0(addr=0), pos1=T1(val=42)
+        let trap = run_jit_mem_store_test(
+            |e| e.i32_store(0),
+            2, 0, 42, 0, 0, &mut mem,
+        );
+        assert!(trap.is_null(), "should not trap");
+        let stored = u32::from_le_bytes([mem[0], mem[1], mem[2], mem[3]]);
+        assert_eq!(stored, 42);
+    }
+
+    #[test]
+    fn test_i64_store_basic() {
+        let mut mem = [0u8; 1024];
+        let val: u64 = 0xCAFE_BABE_DEAD_BEEF;
+
+        // D2: pos2=T0(addr=0), pos1=T1(val)
+        let trap = run_jit_mem_store_test(
+            |e| e.i64_store(0),
+            2, 0, val, 0, 0, &mut mem,
+        );
+        assert!(trap.is_null(), "should not trap");
+        let stored = u64::from_le_bytes(mem[0..8].try_into().unwrap());
+        assert_eq!(stored, val);
+    }
+
+    #[test]
+    fn test_i32_store8() {
+        let mut mem = [0u8; 1024];
+        // Store 0xABCD to byte — should truncate to 0xCD
+        let trap = run_jit_mem_store_test(
+            |e| e.i32_store8(0),
+            2, 0, 0xABCD, 0, 0, &mut mem,
+        );
+        assert!(trap.is_null());
+        assert_eq!(mem[0], 0xCD);
+    }
+
+    #[test]
+    fn test_mem_oob_trap() {
+        let mut mem = [0u8; 16];
+
+        // Try to load from addr=13 with i32_load (4 bytes) → ea_end=17 > 16
+        let trap = run_jit_mem_store_test(
+            |e| e.i32_load(0),
+            1, 13, 0, 0, 0, &mut mem,
+        );
+        assert!(!trap.is_null(), "should trap on OOB access");
+    }
+
+    #[test]
+    fn test_mem_const_store_load() {
+        // Group: const 0 (addr), const 999, i32_store, const 0 (addr), i32_load → 999
+        let mut mem = [0u8; 1024];
+
+        let result = run_jit_mem_test(
+            |e| {
+                e.i32_const(0);     // addr
+                e.i32_const(999);   // val
+                e.i32_store(0);     // store 999 at mem[0]
+                e.i32_const(0);     // addr
+                e.i32_load(0);      // load from mem[0]
+            },
+            0, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 999);
     }
 }

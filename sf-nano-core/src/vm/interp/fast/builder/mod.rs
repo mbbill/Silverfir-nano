@@ -127,7 +127,7 @@ pub fn build_for_function(
             hot_locals[2].is_some(),
         ];
 
-        match CodeBuffer::with_capacity(65536) {
+        match CodeBuffer::new() {
             Ok(mut buf) => {
                 group::compile_jit_groups(&mut temps, &mut buf, hot_mask);
                 Some(buf)

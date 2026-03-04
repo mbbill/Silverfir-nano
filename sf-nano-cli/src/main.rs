@@ -2,7 +2,7 @@
 mod discover_fusion;
 
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
-use sf_nano_core::Instance;
+use sf_nano_core::{Instance, jit_stats_snapshot};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -100,6 +100,20 @@ fn main() {
         }
         _ => result,
     };
+
+    // Print JIT status on exit
+    let s = jit_stats_snapshot();
+    if s.groups > 0 || s.groups_skipped > 0 {
+        let kb = s.bytes_emitted / 1024;
+        if s.groups_skipped > 0 {
+            eprintln!(
+                "[jit] {} groups ({} ops), {}KB emitted | {} groups ({} ops) skipped (buffer full)",
+                s.groups, s.ops, kb, s.groups_skipped, s.ops_skipped
+            );
+        } else {
+            eprintln!("[jit] {} groups ({} ops), {}KB emitted", s.groups, s.ops, kb);
+        }
+    }
 
     match result {
         Ok(_) => {}

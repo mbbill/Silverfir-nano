@@ -48,8 +48,8 @@ pub struct CodeBuffer {
 }
 
 impl CodeBuffer {
-    /// Default arena size: 1MB (enough for thousands of JIT groups).
-    const DEFAULT_CAPACITY: usize = 1024 * 1024;
+    /// Default arena size: 16MB.
+    const DEFAULT_CAPACITY: usize = 16 * 1024 * 1024;
 
     /// Allocate a new executable code buffer.
     pub fn new() -> Result<Self, &'static str> {
@@ -152,6 +152,16 @@ impl CodeBuffer {
             self.emit(inst);
         }
         start
+    }
+
+    /// Overwrite a previously emitted instruction at the given byte offset.
+    /// Must be called between `begin_write()` and `finish_write()`.
+    pub fn patch_u32(&mut self, offset: usize, inst: u32) {
+        assert!(offset + 4 <= self.offset, "patch beyond written region");
+        unsafe {
+            let ptr = self.base.add(offset) as *mut u32;
+            ptr.write(inst);
+        }
     }
 
     /// Get a function pointer to code at the given offset.

@@ -91,6 +91,23 @@ fn is_jit_able(t: &TempInst, hot_local_mask: [bool; 3]) -> bool {
                 _ => false,
             },
 
+            // Memory loads (pop 1, push 1) — need height >= 1, mem0 only
+            Opcode::I32_LOAD | Opcode::I64_LOAD | Opcode::F32_LOAD | Opcode::F64_LOAD |
+            Opcode::I32_LOAD8_S | Opcode::I32_LOAD8_U |
+            Opcode::I32_LOAD16_S | Opcode::I32_LOAD16_U |
+            Opcode::I64_LOAD8_S | Opcode::I64_LOAD8_U |
+            Opcode::I64_LOAD16_S | Opcode::I64_LOAD16_U |
+            Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => {
+                h >= 1 && matches!(t.data, PatternData::Load { memidx, .. } if memidx == 0)
+            },
+
+            // Memory stores (pop 2, push 0) — need height >= 2, mem0 only
+            Opcode::I32_STORE | Opcode::I64_STORE | Opcode::F32_STORE | Opcode::F64_STORE |
+            Opcode::I32_STORE8 | Opcode::I32_STORE16 |
+            Opcode::I64_STORE8 | Opcode::I64_STORE16 | Opcode::I64_STORE32 => {
+                h >= 2 && matches!(t.data, PatternData::Store { memidx, .. } if memidx == 0)
+            },
+
             _ => false,
         },
         _ => false,
@@ -101,18 +118,53 @@ fn is_jit_able(t: &TempInst, hot_local_mask: [bool; 3]) -> bool {
 pub struct JitStats {
     pub groups: core::sync::atomic::AtomicUsize,
     pub ops: core::sync::atomic::AtomicUsize,
+    pub bytes_emitted: core::sync::atomic::AtomicUsize,
+    pub groups_skipped_capacity: core::sync::atomic::AtomicUsize,
+    pub ops_skipped_capacity: core::sync::atomic::AtomicUsize,
 }
 
 pub static JIT_STATS: JitStats = JitStats {
     groups: core::sync::atomic::AtomicUsize::new(0),
     ops: core::sync::atomic::AtomicUsize::new(0),
+    bytes_emitted: core::sync::atomic::AtomicUsize::new(0),
+    groups_skipped_capacity: core::sync::atomic::AtomicUsize::new(0),
+    ops_skipped_capacity: core::sync::atomic::AtomicUsize::new(0),
 };
+
+/// Snapshot of JIT compilation statistics.
+pub struct JitStatsSnapshot {
+    pub groups: usize,
+    pub ops: usize,
+    pub bytes_emitted: usize,
+    pub groups_skipped: usize,
+    pub ops_skipped: usize,
+}
+
+/// Return a snapshot of all JIT statistics.
+pub fn jit_stats_snapshot() -> JitStatsSnapshot {
+    use core::sync::atomic::Ordering::Relaxed;
+    JitStatsSnapshot {
+        groups: JIT_STATS.groups.load(Relaxed),
+        ops: JIT_STATS.ops.load(Relaxed),
+        bytes_emitted: JIT_STATS.bytes_emitted.load(Relaxed),
+        groups_skipped: JIT_STATS.groups_skipped_capacity.load(Relaxed),
+        ops_skipped: JIT_STATS.ops_skipped_capacity.load(Relaxed),
+    }
+}
 
 /// Return (groups_compiled, ops_compiled) since process start.
 pub fn jit_stats() -> (usize, usize) {
     (
         JIT_STATS.groups.load(core::sync::atomic::Ordering::Relaxed),
         JIT_STATS.ops.load(core::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Return (groups_skipped, ops_skipped) due to buffer capacity exhaustion.
+pub fn jit_capacity_skips() -> (usize, usize) {
+    (
+        JIT_STATS.groups_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
+        JIT_STATS.ops_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -127,9 +179,12 @@ pub fn compile_jit_groups(
     hot_local_mask: [bool; 3],
 ) {
     buf.begin_write();
+    let bytes_before = buf.len();
 
     let mut groups_compiled: usize = 0;
     let mut ops_compiled: usize = 0;
+    let mut groups_skipped: usize = 0;
+    let mut ops_skipped: usize = 0;
 
     let mut i = 0;
     while i < temps.len() {
@@ -158,9 +213,17 @@ pub fn compile_jit_groups(
 
             let group_len = i - group_start;
             if group_len >= 2 {
-                compile_group(&mut temps[group_start..i], buf, hot_local_mask);
-                groups_compiled += 1;
-                ops_compiled += group_len;
+                // Conservative capacity check: ~256 bytes per op + 256 bytes for
+                // dispatch stub + trap stub overhead.
+                let estimated_bytes = group_len * 256 + 256;
+                if buf.remaining() >= estimated_bytes {
+                    compile_group(&mut temps[group_start..i], buf, hot_local_mask);
+                    groups_compiled += 1;
+                    ops_compiled += group_len;
+                } else {
+                    groups_skipped += 1;
+                    ops_skipped += group_len;
+                }
             }
         } else {
             i += 1;
@@ -172,8 +235,14 @@ pub fn compile_jit_groups(
     buf.finish_write(0, total_len);
 
     // Update global stats
+    let bytes_emitted = total_len - bytes_before;
     JIT_STATS.groups.fetch_add(groups_compiled, core::sync::atomic::Ordering::Relaxed);
     JIT_STATS.ops.fetch_add(ops_compiled, core::sync::atomic::Ordering::Relaxed);
+    JIT_STATS.bytes_emitted.fetch_add(bytes_emitted, core::sync::atomic::Ordering::Relaxed);
+    if groups_skipped > 0 {
+        JIT_STATS.groups_skipped_capacity.fetch_add(groups_skipped, core::sync::atomic::Ordering::Relaxed);
+        JIT_STATS.ops_skipped_capacity.fetch_add(ops_skipped, core::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Compute the stack effect of a JIT-able op: (pops, pushes).
@@ -208,6 +277,20 @@ fn op_stack_effect(t: &TempInst) -> (usize, usize) {
             Opcode::DROP | Opcode::LOCAL_SET => (1, 0),
             // Local tee: read top, write local (no height change)
             Opcode::LOCAL_TEE => (0, 0),
+
+            // Memory loads: pop 1, push 1
+            Opcode::I32_LOAD | Opcode::I64_LOAD | Opcode::F32_LOAD | Opcode::F64_LOAD |
+            Opcode::I32_LOAD8_S | Opcode::I32_LOAD8_U |
+            Opcode::I32_LOAD16_S | Opcode::I32_LOAD16_U |
+            Opcode::I64_LOAD8_S | Opcode::I64_LOAD8_U |
+            Opcode::I64_LOAD16_S | Opcode::I64_LOAD16_U |
+            Opcode::I64_LOAD32_S | Opcode::I64_LOAD32_U => (1, 1),
+
+            // Memory stores: pop 2, push 0
+            Opcode::I32_STORE | Opcode::I64_STORE | Opcode::F32_STORE | Opcode::F64_STORE |
+            Opcode::I32_STORE8 | Opcode::I32_STORE16 |
+            Opcode::I64_STORE8 | Opcode::I64_STORE16 | Opcode::I64_STORE32 => (2, 0),
+
             _ => (0, 0),
         },
         _ => (0, 0),
@@ -384,6 +467,79 @@ fn emit_op(e: &mut JitEmitter, t: &TempInst, hot_local_mask: [bool; 3]) {
 
             // Drop
             Opcode::DROP => e.drop_val(),
+
+            // Memory loads
+            Opcode::I32_LOAD => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load(offset); }
+            }
+            Opcode::I32_LOAD8_S => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load8_s(offset); }
+            }
+            Opcode::I32_LOAD8_U => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load8_u(offset); }
+            }
+            Opcode::I32_LOAD16_S => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load16_s(offset); }
+            }
+            Opcode::I32_LOAD16_U => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load16_u(offset); }
+            }
+            Opcode::I64_LOAD => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load(offset); }
+            }
+            Opcode::I64_LOAD8_S => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load8_s(offset); }
+            }
+            Opcode::I64_LOAD8_U => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load8_u(offset); }
+            }
+            Opcode::I64_LOAD16_S => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load16_s(offset); }
+            }
+            Opcode::I64_LOAD16_U => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load16_u(offset); }
+            }
+            Opcode::I64_LOAD32_S => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load32_s(offset); }
+            }
+            Opcode::I64_LOAD32_U => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load32_u(offset); }
+            }
+            Opcode::F32_LOAD => {
+                if let PatternData::Load { offset, .. } = t.data { e.i32_load(offset); }
+            }
+            Opcode::F64_LOAD => {
+                if let PatternData::Load { offset, .. } = t.data { e.i64_load(offset); }
+            }
+
+            // Memory stores
+            Opcode::I32_STORE => {
+                if let PatternData::Store { offset, .. } = t.data { e.i32_store(offset); }
+            }
+            Opcode::I32_STORE8 => {
+                if let PatternData::Store { offset, .. } = t.data { e.i32_store8(offset); }
+            }
+            Opcode::I32_STORE16 => {
+                if let PatternData::Store { offset, .. } = t.data { e.i32_store16(offset); }
+            }
+            Opcode::I64_STORE => {
+                if let PatternData::Store { offset, .. } = t.data { e.i64_store(offset); }
+            }
+            Opcode::I64_STORE8 => {
+                if let PatternData::Store { offset, .. } = t.data { e.i64_store8(offset); }
+            }
+            Opcode::I64_STORE16 => {
+                if let PatternData::Store { offset, .. } = t.data { e.i64_store16(offset); }
+            }
+            Opcode::I64_STORE32 => {
+                if let PatternData::Store { offset, .. } = t.data { e.i64_store32(offset); }
+            }
+            Opcode::F32_STORE => {
+                if let PatternData::Store { offset, .. } = t.data { e.i32_store(offset); }
+            }
+            Opcode::F64_STORE => {
+                if let PatternData::Store { offset, .. } = t.data { e.i64_store(offset); }
+            }
 
             _ => {} // Should not reach here (is_jit_able filters)
         },
