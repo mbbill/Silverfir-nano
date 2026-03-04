@@ -5,3 +5,5 @@
 
 pub mod reg;
 pub mod arm64_enc;
+pub mod code_buf;
+pub mod emit;
