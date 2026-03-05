@@ -13,6 +13,7 @@ mod dispatch;
 mod emitter;
 mod finalizer;
 pub mod hot_local;
+pub mod ir;
 // Auto-generated from handlers.toml [[fused]] entries.
 // See `build/fast_interp/gen_fusion.rs` for the generator.
 #[cfg(feature = "fusion")]
