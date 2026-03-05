@@ -13,10 +13,10 @@ pub mod gen_handler_names;
 pub mod gen_encoding;
 pub mod gen_handler_lookup;
 pub mod op_classify;
-pub mod gen_fusion_match;
-pub mod gen_fusion_emit;
 pub mod gen_fusion_c;
 pub mod gen_fusion;
+pub mod gen_ir_resolve;
+pub mod gen_fusion_ir_match;
 
 use std::fs;
 use std::path::PathBuf;
@@ -63,6 +63,7 @@ pub fn generate(out_dir: &PathBuf) {
     gen_handler_names::generate(&handlers, &fast_out);
     gen_handler_lookup::generate(&handlers, &fast_out);
     gen_fusion::generate(&handlers, &fast_out);
+    gen_ir_resolve::generate(&handlers, &fast_out);
 
     // Track dependencies
     println!("cargo:rerun-if-changed={}", handlers_toml_path);

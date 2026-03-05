@@ -10,8 +10,13 @@ license = "MIT/Apache-2.0"
 name = "sf-nano-spectest"
 path = "src/main.rs"
 
+[features]
+default = ["micro-jit"]
+micro-jit = ["sf-nano-core/micro-jit"]
+fusion = ["sf-nano-core/fusion"]
+
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["validate"] }
+sf-nano-core = { path = "../sf-nano-core", default-features = false, features = ["validate"] }
 log = { version = "0.4", features = ["release_max_level_debug"] }
 env_logger = "0.9"
 structopt = "0.3"

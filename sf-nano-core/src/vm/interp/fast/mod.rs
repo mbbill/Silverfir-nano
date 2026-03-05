@@ -32,6 +32,9 @@ pub fn is_fusion_disabled() -> bool {
 }
 
 #[cfg(not(feature = "fusion"))]
+pub fn set_fusion_disabled(_disabled: bool) {}
+
+#[cfg(not(feature = "fusion"))]
 pub fn is_fusion_disabled() -> bool {
     true
 }

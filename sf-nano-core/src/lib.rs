@@ -32,4 +32,5 @@ pub use utils::limits::Limitable;
 pub use vm::instance::{Import, ImportValue, Instance};
 pub use vm::value::Value;
 pub use vm::entities::ExternalFn;
+#[cfg(feature = "micro-jit")]
 pub use vm::interp::fast::jit::group::{jit_stats, jit_capacity_skips, jit_stats_snapshot, JitStatsSnapshot};
