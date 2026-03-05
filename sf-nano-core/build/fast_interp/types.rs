@@ -242,9 +242,10 @@ impl HandlerVariantSource for FusedHandler {
         // the taken branch target is never the next sequential instruction.
         // Patterns ending with if_ use guard-check dispatch (default):
         // the then-path falls through to pc_next(pc) which is linear.
+        // Handles variant-qualified names (e.g., "br_if_d1").
         if self.dispatch.is_some() {
             self.dispatch
-        } else if self.pattern.iter().any(|op| op == "br_if") {
+        } else if self.pattern.iter().any(|op| op == "br_if" || op.starts_with("br_if_d")) {
             Some(DispatchMode::Nonlinear)
         } else {
             // if_ patterns and everything else use guard-check (None = default)

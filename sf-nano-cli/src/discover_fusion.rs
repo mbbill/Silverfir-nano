@@ -8,9 +8,9 @@
 //! instruction statistics are frequency-averaged across workloads to produce
 //! fusion patterns that generalize across diverse programs.
 
-use sf_nano_core::vm::interp::fast::fusion_discovery::{self, DiscoveryConfig};
-use sf_nano_core::vm::interp::fast::pattern_trie::PatternTrie;
-use sf_nano_core::vm::interp::fast::profiler;
+use sf_nano_core::vm::interp::fast::fusion::discovery::{self, DiscoveryConfig};
+use sf_nano_core::vm::interp::fast::fusion::pattern_trie::PatternTrie;
+use sf_nano_core::vm::interp::fast::fusion::profiler;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
 
@@ -367,7 +367,7 @@ pub fn run(cmd: DiscoverFusionArgs) {
         reserved_names,
     };
 
-    let candidates = fusion_discovery::discover(&trie, &config);
+    let candidates = discovery::discover(&trie, &config);
 
     if candidates.is_empty() {
         eprintln!("No new fusion candidates found above threshold.");
@@ -408,7 +408,7 @@ pub fn run(cmd: DiscoverFusionArgs) {
     eprintln!();
 
     // Generate TOML
-    let toml = fusion_discovery::format_all_toml(&candidates);
+    let toml = discovery::format_all_toml(&candidates);
 
     // Output
     let output_path = cmd.output.unwrap_or_else(|| PathBuf::from(DEFAULT_FUSED_TOML));

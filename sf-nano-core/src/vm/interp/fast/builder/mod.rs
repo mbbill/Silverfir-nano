@@ -15,8 +15,6 @@
 pub mod backend;
 mod context;
 mod finalizer_ir;
-#[cfg(feature = "fusion")]
-mod fusion;
 pub mod hot_local;
 pub mod ir;
 pub mod ir_lower;
@@ -87,7 +85,11 @@ pub fn build_for_function(
     };
 
     #[cfg(all(not(feature = "micro-jit"), feature = "fusion"))]
-    let resolved = fusion::resolve_fusion(&ir_ops);
+    let resolved = if super::is_fusion_disabled() {
+        backend::resolve_base(&ir_ops)
+    } else {
+        super::fusion::resolve::resolve_fusion(&ir_ops)
+    };
 
     #[cfg(all(not(feature = "micro-jit"), not(feature = "fusion")))]
     let resolved = backend::resolve_base(&ir_ops);

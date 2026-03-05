@@ -1,8 +1,10 @@
-//! Automatic fusion candidate discovery.
+//! Automatic fusion candidate discovery for variant-qualified patterns.
 //!
 //! Analyzes a [`PatternTrie`] to find the best instruction sequences to fuse,
 //! accounting for prefix overlaps and encoding budget constraints.
 //! Outputs ready-to-paste `[[fused]]` TOML entries for `handlers_fused.toml`.
+//!
+//! All pattern elements are variant-qualified: "i32_const_d1", "i32_add_d2", etc.
 
 extern crate std;
 
@@ -13,10 +15,26 @@ use std::vec::Vec;
 use super::pattern_trie::PatternTrie;
 
 // =============================================================================
-// Op classification
+// Variant suffix handling
 // =============================================================================
 
-pub fn is_pure_binop(op: &str) -> bool {
+/// Strip _dN variant suffix from a handler name.
+/// "i32_add_d1" → "i32_add", "i32_add" → "i32_add"
+fn strip_variant(name: &str) -> &str {
+    if name.len() >= 3 {
+        let suffix = &name[name.len() - 3..];
+        if matches!(suffix, "_d1" | "_d2" | "_d3" | "_d4") {
+            return &name[..name.len() - 3];
+        }
+    }
+    name
+}
+
+// =============================================================================
+// Op classification (operates on base op names after stripping variant)
+// =============================================================================
+
+fn is_pure_binop(op: &str) -> bool {
     matches!(
         op,
         "i32_add" | "i32_sub" | "i32_mul"
@@ -40,7 +58,7 @@ pub fn is_pure_binop(op: &str) -> bool {
     )
 }
 
-pub fn is_trapping_binop(op: &str) -> bool {
+fn is_trapping_binop(op: &str) -> bool {
     matches!(
         op,
         "i32_div_s" | "i32_div_u" | "i32_rem_s" | "i32_rem_u"
@@ -48,7 +66,7 @@ pub fn is_trapping_binop(op: &str) -> bool {
     )
 }
 
-pub fn is_pure_unary(op: &str) -> bool {
+fn is_pure_unary(op: &str) -> bool {
     matches!(
         op,
         "i32_eqz" | "i32_clz" | "i32_ctz" | "i32_popcnt"
@@ -70,7 +88,7 @@ pub fn is_pure_unary(op: &str) -> bool {
     )
 }
 
-pub fn is_load_op(op: &str) -> bool {
+fn is_load_op(op: &str) -> bool {
     matches!(
         op,
         "i32_load" | "i32_load8_s" | "i32_load8_u" | "i32_load16_s" | "i32_load16_u"
@@ -80,7 +98,7 @@ pub fn is_load_op(op: &str) -> bool {
     )
 }
 
-pub fn is_store_op(op: &str) -> bool {
+fn is_store_op(op: &str) -> bool {
     matches!(
         op,
         "i32_store" | "i32_store8" | "i32_store16"
@@ -89,59 +107,19 @@ pub fn is_store_op(op: &str) -> bool {
     )
 }
 
+/// Check if a variant-qualified op is fusible.
 pub fn is_fusible_op(op: &str) -> bool {
-    matches!(op, "local_get" | "local_set" | "local_tee"
+    let base = strip_variant(op);
+    matches!(base, "local_get" | "local_set" | "local_tee"
         | "local_get_l0" | "local_set_l0" | "local_tee_l0"
         | "local_get_l1" | "local_set_l1" | "local_tee_l1"
         | "local_get_l2" | "local_set_l2" | "local_tee_l2"
         | "i32_const" | "i64_const" | "br_if" | "if_")
-        || is_pure_binop(op)
-        || is_trapping_binop(op)
-        || is_pure_unary(op)
-        || is_load_op(op)
-        || is_store_op(op)
-}
-
-// =============================================================================
-// Stack effect computation
-// =============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TosPattern {
-    None,
-    PopPush(u32, u32),
-}
-
-fn op_stack_effect(op: &str) -> (u32, u32) {
-    match op {
-        "local_get" | "local_get_l0" | "local_get_l1" | "local_get_l2" | "i32_const" | "i64_const" => (0, 1),
-        "local_set" | "local_set_l0" | "local_set_l1" | "local_set_l2" => (1, 0),
-        "local_tee" | "local_tee_l0" | "local_tee_l1" | "local_tee_l2" => (1, 1),
-        "br_if" | "if_" => (1, 0),
-        _ if is_pure_binop(op) || is_trapping_binop(op) => (2, 1),
-        _ if is_pure_unary(op) => (1, 1),
-        _ if is_load_op(op) => (1, 1),
-        _ if is_store_op(op) => (2, 0),
-        _ => (0, 0),
-    }
-}
-
-pub fn compute_tos_pattern(pattern: &[&str]) -> TosPattern {
-    let mut height: i32 = 0;
-    let mut min_height: i32 = 0;
-    for op in pattern {
-        let (pop, push) = op_stack_effect(op);
-        height -= pop as i32;
-        min_height = min_height.min(height);
-        height += push as i32;
-    }
-    let pop = (-min_height) as u32;
-    let push = (pop as i32 + height) as u32;
-    if pop == 0 && push == 0 {
-        TosPattern::None
-    } else {
-        TosPattern::PopPush(pop, push)
-    }
+        || is_pure_binop(base)
+        || is_trapping_binop(base)
+        || is_pure_unary(base)
+        || is_load_op(base)
+        || is_store_op(base)
 }
 
 // =============================================================================
@@ -149,23 +127,20 @@ pub fn compute_tos_pattern(pattern: &[&str]) -> TosPattern {
 // =============================================================================
 
 fn op_encoding_bits(op: &str) -> u32 {
-    match op {
+    let base = strip_variant(op);
+    match base {
         "local_get" | "local_set" | "local_tee" => 8,
         "local_get_l0" | "local_set_l0" | "local_tee_l0"
         | "local_get_l1" | "local_set_l1" | "local_tee_l1"
-        | "local_get_l2" | "local_set_l2" | "local_tee_l2" => 0, // no field — register access
+        | "local_get_l2" | "local_set_l2" | "local_tee_l2" => 0,
         "i32_const" => 32,
         "i64_const" | "br_if" | "if_" => 64,
-        _ if is_load_op(op) || is_store_op(op) => 32,
+        _ if is_load_op(base) || is_store_op(base) => 32,
         _ => 0,
     }
 }
 
 pub fn encoding_fits(pattern: &[&str]) -> bool {
-    // Simulate the slot-packing algorithm from gen_encoding.rs: fields are packed
-    // into 3 x 64-bit immediate slots (imm0, imm1, imm2) without spanning slot
-    // boundaries. A field that doesn't fit in the remaining space of the current
-    // slot gets bumped to the next one.
     let mut current_slot = 0u32;
     let mut current_bit = 0u32;
     for op in pattern {
@@ -185,16 +160,6 @@ pub fn encoding_fits(pattern: &[&str]) -> bool {
     true
 }
 
-pub fn tos_supported(pattern: &[&str]) -> bool {
-    match compute_tos_pattern(pattern) {
-        TosPattern::None => true,
-        TosPattern::PopPush(pop, push) => matches!(
-            (pop, push),
-            (0, 1) | (0, 2) | (0, 3) | (1, 0) | (1, 1) | (1, 2) | (2, 0) | (2, 1) | (2, 2)
-        ),
-    }
-}
-
 // =============================================================================
 // Encoding field auto-generation
 // =============================================================================
@@ -210,6 +175,7 @@ pub struct EncodingField {
 pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
     let mut fields = Vec::new();
 
+    // Count field types (using base op names)
     let mut local_count = 0u32;
     let mut const32_count = 0u32;
     let mut const64_count = 0u32;
@@ -218,16 +184,17 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
     let mut if_count = 0u32;
 
     for op in pattern {
-        match *op {
+        let base = strip_variant(op);
+        match base {
             "local_get" | "local_set" | "local_tee" => local_count += 1,
             "local_get_l0" | "local_set_l0" | "local_tee_l0"
             | "local_get_l1" | "local_set_l1" | "local_tee_l1"
-            | "local_get_l2" | "local_set_l2" | "local_tee_l2" => {} // no field needed
+            | "local_get_l2" | "local_set_l2" | "local_tee_l2" => {}
             "i32_const" => const32_count += 1,
             "i64_const" => const64_count += 1,
             "br_if" => brif_count += 1,
             "if_" => if_count += 1,
-            _ if is_load_op(op) || is_store_op(op) => load_store_count += 1,
+            _ if is_load_op(base) || is_store_op(base) => load_store_count += 1,
             _ => {}
         }
     }
@@ -236,7 +203,8 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
     let total_branch_count = brif_count + if_count;
 
     for (i, op) in pattern.iter().enumerate() {
-        match *op {
+        let base = strip_variant(op);
+        match base {
             "local_get" | "local_set" | "local_tee" => {
                 let name = if local_count == 1 {
                     String::from("local_idx")
@@ -277,7 +245,7 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 };
                 fields.push(EncodingField { name, bits: 64, kind: Some(String::from("target")), from: i });
             }
-            _ if is_load_op(op) || is_store_op(op) => {
+            _ if is_load_op(base) || is_store_op(base) => {
                 let name = if load_store_count == 1 {
                     String::from("offset")
                 } else {
@@ -293,58 +261,6 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
 }
 
 // =============================================================================
-// Op name auto-generation
-// =============================================================================
-
-fn abbreviate_op(op: &str) -> &str {
-    match op {
-        "local_get" => "get",
-        "local_set" => "set",
-        "local_tee" => "tee",
-        "local_get_l0" => "gl0",
-        "local_set_l0" => "sl0",
-        "local_tee_l0" => "tl0",
-        "local_get_l1" => "gl1",
-        "local_set_l1" => "sl1",
-        "local_tee_l1" => "tl1",
-        "local_get_l2" => "gl2",
-        "local_set_l2" => "sl2",
-        "local_tee_l2" => "tl2",
-        "i32_const" | "f32_const" => "const",
-        "i64_const" | "f64_const" => "const64",
-        "br_if" => "brif",
-        "if_" => "if",
-        _ => {
-            if let Some(pos) = op.find('_') {
-                let prefix = &op[..pos];
-                if matches!(prefix, "i32" | "i64" | "f32" | "f64") {
-                    return &op[pos + 1..];
-                }
-            }
-            op
-        }
-    }
-}
-
-pub fn auto_name(pattern: &[&str], existing_names: &HashSet<String>) -> String {
-    let parts: Vec<&str> = pattern.iter().map(|op| abbreviate_op(op)).collect();
-    let mut name = parts.join("_");
-
-    if existing_names.contains(&name) {
-        let mut suffix = 2;
-        loop {
-            let candidate = std::format!("{}_{}", name, suffix);
-            if !existing_names.contains(&candidate) {
-                name = candidate;
-                break;
-            }
-            suffix += 1;
-        }
-    }
-    name
-}
-
-// =============================================================================
 // Greedy selection algorithm
 // =============================================================================
 
@@ -355,7 +271,6 @@ pub struct FusionCandidate {
     pub raw_count: u64,
     pub effective_count: u64,
     pub savings: u64,
-    pub tos_pattern: TosPattern,
     pub encoding_fields: Vec<EncodingField>,
 }
 
@@ -373,15 +288,19 @@ fn is_pattern_fusible(pattern: &[&str]) -> bool {
     if !pattern.iter().all(|op| is_fusible_op(op)) {
         return false;
     }
-    // br_if and if_ can only appear at the END of a pattern, not in the middle
+    // br_if and if_ can only appear at the END of a pattern
     for op in &pattern[..pattern.len() - 1] {
-        if *op == "br_if" || *op == "if_" {
+        let base = strip_variant(op);
+        if base == "br_if" || base == "if_" {
             return false;
         }
     }
     let mem_count = pattern
         .iter()
-        .filter(|op| is_load_op(op) || is_store_op(op))
+        .filter(|op| {
+            let base = strip_variant(op);
+            is_load_op(base) || is_store_op(base)
+        })
         .count();
     if mem_count > 1 {
         return false;
@@ -393,7 +312,6 @@ fn is_pattern_fusible(pattern: &[&str]) -> bool {
 pub fn discover(trie: &PatternTrie, config: &DiscoveryConfig) -> Vec<FusionCandidate> {
     let raw_candidates = trie.collect_candidates(2, 1);
 
-    // Convert percentage threshold to absolute savings count
     let min_savings = (config.min_savings_pct / 100.0 * trie.total_instructions as f64) as u64;
 
     let mut scored: Vec<(Vec<String>, u64, u64)> = Vec::new();
@@ -404,9 +322,6 @@ pub fn discover(trie: &PatternTrie, config: &DiscoveryConfig) -> Vec<FusionCandi
             continue;
         }
         if !encoding_fits(&pattern_refs) {
-            continue;
-        }
-        if !tos_supported(&pattern_refs) {
             continue;
         }
 
@@ -438,9 +353,13 @@ pub fn discover(trie: &PatternTrie, config: &DiscoveryConfig) -> Vec<FusionCandi
         }
 
         let pattern_refs: Vec<&str> = pattern.iter().map(|s| s.as_str()).collect();
-        let tos = compute_tos_pattern(&pattern_refs);
         let fields = auto_encoding_fields(&pattern_refs);
-        let name = auto_name(&pattern_refs, &used_names);
+
+        // Name = concatenation of pattern elements
+        let name = pattern_refs.join("_");
+        if used_names.contains(&name) {
+            continue; // skip duplicates
+        }
         used_names.insert(name.clone());
 
         for prefix_len in 2..pattern.len() {
@@ -454,7 +373,6 @@ pub fn discover(trie: &PatternTrie, config: &DiscoveryConfig) -> Vec<FusionCandi
             raw_count: *raw_count,
             effective_count,
             savings: effective_savings,
-            tos_pattern: tos,
             encoding_fields: fields,
         });
     }
@@ -495,18 +413,6 @@ pub fn format_toml_entry(candidate: &FusionCandidate) -> String {
             out.push_str(&std::format!("    {{ {} }},\n", parts.join(", ")));
         }
         out.push_str("]\n");
-    }
-
-    match &candidate.tos_pattern {
-        TosPattern::None => {
-            out.push_str("tos_pattern = \"none\"\n");
-        }
-        TosPattern::PopPush(pop, push) => {
-            out.push_str(&std::format!(
-                "tos_pattern = {{ pop = {}, push = {} }}\n",
-                pop, push
-            ));
-        }
     }
 
     out

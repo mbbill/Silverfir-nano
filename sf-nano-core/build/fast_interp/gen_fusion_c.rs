@@ -1,46 +1,33 @@
-// Fused C handler code generator.
-// Produces fast_fused_handlers.inc: StackSim, impl_* C handler bodies.
+// Fused C handler code generator (variant-qualified).
+//
+// Generates complete PRESERVE_NONE void handler functions with direct
+// TOS register access. No impl/wrapper split — each handler IS the
+// complete function.
+//
+// Trapping ops (loads, stores, trapping binops) use SEM macros that
+// contain `return c_trap(ctx, msg)`. Since void handlers can't return
+// a value, we override the base SEM_LOAD/SEM_STORE macros and trapping
+// binop macros at the top of the generated file. The override replaces
+// `return c_trap(ctx, msg)` with FUSED_TRAP_RETURN — a musttail dispatch
+// directly to the trap handler. Zero overhead, no impl/wrapper needed.
 
 use super::op_classify::{
-    get_pop_push, is_load_op, is_pure_binop, is_pure_unary, is_store_op, is_tos_none,
-    is_trapping_binop, needs_ctx, CategoryMap,
+    has_branch, has_if, is_load_op, is_pure_binop, is_pure_unary, is_store_op,
+    is_trapping_binop, needs_ctx, parse_variant_qualified, strip_variant_suffix,
+    tos_reg, CategoryMap,
 };
 use super::types::{FieldKind, FusedHandler};
 
-/// Determine the IMPL_PARAMS_* macro name for a given pop/push pattern
-fn impl_params_name(fused: &FusedHandler) -> &'static str {
-    if is_tos_none(fused) {
-        return "IMPL_PARAMS_NONE";
-    }
-    let (pop, push) = get_pop_push(fused);
-    match (pop, push) {
-        (0, 1) => "IMPL_PARAMS_POP0_PUSH1",
-        (0, 2) => "IMPL_PARAMS_POP0_PUSH2",
-        (0, 3) => "IMPL_PARAMS_POP0_PUSH3",
-        (1, 0) => "IMPL_PARAMS_POP1_PUSH0",
-        (1, 1) => "IMPL_PARAMS_POP1_PUSH1",
-        (1, 2) => "IMPL_PARAMS_POP1_PUSH2",
-        (2, 0) => "IMPL_PARAMS_POP2_PUSH0",
-        (2, 1) => "IMPL_PARAMS_POP2_PUSH1",
-        (2, 2) => "IMPL_PARAMS_POP2_PUSH2",
-        _ => panic!(
-            "No IMPL_PARAMS for pop={} push={} in handler {}",
-            pop, push, fused.op
-        ),
-    }
-}
-
-/// Map base instruction to SEM_* macro expression for fused code generation.
-/// Each base instruction is modeled as a stack operation:
-///   - Result: what it pushes (or None for side-effect-only ops)
-///   - Consumes: how many stack values it pops
-/// Check if a fused pattern contains float mul + float add/sub, which the C compiler
-/// could contract into FMA. Only these patterns need a barrier on the mul result.
+/// Check if a fused pattern contains float mul + float add/sub.
 fn needs_fp_mul_barrier(pattern: &[String]) -> bool {
-    let has_fmul = pattern.iter().any(|op| op == "f32_mul" || op == "f64_mul");
-    let has_fadd_sub = pattern
-        .iter()
-        .any(|op| matches!(op.as_str(), "f32_add" | "f32_sub" | "f64_add" | "f64_sub"));
+    let has_fmul = pattern.iter().any(|op| {
+        let base = strip_variant_suffix(op);
+        base == "f32_mul" || base == "f64_mul"
+    });
+    let has_fadd_sub = pattern.iter().any(|op| {
+        let base = strip_variant_suffix(op);
+        matches!(base, "f32_add" | "f32_sub" | "f64_add" | "f64_sub")
+    });
     has_fmul && has_fadd_sub
 }
 
@@ -48,377 +35,400 @@ fn is_float_mul(op: &str) -> bool {
     op == "f32_mul" || op == "f64_mul"
 }
 
-struct StackSim {
-    /// Named variables on the simulated stack
-    vars: Vec<String>,
-    /// Counter for generating unique variable names
-    counter: usize,
-    /// Lines of C code emitted
-    lines: Vec<String>,
-    /// Whether to emit FP_MUL_BARRIER after float mul results
-    emit_mul_barrier: bool,
-}
-
-impl StackSim {
-    fn new(emit_mul_barrier: bool) -> Self {
-        Self {
-            vars: Vec::new(),
-            counter: 0,
-            lines: Vec::new(),
-            emit_mul_barrier,
-        }
-    }
-
-    fn fresh_var(&mut self) -> String {
-        let name = format!("v{}_", self.counter);
-        self.counter += 1;
-        name
-    }
-
-    fn pop(&mut self) -> String {
-        self.vars
-            .pop()
-            .expect("Stack underflow in fused handler simulation")
-    }
-
-    fn push(&mut self, var: String) {
-        self.vars.push(var);
-    }
-
-    fn emit(&mut self, line: String) {
-        self.lines.push(line);
-    }
-
-    /// Process one instruction in the fused pattern.
-    /// Dispatches to the appropriate handler based on op category.
-    fn process_op(
-        &mut self,
-        op: &str,
-        field_name: Option<&str>,
-        fused_op_name: &str,
-        categories: &CategoryMap,
-    ) {
-        match op {
-            // --- Special ops with immediates ---
-            // General local ops — use SEM macros (fp[idx]).
-            // At match time, l0 locals are excluded from these patterns,
-            // so idx is guaranteed non-zero when l0 is active.
-            "local_get" => {
-                let fname = field_name.expect("local_get needs field name");
-                let var = self.fresh_var();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                self.emit(format!("    uint16_t {} = {};", fname, decode));
-                self.emit(format!(
-                    "    uint64_t {} = SEM_LOCAL_GET(fp, {});",
-                    var, fname
-                ));
-                self.push(var);
-            }
-            "local_set" => {
-                let fname = field_name.expect("local_set needs field name");
-                let val = self.pop();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                self.emit(format!("    uint16_t {} = {};", fname, decode));
-                self.emit(format!("    SEM_LOCAL_SET(fp, {}, {});", fname, val));
-            }
-            "local_tee" => {
-                let fname = field_name.expect("local_tee needs field name");
-                let val = self.pop();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                self.emit(format!("    uint16_t {} = {};", fname, decode));
-                self.emit(format!("    SEM_LOCAL_SET(fp, {}, {});", fname, val));
-                self.push(val);
-            }
-            // L0 register ops — direct register access, no field decode needed.
-            // The compiler can fully eliminate these as reg-to-reg copies when fused.
-            "local_get_l0" => {
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {} = *p_l0;", var));
-                self.push(var);
-            }
-            "local_set_l0" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l0 = (uint64_t)({});", val));
-            }
-            "local_tee_l0" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l0 = (uint64_t)({});", val));
-                self.push(val);
-            }
-            // L1 register ops — direct register access, no field decode needed.
-            "local_get_l1" => {
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {} = *p_l1;", var));
-                self.push(var);
-            }
-            "local_set_l1" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l1 = (uint64_t)({});", val));
-            }
-            "local_tee_l1" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l1 = (uint64_t)({});", val));
-                self.push(val);
-            }
-            // L2 register ops — direct register access, no field decode needed.
-            "local_get_l2" => {
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {} = *p_l2;", var));
-                self.push(var);
-            }
-            "local_set_l2" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l2 = (uint64_t)({});", val));
-            }
-            "local_tee_l2" => {
-                let val = self.pop();
-                self.emit(format!("    *p_l2 = (uint64_t)({});", val));
-                self.push(val);
-            }
-            "i32_const" => {
-                let fname = field_name.expect("i32_const needs field name");
-                let var = self.fresh_var();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                self.emit(format!(
-                    "    uint64_t {} = (uint64_t)(uint32_t){};",
-                    var, decode
-                ));
-                self.push(var);
-            }
-            "i64_const" => {
-                let fname = field_name.expect("i64_const needs field name");
-                let var = self.fresh_var();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                self.emit(format!(
-                    "    uint64_t {} = (uint64_t){};",
-                    var, decode
-                ));
-                self.push(var);
-            }
-            "br_if" => {
-                let cond = self.pop();
-                self.emit(format!(
-                    "    struct Instruction* target = (struct Instruction*){}_decode_target(pc);",
-                    fused_op_name
-                ));
-                self.emit(format!("    if ((uint32_t){} != 0) {{", cond));
-                self.emit("        return target;".to_string());
-                self.emit("    }".to_string());
-            }
-            "if_" => {
-                // IF semantics: condition == 0 jumps to else/end (target),
-                // condition != 0 falls through to then-body (pc_next).
-                // Uses guard-check dispatch, so the linear path (then) is fast.
-                // Must use pattern-specific decode_target (not pc_alt) because
-                // the target may not be in imm0 when other fields occupy it.
-                let cond = self.pop();
-                self.emit(format!(
-                    "    struct Instruction* target = (struct Instruction*){}_decode_target(pc);",
-                    fused_op_name
-                ));
-                self.emit(format!("    if ((uint32_t){} == 0) {{", cond));
-                self.emit("        return target;".to_string());
-                self.emit("    }".to_string());
-            }
-
-            // --- Load ops: pop addr, push value, trapping ---
-            _ if is_load_op(categories, op) => {
-                let fname = field_name.unwrap_or_else(|| panic!("{} needs field name", op));
-                let addr = self.pop();
-                let var = self.fresh_var();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                let sem = format!("SEM_{}", op.to_uppercase());
-                self.emit(format!("    uint32_t {} = {};", fname, decode));
-                self.emit(format!("    uint64_t {};", var));
-                self.emit(format!("    {}(ctx, {}, {}, {});", sem, addr, fname, var));
-                self.push(var);
-            }
-
-            // --- Store ops: pop addr + val, no push, trapping ---
-            _ if is_store_op(categories, op) => {
-                let fname = field_name.unwrap_or_else(|| panic!("{} needs field name", op));
-                let val = self.pop();
-                let addr = self.pop();
-                let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-                let sem = format!("SEM_{}", op.to_uppercase());
-                self.emit(format!("    uint32_t {} = {};", fname, decode));
-                self.emit(format!("    {}(ctx, {}, {}, {});", sem, addr, fname, val));
-            }
-
-            // --- Trapping binops: pop 2, push 1, needs ctx ---
-            _ if is_trapping_binop(categories, op) => {
-                let sem = format!("SEM_{}", op.to_uppercase());
-                let rhs = self.pop();
-                let lhs = self.pop();
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {};", var));
-                self.emit(format!("    {}(ctx, {}, {}, {});", sem, lhs, rhs, var));
-                self.push(var);
-            }
-
-            // --- Pure expression binops: pop 2, push 1 ---
-            _ if is_pure_binop(categories, op) => {
-                let sem = format!("SEM_{}", op.to_uppercase());
-                let rhs = self.pop();
-                let lhs = self.pop();
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {} = {}({}, {});", var, sem, lhs, rhs));
-                // Emit barrier after float mul to prevent FMA contraction with subsequent add/sub
-                if self.emit_mul_barrier && is_float_mul(op) {
-                    self.emit(format!("    FP_MUL_BARRIER({});", var));
-                }
-                self.push(var);
-            }
-
-            // --- Pure expression unary: pop 1, push 1 ---
-            _ if is_pure_unary(categories, op) => {
-                let sem = format!("SEM_{}", op.to_uppercase());
-                let val = self.pop();
-                let var = self.fresh_var();
-                self.emit(format!("    uint64_t {} = {}({});", var, sem, val));
-                self.push(var);
-            }
-
-            _ => panic!("Unknown op in fused pattern: {}", op),
-        }
-    }
-}
-
-/// Generate fast_fused_handlers.inc content from fused handler definitions.
+/// Generate fast_fused_handlers.inc content.
 pub fn generate(fused_handlers: &[FusedHandler], categories: &CategoryMap) -> String {
     let mut code = String::new();
 
-    code.push_str("// Auto-generated by gen_fusion.rs from handlers.toml\n");
-    code.push_str("// DO NOT EDIT MANUALLY\n\n");
+    code.push_str("// Auto-generated by gen_fusion_c.rs from handlers_fused.toml\n");
+    code.push_str("// DO NOT EDIT MANUALLY\n");
+    code.push_str("// Variant-qualified fused handlers with direct register access\n\n");
     code.push_str("#include <stdint.h>\n\n");
-    code.push_str("#define fp (*pfp)\n\n");
 
+    // Emit SEM macro overrides for trapping ops in void handler context.
+    emit_sem_overrides(&mut code);
+
+    // Generate handlers
     for fused in fused_handlers {
-        generate_fused_c_handler(&mut code, fused, categories);
+        generate_fused_handler(&mut code, fused, categories);
     }
-
-    code.push_str("#undef fp\n");
 
     code
 }
 
-fn generate_fused_c_handler(code: &mut String, fused: &FusedHandler, categories: &CategoryMap) {
-    let params_macro = impl_params_name(fused);
-    let (pop, push) = get_pop_push(fused);
-    let tos_none = is_tos_none(fused);
+/// Emit macro overrides that replace `return c_trap(ctx, msg)` with
+/// a direct musttail dispatch to the trap handler.
+///
+/// This allows SEM_LOAD, SEM_STORE, and trapping binop macros to work
+/// inside PRESERVE_NONE void handler functions.
+fn emit_sem_overrides(code: &mut String) {
+    // FUSED_TRAP_RETURN: replaces `return c_trap(ctx, msg)` in SEM macros.
+    // Sets the trap message, gets the term instruction, dispatches via musttail.
+    // Uses PARAMS variable names directly (only valid inside fused handlers).
+    code.push_str("// SEM macro overrides for fused void handlers.\n");
+    code.push_str("// Replaces `return c_trap(ctx, msg)` with direct trap dispatch.\n\n");
+    code.push_str(
+        "#define FUSED_TRAP_RETURN(ctx, msg) { \\\n\
+         \x20   ctx_trap_message(ctx) = (msg); \\\n\
+         \x20   struct Instruction* _tnp = ctx_term_inst(ctx); \\\n\
+         \x20   (void)nh; \\\n\
+         \x20   NextHandler _tnh = (NextHandler)pc_next(_tnp)->handler; \\\n\
+         \x20   __attribute__((musttail)) return _tnp->handler(ctx, _tnp, fp, l0, l1, l2, t0, t1, t2, t3, _tnh); \\\n\
+         }\n\n",
+    );
+
+    // Override SEM_LOAD / SEM_STORE base macros.
+    // All specializations (SEM_I32_LOAD, SEM_I32_STORE, etc.) are defined in
+    // terms of these, so they inherit the override automatically.
+    code.push_str("#undef SEM_LOAD\n");
+    code.push_str(
+        "#define SEM_LOAD(ctx, addr, offset, byte_count, load_body) \\\n\
+         \x20   uint64_t ea_ = (uint64_t)(uint32_t)(addr) + (uint32_t)(offset); \\\n\
+         \x20   if (unlikely(ea_ + (byte_count) > ctx_mem0_size(ctx))) \\\n\
+         \x20       FUSED_TRAP_RETURN(ctx, \"out of bounds memory access\"); \\\n\
+         \x20   uint8_t* base_ = ctx_mem0_base(ctx); \\\n\
+         \x20   load_body\n\n",
+    );
+    code.push_str("#undef SEM_STORE\n");
+    code.push_str(
+        "#define SEM_STORE(ctx, addr, offset, byte_count, store_body) \\\n\
+         \x20   uint64_t ea_ = (uint64_t)(uint32_t)(addr) + (uint32_t)(offset); \\\n\
+         \x20   if (unlikely(ea_ + (byte_count) > ctx_mem0_size(ctx))) \\\n\
+         \x20       FUSED_TRAP_RETURN(ctx, \"out of bounds memory access\"); \\\n\
+         \x20   uint8_t* base_ = ctx_mem0_base(ctx); \\\n\
+         \x20   store_body\n\n",
+    );
+
+    // Override trapping integer division/remainder macros.
+    // These contain `return c_trap(...)` directly (not via SEM_LOAD/SEM_STORE).
+    for (name, body) in TRAPPING_BINOP_OVERRIDES {
+        code.push_str(&format!("#undef {}\n", name));
+        code.push_str(&format!("#define {}{}\n\n", name, body));
+    }
+}
+
+/// Trapping binop macro overrides: (macro_name, macro_body_with_params)
+const TRAPPING_BINOP_OVERRIDES: &[(&str, &str)] = &[
+    (
+        "SEM_I32_DIV_S",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   int32_t a_ = (int32_t)(a); int32_t b_ = (int32_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   if (unlikely(a_ == INT32_MIN && b_ == -1)) FUSED_TRAP_RETURN(ctx, \"integer overflow\"); \\\n\
+         \x20   (OUT) = (uint64_t)(uint32_t)(a_ / b_);",
+    ),
+    (
+        "SEM_I32_DIV_U",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   uint32_t a_ = (uint32_t)(a); uint32_t b_ = (uint32_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   (OUT) = (uint64_t)(a_ / b_);",
+    ),
+    (
+        "SEM_I32_REM_S",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   int32_t a_ = (int32_t)(a); int32_t b_ = (int32_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   if (unlikely(a_ == INT32_MIN && b_ == -1)) { (OUT) = 0; } \\\n\
+         \x20   else { (OUT) = (uint64_t)(uint32_t)(a_ % b_); }",
+    ),
+    (
+        "SEM_I32_REM_U",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   uint32_t a_ = (uint32_t)(a); uint32_t b_ = (uint32_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   (OUT) = (uint64_t)(a_ % b_);",
+    ),
+    (
+        "SEM_I64_DIV_S",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   int64_t a_ = (int64_t)(a); int64_t b_ = (int64_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   if (unlikely(a_ == INT64_MIN && b_ == -1)) FUSED_TRAP_RETURN(ctx, \"integer overflow\"); \\\n\
+         \x20   (OUT) = (uint64_t)(a_ / b_);",
+    ),
+    (
+        "SEM_I64_DIV_U",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   uint64_t a_ = (uint64_t)(a); uint64_t b_ = (uint64_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   (OUT) = a_ / b_;",
+    ),
+    (
+        "SEM_I64_REM_S",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   int64_t a_ = (int64_t)(a); int64_t b_ = (int64_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   if (unlikely(a_ == INT64_MIN && b_ == -1)) { (OUT) = 0; } \\\n\
+         \x20   else { (OUT) = (uint64_t)(a_ % b_); }",
+    ),
+    (
+        "SEM_I64_REM_U",
+        "(ctx, a, b, OUT) \\\n\
+         \x20   uint64_t a_ = (uint64_t)(a); uint64_t b_ = (uint64_t)(b); \\\n\
+         \x20   if (unlikely(b_ == 0)) FUSED_TRAP_RETURN(ctx, \"integer divide by zero\"); \\\n\
+         \x20   (OUT) = a_ % b_;",
+    ),
+];
+
+fn generate_fused_handler(code: &mut String, fused: &FusedHandler, categories: &CategoryMap) {
+    let is_br = has_branch(fused);
+    let is_if_pat = has_if(fused);
     let ctx_used = needs_ctx(categories, fused);
     let fields = fused.get_fields();
+    let emit_mul_barrier = needs_fp_mul_barrier(&fused.pattern);
 
+    // Build field map: pattern_index -> field_name
+    let mut field_for_pattern: Vec<Option<&str>> = vec![None; fused.pattern.len()];
+    for f in fields {
+        if f.kind != FieldKind::Target {
+            if let Some(from_idx) = f.from {
+                field_for_pattern[from_idx] = Some(&f.name);
+            }
+        }
+    }
+
+    // Function header
     code.push_str(&format!(
         "// {}: {}\n",
         fused.op,
         fused.pattern.join(" -> ")
     ));
     code.push_str(&format!(
-        "FORCE_INLINE struct Instruction* impl_{}({}) {{\n",
-        fused.op, params_macro
+        "PRESERVE_NONE\nvoid op_{}(PARAMS) {{\n",
+        fused.op
     ));
+    code.push_str(&format!("    FAST_TRACE_HOOK({});\n", fused.op));
+    code.push_str(&format!("    FAST_PROFILE_HOOK({});\n", fused.op));
 
-    // Suppress unused parameter warnings
     if !ctx_used {
         code.push_str("    (void)ctx;\n");
     }
 
-    // Build a map from pattern index to field name (for ops that need field decode)
-    let mut field_for_pattern: Vec<Option<&str>> = vec![None; fused.pattern.len()];
-    for f in fields {
-        if let Some(from_idx) = f.from {
-            // For target fields, we handle them specially in br_if processing
-            if f.kind == FieldKind::Target {
-                // target is decoded directly in br_if
-            } else {
-                field_for_pattern[from_idx] = Some(&f.name);
-            }
-        }
+    // Emit code for each op
+    for (i, pat_op) in fused.pattern.iter().enumerate() {
+        let (base_op, variant) = parse_variant_qualified(pat_op);
+        emit_op_code(
+            code,
+            base_op,
+            variant,
+            field_for_pattern[i],
+            &fused.op,
+            categories,
+            emit_mul_barrier,
+        );
     }
 
-    // Simulate stack and emit code
-    let mut sim = StackSim::new(needs_fp_mul_barrier(&fused.pattern));
-
-    // Pre-populate stack with TOS input values
-    if !tos_none {
-        match (pop, push) {
-            (0, _) => {} // No inputs from stack
-            (1, 0) => {
-                sim.push("*p_src".to_string());
-            }
-            (1, 1) => {
-                sim.push("*p_src".to_string());
-            }
-            (1, 2) => {
-                sim.push("*p_src".to_string());
-            }
-            (2, 0) => {
-                sim.push("*p_addr".to_string());
-                sim.push("*p_val".to_string());
-            }
-            (2, 1) => {
-                sim.push("*p_lhs".to_string());
-                sim.push("*p_rhs".to_string());
-            }
-            (2, 2) => {
-                sim.push("*p_lhs".to_string());
-                sim.push("*p_rhs".to_string());
-            }
-            _ => panic!(
-                "Unhandled pop/push pattern: pop={} push={} in {}",
-                pop, push, fused.op
-            ),
-        }
+    // Dispatch tail
+    if is_br {
+        // br_if already set np via emit_op_code; nonlinear dispatch
+        emit_nonlinear_dispatch(code);
+    } else if is_if_pat {
+        // if_ already set np; guard-check dispatch (then-path is linear)
+        emit_guard_check_dispatch(code);
+    } else {
+        // Linear path
+        code.push_str("    struct Instruction* np = pc_next(pc);\n");
+        emit_guard_check_dispatch(code);
     }
 
-    // Process each pattern instruction
-    for (i, op) in fused.pattern.iter().enumerate() {
-        sim.process_op(op, field_for_pattern[i], &fused.op, categories);
-    }
-
-    // Emit the generated lines
-    for line in &sim.lines {
-        code.push_str(line);
-        code.push('\n');
-    }
-
-    // Write outputs to TOS registers
-    if !tos_none && push > 0 {
-        // The remaining items on the simulated stack are our outputs
-        // We need to assign them to the output pointers
-        let outputs: Vec<String> = sim.vars.clone();
-        match (pop, push) {
-            (_, 1) if !tos_none => {
-                if let Some(val) = outputs.last() {
-                    code.push_str(&format!("    *p_dst = {};\n", val));
-                }
-            }
-            (0, 2) | (1, 2) => {
-                // p_dst0 = first output (deeper), p_dst1 = second (top)
-                if outputs.len() >= 2 {
-                    code.push_str(&format!("    *p_dst0 = {};\n", outputs[0]));
-                    code.push_str(&format!("    *p_dst1 = {};\n", outputs[1]));
-                }
-            }
-            (2, 2) => {
-                // p_dst0 and p_dst1
-                if outputs.len() >= 2 {
-                    code.push_str(&format!("    *p_dst0 = {};\n", outputs[0]));
-                    code.push_str(&format!("    *p_dst1 = {};\n", outputs[1]));
-                }
-            }
-            (0, 3) => {
-                if outputs.len() >= 3 {
-                    code.push_str(&format!("    *p_dst0 = {};\n", outputs[0]));
-                    code.push_str(&format!("    *p_dst1 = {};\n", outputs[1]));
-                    code.push_str(&format!("    *p_dst2 = {};\n", outputs[2]));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    code.push_str("    return pc_next(pc);\n");
     code.push_str("}\n\n");
+}
+
+/// Emit C code for a single op within a fused pattern.
+fn emit_op_code(
+    code: &mut String,
+    base_op: &str,
+    variant: u8,
+    field_name: Option<&str>,
+    fused_op_name: &str,
+    categories: &CategoryMap,
+    emit_mul_barrier: bool,
+) {
+    match base_op {
+        // --- Constants ---
+        "i32_const" => {
+            let fname = field_name.expect("i32_const needs field name");
+            let dst = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            code.push_str(&format!(
+                "    {} = (uint64_t)(uint32_t){};\n",
+                dst, decode
+            ));
+        }
+        "i64_const" => {
+            let fname = field_name.expect("i64_const needs field name");
+            let dst = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            code.push_str(&format!("    {} = (uint64_t){};\n", dst, decode));
+        }
+
+        // --- General local ops ---
+        "local_get" => {
+            let fname = field_name.expect("local_get needs field name");
+            let dst = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            code.push_str(&format!("    uint16_t {} = {};\n", fname, decode));
+            code.push_str(&format!(
+                "    {} = SEM_LOCAL_GET(fp, {});\n",
+                dst, fname
+            ));
+        }
+        "local_set" => {
+            let fname = field_name.expect("local_set needs field name");
+            let src = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            code.push_str(&format!("    uint16_t {} = {};\n", fname, decode));
+            code.push_str(&format!("    SEM_LOCAL_SET(fp, {}, {});\n", fname, src));
+        }
+        "local_tee" => {
+            let fname = field_name.expect("local_tee needs field name");
+            let src = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            code.push_str(&format!("    uint16_t {} = {};\n", fname, decode));
+            code.push_str(&format!("    SEM_LOCAL_SET(fp, {}, {});\n", fname, src));
+        }
+
+        // --- Hot local register ops ---
+        "local_get_l0" => {
+            code.push_str(&format!("    {} = l0;\n", tos_reg(variant, 1)));
+        }
+        "local_set_l0" => {
+            code.push_str(&format!("    l0 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+        "local_tee_l0" => {
+            code.push_str(&format!("    l0 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+        "local_get_l1" => {
+            code.push_str(&format!("    {} = l1;\n", tos_reg(variant, 1)));
+        }
+        "local_set_l1" => {
+            code.push_str(&format!("    l1 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+        "local_tee_l1" => {
+            code.push_str(&format!("    l1 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+        "local_get_l2" => {
+            code.push_str(&format!("    {} = l2;\n", tos_reg(variant, 1)));
+        }
+        "local_set_l2" => {
+            code.push_str(&format!("    l2 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+        "local_tee_l2" => {
+            code.push_str(&format!("    l2 = (uint64_t)({});\n", tos_reg(variant, 1)));
+        }
+
+        // --- Branch ops ---
+        "br_if" => {
+            let cond = tos_reg(variant, 1);
+            code.push_str(&format!(
+                "    struct Instruction* target = (struct Instruction*){}_decode_target(pc);\n",
+                fused_op_name
+            ));
+            code.push_str("    struct Instruction* np;\n");
+            code.push_str(&format!("    if ((uint32_t){} != 0) {{\n", cond));
+            code.push_str("        np = target;\n");
+            code.push_str("    } else {\n");
+            code.push_str("        np = pc_next(pc);\n");
+            code.push_str("    }\n");
+        }
+        "if_" => {
+            let cond = tos_reg(variant, 1);
+            code.push_str(&format!(
+                "    struct Instruction* target = (struct Instruction*){}_decode_target(pc);\n",
+                fused_op_name
+            ));
+            code.push_str("    struct Instruction* np;\n");
+            code.push_str(&format!("    if ((uint32_t){} == 0) {{\n", cond));
+            code.push_str("        np = target;\n");
+            code.push_str("    } else {\n");
+            code.push_str("        np = pc_next(pc);\n");
+            code.push_str("    }\n");
+        }
+
+        // --- Load ops (trapping — uses overridden SEM_LOAD) ---
+        _ if is_load_op(categories, base_op) => {
+            let fname = field_name.unwrap_or_else(|| panic!("{} needs field name", base_op));
+            let src_dst = tos_reg(variant, 1);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            let sem = format!("SEM_{}", base_op.to_uppercase());
+            code.push_str(&format!("    uint32_t {} = {};\n", fname, decode));
+            code.push_str(&format!(
+                "    {}(ctx, {}, {}, {});\n",
+                sem, src_dst, fname, src_dst
+            ));
+        }
+
+        // --- Store ops (trapping — uses overridden SEM_STORE) ---
+        _ if is_store_op(categories, base_op) => {
+            let fname = field_name.unwrap_or_else(|| panic!("{} needs field name", base_op));
+            let val = tos_reg(variant, 1);
+            let addr = tos_reg(variant, 2);
+            let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
+            let sem = format!("SEM_{}", base_op.to_uppercase());
+            code.push_str(&format!("    uint32_t {} = {};\n", fname, decode));
+            code.push_str(&format!(
+                "    {}(ctx, {}, {}, {});\n",
+                sem, addr, fname, val
+            ));
+        }
+
+        // --- Trapping binops (uses overridden SEM macros) ---
+        _ if is_trapping_binop(categories, base_op) => {
+            let rhs = tos_reg(variant, 1);
+            let lhs = tos_reg(variant, 2);
+            let sem = format!("SEM_{}", base_op.to_uppercase());
+            code.push_str(&format!(
+                "    {}(ctx, {}, {}, {});\n",
+                sem, lhs, rhs, lhs
+            ));
+        }
+
+        // --- Pure binops ---
+        _ if is_pure_binop(categories, base_op) => {
+            let rhs = tos_reg(variant, 1);
+            let lhs = tos_reg(variant, 2);
+            let sem = format!("SEM_{}", base_op.to_uppercase());
+            code.push_str(&format!(
+                "    {} = {}({}, {});\n",
+                lhs, sem, lhs, rhs
+            ));
+            if emit_mul_barrier && is_float_mul(base_op) {
+                code.push_str(&format!("    FP_MUL_BARRIER({});\n", lhs));
+            }
+        }
+
+        // --- Pure unary ---
+        _ if is_pure_unary(categories, base_op) => {
+            let src_dst = tos_reg(variant, 1);
+            let sem = format!("SEM_{}", base_op.to_uppercase());
+            code.push_str(&format!(
+                "    {} = {}({});\n",
+                src_dst, sem, src_dst
+            ));
+        }
+
+        _ => panic!("Unknown op in fused pattern: {}", base_op),
+    }
+}
+
+/// Guard-check dispatch tail.
+fn emit_guard_check_dispatch(code: &mut String) {
+    if cfg!(target_os = "windows") {
+        code.push_str("    NextHandler new_nh = (NextHandler)pc_next(np)->handler;\n");
+        code.push_str("    __attribute__((musttail)) return np->handler(ARGS_NEXT);\n");
+    } else {
+        code.push_str("    NextHandler new_nh = (NextHandler)pc_next(np)->handler;\n");
+        code.push_str("    if (likely(np == pc_next(pc))) {\n");
+        code.push_str("        __attribute__((musttail)) return ((OpHandler)nh)(ARGS_NEXT);\n");
+        code.push_str("    } else {\n");
+        code.push_str("        __attribute__((musttail)) return np->handler(ARGS_NEXT);\n");
+        code.push_str("    }\n");
+    }
+}
+
+/// Nonlinear dispatch tail.
+fn emit_nonlinear_dispatch(code: &mut String) {
+    code.push_str("    (void)nh;\n");
+    code.push_str("    NextHandler new_nh = (NextHandler)pc_next(np)->handler;\n");
+    code.push_str("    __attribute__((musttail)) return np->handler(ARGS_NEXT);\n");
 }

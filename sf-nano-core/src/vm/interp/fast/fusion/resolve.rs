@@ -5,18 +5,24 @@
 
 use alloc::vec::Vec;
 
-use super::backend::ResolvedInst;
-use super::ir::{IrOp, IrOpKind};
+use super::super::builder::backend::ResolvedInst;
+use super::super::builder::ir::{IrOp, IrOpKind};
 use super::super::handlers::OpHandler as Handler;
 use super::super::handlers::full_set;
+#[allow(unused_imports)]
 use super::super::handler_lookup;
 use super::super::encoding;
-use super::ir_resolve::resolve_handler;
+use super::super::builder::ir_resolve::resolve_handler;
 
 // Include the generated IR-level fusion pattern matching code.
 // The generated file defines `try_fuse()` and per-pattern `try_fuse_*()` functions.
 // It does NOT contain any `use` statements — all imports are above.
-include!(concat!(env!("OUT_DIR"), "/fast_interp/fast_fusion_ir_match.rs"));
+#[allow(non_snake_case)]
+mod _fusion_ir_match {
+    use super::*;
+    include!(concat!(env!("OUT_DIR"), "/fast_interp/fast_fusion_ir_match.rs"));
+}
+use _fusion_ir_match::try_fuse;
 
 /// Resolve IR ops via fusion pattern matching.
 ///

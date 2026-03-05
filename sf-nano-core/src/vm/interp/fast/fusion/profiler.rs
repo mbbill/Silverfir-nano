@@ -89,15 +89,28 @@ impl SequenceKey {
 }
 
 /// Check if a handler name represents a control flow instruction.
+/// Handles variant-qualified names like "br_if_d1", "if__d1".
 fn is_control_flow(name: &str) -> bool {
+    let base = strip_variant_suffix_str(name);
     matches!(
-        name,
+        base,
         "br" | "br_if" | "br_table"
         | "block" | "loop" | "if_" | "else_" | "end"
         | "call" | "call_indirect" | "return"
         | "return_call" | "return_call_indirect"
         | "unreachable"
     )
+}
+
+/// Strip _dN variant suffix from a handler name.
+fn strip_variant_suffix_str(name: &str) -> &str {
+    if name.len() >= 3 {
+        let suffix = &name[name.len() - 3..];
+        if matches!(suffix, "_d1" | "_d2" | "_d3" | "_d4") {
+            return &name[..name.len() - 3];
+        }
+    }
+    name
 }
 
 // All profiler state in a single thread-local to minimize TLS lookups.
@@ -238,11 +251,38 @@ fn intern_name_from_c(c_name: *const core::ffi::c_char) -> &'static str {
 }
 
 /// Normalize handler names so profiler data matches the discovery pipeline.
+/// Handles variant-qualified names: "br_if_simple_d1" → "br_if_d1".
 #[inline]
 fn normalize_handler_name(name: &'static str) -> &'static str {
-    match name {
+    // Check for variant suffix (_d1.._d4)
+    let (base, variant_suffix) = if name.len() >= 3 {
+        let suffix = &name[name.len() - 3..];
+        if matches!(suffix, "_d1" | "_d2" | "_d3" | "_d4") {
+            (&name[..name.len() - 3], suffix)
+        } else {
+            (name, "")
+        }
+    } else {
+        (name, "")
+    };
+
+    let normalized_base = match base {
         "br_if_simple" => "br_if",
-        _ => name,
+        _ => base,
+    };
+
+    if core::ptr::eq(normalized_base, base) {
+        name // no normalization needed
+    } else if variant_suffix.is_empty() {
+        // Exact match without variant suffix (shouldn't happen with new profile hooks, but safe)
+        match normalized_base {
+            "br_if" => "br_if",
+            _ => name,
+        }
+    } else {
+        // Need to create a new string: normalized_base + variant_suffix
+        let new_name = std::format!("{}{}", normalized_base, variant_suffix);
+        std::boxed::Box::leak(new_name.into_boxed_str())
     }
 }
 
