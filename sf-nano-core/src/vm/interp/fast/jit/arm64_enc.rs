@@ -855,6 +855,125 @@ pub fn nop() -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Floating-Point instructions
+// ---------------------------------------------------------------------------
+
+/// FP integer-conversion / FMOV helper.
+/// Encoding: sf(1) 00 11110 type(2) 1 rmode(2) opcode(3) 000000 Rn(5) Rd(5)
+fn fp_int_conv(sf: u32, type_: u32, rmode: u32, opcode: u32, rd: u32, rn: u32) -> u32 {
+    (sf << 31) | (0x1E << 24) | (type_ << 22) | (1 << 21)
+        | (rmode << 19) | (opcode << 16) | (rn << 5) | rd
+}
+
+/// FMOV Dd, Xn — GPR to FP register (64-bit bit transfer)
+pub fn fmov_gpr_to_fp64(fd: u32, rn: Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b111, fd, rn.idx())
+}
+
+/// FMOV Xd, Dn — FP register to GPR (64-bit bit transfer)
+pub fn fmov_fp64_to_gpr(rd: Reg, fn_: u32) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b110, rd.idx(), fn_)
+}
+
+/// FMOV Sd, Wn — GPR to FP register (32-bit bit transfer)
+pub fn fmov_gpr_to_fp32(fd: u32, rn: Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b111, fd, rn.idx())
+}
+
+/// FMOV Wd, Sn — FP register to GPR (32-bit bit transfer)
+pub fn fmov_fp32_to_gpr(rd: Reg, fn_: u32) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b110, rd.idx(), fn_)
+}
+
+// --- FP arithmetic (2-source) ---
+// Encoding: 0 0 0 11110 type(2) 1 Rm(5) opcode(4) 10 Rn(5) Rd(5)
+
+fn fp_binop_enc(type_: u32, opcode: u32, rd: u32, rn: u32, rm: u32) -> u32 {
+    (0b00011110 << 24) | (type_ << 22) | (1 << 21)
+        | (rm << 16) | (opcode << 12) | (0b10 << 10) | (rn << 5) | rd
+}
+
+pub fn fadd_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0010, rd, rn, rm) }
+pub fn fsub_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0011, rd, rn, rm) }
+pub fn fmul_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0000, rd, rn, rm) }
+pub fn fdiv_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0001, rd, rn, rm) }
+pub fn fmax_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0100, rd, rn, rm) }
+pub fn fmin_64(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b01, 0b0101, rd, rn, rm) }
+
+pub fn fadd_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0010, rd, rn, rm) }
+pub fn fsub_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0011, rd, rn, rm) }
+pub fn fmul_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0000, rd, rn, rm) }
+pub fn fdiv_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0001, rd, rn, rm) }
+pub fn fmax_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0100, rd, rn, rm) }
+pub fn fmin_32(rd: u32, rn: u32, rm: u32) -> u32 { fp_binop_enc(0b00, 0b0101, rd, rn, rm) }
+
+// --- FP unary (1-source) ---
+// Encoding: 0 0 0 11110 type(2) 1 opcode(6) 10000 Rn(5) Rd(5)
+
+fn fp_1src_enc(type_: u32, opcode: u32, rd: u32, rn: u32) -> u32 {
+    (0b00011110 << 24) | (type_ << 22) | (1 << 21)
+        | (opcode << 15) | (0b10000 << 10) | (rn << 5) | rd
+}
+
+pub fn fabs_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b000001, rd, rn) }
+pub fn fneg_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b000010, rd, rn) }
+pub fn fsqrt_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b000011, rd, rn) }
+pub fn frintn_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b001000, rd, rn) }
+pub fn frintp_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b001001, rd, rn) }
+pub fn frintm_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b001010, rd, rn) }
+pub fn frintz_64(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b01, 0b001011, rd, rn) }
+
+pub fn fabs_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b000001, rd, rn) }
+pub fn fneg_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b000010, rd, rn) }
+pub fn fsqrt_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b000011, rd, rn) }
+pub fn frintn_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b001000, rd, rn) }
+pub fn frintp_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b001001, rd, rn) }
+pub fn frintm_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b001010, rd, rn) }
+pub fn frintz_32(rd: u32, rn: u32) -> u32 { fp_1src_enc(0b00, 0b001011, rd, rn) }
+
+/// FCVT Dd, Sn — f32 to f64 (promote)
+pub fn fcvt_f32_to_f64(dd: u32, sn: u32) -> u32 { fp_1src_enc(0b00, 0b000101, dd, sn) }
+/// FCVT Sd, Dn — f64 to f32 (demote)
+pub fn fcvt_f64_to_f32(sd: u32, dn: u32) -> u32 { fp_1src_enc(0b01, 0b000100, sd, dn) }
+
+// --- FP compare ---
+// Encoding: 0 0 0 11110 type(2) 1 Rm(5) 00 1000 Rn(5) 00000
+
+pub fn fcmp_64(fn_: u32, fm: u32) -> u32 {
+    (0b00011110 << 24) | (0b01 << 22) | (1 << 21)
+        | (fm << 16) | (0b001000 << 10) | (fn_ << 5)
+}
+
+pub fn fcmp_32(fn_: u32, fm: u32) -> u32 {
+    (0b00011110 << 24) | (0b00 << 22) | (1 << 21)
+        | (fm << 16) | (0b001000 << 10) | (fn_ << 5)
+}
+
+// --- Float-to-int conversion (saturating truncate toward zero) ---
+
+pub fn fcvtzs_w_s(wd: Reg, sn: u32) -> u32 { fp_int_conv(0, 0b00, 0b11, 0b000, wd.idx(), sn) }
+pub fn fcvtzs_w_d(wd: Reg, dn: u32) -> u32 { fp_int_conv(0, 0b01, 0b11, 0b000, wd.idx(), dn) }
+pub fn fcvtzs_x_s(xd: Reg, sn: u32) -> u32 { fp_int_conv(1, 0b00, 0b11, 0b000, xd.idx(), sn) }
+pub fn fcvtzs_x_d(xd: Reg, dn: u32) -> u32 { fp_int_conv(1, 0b01, 0b11, 0b000, xd.idx(), dn) }
+
+pub fn fcvtzu_w_s(wd: Reg, sn: u32) -> u32 { fp_int_conv(0, 0b00, 0b11, 0b001, wd.idx(), sn) }
+pub fn fcvtzu_w_d(wd: Reg, dn: u32) -> u32 { fp_int_conv(0, 0b01, 0b11, 0b001, wd.idx(), dn) }
+pub fn fcvtzu_x_s(xd: Reg, sn: u32) -> u32 { fp_int_conv(1, 0b00, 0b11, 0b001, xd.idx(), sn) }
+pub fn fcvtzu_x_d(xd: Reg, dn: u32) -> u32 { fp_int_conv(1, 0b01, 0b11, 0b001, xd.idx(), dn) }
+
+// --- Int-to-float conversion ---
+
+pub fn scvtf_s_w(sd: u32, wn: Reg) -> u32 { fp_int_conv(0, 0b00, 0b00, 0b010, sd, wn.idx()) }
+pub fn scvtf_d_w(dd: u32, wn: Reg) -> u32 { fp_int_conv(0, 0b01, 0b00, 0b010, dd, wn.idx()) }
+pub fn scvtf_s_x(sd: u32, xn: Reg) -> u32 { fp_int_conv(1, 0b00, 0b00, 0b010, sd, xn.idx()) }
+pub fn scvtf_d_x(dd: u32, xn: Reg) -> u32 { fp_int_conv(1, 0b01, 0b00, 0b010, dd, xn.idx()) }
+
+pub fn ucvtf_s_w(sd: u32, wn: Reg) -> u32 { fp_int_conv(0, 0b00, 0b00, 0b011, sd, wn.idx()) }
+pub fn ucvtf_d_w(dd: u32, wn: Reg) -> u32 { fp_int_conv(0, 0b01, 0b00, 0b011, dd, wn.idx()) }
+pub fn ucvtf_s_x(sd: u32, xn: Reg) -> u32 { fp_int_conv(1, 0b00, 0b00, 0b011, sd, xn.idx()) }
+pub fn ucvtf_d_x(dd: u32, xn: Reg) -> u32 { fp_int_conv(1, 0b01, 0b00, 0b011, dd, xn.idx()) }
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

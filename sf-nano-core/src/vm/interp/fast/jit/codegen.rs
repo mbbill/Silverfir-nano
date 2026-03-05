@@ -316,6 +316,13 @@ impl<'a> JitEmitter<'a> {
         self.height -= 1;
     }
 
+    pub fn local_tee(&mut self, idx: u16) {
+        let src = tos_reg(self.dv(), 1);
+        let scaled = idx as u32;
+        self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
+        // height unchanged (tee keeps value on stack)
+    }
+
     // ==================== Drop (pop1, no code) ====================
 
     pub fn drop_val(&mut self) {
@@ -507,6 +514,316 @@ impl<'a> JitEmitter<'a> {
         self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
         self.height -= 2;
     }
+
+    // ==================== Float constants (push1) ====================
+
+    pub fn f32_const(&mut self, bits: u32) {
+        self.height += 1;
+        let dst = tos_reg(self.dv(), 1);
+        materialize_u32(self.buf, dst, bits);
+    }
+
+    pub fn f64_const(&mut self, bits: u64) {
+        self.height += 1;
+        let dst = tos_reg(self.dv(), 1);
+        materialize_u64(self.buf, dst, bits);
+    }
+
+    // ==================== Type conversions (pop1_push1, no height change) ====================
+
+    pub fn i32_wrap_i64(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::mov_reg_32(src, src));
+    }
+
+    pub fn i64_extend_i32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxtw(src, src));
+    }
+
+    pub fn i64_extend_i32_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::mov_reg_32(src, src));
+    }
+
+    // ==================== Sign extensions (pop1_push1, no height change) ====================
+
+    pub fn i32_extend8_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxtb_32(src, src));
+    }
+
+    pub fn i32_extend16_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxth_32(src, src));
+    }
+
+    pub fn i64_extend8_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxtb_64(src, src));
+    }
+
+    pub fn i64_extend16_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxth_64(src, src));
+    }
+
+    pub fn i64_extend32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::sxtw(src, src));
+    }
+
+    // ==================== Select (pop3_push1) ====================
+
+    pub fn select(&mut self) {
+        let d = self.dv();
+        let cond = tos_reg(d, 1);
+        let val2 = tos_reg(d, 2);
+        let val1 = tos_reg(d, 3);
+        self.buf.emit(arm64_enc::cmp_imm_32(cond, 0));
+        self.buf.emit(arm64_enc::csel_64(val1, val1, val2, Cond::NE));
+        self.height -= 2;
+    }
+
+    // ==================== f64 binary ops (pop2_push1) ====================
+
+    /// Scratch FP register indices (d0, d1).
+    const FP0: u32 = 0;
+    const FP1: u32 = 1;
+
+    fn emit_f64_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
+        let d = self.dv();
+        let lhs = tos_reg(d, 2);
+        let rhs = tos_reg(d, 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
+        self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(lhs, Self::FP0));
+        self.height -= 1;
+    }
+
+    pub fn f64_add(&mut self) { self.emit_f64_binop(arm64_enc::fadd_64); }
+    pub fn f64_sub(&mut self) { self.emit_f64_binop(arm64_enc::fsub_64); }
+    pub fn f64_mul(&mut self) { self.emit_f64_binop(arm64_enc::fmul_64); }
+    pub fn f64_div(&mut self) { self.emit_f64_binop(arm64_enc::fdiv_64); }
+    pub fn f64_min(&mut self) { self.emit_f64_binop(arm64_enc::fmin_64); }
+    pub fn f64_max(&mut self) { self.emit_f64_binop(arm64_enc::fmax_64); }
+
+    // ==================== f32 binary ops (pop2_push1) ====================
+
+    fn emit_f32_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
+        let d = self.dv();
+        let lhs = tos_reg(d, 2);
+        let rhs = tos_reg(d, 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
+        self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(lhs, Self::FP0));
+        self.height -= 1;
+    }
+
+    pub fn f32_add(&mut self) { self.emit_f32_binop(arm64_enc::fadd_32); }
+    pub fn f32_sub(&mut self) { self.emit_f32_binop(arm64_enc::fsub_32); }
+    pub fn f32_mul(&mut self) { self.emit_f32_binop(arm64_enc::fmul_32); }
+    pub fn f32_div(&mut self) { self.emit_f32_binop(arm64_enc::fdiv_32); }
+    pub fn f32_min(&mut self) { self.emit_f32_binop(arm64_enc::fmin_32); }
+    pub fn f32_max(&mut self) { self.emit_f32_binop(arm64_enc::fmax_32); }
+
+    // ==================== f64 comparisons (pop2_push1) ====================
+    // NaN-aware: use MI/LS instead of LT/LE to get false for unordered
+
+    fn emit_f64_cmp(&mut self, cond: Cond) {
+        let d = self.dv();
+        let lhs = tos_reg(d, 2);
+        let rhs = tos_reg(d, 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
+        self.buf.emit(arm64_enc::fcmp_64(Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::cset_32(lhs, cond));
+        self.height -= 1;
+    }
+
+    pub fn f64_eq(&mut self) { self.emit_f64_cmp(Cond::EQ); }
+    pub fn f64_ne(&mut self) { self.emit_f64_cmp(Cond::NE); }
+    pub fn f64_lt(&mut self) { self.emit_f64_cmp(Cond::MI); }
+    pub fn f64_gt(&mut self) { self.emit_f64_cmp(Cond::GT); }
+    pub fn f64_le(&mut self) { self.emit_f64_cmp(Cond::LS); }
+    pub fn f64_ge(&mut self) { self.emit_f64_cmp(Cond::GE); }
+
+    // ==================== f32 comparisons (pop2_push1) ====================
+
+    fn emit_f32_cmp(&mut self, cond: Cond) {
+        let d = self.dv();
+        let lhs = tos_reg(d, 2);
+        let rhs = tos_reg(d, 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
+        self.buf.emit(arm64_enc::fcmp_32(Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::cset_32(lhs, cond));
+        self.height -= 1;
+    }
+
+    pub fn f32_eq(&mut self) { self.emit_f32_cmp(Cond::EQ); }
+    pub fn f32_ne(&mut self) { self.emit_f32_cmp(Cond::NE); }
+    pub fn f32_lt(&mut self) { self.emit_f32_cmp(Cond::MI); }
+    pub fn f32_gt(&mut self) { self.emit_f32_cmp(Cond::GT); }
+    pub fn f32_le(&mut self) { self.emit_f32_cmp(Cond::LS); }
+    pub fn f32_ge(&mut self) { self.emit_f32_cmp(Cond::GE); }
+
+    // ==================== f64 unary ops (pop1_push1) ====================
+
+    fn emit_f64_unop(&mut self, f: fn(u32, u32) -> u32) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(f(Self::FP0, Self::FP0));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f64_abs(&mut self) { self.emit_f64_unop(arm64_enc::fabs_64); }
+    pub fn f64_neg(&mut self) { self.emit_f64_unop(arm64_enc::fneg_64); }
+    pub fn f64_sqrt(&mut self) { self.emit_f64_unop(arm64_enc::fsqrt_64); }
+    pub fn f64_ceil(&mut self) { self.emit_f64_unop(arm64_enc::frintp_64); }
+    pub fn f64_floor(&mut self) { self.emit_f64_unop(arm64_enc::frintm_64); }
+    pub fn f64_trunc(&mut self) { self.emit_f64_unop(arm64_enc::frintz_64); }
+    pub fn f64_nearest(&mut self) { self.emit_f64_unop(arm64_enc::frintn_64); }
+
+    // ==================== f32 unary ops (pop1_push1) ====================
+
+    fn emit_f32_unop(&mut self, f: fn(u32, u32) -> u32) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(f(Self::FP0, Self::FP0));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f32_abs(&mut self) { self.emit_f32_unop(arm64_enc::fabs_32); }
+    pub fn f32_neg(&mut self) { self.emit_f32_unop(arm64_enc::fneg_32); }
+    pub fn f32_sqrt(&mut self) { self.emit_f32_unop(arm64_enc::fsqrt_32); }
+    pub fn f32_ceil(&mut self) { self.emit_f32_unop(arm64_enc::frintp_32); }
+    pub fn f32_floor(&mut self) { self.emit_f32_unop(arm64_enc::frintm_32); }
+    pub fn f32_trunc(&mut self) { self.emit_f32_unop(arm64_enc::frintz_32); }
+    pub fn f32_nearest(&mut self) { self.emit_f32_unop(arm64_enc::frintn_32); }
+
+    // ==================== Float precision conversions (pop1_push1) ====================
+
+    pub fn f64_promote_f32(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvt_f32_to_f64(Self::FP0, Self::FP0));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f32_demote_f64(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvt_f64_to_f32(Self::FP0, Self::FP0));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    // ==================== Int-to-float conversions (pop1_push1) ====================
+
+    pub fn f32_convert_i32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::scvtf_s_w(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f32_convert_i32_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ucvtf_s_w(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f32_convert_i64_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::scvtf_s_x(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f32_convert_i64_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ucvtf_s_x(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f64_convert_i32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::scvtf_d_w(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f64_convert_i32_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ucvtf_d_w(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f64_convert_i64_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::scvtf_d_x(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    pub fn f64_convert_i64_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ucvtf_d_x(Self::FP0, src));
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(src, Self::FP0));
+    }
+
+    // ==================== Saturating float-to-int truncation (pop1_push1) ====================
+    // ARM64 FCVTZS/FCVTZU naturally saturates and returns 0 for NaN.
+
+    pub fn i32_trunc_sat_f32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzs_w_s(src, Self::FP0));
+    }
+
+    pub fn i32_trunc_sat_f32_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzu_w_s(src, Self::FP0));
+    }
+
+    pub fn i32_trunc_sat_f64_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzs_w_d(src, Self::FP0));
+    }
+
+    pub fn i32_trunc_sat_f64_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzu_w_d(src, Self::FP0));
+    }
+
+    pub fn i64_trunc_sat_f32_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzs_x_s(src, Self::FP0));
+    }
+
+    pub fn i64_trunc_sat_f32_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzu_x_s(src, Self::FP0));
+    }
+
+    pub fn i64_trunc_sat_f64_s(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzs_x_d(src, Self::FP0));
+    }
+
+    pub fn i64_trunc_sat_f64_u(&mut self) {
+        let src = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, src));
+        self.buf.emit(arm64_enc::fcvtzu_x_d(src, Self::FP0));
+    }
+
+    // ==================== Reinterpret ops (pop1_push1, NOP) ====================
+    // These are NOPs — same bit pattern, just reinterpreted.
+    // No code emitted, no height change.
 }
 
 // ==================== Constant materialization ====================
