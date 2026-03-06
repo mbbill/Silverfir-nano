@@ -366,4 +366,23 @@ mod tests {
 
         assert_base_equals_jit(&ops, 0, 8, 0, &[], &[0, 0, 0, 0]);
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_if_terminator() {
+        for cond in [0u64, 1u64] {
+            let mut if_op = make_op(ir::IrOpKind::If, 1, current_variant(1));
+            if_op.has_target = true;
+            if_op.alt_target = Some(ir::OpIndex::from(4));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::I32Const { value: cond as u32 }, 0, post_push_variant(0)),
+                if_op,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
 }

@@ -158,6 +158,7 @@ define_semantics_emitter! {
     fn i64_store8(offset: u32);
     fn i64_store16(offset: u32);
     fn i64_store32(offset: u32);
+    fn init_locals(k0: u16, k1: u16, k2: u16);
     fn spill(slot: u16, count: u8, variant: u8);
     fn fill(slot: u16, count: u8, variant: u8);
 }

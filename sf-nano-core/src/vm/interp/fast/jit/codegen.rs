@@ -87,6 +87,29 @@ impl<'a> JitEmitter<'a> {
         self.start_offset
     }
 
+    /// Finish with an `if` conditional dispatch.
+    ///
+    /// Pops the condition from TOS top (i32). If zero, branches to the target
+    /// in `pc->imm0` via nonlinear dispatch. If nonzero, falls through linearly
+    /// to `pc + 1` (the then-path).
+    pub fn finish_if(mut self) -> usize {
+        let d = depth_variant(self.height);
+        let cond = tos_reg(d, 1);
+
+        // CBNZ w_cond, +6: cond != 0 skips the 5 taken-path instructions
+        // and lands at the linear fallthrough dispatch.
+        self.buf.emit(arm64_enc::cbnz_32(cond, 6));
+
+        // Condition == 0: jump to else/end target.
+        emit::emit_dispatch_nonlinear(self.buf);
+
+        // Condition != 0: enter the then-path at pc+1.
+        emit::emit_dispatch_linear(self.buf);
+
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
     /// Emit the OOB trap stub and patch all B.HI branches to it.
     fn emit_trap_stub_if_needed(&mut self) {
         if self.trap_patches.is_empty() {
@@ -321,6 +344,30 @@ impl<'a> JitEmitter<'a> {
         let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
         // height unchanged (tee keeps value on stack)
+    }
+
+    // ==================== Hot local init prologue ====================
+
+    /// Perform the InitLocals hot-local swaps and fill L0-L2.
+    ///
+    /// This mirrors `impl_init_locals` in `handlers_c/const_local.c`:
+    /// each `Kn` swaps `fp[n]` with `fp[Kn]`, then fills `Ln` from `fp[n]`.
+    pub fn init_locals(&mut self, k0: u16, k1: u16, k2: u16) {
+        self.init_one_hot_local(0, k0, Reg::L0);
+        self.init_one_hot_local(1, k1, Reg::L1);
+        self.init_one_hot_local(2, k2, Reg::L2);
+    }
+
+    fn init_one_hot_local(&mut self, slot: u16, target: u16, reg: Reg) {
+        if target == slot {
+            self.buf.emit(arm64_enc::ldr_64(reg, Reg::FP, target as u32));
+            return;
+        }
+
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::FP, slot as u32));
+        self.buf.emit(arm64_enc::ldr_64(reg, Reg::FP, target as u32));
+        self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, target as u32));
+        self.buf.emit(arm64_enc::str_64(reg, Reg::FP, slot as u32));
     }
 
     // ==================== Drop (pop1, no code) ====================
@@ -1456,6 +1503,77 @@ mod tests {
         assert_eq!(result, 77); // TOS still 77
     }
 
+    #[test]
+    fn test_init_locals_swaps_frame_and_fills_hot_registers() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start;
+        {
+            let mut e = JitEmitter::new(&mut buf, 0);
+            e.init_locals(5, 3, 2);
+            e.emit_raw(arm64_enc::str_64(Reg::L0, Reg::FP, 8));
+            e.emit_raw(arm64_enc::str_64(Reg::L1, Reg::FP, 9));
+            e.emit_raw(arm64_enc::str_64(Reg::L2, Reg::FP, 10));
+            start = e.finish();
+        }
+
+        buf.finish_write(0, buf.len());
+
+        let handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+
+        let mut frame = [0u64; 32];
+        frame[0] = 10;
+        frame[1] = 11;
+        frame[2] = 12;
+        frame[3] = 30;
+        frame[5] = 50;
+
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(),
+            0,
+        );
+        ctx.hot.term_inst = handlers::term();
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx,
+                pc,
+                frame.as_mut_ptr(),
+                777,
+                888,
+                999,
+                0,
+                0,
+                0,
+                0,
+                nh,
+            );
+        }
+
+        assert_eq!(frame[0], 50, "fp[0] should hold the swapped hot local");
+        assert_eq!(frame[5], 10, "fp[5] should receive the original fp[0]");
+        assert_eq!(frame[1], 30, "fp[1] should hold the swapped hot local");
+        assert_eq!(frame[3], 11, "fp[3] should receive the original fp[1]");
+        assert_eq!(frame[2], 12, "fp[2] should remain unchanged");
+        assert_eq!(frame[8], 50, "l0 should be filled from fp[0]");
+        assert_eq!(frame[9], 30, "l1 should be filled from fp[1]");
+        assert_eq!(frame[10], 12, "l2 should be filled from fp[2]");
+    }
+
     // ==================== Step 4: Drop ====================
 
     #[test]
@@ -1855,6 +1973,104 @@ mod tests {
 
         assert_eq!(frame[0], 42, "group1 stored value");
         assert_eq!(frame[1], 88, "group2 at fallthrough stored value");
+    }
+
+    #[test]
+    fn test_if_taken_jumps_to_target_on_zero() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start;
+        {
+            let mut e = JitEmitter::new(&mut buf, 2);
+            let val_reg = tos_reg(e.dv(), 2);
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start = e.finish_if();
+        }
+        buf.finish_write(0, buf.len());
+
+        let jit_handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit_handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.hot.term_inst = handlers::term();
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0,
+                42, 0, 0, 0, // t0=value, t1=cond=0 -> branch to alt target
+                nh,
+            );
+        }
+
+        assert_eq!(frame[0], 42);
+    }
+
+    #[test]
+    fn test_if_fallthrough_on_nonzero() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start;
+        {
+            let mut e = JitEmitter::new(&mut buf, 2);
+            let val_reg = tos_reg(e.dv(), 2);
+            e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
+            start = e.finish_if();
+        }
+        buf.finish_write(0, buf.len());
+
+        let jit_handler: OpHandler = unsafe { buf.fn_ptr(start) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit_handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.hot.term_inst = handlers::term();
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0,
+                42, 1, 0, 0, // t0=value, t1=cond=1 -> fallthrough
+                nh,
+            );
+        }
+
+        assert_eq!(frame[0], 42);
     }
 
     // ==================== Step 10: Memory load/store tests ====================

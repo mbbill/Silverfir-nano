@@ -2,7 +2,7 @@ use super::semantics::SemanticsEmitter;
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind};
 
 const LINEAR_FINISH_BYTES: usize = 16;
-const BR_IF_SIMPLE_FINISH_BYTES: usize = 40;
+const COND_TERMINATOR_FINISH_BYTES: usize = 40;
 const TRAP_STUB_MAX_BYTES: usize = 32;
 
 /// Whether an IR op kind can be lowered by the ARM64 micro-JIT at all.
@@ -49,6 +49,8 @@ pub fn supports_kind(kind: &IrOpKind) -> bool {
         I32Store { .. } | I64Store { .. } | F32Store { .. } | F64Store { .. } |
         I32Store8 { .. } | I32Store16 { .. } |
         I64Store8 { .. } | I64Store16 { .. } | I64Store32 { .. } |
+        InitLocals { .. } |
+        If |
         Spill { .. } | Fill { .. }
     )
 }
@@ -100,6 +102,7 @@ pub fn max_emitted_bytes(op: &IrOp) -> usize {
         LocalSetHot { .. } | LocalSetFrame { .. } |
         LocalTeeHot { .. } | LocalTeeFrame { .. } => 4,
         Spill { count, .. } | Fill { count, .. } => (*count as usize) * 4,
+        InitLocals { .. } => 48,
         I32Const { .. } | I64Const { .. } | F32Const { .. } | F64Const { .. } => 16,
         Select => 24,
         I32Load { .. } | I64Load { .. } | F32Load { .. } | F64Load { .. } |
@@ -113,14 +116,18 @@ pub fn max_emitted_bytes(op: &IrOp) -> usize {
     }
 }
 
-pub fn estimate_group_bytes(group: &[IrOp], ends_with_brif: bool) -> usize {
-    let body_end = if ends_with_brif { group.len().saturating_sub(1) } else { group.len() };
+pub fn estimate_group_bytes(group: &[IrOp], ends_with_conditional_terminator: bool) -> usize {
+    let body_end = if ends_with_conditional_terminator {
+        group.len().saturating_sub(1)
+    } else {
+        group.len()
+    };
     let body = group[..body_end]
         .iter()
         .map(max_emitted_bytes)
         .sum::<usize>();
-    let finish = if ends_with_brif {
-        BR_IF_SIMPLE_FINISH_BYTES
+    let finish = if ends_with_conditional_terminator {
+        COND_TERMINATOR_FINISH_BYTES
     } else {
         LINEAR_FINISH_BYTES
     };
@@ -303,6 +310,7 @@ pub fn emit<E: SemanticsEmitter>(e: &mut E, op: &IrOp, hot_local_mask: [bool; 3]
         IrOpKind::I64Store32 { offset, .. } => e.i64_store32(*offset),
         IrOpKind::F32Store { offset, .. } => e.i32_store(*offset),
         IrOpKind::F64Store { offset, .. } => e.i64_store(*offset),
+        IrOpKind::InitLocals { k0, k1, k2 } => e.init_locals(*k0, *k1, *k2),
         IrOpKind::Spill { slot, count } => e.spill(*slot, *count, op.variant),
         IrOpKind::Fill { slot, count } => e.fill(*slot, *count, op.variant),
         _ => unreachable!("unsupported JIT op: {:?}", op.kind),

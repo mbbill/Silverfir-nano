@@ -9,7 +9,7 @@ use super::code_buf::CodeBuffer;
 use super::codegen::JitEmitter;
 use super::op_meta;
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
-use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, stack_effect};
+use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
 use crate::vm::interp::fast::handlers::OpHandler;
 
 /// Check if an IrOp is JIT-able, considering kind, height, and hot local mask.
@@ -34,9 +34,23 @@ fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
     true
 }
 
-/// Check if an IrOp is a br_if_simple group terminator (can only terminate, not start).
-fn is_br_if_simple(op: &IrOp) -> bool {
-    op.pre_height >= 1 && matches!(op.kind, IrOpKind::BrIfSimple)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GroupTerminator {
+    BrIfSimple,
+    If,
+}
+
+/// Check if an IrOp is a conditional group terminator (can only terminate, not start).
+fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
+    if op.pre_height < 1 {
+        return None;
+    }
+
+    match op.kind {
+        IrOpKind::BrIfSimple => Some(GroupTerminator::BrIfSimple),
+        IrOpKind::If => Some(GroupTerminator::If),
+        _ => None,
+    }
 }
 
 /// Mark every IR index that can be reached by a non-fallthrough branch.
@@ -145,7 +159,7 @@ pub fn resolve_jit(
     let mut i = 0;
     while i < ir.len() {
         // Try to start a JIT group
-        if is_jit_able_op(&ir[i], hot_local_mask) {
+        if group_terminator(&ir[i]).is_none() && is_jit_able_op(&ir[i], hot_local_mask) {
             let group_start = i;
             i += 1;
 
@@ -154,7 +168,7 @@ pub fn resolve_jit(
                 if branch_targets[i] {
                     break;
                 }
-                if is_br_if_simple(&ir[i]) {
+                if group_terminator(&ir[i]).is_some() {
                     i += 1; // include br_if_simple as terminator
                     break;
                 }
@@ -166,28 +180,43 @@ pub fn resolve_jit(
 
             let group_len = i - group_start;
             if group_len >= 2 {
-                let estimated_bytes = op_meta::estimate_group_bytes(&ir[group_start..i], is_br_if_simple(&ir[i - 1]));
+                let estimated_bytes = op_meta::estimate_group_bytes(
+                    &ir[group_start..i],
+                    group_terminator(&ir[i - 1]).is_some(),
+                );
                 if buf.remaining() >= estimated_bytes {
-                    if let Some((handler, ends_brif, branch_target)) =
+                    if let Some((handler, terminator, branch_target)) =
                         try_compile_group(&ir[group_start..i], buf, hot_local_mask)
                     {
                         // JIT entry
-                        if ends_brif {
-                            out.push(ResolvedInst {
-                                handler,
-                                kind: IrOpKind::BrIfSimple,
-                                alt_target: branch_target,
-                                has_target: true,
-                                compaction: CompactionDisposition::Keep,
-                            });
-                        } else {
-                            out.push(ResolvedInst {
-                                handler,
-                                kind: IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 },
-                                alt_target: None,
-                                has_target: false,
-                                compaction: CompactionDisposition::Keep,
-                            });
+                        match terminator {
+                            Some(GroupTerminator::BrIfSimple) => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: IrOpKind::BrIfSimple,
+                                    alt_target: branch_target,
+                                    has_target: true,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
+                            Some(GroupTerminator::If) => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: IrOpKind::If,
+                                    alt_target: branch_target,
+                                    has_target: true,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
+                            None => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 },
+                                    alt_target: None,
+                                    has_target: false,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
                         }
                         // Skip remaining ops in group
                         for _ in 1..group_len {
@@ -238,17 +267,17 @@ fn try_compile_group(
     group: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
-) -> Option<(OpHandler, bool, Option<crate::vm::interp::fast::builder::ir::OpIndex>)> {
-    let ends_with_brif = is_br_if_simple(group.last().unwrap());
-    let branch_alt = if ends_with_brif {
-        group.last().unwrap().alt_target
-    } else {
-        None
-    };
+) -> Option<(OpHandler, Option<GroupTerminator>, Option<OpIndex>)> {
+    let terminator = group_terminator(group.last().unwrap());
+    let branch_alt = terminator.and_then(|_| group.last().unwrap().alt_target);
 
     // Validate: check that heights stay valid throughout the group
     let mut sim_height = group[0].pre_height as usize;
-    let body_end = if ends_with_brif { group.len() - 1 } else { group.len() };
+    let body_end = if terminator.is_some() {
+        group.len() - 1
+    } else {
+        group.len()
+    };
     for op in &group[..body_end] {
         let (pops, pushes) = stack_effect(&op.kind);
         if sim_height < pops as usize {
@@ -256,7 +285,7 @@ fn try_compile_group(
         }
         sim_height = sim_height - pops as usize + pushes as usize;
     }
-    if ends_with_brif && sim_height < 1 {
+    if terminator.is_some() && sim_height < 1 {
         return None;
     }
 
@@ -266,14 +295,14 @@ fn try_compile_group(
         emit_op(&mut e, op, hot_local_mask);
     }
 
-    let start = if ends_with_brif {
-        e.finish_br_if_simple()
-    } else {
-        e.finish()
+    let start = match terminator {
+        Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
+        Some(GroupTerminator::If) => e.finish_if(),
+        None => e.finish(),
     };
 
     let handler: OpHandler = unsafe { buf.fn_ptr(start) };
-    Some((handler, ends_with_brif, branch_alt))
+    Some((handler, terminator, branch_alt))
 }
 
 /// Emit a single op via JitEmitter based on its IrOpKind.
@@ -353,6 +382,12 @@ mod tests {
         let mask = [true, true, true];
         assert!(is_jit_able_op(&make_op(IrOpKind::Drop, 1), mask));
         assert!(!is_jit_able_op(&make_op(IrOpKind::Drop, 0), mask));
+    }
+
+    #[test]
+    fn test_is_jit_able_init_locals() {
+        let mask = [true, true, true];
+        assert!(is_jit_able_op(&make_op(IrOpKind::InitLocals { k0: 5, k1: 1, k2: 2 }, 0), mask));
     }
 
     #[test]
@@ -447,6 +482,53 @@ mod tests {
         assert!(resolved[1].is_internal_only());
         assert!(resolved[2].is_internal_only());
         assert!(resolved[3].is_internal_only());
+    }
+
+    #[test]
+    fn test_group_with_if_terminator() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 1 }, 0),
+            {
+                let mut op = make_op(IrOpKind::If, 1);
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(10));
+                op
+            },
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::If));
+        assert!(resolved[0].has_target);
+        assert_eq!(resolved[0].alt_target, Some(OpIndex::from(10)));
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
+    }
+
+    #[test]
+    fn test_group_does_not_start_at_if() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            {
+                let mut op = make_op(IrOpKind::If, 1);
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(2));
+                op
+            },
+            make_op(IrOpKind::I32Const { value: 11 }, 0),
+            make_op(IrOpKind::LocalSetFrame { idx: 0 }, 1),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+        assert!(matches!(resolved[0].kind, IrOpKind::If));
+        assert!(!resolved[0].is_removed(), "If must remain a standalone entry");
+        assert!(!resolved[1].is_removed(), "grouping must not start at the If terminator");
+        assert!(!resolved[2].is_removed(), "incoming branch targets must still break later groups");
     }
 
     #[test]
@@ -899,6 +981,88 @@ mod tests {
         // The resolved group doesn't include a store — we need to check via
         // a different mechanism. Let's check the spill value in frame[3] instead.
         assert_eq!(frame[3], 1, "spilled value at fp[3] should be 1, got {}", frame[3]);
+    }
+
+    #[test]
+    fn test_resolve_jit_with_init_locals() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, false, false];
+
+        let ops = vec![
+            make_op(IrOpKind::InitLocals { k0: 5, k1: 1, k2: 2 }, 0),
+            make_op(IrOpKind::LocalGetFrame { idx: 0 }, 0),
+            make_op(IrOpKind::LocalSetFrame { idx: 8 }, 1),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+        assert!(!resolved[0].is_removed(), "expected JIT entry");
+        assert!(resolved[1].is_internal_only());
+        assert!(resolved[2].is_internal_only());
+
+        let handler = resolved[0].handler;
+        let term = full_set::op_term;
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+        let mut frame = [0u64; 32];
+        frame[0] = 10;
+        frame[5] = 50;
+
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(),
+            0,
+        );
+        ctx.hot.term_inst = handlers::term();
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx,
+                pc,
+                frame.as_mut_ptr(),
+                111,
+                222,
+                333,
+                0,
+                0,
+                0,
+                0,
+                nh,
+            );
+        }
+
+        assert_eq!(frame[0], 50, "fp[0] should contain the hot local after swap");
+        assert_eq!(frame[5], 10, "fp[5] should contain the original fp[0]");
+        assert_eq!(frame[8], 50, "LocalGetFrame idx 0 should read from L0 after init");
+    }
+
+    #[test]
+    fn test_resolve_jit_with_if_terminator() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 42 }, 0),
+            make_op(IrOpKind::I32Const { value: 0 }, 1),
+            {
+                let mut op = make_op(IrOpKind::If, 2);
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(3));
+                op
+            },
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+        assert!(matches!(resolved[0].kind, IrOpKind::If));
+        assert_eq!(resolved[0].alt_target, Some(OpIndex::from(3)));
+        assert!(resolved[1].is_internal_only());
+        assert!(resolved[2].is_internal_only());
     }
 
     #[test]
