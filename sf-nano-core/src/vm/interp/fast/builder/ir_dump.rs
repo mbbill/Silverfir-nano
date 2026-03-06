@@ -36,7 +36,7 @@ fn should_dump(func_idx: u32) -> bool {
 
 fn fmt_ir(i: usize, op: &IrOp) -> alloc::string::String {
     let target_str = match op.alt_target {
-        Some(t) => alloc::format!(" -> ir[{}]", t),
+        Some(t) => alloc::format!(" -> ir[{}]", t.as_usize()),
         None => alloc::string::String::new(),
     };
     alloc::format!(
@@ -107,7 +107,7 @@ pub fn dump_resolved(func_idx: u32, resolved: &[ResolvedInst], ir_ops: &[IrOp]) 
             i += 1;
         } else {
             let target_str = match inst.alt_target {
-                Some(t) => alloc::format!(" -> ir[{}]", t),
+                Some(t) => alloc::format!(" -> ir[{}]", t.as_usize()),
                 None => alloc::string::String::new(),
             };
             dump!("  res[{:4}] {:?}{}", i, inst.kind, target_str);

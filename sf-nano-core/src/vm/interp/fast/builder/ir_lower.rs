@@ -9,17 +9,13 @@
 use alloc::vec::Vec;
 
 use super::context::CompileContext;
-use super::ir::{self, BrTableEntry, IrOp, IrOpKind};
+use super::ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
 use super::stack::{BlockKind, StackTracker};
 use super::super::TOS_REGISTER_COUNT;
 use crate::error::WasmError;
 use crate::op_decoder::{Decoder, Immediate, OpcodeHandler, OpStream};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::vm::interp::fast::frame_layout;
-
-/// Marker base for operand stack during compilation.
-/// Used to create placeholder values that are fixed up in finalizer.
-const OPERAND_BASE: usize = 16384;
 
 /// Lower Wasm function body to IR.
 ///
@@ -63,8 +59,8 @@ struct IrLower<'a> {
 impl<'a> IrLower<'a> {
     /// Current IR index (next op will be at this index).
     #[inline]
-    fn current_index(&self) -> usize {
-        self.ops.len()
+    fn current_index(&self) -> OpIndex {
+        OpIndex::new(self.ops.len())
     }
 
     /// Compute pre_height: the stack height BEFORE this op executes.
@@ -80,14 +76,14 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit an IR op with automatic fallthrough.
-    fn emit(&mut self, kind: IrOpKind, variant: u8) -> usize {
-        let idx = self.ops.len();
+    fn emit(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+        let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
         self.ops.push(IrOp {
             kind,
             variant,
             pre_height,
-            fallthrough: Some(idx + 1),
+            fallthrough: Some(idx.next()),
             alt_target: None,
             has_target: false,
         });
@@ -95,8 +91,8 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit an IR op without fallthrough (terminal).
-    fn emit_terminal(&mut self, kind: IrOpKind, variant: u8) -> usize {
-        let idx = self.ops.len();
+    fn emit_terminal(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+        let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
         self.ops.push(IrOp {
             kind,
@@ -110,14 +106,14 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit an IR op with has_target set.
-    fn emit_with_target(&mut self, kind: IrOpKind, variant: u8) -> usize {
-        let idx = self.ops.len();
+    fn emit_with_target(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+        let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
         self.ops.push(IrOp {
             kind,
             variant,
             pre_height,
-            fallthrough: Some(idx + 1),
+            fallthrough: Some(idx.next()),
             alt_target: None,
             has_target: true,
         });
@@ -125,15 +121,15 @@ impl<'a> IrLower<'a> {
     }
 
     /// Patch alt_target for an IR op.
-    fn patch_alt(&mut self, idx: usize, alt: usize) {
-        if let Some(op) = self.ops.get_mut(idx) {
+    fn patch_alt(&mut self, idx: OpIndex, alt: OpIndex) {
+        if let Some(op) = self.ops.get_mut(idx.as_usize()) {
             op.alt_target = Some(alt);
         }
     }
 
     /// Patch Br/BrIf data for forward branches.
-    fn patch_br_data(&mut self, idx: usize, stack_offset: u64, arity: u64) {
-        if let Some(op) = self.ops.get_mut(idx) {
+    fn patch_br_data(&mut self, idx: OpIndex, stack_offset: u64, arity: u64) {
+        if let Some(op) = self.ops.get_mut(idx.as_usize()) {
             match &mut op.kind {
                 IrOpKind::Br { stack_drop, arity: a, .. } => {
                     *stack_drop = stack_offset as u32;
@@ -149,8 +145,8 @@ impl<'a> IrLower<'a> {
     }
 
     /// Patch br_table entry target.
-    fn patch_br_table_target(&mut self, inst_idx: usize, entry_idx: usize, target_idx: usize) {
-        if let Some(op) = self.ops.get_mut(inst_idx) {
+    fn patch_br_table_target(&mut self, inst_idx: OpIndex, entry_idx: usize, target_idx: OpIndex) {
+        if let Some(op) = self.ops.get_mut(inst_idx.as_usize()) {
             if let IrOpKind::BrTable { entries, .. } = &mut op.kind {
                 if let Some(entry) = entries.get_mut(entry_idx) {
                     entry.target_idx = Some(target_idx);
@@ -912,25 +908,25 @@ impl<'a> IrLower<'a> {
                 if let Immediate::FunctionIndex(func_idx) = imm {
                     self.emit_spill_all();
                     let (params, results) = self.ctx.resolve_func_type(*func_idx as usize);
-                    let delta = OPERAND_BASE + self.stack.height() - params;
+                    let delta = SlotRef::operand_relative((self.stack.height() - params) as u16);
                     if self.ctx.is_func_internal(*func_idx as usize) {
                         if let Some(callee_inst) = self.ctx.get_func_inst(*func_idx as usize) {
                             self.emit(
                                 IrOpKind::CallInternal {
                                     callee: callee_inst as *const _ as u64,
-                                    delta: delta as u16,
+                                    delta,
                                 },
                                 0,
                             );
                         } else {
                             self.emit(
-                                IrOpKind::CallExternal { func_idx: *func_idx, delta: delta as u16 },
+                                IrOpKind::CallExternal { func_idx: *func_idx, delta },
                                 0,
                             );
                         }
                     } else {
                         self.emit(
-                            IrOpKind::CallExternal { func_idx: *func_idx, delta: delta as u16 },
+                            IrOpKind::CallExternal { func_idx: *func_idx, delta },
                             0,
                         );
                     }
@@ -942,7 +938,7 @@ impl<'a> IrLower<'a> {
                 if let Immediate::CallIndirectArgs { typeidx, tableidx } = imm {
                     self.emit_spill_all();
                     let (params, results) = self.ctx.resolve_type_index(*typeidx as usize);
-                    let delta = OPERAND_BASE + self.stack.height() - params - 1;
+                    let delta = SlotRef::operand_relative((self.stack.height() - params - 1) as u16);
                     let operand_base_offset = (self.stack.operand_base() * 8) as u32;
                     let height = self.stack.height() as u16;
                     self.stack.pop(); // Pop materialized index
@@ -950,7 +946,7 @@ impl<'a> IrLower<'a> {
                         IrOpKind::CallIndirect {
                             type_idx: *typeidx,
                             table_idx: *tableidx,
-                            delta: delta as u16,
+                            delta,
                             operand_base_offset,
                             height,
                         },

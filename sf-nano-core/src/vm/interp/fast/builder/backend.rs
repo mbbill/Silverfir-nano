@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use super::ir::{IrOp, IrOpKind};
+use super::ir::{IrOp, IrOpKind, OpIndex};
 use super::ir_resolve::resolve_handler;
 use super::super::handlers::full_set::op_nop;
 use super::super::handlers::OpHandler as Handler;
@@ -49,7 +49,7 @@ pub struct ResolvedInst {
     /// (e.g. `BrIfSimple` for JIT br_if groups, `Data { 0,0,0 }` for JIT linear groups).
     pub kind: IrOpKind,
     /// Branch target (IR index, pre-compaction).
-    pub alt_target: Option<usize>,
+    pub alt_target: Option<OpIndex>,
     /// Whether this instruction encodes a target field that needs pointer patching.
     pub has_target: bool,
     /// Whether this instruction remains in the final code, redirects branch labels,

@@ -4,6 +4,7 @@
 //! In SP-based model, we don't track individual slot types - just height.
 
 use super::super::TOS_REGISTER_COUNT;
+use super::ir::OpIndex;
 use crate::vm::interp::fast::frame_layout;
 
 use alloc::vec::Vec;
@@ -24,7 +25,7 @@ pub enum BlockKind {
 #[derive(Debug, Clone)]
 pub struct BranchFixup {
     /// Instruction index of the branch
-    pub inst_idx: usize,
+    pub inst_idx: OpIndex,
     /// Stack offset for the branch
     pub stack_offset: usize,
     /// Branch arity
@@ -44,11 +45,11 @@ pub struct ControlFrame {
     /// Block results
     pub result_count: usize,
     /// Instruction index at block start (loop target, or block start for tracking)
-    pub start_inst_idx: usize,
+    pub start_inst_idx: OpIndex,
     /// IF instruction index (for patching at ELSE/END)
-    pub if_inst_idx: Option<usize>,
+    pub if_inst_idx: Option<OpIndex>,
     /// ELSE instruction index (for patching at END)
-    pub else_inst_idx: Option<usize>,
+    pub else_inst_idx: Option<OpIndex>,
     /// Pending forward branches to this block's END
     pub pending_fixups: Vec<BranchFixup>,
 }
@@ -101,7 +102,7 @@ impl StackTracker {
             start_height: 0,
             param_count: 0,
             result_count: results_count,
-            start_inst_idx: 0,
+            start_inst_idx: OpIndex::new(0),
             if_inst_idx: None,
             else_inst_idx: None,
             pending_fixups: Vec::new(),
@@ -361,7 +362,7 @@ impl StackTracker {
         kind: BlockKind,
         param_count: usize,
         result_count: usize,
-        start_inst_idx: usize,
+        start_inst_idx: OpIndex,
     ) {
         let start_height = self.height.saturating_sub(param_count);
 
@@ -378,14 +379,14 @@ impl StackTracker {
     }
 
     /// Set IF instruction index for current frame.
-    pub fn set_if_inst(&mut self, idx: usize) {
+    pub fn set_if_inst(&mut self, idx: OpIndex) {
         if let Some(frame) = self.control_stack.last_mut() {
             frame.if_inst_idx = Some(idx);
         }
     }
 
     /// Set ELSE instruction index for current frame.
-    pub fn set_else_inst(&mut self, idx: usize) {
+    pub fn set_else_inst(&mut self, idx: OpIndex) {
         if let Some(frame) = self.control_stack.last_mut() {
             frame.else_inst_idx = Some(idx);
         }
@@ -469,7 +470,7 @@ impl StackTracker {
     }
 
     /// Get branch info: (stack_offset, target_idx or None for forward ref).
-    pub fn branch_info(&self, label: u32) -> (usize, Option<usize>) {
+    pub fn branch_info(&self, label: u32) -> (usize, Option<OpIndex>) {
         let Some(frame) = self.frame_at_depth(label) else {
             return (0, None);
         };
@@ -492,7 +493,7 @@ impl StackTracker {
     }
 
     /// Register a forward branch fixup.
-    pub fn register_forward_branch(&mut self, label: u32, inst_idx: usize, br_table_entry: Option<usize>) {
+    pub fn register_forward_branch(&mut self, label: u32, inst_idx: OpIndex, br_table_entry: Option<usize>) {
         let (stack_offset, _) = self.branch_info(label);
         let arity = self.branch_arity(label);
 

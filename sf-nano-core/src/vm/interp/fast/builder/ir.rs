@@ -8,11 +8,77 @@
 
 use alloc::vec::Vec;
 
+/// Logical reference to a frame slot used by encoded handlers.
+///
+/// Most IR ops already carry absolute frame slots. Branch/call/return operands
+/// sometimes need a slot that is relative to the function's operand base, which
+/// is only known during finalization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRef {
+    Absolute(u16),
+    OperandRelative(u16),
+}
+
+impl SlotRef {
+    #[inline]
+    pub const fn absolute(slot: u16) -> Self {
+        Self::Absolute(slot)
+    }
+
+    #[inline]
+    pub const fn operand_relative(offset: u16) -> Self {
+        Self::OperandRelative(offset)
+    }
+
+    #[inline]
+    pub fn resolve(self, operand_base: usize) -> u16 {
+        match self {
+            Self::Absolute(slot) => slot,
+            Self::OperandRelative(offset) => (operand_base + offset as usize) as u16,
+        }
+    }
+}
+
+/// Index into the pre-compaction op stream used by lowering/backends/finalizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OpIndex(usize);
+
+impl OpIndex {
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    #[inline]
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+
+    #[inline]
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl From<usize> for OpIndex {
+    #[inline]
+    fn from(index: usize) -> Self {
+        Self::new(index)
+    }
+}
+
+impl From<OpIndex> for usize {
+    #[inline]
+    fn from(index: OpIndex) -> Self {
+        index.as_usize()
+    }
+}
+
 /// Entry for br_table: target info for each label.
 #[derive(Debug, Clone)]
 pub struct BrTableEntry {
     /// Target instruction index (None for forward refs)
-    pub target_idx: Option<usize>,
+    pub target_idx: Option<OpIndex>,
     /// Stack offset for this branch
     pub stack_offset: usize,
     /// Branch arity
@@ -32,9 +98,9 @@ pub struct IrOp {
     /// Stack height before this op executes.
     pub pre_height: u16,
     /// Next IR index (linear fallthrough).
-    pub fallthrough: Option<usize>,
+    pub fallthrough: Option<OpIndex>,
     /// Branch/else target (IR index).
-    pub alt_target: Option<usize>,
+    pub alt_target: Option<OpIndex>,
     /// Whether this instruction encodes a target field that needs pointer patching.
     pub has_target: bool,
 }
@@ -353,9 +419,9 @@ pub enum IrOpKind {
     // =========================================================================
     // Calls
     // =========================================================================
-    CallExternal { func_idx: u32, delta: u16 },
-    CallInternal { callee: u64, delta: u16 },
-    CallIndirect { type_idx: u32, table_idx: u32, delta: u16, operand_base_offset: u32, height: u16 },
+    CallExternal { func_idx: u32, delta: SlotRef },
+    CallInternal { callee: u64, delta: SlotRef },
+    CallIndirect { type_idx: u32, table_idx: u32, delta: SlotRef, operand_base_offset: u32, height: u16 },
 
     // =========================================================================
     // Returns
@@ -561,6 +627,12 @@ mod tests {
         assert_eq!(stack_effect(&IrOpKind::Br { stack_drop: 0, arity: 0, height: 0, operand_base_offset: 0 }), (0, 0));
         assert_eq!(stack_effect(&IrOpKind::Else), (0, 0));
         assert_eq!(stack_effect(&IrOpKind::Block), (0, 0));
+    }
+
+    #[test]
+    fn test_slot_ref_resolution() {
+        assert_eq!(SlotRef::absolute(7).resolve(32), 7);
+        assert_eq!(SlotRef::operand_relative(3).resolve(32), 35);
     }
 
     #[test]

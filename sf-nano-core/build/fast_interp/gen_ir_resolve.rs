@@ -180,9 +180,9 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("///");
     w.line("/// Auto-generated. Replaces PatternData + finalize_pattern_data.");
     w.line("/// `target_ptr` is the resolved branch target pointer (0 on first pass).");
-    w.line("/// `fix_slot` resolves OPERAND_BASE placeholders to actual frame offsets.");
+    w.line("/// `fix_slot` resolves logical slot references to final frame offsets.");
     w.line("#[inline]");
-    w.line("pub fn encode_operands<F: Fn(u16) -> u16>(");
+    w.line("pub fn encode_operands<F: Fn(SlotRef) -> u16>(");
     w.line("    kind: &IrOpKind,");
     w.line("    target_ptr: u64,");
     w.line("    fix_slot: &F,");
@@ -207,14 +207,14 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("IrOpKind::LocalGetHot { .. } => encoding::local_get::encode(0),");
     w.line("IrOpKind::LocalSetHot { .. } => encoding::local_set::encode(0),");
     w.line("IrOpKind::LocalTeeHot { .. } => encoding::local_tee::encode(0),");
-    w.line("// Frame locals (fix_slot applied)");
-    w.line("IrOpKind::LocalGetFrame { idx } => encoding::local_get::encode(fix_slot(*idx)),");
-    w.line("IrOpKind::LocalSetFrame { idx } => encoding::local_set::encode(fix_slot(*idx)),");
-    w.line("IrOpKind::LocalTeeFrame { idx } => encoding::local_tee::encode(fix_slot(*idx)),");
+    w.line("// Frame locals already carry absolute frame slots");
+    w.line("IrOpKind::LocalGetFrame { idx } => encoding::local_get::encode(*idx),");
+    w.line("IrOpKind::LocalSetFrame { idx } => encoding::local_set::encode(*idx),");
+    w.line("IrOpKind::LocalTeeFrame { idx } => encoding::local_tee::encode(*idx),");
     w.blank();
 
     // Spill/Fill
-    w.line("// Spill/Fill (all patterns have identical layout: slot u16)");
+    w.line("// Spill/Fill (slots are absolute frame slots)");
     w.line("IrOpKind::Spill { slot, .. } => encoding::spill_1::encode(*slot),");
     w.line("IrOpKind::Fill { slot, .. } => encoding::fill_1::encode(*slot),");
     w.blank();
@@ -273,11 +273,11 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("IrOpKind::Else => encoding::else_::encode(target_ptr),");
     w.line("IrOpKind::BrIfSimple => encoding::br_if_simple::encode(target_ptr),");
     w.line("IrOpKind::Br { stack_drop, arity, height, operand_base_offset } =>");
-    w.line("    encoding::br::encode(target_ptr, *stack_drop as u64, *arity, fix_slot(*height), *operand_base_offset),");
+    w.line("    encoding::br::encode(target_ptr, *stack_drop as u64, *arity, *height, *operand_base_offset),");
     w.line("IrOpKind::BrIf { stack_drop, arity, height, operand_base_offset } =>");
-    w.line("    encoding::br_if::encode(target_ptr, *stack_drop as u64, *arity, fix_slot(*height), *operand_base_offset),");
+    w.line("    encoding::br_if::encode(target_ptr, *stack_drop as u64, *arity, *height, *operand_base_offset),");
     w.line("IrOpKind::BrTable { entry_count, data_slot_count, height, operand_base_offset, .. } =>");
-    w.line("    encoding::br_table::encode(*entry_count as u64, *data_slot_count as u64, *operand_base_offset, fix_slot(*height)),");
+    w.line("    encoding::br_table::encode(*entry_count as u64, *data_slot_count as u64, *operand_base_offset, *height),");
     w.blank();
 
     // Calls
@@ -287,16 +287,16 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("IrOpKind::CallInternal { callee, delta } =>");
     w.line("    encoding::call_internal::encode(*callee, fix_slot(*delta)),");
     w.line("IrOpKind::CallIndirect { type_idx, table_idx, delta, operand_base_offset, height } =>");
-    w.line("    encoding::call_indirect::encode(*type_idx as u64, *table_idx as u64, fix_slot(*delta), *operand_base_offset, fix_slot(*height)),");
+    w.line("    encoding::call_indirect::encode(*type_idx as u64, *table_idx as u64, fix_slot(*delta), *operand_base_offset, *height),");
     w.blank();
 
     // Returns
     w.line("// Returns");
     w.line("IrOpKind::ReturnVoid { frame_size } => encoding::return_void::encode(*frame_size),");
     w.line("IrOpKind::ReturnOne { frame_size, operand_base_offset, height } =>");
-    w.line("    encoding::return_one::encode(*frame_size, *operand_base_offset, fix_slot(*height)),");
+    w.line("    encoding::return_one::encode(*frame_size, *operand_base_offset, *height),");
     w.line("IrOpKind::Return { arity, frame_size, operand_base_offset, height } =>");
-    w.line("    encoding::r#return::encode(*arity, *frame_size, *operand_base_offset, fix_slot(*height)),");
+    w.line("    encoding::r#return::encode(*arity, *frame_size, *operand_base_offset, *height),");
     w.blank();
 
     // Prologue

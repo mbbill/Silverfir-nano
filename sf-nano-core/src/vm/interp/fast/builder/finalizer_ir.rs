@@ -8,15 +8,11 @@ use alloc::vec;
 use core::mem;
 
 use super::backend::{CompactionDisposition, ResolvedInst};
-use super::ir::IrOpKind;
+use super::ir::{IrOpKind, OpIndex, SlotRef};
 use super::ir_resolve::{resolve_handler, encode_operands};
 use super::stack::StackTracker;
 use super::super::handlers::OpHandler as Handler;
 use crate::vm::interp::fast::instruction::Instruction;
-
-/// Marker base for operand stack slots during compilation.
-/// Final slot = operand_base + (value - OPERAND_BASE)
-const OPERAND_BASE: usize = 16384;
 
 /// Finalize resolved instructions into final code.
 pub fn finalize(
@@ -76,7 +72,7 @@ fn route_terminals(ops: &mut Vec<ResolvedInst>) {
         match &op.kind {
             IrOpKind::ReturnVoid { .. } | IrOpKind::ReturnOne { .. } |
             IrOpKind::Return { .. } | IrOpKind::Unreachable => {
-                op.alt_target = Some(term_idx);
+                op.alt_target = Some(OpIndex::from(term_idx));
             }
             _ => {}
         }
@@ -88,7 +84,7 @@ fn default_alt_to_term(ops: &mut Vec<ResolvedInst>) {
     let term_idx = ops.len() - 1;
     for op in ops.iter_mut() {
         if op.alt_target.is_none() {
-            op.alt_target = Some(term_idx);
+            op.alt_target = Some(OpIndex::from(term_idx));
         }
     }
 }
@@ -122,16 +118,16 @@ fn expand_br_tables(ops: Vec<ResolvedInst>) -> Vec<ResolvedInst> {
     let mut ops = ops;
     for op in ops.iter_mut() {
         if let Some(ref mut alt) = op.alt_target {
-            if *alt < old_to_new.len() {
-                *alt = old_to_new[*alt];
+            if alt.as_usize() < old_to_new.len() {
+                *alt = OpIndex::from(old_to_new[alt.as_usize()]);
             }
         }
         // Patch br_table entry targets
         if let IrOpKind::BrTable { ref mut entries, .. } = op.kind {
             for e in entries.iter_mut() {
                 if let Some(ref mut tgt) = e.target_idx {
-                    if *tgt < old_to_new.len() {
-                        *tgt = old_to_new[*tgt];
+                    if tgt.as_usize() < old_to_new.len() {
+                        *tgt = OpIndex::from(old_to_new[tgt.as_usize()]);
                     }
                 }
             }
@@ -184,16 +180,16 @@ fn incoming_targets(ops: &[ResolvedInst]) -> Vec<bool> {
 
     for op in ops {
         if let Some(target) = op.alt_target {
-            if target < incoming.len() {
-                incoming[target] = true;
+            if target.as_usize() < incoming.len() {
+                incoming[target.as_usize()] = true;
             }
         }
 
         if let IrOpKind::BrTable { entries, .. } = &op.kind {
             for entry in entries {
                 if let Some(target) = entry.target_idx {
-                    if target < incoming.len() {
-                        incoming[target] = true;
+                    if target.as_usize() < incoming.len() {
+                        incoming[target.as_usize()] = true;
                     }
                 }
             }
@@ -221,21 +217,21 @@ fn validate_removed_targets(ops: &[ResolvedInst], keep: &[bool]) {
 }
 
 fn remap_target(
-    old_target: usize,
+    old_target: OpIndex,
     ops: &[ResolvedInst],
     index_map: &[Option<usize>],
-) -> Option<usize> {
-    let mut target = old_target;
+) -> Option<OpIndex> {
+    let mut target = old_target.as_usize();
 
     while target < index_map.len() {
         if let Some(new_target) = index_map[target] {
-            return Some(new_target);
+            return Some(OpIndex::from(new_target));
         }
 
         assert!(
             ops[target].redirects_branch_target(),
             "branch target {} points to removed internal-only op {:?}",
-            old_target,
+            old_target.as_usize(),
             ops[target].kind,
         );
         target += 1;
@@ -284,8 +280,8 @@ fn compact_and_patch(
 
             for (entry_idx, entry) in taken_entries.iter().enumerate() {
                 if let Some(tgt_old) = entry.target_idx {
-                    if let Some(tgt_new) = remap_target(tgt_old, &original_ops, index_map) {
-                        let rel = (tgt_new as i32) - (br_table_new_idx as i32);
+                        if let Some(tgt_new) = remap_target(tgt_old, &original_ops, index_map) {
+                        let rel = (tgt_new.as_usize() as i32) - (br_table_new_idx as i32);
                         let stack_drop = entry.stack_offset as u32;
                         let arity = entry.arity as u32;
 
@@ -328,7 +324,7 @@ fn compact_and_patch(
 mod tests {
     use super::*;
 
-    fn resolved(kind: IrOpKind, alt_target: Option<usize>, has_target: bool, compaction: CompactionDisposition) -> ResolvedInst {
+    fn resolved(kind: IrOpKind, alt_target: Option<OpIndex>, has_target: bool, compaction: CompactionDisposition) -> ResolvedInst {
         ResolvedInst {
             handler: resolve_handler(&kind, 0),
             kind,
@@ -341,7 +337,7 @@ mod tests {
     #[test]
     fn test_removed_redirect_target_maps_to_next_kept() {
         let ops = vec![
-            resolved(IrOpKind::If, Some(1), true, CompactionDisposition::Keep),
+            resolved(IrOpKind::If, Some(OpIndex::from(1)), true, CompactionDisposition::Keep),
             resolved(IrOpKind::Block, None, false, CompactionDisposition::RedirectBranchTarget),
             resolved(IrOpKind::I32Const { value: 7 }, None, false, CompactionDisposition::Keep),
         ];
@@ -351,31 +347,20 @@ mod tests {
         validate_removed_targets(&ops, &keep);
         let compacted = compact_and_patch(ops, &keep, &index_map);
 
-        assert_eq!(compacted[0].alt_target, Some(1));
+        assert_eq!(compacted[0].alt_target, Some(OpIndex::from(1)));
     }
 
     #[test]
     #[should_panic(expected = "removed internal-only op")]
     fn test_removed_internal_only_target_panics() {
         let ops = vec![
-            resolved(IrOpKind::If, Some(1), true, CompactionDisposition::Keep),
+            resolved(IrOpKind::If, Some(OpIndex::from(1)), true, CompactionDisposition::Keep),
             resolved(IrOpKind::Nop, None, false, CompactionDisposition::InternalOnly),
             resolved(IrOpKind::I32Const { value: 7 }, None, false, CompactionDisposition::Keep),
         ];
         let keep: Vec<bool> = ops.iter().map(|op| op.compaction.is_kept()).collect();
 
         validate_removed_targets(&ops, &keep);
-    }
-}
-
-/// Convert an operand slot placeholder to an absolute frame offset.
-#[inline]
-fn fixup_slot(slot: u16, operand_base: usize) -> u16 {
-    let slot = slot as usize;
-    if slot >= OPERAND_BASE {
-        (operand_base + (slot - OPERAND_BASE)) as u16
-    } else {
-        slot as u16
     }
 }
 
@@ -390,8 +375,8 @@ fn build_instructions(
         return Box::new([]);
     }
 
-    let fix_slot = |slot: u16| -> u16 {
-        fixup_slot(slot, operand_base)
+    let fix_slot = |slot: SlotRef| -> u16 {
+        slot.resolve(operand_base)
     };
 
     // First pass: encode all instructions (target_ptr = 0 for now)
@@ -412,7 +397,7 @@ fn build_instructions(
         if let Some(alt_idx) = op.alt_target {
             if op.has_target {
                 unsafe {
-                    let target_ptr = base.add(alt_idx) as u64;
+                    let target_ptr = base.add(alt_idx.as_usize()) as u64;
                     let (imm0, imm1, imm2) = encode_operands(&op.kind, target_ptr, &fix_slot);
                     (*base.add(i)).imm0 = imm0;
                     (*base.add(i)).imm1 = imm1;

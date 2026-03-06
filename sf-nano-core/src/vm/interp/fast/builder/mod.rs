@@ -341,7 +341,7 @@ mod tests {
         // into an internal-only group interior again, base and JIT will diverge here.
         let mut br = make_op(ir::IrOpKind::BrIfSimple, 2, current_variant(2));
         br.has_target = true;
-        br.alt_target = Some(5);
+        br.alt_target = Some(ir::OpIndex::from(5));
 
         let ops = vec![
             make_op(ir::IrOpKind::I32Const { value: 42 }, 0, post_push_variant(0)),
