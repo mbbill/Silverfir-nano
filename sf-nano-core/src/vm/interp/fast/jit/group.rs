@@ -140,6 +140,31 @@ fn is_br_if_simple(op: &IrOp) -> bool {
     op.pre_height >= 1 && matches!(op.kind, IrOpKind::BrIfSimple)
 }
 
+/// Mark every IR index that can be reached by a non-fallthrough branch.
+fn incoming_targets(ir: &[IrOp]) -> Vec<bool> {
+    let mut incoming = alloc::vec![false; ir.len()];
+
+    for op in ir {
+        if let Some(target) = op.alt_target {
+            if target < incoming.len() {
+                incoming[target] = true;
+            }
+        }
+
+        if let IrOpKind::BrTable { entries, .. } = &op.kind {
+            for entry in entries {
+                if let Some(target) = entry.target_idx {
+                    if target < incoming.len() {
+                        incoming[target] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    incoming
+}
+
 // =========================================================================
 // JIT statistics
 // =========================================================================
@@ -210,6 +235,7 @@ pub fn resolve_jit(
 ) -> Vec<ResolvedInst> {
     buf.begin_write();
     let bytes_before = buf.len();
+    let branch_targets = incoming_targets(ir);
 
     let mut out = Vec::with_capacity(ir.len());
     let mut groups_compiled: usize = 0;
@@ -226,6 +252,9 @@ pub fn resolve_jit(
 
             // Extend the group
             while i < ir.len() {
+                if branch_targets[i] {
+                    break;
+                }
                 if is_br_if_simple(&ir[i]) {
                     i += 1; // include br_if_simple as terminator
                     break;
@@ -736,6 +765,32 @@ mod tests {
         assert!(resolved[1].structural);
         assert!(resolved[2].structural);
         assert!(resolved[3].structural);
+    }
+
+    #[test]
+    fn test_group_breaks_at_incoming_branch_target() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            {
+                let mut op = make_op(IrOpKind::BrIfSimple, 1);
+                op.has_target = true;
+                op.alt_target = Some(2);
+                op
+            },
+            make_op(IrOpKind::I32Const { value: 5 }, 0),
+            make_op(IrOpKind::I32Const { value: 3 }, 0),
+            make_op(IrOpKind::I32Eqz, 1),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
+        assert!(matches!(resolved[1].kind, IrOpKind::I32Const { .. }));
+        assert!(!resolved[1].structural, "incoming target must break the group before ir[2]");
+        assert!(!resolved[2].structural, "targeted op should remain a real entry");
+        assert!(resolved[3].structural, "ir[2..4] may still form a group starting at the target");
     }
 
     // ==================== Execution tests ====================

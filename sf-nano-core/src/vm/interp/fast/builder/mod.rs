@@ -37,7 +37,85 @@ use crate::{
 };
 
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 use crate::module::type_defs::FunctionType;
+
+#[cfg(any(feature = "wasi", feature = "std"))]
+use std::{env, sync::OnceLock};
+
+#[derive(Clone, Debug, Default)]
+struct JitFuncFilter {
+    only: Vec<(u32, u32)>,
+    disable: Vec<(u32, u32)>,
+}
+
+impl JitFuncFilter {
+    fn allows(&self, func_idx: u32) -> bool {
+        if !self.only.is_empty() && !range_list_contains(&self.only, func_idx) {
+            return false;
+        }
+        if range_list_contains(&self.disable, func_idx) {
+            return false;
+        }
+        true
+    }
+}
+
+fn range_list_contains(ranges: &[(u32, u32)], func_idx: u32) -> bool {
+    ranges.iter().any(|&(start, end)| start <= func_idx && func_idx <= end)
+}
+
+fn parse_func_range_list(spec: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+
+    for raw_part in spec.split(',') {
+        let part = raw_part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        if let Some((start, end)) = part.split_once('-') {
+            let Ok(start_idx) = start.trim().parse::<u32>() else { continue };
+            let Ok(end_idx) = end.trim().parse::<u32>() else { continue };
+            if start_idx <= end_idx {
+                out.push((start_idx, end_idx));
+            }
+            continue;
+        }
+
+        if let Ok(idx) = part.parse::<u32>() {
+            out.push((idx, idx));
+        }
+    }
+
+    out
+}
+
+#[cfg(any(feature = "wasi", feature = "std"))]
+fn jit_func_filter() -> &'static JitFuncFilter {
+    static FILTER: OnceLock<JitFuncFilter> = OnceLock::new();
+
+    FILTER.get_or_init(|| JitFuncFilter {
+        only: env::var("SF_JIT_ONLY_FUNC")
+            .ok()
+            .map(|v| parse_func_range_list(&v))
+            .unwrap_or_default(),
+        disable: env::var("SF_JIT_DISABLE_FUNC")
+            .ok()
+            .map(|v| parse_func_range_list(&v))
+            .unwrap_or_default(),
+    })
+}
+
+#[cfg(any(feature = "wasi", feature = "std"))]
+fn jit_enabled_for_func(func_idx: u32) -> bool {
+    jit_func_filter().allows(func_idx)
+}
+
+#[cfg(not(any(feature = "wasi", feature = "std")))]
+fn jit_enabled_for_func(_func_idx: u32) -> bool {
+    true
+}
 
 /// Build fast IR via the unified IR pipeline.
 ///
@@ -81,12 +159,16 @@ pub fn build_for_function(
             hot_locals[2].is_some(),
         ];
 
-        match CodeBuffer::new() {
-            Ok(mut buf) => {
-                let resolved = group::resolve_jit(&ir_ops, &mut buf, hot_mask);
-                (resolved, Some(buf))
+        if !jit_enabled_for_func(func_idx) {
+            (backend::resolve_base(&ir_ops), None)
+        } else {
+            match CodeBuffer::new() {
+                Ok(mut buf) => {
+                    let resolved = group::resolve_jit(&ir_ops, &mut buf, hot_mask);
+                    (resolved, Some(buf))
+                }
+                Err(_) => (backend::resolve_base(&ir_ops), None),
             }
-            Err(_) => (backend::resolve_base(&ir_ops), None),
         }
     };
 
@@ -122,5 +204,27 @@ pub fn build_for_function(
         let entry = fast_cache.entry();
         function.set_fast_code(fast_code, fast_cache);
         Ok(entry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use super::parse_func_range_list;
+
+    #[test]
+    fn parse_single_and_ranges() {
+        assert_eq!(
+            parse_func_range_list("1, 3-5, 8"),
+            vec![(1, 1), (3, 5), (8, 8)],
+        );
+    }
+
+    #[test]
+    fn parse_ignores_invalid_parts() {
+        assert_eq!(
+            parse_func_range_list("2-1, x, 4, 7-y, 9-10"),
+            vec![(4, 4), (9, 10)],
+        );
     }
 }
