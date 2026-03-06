@@ -45,11 +45,18 @@ fn try_resolve_jit_backend(
     ir_ops: &[ir::IrOp],
     module: &ModuleInst,
     hot_mask: [bool; 3],
+    func_idx: u32,
 ) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     use super::jit::group;
 
     let mut buf = module.jit_code_buffer()?;
-    Ok(group::resolve_jit(ir_ops, &mut buf, hot_mask))
+    Ok(group::resolve_jit_with_context(
+        ir_ops,
+        &mut buf,
+        hot_mask,
+        &module.name,
+        func_idx,
+    ))
 }
 
 #[cfg(not(feature = "micro-jit"))]
@@ -57,6 +64,7 @@ fn try_resolve_jit_backend(
     _ir_ops: &[ir::IrOp],
     _module: &ModuleInst,
     _hot_mask: [bool; 3],
+    _func_idx: u32,
 ) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Err("micro-jit backend not compiled in")
 }
@@ -112,10 +120,10 @@ pub fn build_for_function(
         BackendMode::Base => backend::resolve_base(&ir_ops),
         BackendMode::Fusion => resolve_fusion_backend(&ir_ops)
             .map_err(|err| WasmError::invalid(alloc::format!("requested backend fusion is unavailable: {}", err)))?,
-        BackendMode::Jit => try_resolve_jit_backend(&ir_ops, module, hot_mask)
+        BackendMode::Jit => try_resolve_jit_backend(&ir_ops, module, hot_mask, func_idx)
             .map_err(|err| WasmError::invalid(alloc::format!("requested backend jit is unavailable: {}", err)))?,
         BackendMode::Auto => match super::active_backend().unwrap_or(BackendKind::Base) {
-            BackendKind::Jit => match try_resolve_jit_backend(&ir_ops, module, hot_mask) {
+            BackendKind::Jit => match try_resolve_jit_backend(&ir_ops, module, hot_mask, func_idx) {
                 Ok(resolved) => resolved,
                 Err(_) => match resolve_fusion_backend(&ir_ops) {
                     Ok(resolved) => resolved,

@@ -7,6 +7,7 @@
 use alloc::vec::Vec;
 use super::code_buf::CodeBuffer;
 use super::codegen::JitEmitter;
+use super::debug_map;
 use super::op_meta;
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
@@ -146,6 +147,17 @@ pub fn resolve_jit(
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
 ) -> Vec<ResolvedInst> {
+    resolve_jit_with_context(ir, buf, hot_local_mask, "", 0)
+}
+
+/// Resolve IR ops via JIT compilation with optional source metadata for debug maps.
+pub fn resolve_jit_with_context(
+    ir: &[IrOp],
+    buf: &mut CodeBuffer,
+    hot_local_mask: [bool; 3],
+    module_name: &str,
+    func_idx: u32,
+) -> Vec<ResolvedInst> {
     buf.begin_write();
     let bytes_before = buf.len();
     let branch_targets = incoming_targets(ir);
@@ -185,9 +197,22 @@ pub fn resolve_jit(
                     group_terminator(&ir[i - 1]).is_some(),
                 );
                 if buf.remaining() >= estimated_bytes {
+                    let code_start = buf.len();
                     if let Some((handler, terminator, branch_target)) =
                         try_compile_group(&ir[group_start..i], buf, hot_local_mask)
                     {
+                        let code_len = buf.len() - code_start;
+                        debug_map::record_group(
+                            buf.base_ptr(),
+                            code_start,
+                            code_len,
+                            module_name,
+                            func_idx,
+                            group_start,
+                            &ir[group_start..i],
+                            terminator_name(terminator),
+                            branch_target,
+                        );
                         // JIT entry
                         match terminator {
                             Some(GroupTerminator::BrIfSimple) => {
@@ -258,6 +283,14 @@ pub fn resolve_jit(
     }
 
     out
+}
+
+fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> {
+    match terminator {
+        Some(GroupTerminator::BrIfSimple) => Some("br_if_simple"),
+        Some(GroupTerminator::If) => Some("if"),
+        None => None,
+    }
 }
 
 /// Try to compile a group of IrOps into a single JIT handler.

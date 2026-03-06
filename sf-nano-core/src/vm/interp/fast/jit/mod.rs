@@ -11,3 +11,4 @@ pub mod codegen;
 pub mod op_meta;
 pub mod semantics;
 pub mod group;
+mod debug_map;
