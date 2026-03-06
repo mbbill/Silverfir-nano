@@ -5,10 +5,12 @@
 //! Non-JIT-able ops fall back to 1:1 base handler resolution.
 
 use alloc::vec::Vec;
+use super::arm64_enc::{self, Cond};
 use super::code_buf::CodeBuffer;
-use super::codegen::JitEmitter;
+use super::codegen::{JitEmitter, depth_variant, tos_reg};
 use super::debug_map;
 use super::op_meta;
+use super::reg::Reg;
 use super::samply_jitdump;
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
@@ -317,6 +319,215 @@ fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> 
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CompareFusionKind {
+    I32(Cond),
+    I64(Cond),
+    F32(Cond),
+    F64(Cond),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TailFusion {
+    DirectCompareBr(CompareFusionKind),
+    DirectCompareIf(CompareFusionKind),
+    DirectZeroCompareBr(CompareFusionKind),
+    DirectZeroCompareIf(CompareFusionKind),
+    EqzBr,
+    EqzIf,
+    XorOneBr,
+    XorOneIfIdentity,
+}
+
+fn compare_fusion_kind(kind: &IrOpKind) -> Option<CompareFusionKind> {
+    use IrOpKind::*;
+
+    match kind {
+        I32Eq => Some(CompareFusionKind::I32(Cond::EQ)),
+        I32Ne => Some(CompareFusionKind::I32(Cond::NE)),
+        I32LtS => Some(CompareFusionKind::I32(Cond::LT)),
+        I32LtU => Some(CompareFusionKind::I32(Cond::LO)),
+        I32GtS => Some(CompareFusionKind::I32(Cond::GT)),
+        I32GtU => Some(CompareFusionKind::I32(Cond::HI)),
+        I32LeS => Some(CompareFusionKind::I32(Cond::LE)),
+        I32LeU => Some(CompareFusionKind::I32(Cond::LS)),
+        I32GeS => Some(CompareFusionKind::I32(Cond::GE)),
+        I32GeU => Some(CompareFusionKind::I32(Cond::HS)),
+        I64Eq => Some(CompareFusionKind::I64(Cond::EQ)),
+        I64Ne => Some(CompareFusionKind::I64(Cond::NE)),
+        I64LtS => Some(CompareFusionKind::I64(Cond::LT)),
+        I64LtU => Some(CompareFusionKind::I64(Cond::LO)),
+        I64GtS => Some(CompareFusionKind::I64(Cond::GT)),
+        I64GtU => Some(CompareFusionKind::I64(Cond::HI)),
+        I64LeS => Some(CompareFusionKind::I64(Cond::LE)),
+        I64LeU => Some(CompareFusionKind::I64(Cond::LS)),
+        I64GeS => Some(CompareFusionKind::I64(Cond::GE)),
+        I64GeU => Some(CompareFusionKind::I64(Cond::HS)),
+        F32Eq => Some(CompareFusionKind::F32(Cond::EQ)),
+        F32Ne => Some(CompareFusionKind::F32(Cond::NE)),
+        F32Lt => Some(CompareFusionKind::F32(Cond::MI)),
+        F32Gt => Some(CompareFusionKind::F32(Cond::GT)),
+        F32Le => Some(CompareFusionKind::F32(Cond::LS)),
+        F32Ge => Some(CompareFusionKind::F32(Cond::GE)),
+        F64Eq => Some(CompareFusionKind::F64(Cond::EQ)),
+        F64Ne => Some(CompareFusionKind::F64(Cond::NE)),
+        F64Lt => Some(CompareFusionKind::F64(Cond::MI)),
+        F64Gt => Some(CompareFusionKind::F64(Cond::GT)),
+        F64Le => Some(CompareFusionKind::F64(Cond::LS)),
+        F64Ge => Some(CompareFusionKind::F64(Cond::GE)),
+        _ => None,
+    }
+}
+
+fn matches_const_one_xor(suffix: &[IrOpKind]) -> bool {
+    matches!(
+        suffix,
+        [IrOpKind::I32Const { value: 1 }, IrOpKind::I32Xor]
+    )
+}
+
+fn produces_bool(kind: &IrOpKind) -> bool {
+    compare_fusion_kind(kind).is_some() || matches!(kind, IrOpKind::I32Eqz | IrOpKind::I64Eqz)
+}
+
+fn zero_float_compare_kind(const_kind: &IrOpKind, cmp_kind: &IrOpKind) -> Option<CompareFusionKind> {
+    match (const_kind, compare_fusion_kind(cmp_kind)) {
+        (IrOpKind::F32Const { value: 0 }, Some(cmp @ CompareFusionKind::F32(_))) => Some(cmp),
+        (IrOpKind::F64Const { value: 0 }, Some(cmp @ CompareFusionKind::F64(_))) => Some(cmp),
+        _ => None,
+    }
+}
+
+fn pick_tail_fusion(group: &[IrOp], terminator: Option<GroupTerminator>, body_end: usize) -> Option<(TailFusion, usize)> {
+    let start_height = group[0].pre_height;
+
+    match terminator {
+        Some(GroupTerminator::BrIfSimple) => {
+            if start_height == 0 && body_end >= 2 {
+                if let Some(cmp) =
+                    zero_float_compare_kind(&group[body_end - 2].kind, &group[body_end - 1].kind)
+                {
+                    return Some((TailFusion::DirectZeroCompareBr(cmp), body_end - 2));
+                }
+            }
+            if start_height == 0 && body_end >= 1 {
+                if let Some(cmp) = compare_fusion_kind(&group[body_end - 1].kind) {
+                    return Some((TailFusion::DirectCompareBr(cmp), body_end - 1));
+                }
+            }
+            if body_end >= 3 && matches_const_one_xor(&[
+                group[body_end - 2].kind.clone(),
+                group[body_end - 1].kind.clone(),
+            ]) && produces_bool(&group[body_end - 3].kind) {
+                return Some((TailFusion::XorOneBr, body_end - 2));
+            }
+            if body_end >= 1 && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz) {
+                return Some((TailFusion::EqzBr, body_end - 1));
+            }
+        }
+        Some(GroupTerminator::If) => {
+            if body_end >= 5
+                && start_height == 0
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+            {
+                if let Some(cmp) =
+                    zero_float_compare_kind(&group[body_end - 5].kind, &group[body_end - 4].kind)
+                {
+                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 5));
+                }
+            }
+            if start_height == 0 && body_end >= 2 {
+                if let Some(cmp) =
+                    zero_float_compare_kind(&group[body_end - 2].kind, &group[body_end - 1].kind)
+                {
+                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 2));
+                }
+            }
+            if body_end >= 4
+                && start_height == 0
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+            {
+                if let Some(cmp) = compare_fusion_kind(&group[body_end - 4].kind) {
+                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 4));
+                }
+            }
+            if body_end >= 4
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+                && produces_bool(&group[body_end - 4].kind)
+            {
+                return Some((TailFusion::XorOneIfIdentity, body_end - 3));
+            }
+            if body_end >= 1 && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz) {
+                return Some((TailFusion::EqzIf, body_end - 1));
+            }
+            if start_height == 0 && body_end >= 1 {
+                if let Some(cmp) = compare_fusion_kind(&group[body_end - 1].kind) {
+                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 1));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    None
+}
+
+fn emit_compare_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
+    let lhs = e.resolve_tos_reg(2);
+    let rhs = e.resolve_tos_reg(1);
+
+    match cmp {
+        CompareFusionKind::I32(_) => {
+            e.emit_raw(arm64_enc::subs_reg_32(Reg::XZR, lhs, rhs));
+        }
+        CompareFusionKind::I64(_) => {
+            e.emit_raw(arm64_enc::subs_reg_64(Reg::XZR, lhs, rhs));
+        }
+        CompareFusionKind::F32(_) => {
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(0, lhs));
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(1, rhs));
+            e.emit_raw(arm64_enc::fcmp_32(0, 1));
+        }
+        CompareFusionKind::F64(_) => {
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(0, lhs));
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(1, rhs));
+            e.emit_raw(arm64_enc::fcmp_64(0, 1));
+        }
+    }
+}
+
+fn emit_compare_zero_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
+    let lhs = e.resolve_tos_reg(1);
+
+    match cmp {
+        CompareFusionKind::F32(_) => {
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(0, lhs));
+            e.emit_raw(arm64_enc::fcmp_32_zero(0));
+        }
+        CompareFusionKind::F64(_) => {
+            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(0, lhs));
+            e.emit_raw(arm64_enc::fcmp_64_zero(0));
+        }
+        CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!("zero-float compare only"),
+    }
+}
+
+fn top_i32_reg(e: &JitEmitter) -> Reg {
+    e.resolve_tos_reg(1)
+}
+
 /// Try to compile a group of IrOps into a single JIT handler.
 ///
 /// Returns `(handler, ends_with_brif, branch_alt_target)` on success.
@@ -351,15 +562,72 @@ fn try_compile_group(
 
     // Compile
     let mut e = JitEmitter::new(buf, group[0].pre_height as usize);
-    for op in group[..body_end].iter() {
+    let tail_fusion = pick_tail_fusion(group, terminator, body_end);
+    let compile_body_end = tail_fusion.map(|(_, end)| end).unwrap_or(body_end);
+
+    for op in group[..compile_body_end].iter() {
         emit_op(&mut e, op, hot_local_mask);
     }
 
-    let start = match terminator {
-        Some(GroupTerminator::Br) => e.finish_br(),
-        Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
-        Some(GroupTerminator::If) => e.finish_if(),
-        None => e.finish(),
+    let start = match tail_fusion {
+        Some((TailFusion::DirectCompareBr(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::I32(cond)
+                | CompareFusionKind::I64(cond)
+                | CompareFusionKind::F32(cond)
+                | CompareFusionKind::F64(cond) => cond,
+            };
+            emit_compare_flags(&mut e, cmp);
+            e.finish_br_if_simple_from_flags(cond)
+        }
+        Some((TailFusion::DirectCompareIf(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::I32(cond)
+                | CompareFusionKind::I64(cond)
+                | CompareFusionKind::F32(cond)
+                | CompareFusionKind::F64(cond) => cond,
+            };
+            emit_compare_flags(&mut e, cmp);
+            e.finish_if_from_flags(cond)
+        }
+        Some((TailFusion::DirectZeroCompareBr(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
+                CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!(),
+            };
+            emit_compare_zero_flags(&mut e, cmp);
+            e.finish_br_if_simple_from_flags(cond)
+        }
+        Some((TailFusion::DirectZeroCompareIf(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
+                CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!(),
+            };
+            emit_compare_zero_flags(&mut e, cmp);
+            e.finish_if_from_flags(cond)
+        }
+        Some((TailFusion::EqzBr, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_br_if_simple_from_reg(cond, true)
+        }
+        Some((TailFusion::EqzIf, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_if_from_reg(cond, true)
+        }
+        Some((TailFusion::XorOneBr, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_br_if_simple_from_reg(cond, true)
+        }
+        Some((TailFusion::XorOneIfIdentity, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_if_from_reg(cond, false)
+        }
+        None => match terminator {
+            Some(GroupTerminator::Br) => e.finish_br(),
+            Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
+            Some(GroupTerminator::If) => e.finish_if(),
+            None => e.finish(),
+        },
     };
 
     let handler: OpHandler = unsafe { buf.fn_ptr(start) };
@@ -374,7 +642,49 @@ fn emit_op(e: &mut JitEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
         "height mismatch at {:?}: emitter={}, ir={}",
         op.kind, e.height(), op.pre_height
     );
-    op_meta::emit(e, op, hot_local_mask);
+    match &op.kind {
+        IrOpKind::I32Const { .. }
+        | IrOpKind::I64Const { .. }
+        | IrOpKind::F32Const { .. }
+        | IrOpKind::F64Const { .. }
+        | IrOpKind::LocalGetHot { .. }
+        | IrOpKind::LocalGetFrame { .. }
+        | IrOpKind::LocalSetHot { .. }
+        | IrOpKind::LocalSetFrame { .. }
+        | IrOpKind::LocalTeeHot { .. }
+        | IrOpKind::LocalTeeFrame { .. }
+        | IrOpKind::Drop
+        | IrOpKind::I32Eqz
+        | IrOpKind::I64Eqz
+        | IrOpKind::F32Add
+        | IrOpKind::F32Sub
+        | IrOpKind::F32Mul
+        | IrOpKind::F32Div
+        | IrOpKind::F32Min
+        | IrOpKind::F32Max
+        | IrOpKind::F32Eq
+        | IrOpKind::F32Ne
+        | IrOpKind::F32Lt
+        | IrOpKind::F32Gt
+        | IrOpKind::F32Le
+        | IrOpKind::F32Ge
+        | IrOpKind::F64Add
+        | IrOpKind::F64Sub
+        | IrOpKind::F64Mul
+        | IrOpKind::F64Div
+        | IrOpKind::F64Min
+        | IrOpKind::F64Max
+        | IrOpKind::F64Eq
+        | IrOpKind::F64Ne
+        | IrOpKind::F64Lt
+        | IrOpKind::F64Gt
+        | IrOpKind::F64Le
+        | IrOpKind::F64Ge => op_meta::emit(e, op, hot_local_mask),
+        _ => {
+            e.materialize_aliases();
+            op_meta::emit(e, op, hot_local_mask);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1529,115 @@ mod tests {
         assert_eq!(resolved[0].alt_target, Some(OpIndex::from(3)));
         assert!(resolved[1].is_internal_only());
         assert!(resolved[2].is_internal_only());
+    }
+
+    #[test]
+    fn test_resolve_jit_with_hot_float_chain() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [false, true, false];
+
+        let ops = vec![
+            make_op(IrOpKind::LocalGetHot { reg: 0 }, 0),
+            make_op(IrOpKind::LocalGetHot { reg: 0 }, 1),
+            make_op(IrOpKind::F64Mul, 2),
+            make_op(IrOpKind::LocalTeeHot { reg: 1 }, 1),
+            make_op(IrOpKind::LocalGetHot { reg: 1 }, 1),
+            make_op(IrOpKind::F64Add, 2),
+            make_op(IrOpKind::LocalSetFrame { idx: 3 }, 1),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let handler = resolved[0].handler;
+        let term = full_set::op_term;
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(),
+            0,
+        );
+        ctx.hot.term_inst = handlers::term();
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx,
+                pc,
+                frame.as_mut_ptr(),
+                3.0f64.to_bits(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                nh,
+            );
+        }
+
+        assert_eq!(frame[3], 18.0f64.to_bits());
+    }
+
+    #[test]
+    fn test_resolve_jit_with_hot_frame_float_mix() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [false, true, false];
+
+        let ops = vec![
+            make_op(IrOpKind::LocalGetFrame { idx: 3 }, 0),
+            make_op(IrOpKind::LocalGetHot { reg: 1 }, 1),
+            make_op(IrOpKind::LocalGetFrame { idx: 4 }, 2),
+            make_op(IrOpKind::F64Sub, 3),
+            make_op(IrOpKind::F64Add, 2),
+            make_op(IrOpKind::LocalSetFrame { idx: 5 }, 1),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let handler = resolved[0].handler;
+        let term = full_set::op_term;
+        let mut insts = [
+            Instruction::new_handler_only(handler),
+            Instruction::new_handler_only(term),
+            Instruction::new_handler_only(term),
+        ];
+        let mut frame = [0u64; 32];
+        frame[3] = 5.0f64.to_bits();
+        frame[4] = 2.0f64.to_bits();
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(),
+            0,
+        );
+        ctx.hot.term_inst = handlers::term();
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx,
+                pc,
+                frame.as_mut_ptr(),
+                0,
+                3.0f64.to_bits(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                nh,
+            );
+        }
+
+        assert_eq!(frame[5], 6.0f64.to_bits());
     }
 
     #[test]

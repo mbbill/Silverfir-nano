@@ -949,6 +949,16 @@ pub fn fcmp_32(fn_: u32, fm: u32) -> u32 {
         | (fm << 16) | (0b001000 << 10) | (fn_ << 5)
 }
 
+/// FCMP Dn, #0.0
+pub fn fcmp_64_zero(fn_: u32) -> u32 {
+    0x1E60_2008 | (fn_ << 5)
+}
+
+/// FCMP Sn, #0.0
+pub fn fcmp_32_zero(fn_: u32) -> u32 {
+    0x1E20_2008 | (fn_ << 5)
+}
+
 // --- Float-to-int conversion (saturating truncate toward zero) ---
 
 pub fn fcvtzs_w_s(wd: Reg, sn: u32) -> u32 { fp_int_conv(0, 0b00, 0b11, 0b000, wd.idx(), sn) }

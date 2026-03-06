@@ -217,9 +217,32 @@ mod tests {
         initial_frame: &[u64],
         initial_memory: &[u8],
     ) -> ExecOutcome {
+        run_backend_with_hot(
+            backend_impl,
+            ir_ops,
+            locals_count,
+            frame_words,
+            observe_frame_words,
+            initial_frame,
+            initial_memory,
+            [false; 3],
+            [0; 3],
+        )
+    }
+
+    fn run_backend_with_hot(
+        backend_impl: BackendUnderTest,
+        ir_ops: &[ir::IrOp],
+        locals_count: usize,
+        frame_words: usize,
+        observe_frame_words: usize,
+        initial_frame: &[u64],
+        initial_memory: &[u8],
+        hot_mask: [bool; 3],
+        hot_values: [u64; 3],
+    ) -> ExecOutcome {
         let hot_locals = [None; HOT_LOCAL_COUNT];
         let mut stack = StackTracker::new(0, locals_count, 0, hot_locals);
-        let hot_mask = [false; 3];
 
         let mut maybe_jit_buf = None;
         let resolved = match backend_impl {
@@ -260,9 +283,9 @@ mod tests {
                 &mut ctx,
                 entry,
                 frame.as_mut_ptr(),
-                0,
-                0,
-                0,
+                hot_values[0],
+                hot_values[1],
+                hot_values[2],
                 0,
                 0,
                 0,
@@ -301,7 +324,29 @@ mod tests {
         initial_frame: &[u64],
         initial_memory: &[u8],
     ) {
-        let base = run_backend(
+        assert_base_equals_jit_with_hot(
+            ir_ops,
+            locals_count,
+            frame_words,
+            observe_frame_words,
+            initial_frame,
+            initial_memory,
+            [false; 3],
+            [0; 3],
+        );
+    }
+
+    fn assert_base_equals_jit_with_hot(
+        ir_ops: &[ir::IrOp],
+        locals_count: usize,
+        frame_words: usize,
+        observe_frame_words: usize,
+        initial_frame: &[u64],
+        initial_memory: &[u8],
+        hot_mask: [bool; 3],
+        hot_values: [u64; 3],
+    ) {
+        let base = run_backend_with_hot(
             BackendUnderTest::Base,
             ir_ops,
             locals_count,
@@ -309,8 +354,10 @@ mod tests {
             observe_frame_words,
             initial_frame,
             initial_memory,
+            hot_mask,
+            hot_values,
         );
-        let jit = run_backend(
+        let jit = run_backend_with_hot(
             BackendUnderTest::Jit,
             ir_ops,
             locals_count,
@@ -318,6 +365,8 @@ mod tests {
             observe_frame_words,
             initial_frame,
             initial_memory,
+            hot_mask,
+            hot_values,
         );
         assert_eq!(base, jit);
     }
@@ -395,6 +444,119 @@ mod tests {
     }
 
     #[test]
+    fn test_base_vs_jit_equivalent_with_f64_compare_br_if_suffix() {
+        for (lhs, rhs) in [(3.0f64, 2.0f64), (1.0f64, 2.0f64)] {
+            let mut br = make_op(ir::IrOpKind::BrIfSimple, 1, current_variant(1));
+            br.has_target = true;
+            br.alt_target = Some(ir::OpIndex::from(6));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::F64Const { value: lhs.to_bits() }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::F64Const { value: rhs.to_bits() }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::F64Gt, 2, current_variant(2)),
+                br,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_f64_zero_compare_br_if_suffix() {
+        for lhs in [-1.0f64, 1.0f64] {
+            let mut br = make_op(ir::IrOpKind::BrIfSimple, 1, current_variant(1));
+            br.has_target = true;
+            br.alt_target = Some(ir::OpIndex::from(6));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::F64Const { value: lhs.to_bits() }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::F64Const { value: 0 }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::F64Gt, 2, current_variant(2)),
+                br,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_bool_xor_eqz_if_suffix() {
+        for (lhs, rhs) in [(3.0f64, 2.0f64), (1.0f64, 2.0f64)] {
+            let mut if_op = make_op(ir::IrOpKind::If, 1, current_variant(1));
+            if_op.has_target = true;
+            if_op.alt_target = Some(ir::OpIndex::from(9));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::F64Const { value: lhs.to_bits() }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::F64Const { value: rhs.to_bits() }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::F64Gt, 2, current_variant(2)),
+                make_op(ir::IrOpKind::I32Const { value: 1 }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::I32Xor, 2, current_variant(2)),
+                make_op(ir::IrOpKind::I32Eqz, 1, current_variant(1)),
+                if_op,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_f64_zero_compare_if_suffix() {
+        for lhs in [-1.0f64, 1.0f64] {
+            let mut if_op = make_op(ir::IrOpKind::If, 1, current_variant(1));
+            if_op.has_target = true;
+            if_op.alt_target = Some(ir::OpIndex::from(9));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::F64Const { value: lhs.to_bits() }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::F64Const { value: 0 }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::F64Gt, 2, current_variant(2)),
+                make_op(ir::IrOpKind::I32Const { value: 1 }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::I32Xor, 2, current_variant(2)),
+                make_op(ir::IrOpKind::I32Eqz, 1, current_variant(1)),
+                if_op,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_bool_xor_br_if_suffix() {
+        for (lhs, rhs) in [(3u32, 3u32), (3u32, 4u32)] {
+            let mut br = make_op(ir::IrOpKind::BrIfSimple, 1, current_variant(1));
+            br.has_target = true;
+            br.alt_target = Some(ir::OpIndex::from(8));
+
+            let ops = vec![
+                make_op(ir::IrOpKind::I32Const { value: lhs }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::I32Const { value: rhs }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::I32Eq, 2, current_variant(2)),
+                make_op(ir::IrOpKind::I32Const { value: 1 }, 1, post_push_variant(1)),
+                make_op(ir::IrOpKind::I32Xor, 2, current_variant(2)),
+                br,
+                make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+                make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+                make_op(ir::IrOpKind::Nop, 0, 0),
+            ];
+
+            assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+        }
+    }
+
+    #[test]
     fn test_base_vs_jit_equivalent_with_br_terminator_no_fixup() {
         let mut br = make_op(
             ir::IrOpKind::Br {
@@ -447,5 +609,44 @@ mod tests {
         ];
 
         assert_base_equals_jit(&ops, 2, 8, 2, &[0, 0], &[]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_hot_local_alias_chain() {
+        let hot = 3.0f64.to_bits();
+        let ops = vec![
+            make_op(ir::IrOpKind::LocalGetHot { reg: 0 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalGetHot { reg: 0 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::F64Mul, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalTeeHot { reg: 1 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalGetHot { reg: 1 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::F64Add, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 3 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit_with_hot(&ops, 4, 8, 4, &[0, 0, 0, 0], &[], [false, true, false], [hot, 0, 0]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_hot_and_frame_float_mix() {
+        let ops = vec![
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 3 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalGetHot { reg: 1 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 4 }, 2, post_push_variant(2)),
+            make_op(ir::IrOpKind::F64Sub, 3, current_variant(3)),
+            make_op(ir::IrOpKind::F64Add, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 5 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit_with_hot(
+            &ops,
+            6,
+            8,
+            6,
+            &[0, 0, 0, 5.0f64.to_bits(), 2.0f64.to_bits(), 0],
+            &[],
+            [false, true, false],
+            [0, 3.0f64.to_bits(), 0],
+        );
     }
 }

@@ -33,6 +33,11 @@ pub fn tos_reg(d: u8, pos: u8) -> Reg {
 pub struct JitEmitter<'a> {
     buf: &'a mut CodeBuffer,
     height: usize,
+    /// Optional non-canonical source register for each live TOS slot.
+    ///
+    /// Index 0 is the current top of stack, index 1 is the next value down, etc.
+    /// `None` means the slot already lives in its canonical TOS register.
+    tos_aliases: [Option<Reg>; 4],
     /// Byte offset where this group's code starts.
     pub start_offset: usize,
     /// Byte offsets of B.HI instructions to patch to the OOB trap stub.
@@ -42,15 +47,77 @@ pub struct JitEmitter<'a> {
 impl<'a> JitEmitter<'a> {
     pub fn new(buf: &'a mut CodeBuffer, initial_height: usize) -> Self {
         let start_offset = buf.len();
-        Self { buf, height: initial_height, start_offset, trap_patches: Vec::new() }
+        Self {
+            buf,
+            height: initial_height,
+            tos_aliases: [None; 4],
+            start_offset,
+            trap_patches: Vec::new(),
+        }
     }
 
     pub fn height(&self) -> usize { self.height }
 
     fn dv(&self) -> u8 { depth_variant(self.height) }
 
+    fn shift_aliases_for_push(&mut self) {
+        self.tos_aliases[3] = self.tos_aliases[2];
+        self.tos_aliases[2] = self.tos_aliases[1];
+        self.tos_aliases[1] = self.tos_aliases[0];
+        self.tos_aliases[0] = None;
+    }
+
+    fn shift_aliases_for_pop(&mut self) {
+        self.tos_aliases[0] = self.tos_aliases[1];
+        self.tos_aliases[1] = self.tos_aliases[2];
+        self.tos_aliases[2] = self.tos_aliases[3];
+        self.tos_aliases[3] = None;
+    }
+
+    fn pop2_push_materialized(&mut self) {
+        self.tos_aliases[0] = None;
+        self.tos_aliases[1] = self.tos_aliases[2];
+        self.tos_aliases[2] = self.tos_aliases[3];
+        self.tos_aliases[3] = None;
+        self.height -= 1;
+    }
+
+    fn push_materialized_slot(&mut self) {
+        self.height += 1;
+        self.shift_aliases_for_push();
+    }
+
+    fn push_alias_slot(&mut self, reg: Reg) {
+        self.height += 1;
+        self.shift_aliases_for_push();
+        self.tos_aliases[0] = Some(reg);
+    }
+
+    pub fn resolve_tos_reg(&self, pos: u8) -> Reg {
+        self.tos_aliases[(pos - 1) as usize].unwrap_or_else(|| tos_reg(self.dv(), pos))
+    }
+
+    pub fn materialize_aliases(&mut self) {
+        self.materialize_aliases_from(1);
+    }
+
+    fn materialize_aliases_from(&mut self, start_pos: usize) {
+        let live = self.height.min(self.tos_aliases.len());
+        for pos in start_pos..=live {
+            let Some(src) = self.tos_aliases[pos - 1] else {
+                continue;
+            };
+            let dst = tos_reg(self.dv(), pos as u8);
+            if src != dst {
+                self.buf.emit(arm64_enc::mov_reg_64(dst, src));
+            }
+            self.tos_aliases[pos - 1] = None;
+        }
+    }
+
     /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
     pub fn finish(mut self) -> usize {
+        self.materialize_aliases();
         emit::emit_dispatch_linear(self.buf);
         self.emit_trap_stub_if_needed();
         self.start_offset
@@ -60,6 +127,7 @@ impl<'a> JitEmitter<'a> {
     ///
     /// Branches to the target in `pc->imm0` via nonlinear dispatch.
     pub fn finish_br(mut self) -> usize {
+        self.materialize_aliases();
         emit::emit_dispatch_nonlinear(self.buf);
         self.emit_trap_stub_if_needed();
         self.start_offset
@@ -80,8 +148,8 @@ impl<'a> JitEmitter<'a> {
     /// <linear dispatch: 4>      ; fallthrough path
     /// ```
     pub fn finish_br_if_simple(mut self) -> usize {
-        let d = depth_variant(self.height);
-        let cond = tos_reg(d, 1);
+        let cond = self.resolve_tos_reg(1);
+        self.materialize_aliases_from(2);
 
         // CBZ w_cond, +6: if cond == 0, skip 5 taken-path instructions
         self.buf.emit(arm64_enc::cbz_32(cond, 6));
@@ -102,8 +170,8 @@ impl<'a> JitEmitter<'a> {
     /// in `pc->imm0` via nonlinear dispatch. If nonzero, falls through linearly
     /// to `pc + 1` (the then-path).
     pub fn finish_if(mut self) -> usize {
-        let d = depth_variant(self.height);
-        let cond = tos_reg(d, 1);
+        let cond = self.resolve_tos_reg(1);
+        self.materialize_aliases_from(2);
 
         // CBNZ w_cond, +6: cond != 0 skips the 5 taken-path instructions
         // and lands at the linear fallthrough dispatch.
@@ -115,6 +183,68 @@ impl<'a> JitEmitter<'a> {
         // Condition != 0: enter the then-path at pc+1.
         emit::emit_dispatch_linear(self.buf);
 
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
+    /// Finish with a conditional dispatch using an existing integer condition register.
+    ///
+    /// If `branch_on_zero` is true, zero branches to the nonlinear target in `pc->imm0`.
+    /// Otherwise, nonzero branches to the nonlinear target.
+    pub fn finish_br_if_simple_from_reg(mut self, cond: Reg, branch_on_zero: bool) -> usize {
+        self.materialize_aliases_from(2);
+        let branch = if branch_on_zero {
+            arm64_enc::cbz_32(cond, 5)
+        } else {
+            arm64_enc::cbnz_32(cond, 5)
+        };
+        self.buf.emit(branch);
+        emit::emit_dispatch_linear(self.buf);
+        emit::emit_dispatch_nonlinear(self.buf);
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
+    /// Finish an `if` using an existing integer condition register.
+    ///
+    /// If `linear_on_zero` is true, zero enters the linear then-path. Otherwise
+    /// nonzero enters the linear then-path.
+    pub fn finish_if_from_reg(mut self, cond: Reg, linear_on_zero: bool) -> usize {
+        self.materialize_aliases_from(2);
+        let branch = if linear_on_zero {
+            arm64_enc::cbz_32(cond, 6)
+        } else {
+            arm64_enc::cbnz_32(cond, 6)
+        };
+        self.buf.emit(branch);
+        emit::emit_dispatch_nonlinear(self.buf);
+        emit::emit_dispatch_linear(self.buf);
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
+    /// Finish `br_if_simple` when flags are already set.
+    ///
+    /// `taken_cond` is the condition under which control jumps to the nonlinear
+    /// branch target in `pc->imm0`.
+    pub fn finish_br_if_simple_from_flags(mut self, taken_cond: Cond) -> usize {
+        self.materialize_aliases_from(3);
+        self.buf.emit(arm64_enc::b_cond(taken_cond, 5));
+        emit::emit_dispatch_linear(self.buf);
+        emit::emit_dispatch_nonlinear(self.buf);
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
+    /// Finish `if` when flags are already set.
+    ///
+    /// `linear_cond` is the condition under which control enters the linear
+    /// then-path at `pc + 1`.
+    pub fn finish_if_from_flags(mut self, linear_cond: Cond) -> usize {
+        self.materialize_aliases_from(3);
+        self.buf.emit(arm64_enc::b_cond(linear_cond, 6));
+        emit::emit_dispatch_nonlinear(self.buf);
+        emit::emit_dispatch_linear(self.buf);
         self.emit_trap_stub_if_needed();
         self.start_offset
     }
@@ -262,9 +392,11 @@ impl<'a> JitEmitter<'a> {
     // ==================== Unary i32 ops (pop1_push1) ====================
 
     pub fn i32_eqz(&mut self) {
-        let src = tos_reg(self.dv(), 1);
+        let src = self.resolve_tos_reg(1);
+        let dst = tos_reg(self.dv(), 1);
         self.buf.emit(arm64_enc::cmp_imm_32(src, 0));
-        self.buf.emit(arm64_enc::cset_32(src, Cond::EQ));
+        self.buf.emit(arm64_enc::cset_32(dst, Cond::EQ));
+        self.tos_aliases[0] = None;
         // height unchanged
     }
 
@@ -282,9 +414,11 @@ impl<'a> JitEmitter<'a> {
     // ==================== Unary i64 ops (pop1_push1) ====================
 
     pub fn i64_eqz(&mut self) {
-        let src = tos_reg(self.dv(), 1);
+        let src = self.resolve_tos_reg(1);
+        let dst = tos_reg(self.dv(), 1);
         self.buf.emit(arm64_enc::cmp_imm_64(src, 0));
-        self.buf.emit(arm64_enc::cset_64(src, Cond::EQ));
+        self.buf.emit(arm64_enc::cset_64(dst, Cond::EQ));
+        self.tos_aliases[0] = None;
     }
 
     pub fn i64_clz(&mut self) {
@@ -301,13 +435,13 @@ impl<'a> JitEmitter<'a> {
     // ==================== Constants (push1) ====================
 
     pub fn i32_const(&mut self, value: u32) {
-        self.height += 1;
+        self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         materialize_u32(self.buf, dst, value);
     }
 
     pub fn i64_const(&mut self, value: u64) {
-        self.height += 1;
+        self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         materialize_u64(self.buf, dst, value);
     }
@@ -315,41 +449,45 @@ impl<'a> JitEmitter<'a> {
     // ==================== Hot locals (push1 / pop1) ====================
 
     pub fn local_get_ln(&mut self, n: u8) {
-        self.height += 1;
-        let dst = tos_reg(self.dv(), 1);
-        self.buf.emit(arm64_enc::mov_reg_64(dst, LOCAL_REGS[n as usize]));
+        self.push_alias_slot(LOCAL_REGS[n as usize]);
     }
 
     pub fn local_set_ln(&mut self, n: u8) {
-        let src = tos_reg(self.dv(), 1);
+        let src = self.resolve_tos_reg(1);
         self.buf.emit(arm64_enc::mov_reg_64(LOCAL_REGS[n as usize], src));
         self.height -= 1;
+        self.shift_aliases_for_pop();
     }
 
     pub fn local_tee_ln(&mut self, n: u8) {
-        let src = tos_reg(self.dv(), 1);
-        self.buf.emit(arm64_enc::mov_reg_64(LOCAL_REGS[n as usize], src));
+        let dst = LOCAL_REGS[n as usize];
+        let src = self.resolve_tos_reg(1);
+        if src != dst {
+            self.buf.emit(arm64_enc::mov_reg_64(dst, src));
+        }
+        self.tos_aliases[0] = Some(dst);
         // height unchanged (tee keeps value on stack)
     }
 
     // ==================== Non-hot locals (push1 / pop1) ====================
 
     pub fn local_get(&mut self, idx: u16) {
-        self.height += 1;
+        self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         let scaled = idx as u32; // ldr_64 imm12 is pre-scaled by 8
         self.buf.emit(arm64_enc::ldr_64(dst, Reg::FP, scaled));
     }
 
     pub fn local_set(&mut self, idx: u16) {
-        let src = tos_reg(self.dv(), 1);
+        let src = self.resolve_tos_reg(1);
         let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
         self.height -= 1;
+        self.shift_aliases_for_pop();
     }
 
     pub fn local_tee(&mut self, idx: u16) {
-        let src = tos_reg(self.dv(), 1);
+        let src = self.resolve_tos_reg(1);
         let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
         // height unchanged (tee keeps value on stack)
@@ -383,6 +521,7 @@ impl<'a> JitEmitter<'a> {
 
     pub fn drop_val(&mut self) {
         self.height -= 1;
+        self.shift_aliases_for_pop();
         // No code emitted — value is simply forgotten
     }
 
@@ -598,13 +737,13 @@ impl<'a> JitEmitter<'a> {
     // ==================== Float constants (push1) ====================
 
     pub fn f32_const(&mut self, bits: u32) {
-        self.height += 1;
+        self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         materialize_u32(self.buf, dst, bits);
     }
 
     pub fn f64_const(&mut self, bits: u64) {
-        self.height += 1;
+        self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         materialize_u64(self.buf, dst, bits);
     }
@@ -672,14 +811,14 @@ impl<'a> JitEmitter<'a> {
     const FP1: u32 = 1;
 
     fn emit_f64_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
-        let d = self.dv();
-        let lhs = tos_reg(d, 2);
-        let rhs = tos_reg(d, 1);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.resolve_tos_reg(1);
+        let dst = tos_reg(depth_variant(self.height - 1), 1);
         self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
         self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
         self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(lhs, Self::FP0));
-        self.height -= 1;
+        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(dst, Self::FP0));
+        self.pop2_push_materialized();
     }
 
     pub fn f64_add(&mut self) { self.emit_f64_binop(arm64_enc::fadd_64); }
@@ -692,14 +831,14 @@ impl<'a> JitEmitter<'a> {
     // ==================== f32 binary ops (pop2_push1) ====================
 
     fn emit_f32_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
-        let d = self.dv();
-        let lhs = tos_reg(d, 2);
-        let rhs = tos_reg(d, 1);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.resolve_tos_reg(1);
+        let dst = tos_reg(depth_variant(self.height - 1), 1);
         self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
         self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
         self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(lhs, Self::FP0));
-        self.height -= 1;
+        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(dst, Self::FP0));
+        self.pop2_push_materialized();
     }
 
     pub fn f32_add(&mut self) { self.emit_f32_binop(arm64_enc::fadd_32); }
@@ -713,14 +852,14 @@ impl<'a> JitEmitter<'a> {
     // NaN-aware: use MI/LS instead of LT/LE to get false for unordered
 
     fn emit_f64_cmp(&mut self, cond: Cond) {
-        let d = self.dv();
-        let lhs = tos_reg(d, 2);
-        let rhs = tos_reg(d, 1);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.resolve_tos_reg(1);
+        let dst = tos_reg(depth_variant(self.height - 1), 1);
         self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
         self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
         self.buf.emit(arm64_enc::fcmp_64(Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::cset_32(lhs, cond));
-        self.height -= 1;
+        self.buf.emit(arm64_enc::cset_32(dst, cond));
+        self.pop2_push_materialized();
     }
 
     pub fn f64_eq(&mut self) { self.emit_f64_cmp(Cond::EQ); }
@@ -733,14 +872,14 @@ impl<'a> JitEmitter<'a> {
     // ==================== f32 comparisons (pop2_push1) ====================
 
     fn emit_f32_cmp(&mut self, cond: Cond) {
-        let d = self.dv();
-        let lhs = tos_reg(d, 2);
-        let rhs = tos_reg(d, 1);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.resolve_tos_reg(1);
+        let dst = tos_reg(depth_variant(self.height - 1), 1);
         self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
         self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
         self.buf.emit(arm64_enc::fcmp_32(Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::cset_32(lhs, cond));
-        self.height -= 1;
+        self.buf.emit(arm64_enc::cset_32(dst, cond));
+        self.pop2_push_materialized();
     }
 
     pub fn f32_eq(&mut self) { self.emit_f32_cmp(Cond::EQ); }
@@ -983,6 +1122,7 @@ mod tests {
         setup_fn(&mut emitter);
 
         // Store TOS top to fp[0] for verification
+        emitter.materialize_aliases();
         let result_reg = tos_reg(emitter.dv(), 1);
         emitter.emit_raw(arm64_enc::str_64(result_reg, Reg::FP, 0));
 
@@ -1040,6 +1180,7 @@ mod tests {
         setup_fn(&mut emitter);
 
         // Store the local register to fp[0] for verification
+        emitter.materialize_aliases();
         emitter.emit_raw(arm64_enc::str_64(local_reg, Reg::FP, 0));
 
         let start = emitter.finish();
@@ -1736,6 +1877,74 @@ mod tests {
             0, 0, 0, 0, 0, 0, 10, 0,
         );
         assert_eq!(result, 52);
+    }
+
+    #[test]
+    fn test_group_hot_f64_mul() {
+        let result = run_jit_test(
+            |e| {
+                e.local_get_ln(0);
+                e.local_get_ln(0);
+                e.f64_mul();
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            3.0f64.to_bits(),
+            0,
+            0,
+        );
+        assert_eq!(result, 9.0f64.to_bits());
+    }
+
+    #[test]
+    fn test_group_hot_f64_tee_chain() {
+        let result = run_jit_test(
+            |e| {
+                e.local_get_ln(0);
+                e.local_get_ln(0);
+                e.f64_mul();
+                e.local_tee_ln(1);
+                e.local_get_ln(1);
+                e.f64_add();
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            3.0f64.to_bits(),
+            0,
+            0,
+        );
+        assert_eq!(result, 18.0f64.to_bits());
+    }
+
+    #[test]
+    fn test_group_hot_f64_tee_store_chain() {
+        let result = run_jit_test(
+            |e| {
+                e.local_get_ln(0);
+                e.local_get_ln(0);
+                e.f64_mul();
+                e.local_tee_ln(1);
+                e.local_get_ln(1);
+                e.f64_add();
+                e.local_set(1);
+                e.local_get(1);
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            3.0f64.to_bits(),
+            0,
+            0,
+        );
+        assert_eq!(result, 18.0f64.to_bits());
     }
 
     #[test]
