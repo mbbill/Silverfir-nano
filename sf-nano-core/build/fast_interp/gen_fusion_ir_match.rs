@@ -36,7 +36,7 @@ pub fn generate_empty() -> String {
     code.push_str("// Auto-generated — no fused patterns\n\n");
     code.push_str("// All imports provided by the including module.\n\n");
     code.push_str("#[allow(unused)]\n");
-    code.push_str("pub fn try_fuse(_ir: &[IrOp], _pos: usize) -> Option<(usize, Handler, IrOpKind, Option<usize>, bool)> {\n");
+    code.push_str("pub fn try_fuse(_ir: &[IrOp], _pos: usize) -> Option<(usize, Handler, IrOpKind, Option<OpIndex>, bool)> {\n");
     code.push_str("    None\n");
     code.push_str("}\n");
     code
@@ -62,7 +62,7 @@ fn generate_try_fuse_one(code: &mut String, f: &FusedHandler) {
 
     code.push_str(&format!("/// Pattern: {}\n", f.pattern.join(" → ")));
     code.push_str(&format!(
-        "#[inline]\nfn try_fuse_{}(ir: &[IrOp], pos: usize) -> Option<(usize, Handler, IrOpKind, Option<usize>, bool)> {{\n",
+        "#[inline]\nfn try_fuse_{}(ir: &[IrOp], pos: usize) -> Option<(usize, Handler, IrOpKind, Option<OpIndex>, bool)> {{\n",
         f.op
     ));
 
@@ -206,7 +206,7 @@ fn generate_dispatcher(code: &mut String, fused: &[FusedHandler]) {
         "/// Returns `(len, handler, kind, alt_target, has_target)` on match.\n",
     );
     code.push_str("#[allow(unused_variables)]\n");
-    code.push_str("pub fn try_fuse(ir: &[IrOp], pos: usize) -> Option<(usize, Handler, IrOpKind, Option<usize>, bool)> {\n");
+    code.push_str("pub fn try_fuse(ir: &[IrOp], pos: usize) -> Option<(usize, Handler, IrOpKind, Option<OpIndex>, bool)> {\n");
     code.push_str("    match &ir[pos].kind {\n");
 
     for (disc, group) in &by_first {
