@@ -1,7 +1,7 @@
 //! Modular IR builder for the fast interpreter.
 //!
 //! Pipeline:
-//!   Wasm bytecode → ir_lower → Vec<IrOp> → backend (JIT or fusion) → Vec<ResolvedInst> → finalizer → Box<[Instruction]>
+//!   Wasm bytecode → ir_lower → Vec<IrOp> → selected backend → Vec<ResolvedInst> → finalizer → Box<[Instruction]>
 //!
 //! Modules:
 //! - `context`: Function metadata and type resolution
@@ -27,17 +27,49 @@ pub use context::CompileContext;
 pub use stack::{BlockKind, ControlFrame, StackTracker, HOT_LOCAL_COUNT};
 
 use crate::{
+    error::WasmError,
     module::entities::FunctionSpec,
     vm::{
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
         store::Store,
     },
-    error::WasmError,
 };
 
-use alloc::rc::Rc;
+use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
+use super::{BackendKind, BackendMode};
+
+#[cfg(feature = "micro-jit")]
+fn try_resolve_jit_backend(
+    ir_ops: &[ir::IrOp],
+    module: &ModuleInst,
+    hot_mask: [bool; 3],
+) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+    use super::jit::group;
+
+    let mut buf = module.jit_code_buffer()?;
+    Ok(group::resolve_jit(ir_ops, &mut buf, hot_mask))
+}
+
+#[cfg(not(feature = "micro-jit"))]
+fn try_resolve_jit_backend(
+    _ir_ops: &[ir::IrOp],
+    _module: &ModuleInst,
+    _hot_mask: [bool; 3],
+) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+    Err("micro-jit backend not compiled in")
+}
+
+#[cfg(feature = "fusion")]
+fn resolve_fusion_backend(ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+    Ok(super::fusion::resolve::resolve_fusion(ir_ops))
+}
+
+#[cfg(not(feature = "fusion"))]
+fn resolve_fusion_backend(_ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+    Err("fusion backend not compiled in")
+}
 
 /// Build fast IR via the unified IR pipeline.
 ///
@@ -69,32 +101,34 @@ pub fn build_for_function(
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_ir(func_idx, &ir_ops, hot_locals);
 
-    // Backend: resolve IR to handlers
-    #[cfg(feature = "micro-jit")]
-    let resolved = {
-        use super::jit::group;
+    let hot_mask = [
+        hot_locals[0].is_some(),
+        hot_locals[1].is_some(),
+        hot_locals[2].is_some(),
+    ];
 
-        let hot_mask = [
-            hot_locals[0].is_some(),
-            hot_locals[1].is_some(),
-            hot_locals[2].is_some(),
-        ];
-
-        match module.jit_code_buffer() {
-            Ok(mut buf) => group::resolve_jit(&ir_ops, &mut buf, hot_mask),
-            Err(_) => backend::resolve_base(&ir_ops),
-        }
+    // Backend: resolve IR to handlers.
+    let resolved = match super::backend_mode() {
+        BackendMode::Base => backend::resolve_base(&ir_ops),
+        BackendMode::Fusion => resolve_fusion_backend(&ir_ops)
+            .map_err(|err| WasmError::invalid(alloc::format!("requested backend fusion is unavailable: {}", err)))?,
+        BackendMode::Jit => try_resolve_jit_backend(&ir_ops, module, hot_mask)
+            .map_err(|err| WasmError::invalid(alloc::format!("requested backend jit is unavailable: {}", err)))?,
+        BackendMode::Auto => match super::active_backend().unwrap_or(BackendKind::Base) {
+            BackendKind::Jit => match try_resolve_jit_backend(&ir_ops, module, hot_mask) {
+                Ok(resolved) => resolved,
+                Err(_) => match resolve_fusion_backend(&ir_ops) {
+                    Ok(resolved) => resolved,
+                    Err(_) => backend::resolve_base(&ir_ops),
+                },
+            },
+            BackendKind::Fusion => match resolve_fusion_backend(&ir_ops) {
+                Ok(resolved) => resolved,
+                Err(_) => backend::resolve_base(&ir_ops),
+            },
+            BackendKind::Base => backend::resolve_base(&ir_ops),
+        },
     };
-
-    #[cfg(all(not(feature = "micro-jit"), feature = "fusion"))]
-    let resolved = if super::is_fusion_disabled() {
-        backend::resolve_base(&ir_ops)
-    } else {
-        super::fusion::resolve::resolve_fusion(&ir_ops)
-    };
-
-    #[cfg(all(not(feature = "micro-jit"), not(feature = "fusion")))]
-    let resolved = backend::resolve_base(&ir_ops);
 
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_resolved(func_idx, &resolved, &ir_ops);

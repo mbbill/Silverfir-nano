@@ -1,6 +1,7 @@
 #[cfg(feature = "profile")]
 mod discover_fusion;
 
+use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
 #[cfg(feature = "micro-jit")]
@@ -16,7 +17,7 @@ fn main() {
         eprintln!("Silverfir-nano — WebAssembly interpreter");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("  sf-nano-cli <wasm-file> [args...]");
+        eprintln!("  sf-nano-cli [--backend <auto|jit|fusion|base>] [--dir <path>] <wasm-file> [args...]");
         #[cfg(feature = "profile")]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -36,17 +37,40 @@ fn main() {
         return;
     }
 
-    // Parse --dir option if present
+    // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
+    let mut backend_mode = BackendMode::Auto;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
         while i < args.len() {
-            if args[i] == "--dir" {
+            if args[i] == "--" {
+                remaining_args.extend(args[i + 1..].iter().cloned());
+                break;
+            } else if args[i] == "--dir" {
                 i += 1;
                 if i < args.len() {
                     dir = Some(PathBuf::from(&args[i]));
                 }
+            } else if args[i] == "--backend" {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --backend requires one of: auto, jit, fusion, base");
+                    process::exit(1);
+                }
+                backend_mode = match args[i].as_str() {
+                    "auto" => BackendMode::Auto,
+                    "jit" => BackendMode::Jit,
+                    "fusion" => BackendMode::Fusion,
+                    "base" => BackendMode::Base,
+                    other => {
+                        eprintln!(
+                            "Error: invalid backend '{}'; expected one of: auto, jit, fusion, base",
+                            other
+                        );
+                        process::exit(1);
+                    }
+                };
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -56,6 +80,16 @@ fn main() {
 
     if remaining_args.is_empty() {
         eprintln!("Error: no wasm file specified");
+        process::exit(1);
+    }
+
+    set_backend_mode(backend_mode);
+    if let Err(err) = active_backend() {
+        eprintln!(
+            "Error: backend '{}' is unavailable in this build: {}",
+            backend_mode.as_str(),
+            err,
+        );
         process::exit(1);
     }
 
