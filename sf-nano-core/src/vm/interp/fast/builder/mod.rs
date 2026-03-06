@@ -143,3 +143,227 @@ pub fn build_for_function(
     function.set_fast_code(fast_code, fast_cache);
     Ok(entry)
 }
+
+#[cfg(all(test, feature = "micro-jit"))]
+mod tests {
+    use super::*;
+    use alloc::{
+        string::{String, ToString},
+        vec,
+        vec::Vec,
+    };
+    use crate::vm::interp::fast::{
+        context::Context,
+        handlers::{self, run_trampoline, NextHandler},
+        instruction::Instruction,
+        jit::{code_buf::CodeBuffer, group},
+        TOS_REGISTER_COUNT,
+    };
+
+    #[derive(Clone, Copy)]
+    enum BackendUnderTest {
+        Base,
+        Jit,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ExecOutcome {
+        frame: Vec<u64>,
+        memory: Vec<u8>,
+        trap: Option<String>,
+    }
+
+    fn depth_variant_for(depth: u16) -> u8 {
+        if depth == 0 {
+            1
+        } else {
+            ((((depth - 1) as usize) % TOS_REGISTER_COUNT) + 1) as u8
+        }
+    }
+
+    fn post_push_variant(pre_height: u16) -> u8 {
+        depth_variant_for(pre_height + 1)
+    }
+
+    fn current_variant(pre_height: u16) -> u8 {
+        depth_variant_for(pre_height)
+    }
+
+    fn make_op(kind: ir::IrOpKind, pre_height: u16, variant: u8) -> ir::IrOp {
+        ir::IrOp {
+            kind,
+            variant,
+            pre_height,
+            fallthrough: None,
+            alt_target: None,
+            has_target: false,
+        }
+    }
+
+    fn run_backend(
+        backend_impl: BackendUnderTest,
+        ir_ops: &[ir::IrOp],
+        locals_count: usize,
+        frame_words: usize,
+        observe_frame_words: usize,
+        initial_frame: &[u64],
+        initial_memory: &[u8],
+    ) -> ExecOutcome {
+        let hot_locals = [None; HOT_LOCAL_COUNT];
+        let mut stack = StackTracker::new(0, locals_count, 0, hot_locals);
+        let hot_mask = [false; 3];
+
+        let mut maybe_jit_buf = None;
+        let resolved = match backend_impl {
+            BackendUnderTest::Base => backend::resolve_base(ir_ops),
+            BackendUnderTest::Jit => {
+                let mut buf = CodeBuffer::new().expect("mmap failed");
+                let resolved = group::resolve_jit(ir_ops, &mut buf, hot_mask);
+                maybe_jit_buf = Some(buf);
+                resolved
+            }
+        };
+
+        let mut code = super::finalizer_ir::finalize(resolved, &mut stack);
+        let mut frame = vec![0u64; frame_words.max(initial_frame.len()).max(observe_frame_words)];
+        frame[..initial_frame.len()].copy_from_slice(initial_frame);
+
+        let mut memory = initial_memory.to_vec();
+        let mem_base = if memory.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            memory.as_mut_ptr()
+        };
+
+        let stack_end = unsafe { frame.as_mut_ptr().add(frame.len()) };
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            stack_end,
+            mem_base,
+            memory.len() as u64,
+        );
+        ctx.term_inst = handlers::term() as *mut u8;
+
+        let entry = code.as_mut_ptr();
+        unsafe {
+            let nh: NextHandler = core::mem::transmute((*entry.add(1)).handler);
+            run_trampoline(
+                &mut ctx,
+                entry,
+                frame.as_mut_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                nh,
+            );
+        }
+
+        let trap = if let Some(ref error) = ctx.error {
+            Some(error.message())
+        } else if !ctx.trap_message.is_null() {
+            Some(unsafe {
+                core::ffi::CStr::from_ptr(ctx.trap_message)
+                    .to_str()
+                    .unwrap_or("trap")
+                    .to_string()
+            })
+        } else {
+            None
+        };
+
+        drop(maybe_jit_buf);
+
+        ExecOutcome {
+            frame: frame[..observe_frame_words].to_vec(),
+            memory,
+            trap,
+        }
+    }
+
+    fn assert_base_equals_jit(
+        ir_ops: &[ir::IrOp],
+        locals_count: usize,
+        frame_words: usize,
+        observe_frame_words: usize,
+        initial_frame: &[u64],
+        initial_memory: &[u8],
+    ) {
+        let base = run_backend(
+            BackendUnderTest::Base,
+            ir_ops,
+            locals_count,
+            frame_words,
+            observe_frame_words,
+            initial_frame,
+            initial_memory,
+        );
+        let jit = run_backend(
+            BackendUnderTest::Jit,
+            ir_ops,
+            locals_count,
+            frame_words,
+            observe_frame_words,
+            initial_frame,
+            initial_memory,
+        );
+        assert_eq!(base, jit);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_spill_fill_roundtrip() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 1 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::I32Const { value: 2 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::I32Const { value: 3 }, 2, post_push_variant(2)),
+            make_op(ir::IrOpKind::I32Const { value: 4 }, 3, post_push_variant(3)),
+            make_op(ir::IrOpKind::Spill { slot: 3, count: 1 }, 4, 1),
+            make_op(ir::IrOpKind::I32Const { value: 5 }, 4, post_push_variant(4)),
+            make_op(ir::IrOpKind::I32Add, 5, current_variant(5)),
+            make_op(ir::IrOpKind::I32Add, 4, current_variant(4)),
+            make_op(ir::IrOpKind::I32Add, 3, current_variant(3)),
+            make_op(ir::IrOpKind::Fill { slot: 3, count: 1 }, 2, 1),
+            make_op(ir::IrOpKind::I32Add, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_when_branch_targets_candidate_interior() {
+        // This is the shape that would have caught the old bug: a branch targets an
+        // op inside an otherwise JIT-able window. If JIT ever swallows that target
+        // into an internal-only group interior again, base and JIT will diverge here.
+        let mut br = make_op(ir::IrOpKind::BrIfSimple, 2, current_variant(2));
+        br.has_target = true;
+        br.alt_target = Some(5);
+
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 42 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::I32Const { value: 1 }, 1, post_push_variant(1)),
+            br,
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 1 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::Drop, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 2, 8, 2, &[11, 7], &[]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_on_memory_oob_trap() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 4 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::I32Const { value: 0xDEAD_BEEF }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::I32Store { offset: 0, memidx: 0 }, 2, current_variant(2)),
+        ];
+
+        assert_base_equals_jit(&ops, 0, 8, 0, &[], &[0, 0, 0, 0]);
+    }
+}
