@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use super::super::builder::backend::{CompactionDisposition, ResolvedInst};
-use super::super::builder::ir::{IrOp, IrOpKind};
+use super::super::builder::ir::{IrOp, IrOpKind, OpIndex};
 use super::super::handlers::OpHandler as Handler;
 use super::super::handlers::full_set;
 #[allow(unused_imports)]

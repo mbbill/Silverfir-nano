@@ -3,6 +3,7 @@ use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind};
 
 const LINEAR_FINISH_BYTES: usize = 16;
 const COND_TERMINATOR_FINISH_BYTES: usize = 40;
+const BR_TERMINATOR_FINISH_BYTES: usize = 20;
 const TRAP_STUB_MAX_BYTES: usize = 32;
 
 /// Whether an IR op kind can be lowered by the ARM64 micro-JIT at all.
@@ -116,8 +117,8 @@ pub fn max_emitted_bytes(op: &IrOp) -> usize {
     }
 }
 
-pub fn estimate_group_bytes(group: &[IrOp], ends_with_conditional_terminator: bool) -> usize {
-    let body_end = if ends_with_conditional_terminator {
+pub fn estimate_group_bytes(group: &[IrOp], terminator: Option<&IrOpKind>) -> usize {
+    let body_end = if terminator.is_some() {
         group.len().saturating_sub(1)
     } else {
         group.len()
@@ -126,10 +127,10 @@ pub fn estimate_group_bytes(group: &[IrOp], ends_with_conditional_terminator: bo
         .iter()
         .map(max_emitted_bytes)
         .sum::<usize>();
-    let finish = if ends_with_conditional_terminator {
-        COND_TERMINATOR_FINISH_BYTES
-    } else {
-        LINEAR_FINISH_BYTES
+    let finish = match terminator {
+        Some(IrOpKind::BrIfSimple | IrOpKind::If) => COND_TERMINATOR_FINISH_BYTES,
+        Some(IrOpKind::Br { .. }) => BR_TERMINATOR_FINISH_BYTES,
+        _ => LINEAR_FINISH_BYTES,
     };
     let trap = if group[..body_end].iter().any(|op| uses_trap_stub(&op.kind)) {
         TRAP_STUB_MAX_BYTES

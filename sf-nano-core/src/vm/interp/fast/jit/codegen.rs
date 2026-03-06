@@ -56,6 +56,15 @@ impl<'a> JitEmitter<'a> {
         self.start_offset
     }
 
+    /// Finish with an unconditional branch dispatch.
+    ///
+    /// Branches to the target in `pc->imm0` via nonlinear dispatch.
+    pub fn finish_br(mut self) -> usize {
+        emit::emit_dispatch_nonlinear(self.buf);
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
     /// Finish with a br_if_simple conditional dispatch.
     ///
     /// Pops the condition from TOS top (i32). If nonzero, branches to target
@@ -1973,6 +1982,67 @@ mod tests {
 
         assert_eq!(frame[0], 42, "group1 stored value");
         assert_eq!(frame[1], 88, "group2 at fallthrough stored value");
+    }
+
+    #[test]
+    fn test_br_taken_multi_group() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        buf.begin_write();
+
+        let start1;
+        {
+            let mut e = JitEmitter::new(&mut buf, 0);
+            e.i32_const(42);
+            let top = tos_reg(e.dv(), 1);
+            e.emit_raw(arm64_enc::str_64(top, Reg::FP, 0));
+            start1 = e.finish_br();
+        }
+
+        let start2 = buf.len();
+        {
+            let mut e = JitEmitter::new(&mut buf, 0);
+            e.i32_const(99);
+            let top = tos_reg(e.dv(), 1);
+            e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1));
+            e.finish();
+        }
+
+        buf.finish_write(0, buf.len());
+
+        let jit1: OpHandler = unsafe { buf.fn_ptr(start1) };
+        let jit2: OpHandler = unsafe { buf.fn_ptr(start2) };
+        let term = handlers::full_set::op_term;
+
+        let mut insts = [
+            Instruction::new_handler_only(jit1),  // [0] group1 (br)
+            Instruction::new_handler_only(term),  // [1] fallthrough (not reached)
+            Instruction::new_handler_only(term),  // [2]
+            Instruction::new_handler_only(jit2),  // [3] branch target
+            Instruction::new_handler_only(term),  // [4] group2 fallthrough
+            Instruction::new_handler_only(term),  // [5] for nh
+        ];
+        insts[0].imm0 = &insts[3] as *const Instruction as u64;
+
+        let mut frame = [0u64; 32];
+        let mut ctx = Context::new(
+            core::ptr::null_mut(), core::ptr::null(),
+            frame.as_mut_ptr().wrapping_add(32),
+            core::ptr::null_mut(), 0,
+        );
+        ctx.hot.term_inst = handlers::term();
+
+        let pc = &mut insts[0] as *mut Instruction;
+        let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
+
+        unsafe {
+            run_trampoline(
+                &mut ctx, pc, frame.as_mut_ptr(),
+                0, 0, 0, 0, 0, 0, 0, nh,
+            );
+        }
+
+        assert_eq!(frame[0], 42, "group1 stored value");
+        assert_eq!(frame[1], 99, "group2 at branch target stored value");
     }
 
     #[test]

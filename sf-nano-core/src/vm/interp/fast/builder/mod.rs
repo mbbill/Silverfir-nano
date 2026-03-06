@@ -393,4 +393,59 @@ mod tests {
             assert_base_equals_jit(&ops, 1, 8, 1, &[99], &[]);
         }
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_br_terminator_no_fixup() {
+        let mut br = make_op(
+            ir::IrOpKind::Br {
+                stack_drop: 1,
+                arity: 0,
+                height: 1,
+                operand_base_offset: 0,
+            },
+            1,
+            0,
+        );
+        br.has_target = true;
+        br.alt_target = Some(ir::OpIndex::from(5));
+
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::I32Const { value: 22 }, 0, post_push_variant(0)),
+            br,
+            make_op(ir::IrOpKind::I32Const { value: 99 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 0 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 1 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 2, 8, 2, &[0, 0], &[]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_br_terminator_arity_no_fixup() {
+        let mut br = make_op(
+            ir::IrOpKind::Br {
+                stack_drop: 0,
+                arity: 1,
+                height: 1,
+                operand_base_offset: 0,
+            },
+            1,
+            0,
+        );
+        br.has_target = true;
+        br.alt_target = Some(ir::OpIndex::from(4));
+
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 22 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::Spill { slot: 0, count: 1 }, 1, current_variant(1)),
+            br,
+            make_op(ir::IrOpKind::I32Const { value: 99 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::Fill { slot: 0, count: 1 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 1 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 2, 8, 2, &[0, 0], &[]);
+    }
 }

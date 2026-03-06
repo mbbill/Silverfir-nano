@@ -37,19 +37,21 @@ fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GroupTerminator {
+    Br,
     BrIfSimple,
     If,
 }
 
-/// Check if an IrOp is a conditional group terminator (can only terminate, not start).
+/// Check if an IrOp is a group terminator (can only terminate, not start).
 fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
-    if op.pre_height < 1 {
-        return None;
-    }
-
-    match op.kind {
-        IrOpKind::BrIfSimple => Some(GroupTerminator::BrIfSimple),
-        IrOpKind::If => Some(GroupTerminator::If),
+    match &op.kind {
+        IrOpKind::Br { stack_drop, arity, .. }
+            if (*stack_drop == 0 || *arity == 0) && op.alt_target.is_some() =>
+        {
+            Some(GroupTerminator::Br)
+        }
+        IrOpKind::BrIfSimple if op.pre_height >= 1 => Some(GroupTerminator::BrIfSimple),
+        IrOpKind::If if op.pre_height >= 1 => Some(GroupTerminator::If),
         _ => None,
     }
 }
@@ -194,7 +196,7 @@ pub fn resolve_jit_with_context(
             if group_len >= 2 {
                 let estimated_bytes = op_meta::estimate_group_bytes(
                     &ir[group_start..i],
-                    group_terminator(&ir[i - 1]).is_some(),
+                    group_terminator(&ir[i - 1]).map(|_| &ir[i - 1].kind),
                 );
                 if buf.remaining() >= estimated_bytes {
                     let code_start = buf.len();
@@ -215,6 +217,15 @@ pub fn resolve_jit_with_context(
                         );
                         // JIT entry
                         match terminator {
+                            Some(GroupTerminator::Br) => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: ir[group_start + group_len - 1].kind.clone(),
+                                    alt_target: branch_target,
+                                    has_target: true,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
                             Some(GroupTerminator::BrIfSimple) => {
                                 out.push(ResolvedInst {
                                     handler,
@@ -264,7 +275,7 @@ pub fn resolve_jit_with_context(
             continue;
         }
 
-        // Lone br_if_simple or non-JIT-able op: 1:1
+        // Lone terminator or non-JIT-able op: 1:1
         out.push(ResolvedInst::from_ir(&ir[i]));
         i += 1;
     }
@@ -287,6 +298,7 @@ pub fn resolve_jit_with_context(
 
 fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> {
     match terminator {
+        Some(GroupTerminator::Br) => Some("br"),
         Some(GroupTerminator::BrIfSimple) => Some("br_if_simple"),
         Some(GroupTerminator::If) => Some("if"),
         None => None,
@@ -318,8 +330,11 @@ fn try_compile_group(
         }
         sim_height = sim_height - pops as usize + pushes as usize;
     }
-    if terminator.is_some() && sim_height < 1 {
-        return None;
+    match terminator {
+        Some(GroupTerminator::BrIfSimple | GroupTerminator::If) if sim_height < 1 => {
+            return None;
+        }
+        _ => {}
     }
 
     // Compile
@@ -329,6 +344,7 @@ fn try_compile_group(
     }
 
     let start = match terminator {
+        Some(GroupTerminator::Br) => e.finish_br(),
         Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
         Some(GroupTerminator::If) => e.finish_if(),
         None => e.finish(),
@@ -515,6 +531,101 @@ mod tests {
         assert!(resolved[1].is_internal_only());
         assert!(resolved[2].is_internal_only());
         assert!(resolved[3].is_internal_only());
+    }
+
+    #[test]
+    fn test_group_with_br_terminator() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 5 }, 0),
+            {
+                let mut op = make_op(
+                    IrOpKind::Br {
+                        stack_drop: 1,
+                        arity: 0,
+                        height: 1,
+                        operand_base_offset: 0,
+                    },
+                    1,
+                );
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(10));
+                op
+            },
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::Br { arity: 0, .. }));
+        assert!(resolved[0].has_target);
+        assert_eq!(resolved[0].alt_target, Some(OpIndex::from(10)));
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
+    }
+
+    #[test]
+    fn test_br_with_fixup_not_grouped() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 5 }, 0),
+            {
+                let mut op = make_op(
+                    IrOpKind::Br {
+                        stack_drop: 1,
+                        arity: 1,
+                        height: 1,
+                        operand_base_offset: 0,
+                    },
+                    1,
+                );
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(10));
+                op
+            },
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::I32Const { .. }));
+        assert!(matches!(resolved[1].kind, IrOpKind::Br { arity: 1, .. }));
+        assert!(!resolved[0].is_removed());
+        assert!(!resolved[1].is_removed());
+    }
+
+    #[test]
+    fn test_br_with_arity_and_no_fixup_grouped() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 5 }, 0),
+            {
+                let mut op = make_op(
+                    IrOpKind::Br {
+                        stack_drop: 0,
+                        arity: 1,
+                        height: 1,
+                        operand_base_offset: 0,
+                    },
+                    1,
+                );
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(10));
+                op
+            },
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::Br { arity: 1, stack_drop: 0, .. }));
+        assert!(resolved[0].has_target);
+        assert_eq!(resolved[0].alt_target, Some(OpIndex::from(10)));
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
     }
 
     #[test]
@@ -1109,7 +1220,7 @@ mod tests {
             make_op(IrOpKind::I32Eqz, 1),
         ];
 
-        let estimate = op_meta::estimate_group_bytes(&ops, false);
+        let estimate = op_meta::estimate_group_bytes(&ops, None);
         let before = buf.len();
         buf.begin_write();
         let compiled = try_compile_group(&ops, &mut buf, mask).expect("group should compile");
@@ -1129,7 +1240,7 @@ mod tests {
             make_op(IrOpKind::I32Eqz, 1),
         ];
 
-        let estimate = op_meta::estimate_group_bytes(&ops, false);
+        let estimate = op_meta::estimate_group_bytes(&ops, None);
         let before = buf.len();
         buf.begin_write();
         let compiled = try_compile_group(&ops, &mut buf, mask).expect("memory group should compile");
