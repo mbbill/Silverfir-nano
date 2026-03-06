@@ -19,6 +19,8 @@ fusion = []
 spectest = []
 profile = []
 micro-jit = []
+trace = []
+ir-dump = ["std"]
 tos-stats = ["std"]
 std = []
 

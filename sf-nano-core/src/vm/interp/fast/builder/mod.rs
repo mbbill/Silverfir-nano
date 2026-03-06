@@ -17,6 +17,8 @@ mod context;
 mod finalizer_ir;
 pub mod hot_local;
 pub mod ir;
+#[cfg(feature = "ir-dump")]
+mod ir_dump;
 pub mod ir_lower;
 pub mod ir_resolve;
 mod stack;
@@ -46,6 +48,7 @@ pub fn build_for_function(
     types: Option<&[Rc<FunctionType>]>,
     store: &Store,
     module: &ModuleInst,
+    func_idx: u32,
 ) -> Result<*mut Instruction, WasmError> {
     let code = function.code();
     let func_type = function.func_type();
@@ -62,6 +65,9 @@ pub fn build_for_function(
 
     // IR pipeline: lower to neutral IR
     let ir_ops = ir_lower::lower_to_ir(code, &ctx, &mut stack, hot_locals)?;
+
+    #[cfg(feature = "ir-dump")]
+    ir_dump::dump_ir(func_idx, &ir_ops, hot_locals);
 
     // Backend: resolve IR to handlers
     #[cfg(feature = "micro-jit")]
@@ -93,6 +99,9 @@ pub fn build_for_function(
 
     #[cfg(all(not(feature = "micro-jit"), not(feature = "fusion")))]
     let resolved = backend::resolve_base(&ir_ops);
+
+    #[cfg(feature = "ir-dump")]
+    ir_dump::dump_resolved(func_idx, &resolved, &ir_ops);
 
     // Finalize: Vec<ResolvedInst> → Box<[Instruction]>
     let code_box = finalizer_ir::finalize(resolved, &mut stack);

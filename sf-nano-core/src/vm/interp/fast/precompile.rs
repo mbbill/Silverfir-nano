@@ -32,7 +32,7 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
     }
 
     // Pass 1: Compile all internal functions.
-    for func_inst in module.functions.iter().filter(|f| !f.is_external()) {
+    for (i, func_inst) in module.functions.iter().enumerate().filter(|(_, f)| !f.is_external()) {
         let spec = match func_inst.spec() {
             Some(s) => s,
             None => continue,
@@ -40,7 +40,7 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
         if spec.has_fast_code() {
             continue;
         }
-        let _ = build_for_function(spec, Some(&module.types), store, module);
+        let _ = build_for_function(spec, Some(&module.types), store, module, i as u32);
     }
 
     // Pass 2: Patch call_internal → call_local for same-module calls.
