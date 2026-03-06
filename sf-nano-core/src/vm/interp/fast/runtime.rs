@@ -153,7 +153,7 @@ pub fn internal_eval(
     debug_assert!(!entry.is_null());
 
     // Cache TERM_INST pointer in context
-    ctx.term_inst = super::handlers::term() as *mut u8;
+    ctx.hot.term_inst = super::handlers::term();
 
     unsafe {
         let nh: super::handlers::NextHandler = core::mem::transmute((*entry.add(1)).handler);
@@ -161,9 +161,9 @@ pub fn internal_eval(
     }
 
     // Convert deferred C trap message to WasmError
-    if !ctx.trap_message.is_null() && ctx.error.is_none() {
+    if !ctx.hot.trap_message.is_null() && ctx.error.is_none() {
         let msg = unsafe {
-            core::ffi::CStr::from_ptr(ctx.trap_message)
+            core::ffi::CStr::from_ptr(ctx.hot.trap_message)
                 .to_str()
                 .unwrap_or("trap")
         };

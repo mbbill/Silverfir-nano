@@ -158,16 +158,16 @@ pub fn ptr_ref<'a, T>(ptr: *const T) -> &'a T {
 #[inline(always)]
 pub fn write_mem0(ctx: *mut Context, base: *mut u8, len: u64) {
     unsafe {
-        (*ctx).mem0_base = base;
-        (*ctx).mem0_size = len;
+        (*ctx).hot.mem0_base = base;
+        (*ctx).hot.mem0_size = len;
     }
 }
 
 #[inline(always)]
 pub fn heap_info(ctx: *mut Context) -> (*mut u8, usize) {
     unsafe {
-        let base = (*ctx).mem0_base;
-        let size = (*ctx).mem0_size as usize;
+        let base = (*ctx).hot.mem0_base;
+        let size = (*ctx).hot.mem0_size as usize;
         if base.is_null() || size == 0 {
             (core::ptr::null_mut(), 0)
         } else {

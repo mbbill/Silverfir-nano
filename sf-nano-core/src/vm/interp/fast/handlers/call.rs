@@ -98,17 +98,17 @@ fn enter_unified_callee(
 
     // 5. Stack overflow check (frame + 3 metadata slots)
     let new_stack_top = unsafe { callee_fp.add(frame_size + 3) };
-    if new_stack_top > unsafe { (*ctx).stack_end } {
+    if new_stack_top > unsafe { (*ctx).hot.stack_end } {
         return Err(WasmError::exhaustion("stack overflow".into()));
     }
 
     // 6. Call depth check
     {
         let ctx_ref = ctx_mut(ctx);
-        if ctx_ref.call_depth >= MAX_CALL_DEPTH {
+        if ctx_ref.hot.call_depth >= MAX_CALL_DEPTH {
             return Err(WasmError::exhaustion("call stack exhausted".into()));
         }
-        ctx_ref.call_depth += 1;
+        ctx_ref.hot.call_depth += 1;
     }
 
     // 7. Zero callee's locals

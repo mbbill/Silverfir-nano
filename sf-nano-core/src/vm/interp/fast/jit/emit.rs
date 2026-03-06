@@ -1,25 +1,12 @@
 //! JIT emission helpers.
 //!
 //! Provides the dispatch stub (universal JIT group exit sequence)
-//! and context field offset constants.
+//! and hot-context field offset constants.
 
 use super::code_buf::CodeBuffer;
 use super::reg::Reg;
 use super::arm64_enc;
-
-// ---------------------------------------------------------------------------
-// Context field offsets (must match context.rs layout)
-// ---------------------------------------------------------------------------
-
-/// Byte offsets into the Context struct, used by JIT-emitted code.
-pub mod ctx_offset {
-    pub const STACK_END: u32 = 0;
-    pub const CALL_DEPTH: u32 = 8;
-    pub const MEM0_BASE: u32 = 16;
-    pub const MEM0_SIZE: u32 = 24;
-    pub const TRAP_MESSAGE: u32 = 32;
-    pub const TERM_INST: u32 = 40;
-}
+pub use crate::vm::interp::fast::context::ctx_offset;
 
 // ---------------------------------------------------------------------------
 // Instruction layout constants
@@ -93,18 +80,18 @@ pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
 #[cfg(test)]
 mod offset_checks {
     use super::ctx_offset;
-    use crate::vm::interp::fast::context::Context;
+    use crate::vm::interp::fast::context::ContextHot;
     use crate::vm::interp::fast::instruction::Instruction;
     use super::{INST_SIZE, INST_HANDLER_OFFSET, INST_IMM0_OFFSET};
 
     #[test]
     fn verify_context_offsets() {
-        assert_eq!(core::mem::offset_of!(Context, stack_end), ctx_offset::STACK_END as usize);
-        assert_eq!(core::mem::offset_of!(Context, call_depth), ctx_offset::CALL_DEPTH as usize);
-        assert_eq!(core::mem::offset_of!(Context, mem0_base), ctx_offset::MEM0_BASE as usize);
-        assert_eq!(core::mem::offset_of!(Context, mem0_size), ctx_offset::MEM0_SIZE as usize);
-        assert_eq!(core::mem::offset_of!(Context, trap_message), ctx_offset::TRAP_MESSAGE as usize);
-        assert_eq!(core::mem::offset_of!(Context, term_inst), ctx_offset::TERM_INST as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, stack_end), ctx_offset::STACK_END as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, call_depth), ctx_offset::CALL_DEPTH as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, mem0_base), ctx_offset::MEM0_BASE as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, mem0_size), ctx_offset::MEM0_SIZE as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, trap_message), ctx_offset::TRAP_MESSAGE as usize);
+        assert_eq!(core::mem::offset_of!(ContextHot, term_inst), ctx_offset::TERM_INST as usize);
     }
 
     #[test]
@@ -172,7 +159,7 @@ mod tests {
             core::ptr::null_mut(),
             0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -218,7 +205,7 @@ mod tests {
             core::ptr::null_mut(),
             0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -290,7 +277,7 @@ mod tests {
             stack.as_mut_ptr().wrapping_add(16),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };

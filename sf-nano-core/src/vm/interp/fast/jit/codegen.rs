@@ -951,7 +951,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1006,7 +1006,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1059,7 +1059,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             mem.as_mut_ptr(), mem.len() as u64,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1108,7 +1108,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             mem.as_mut_ptr(), mem.len() as u64,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1122,7 +1122,7 @@ mod tests {
             );
         }
 
-        ctx.trap_message
+        ctx.hot.trap_message
     }
 
     // ==================== Unit tests: depth_variant / tos_reg ====================
@@ -1662,7 +1662,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1712,7 +1712,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1777,7 +1777,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };
@@ -1841,7 +1841,7 @@ mod tests {
             frame.as_mut_ptr().wrapping_add(32),
             core::ptr::null_mut(), 0,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let pc = &mut insts[0] as *mut Instruction;
         let nh: NextHandler = unsafe { core::mem::transmute(insts[1].handler) };

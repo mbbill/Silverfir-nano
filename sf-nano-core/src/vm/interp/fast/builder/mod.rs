@@ -243,7 +243,7 @@ mod tests {
             mem_base,
             memory.len() as u64,
         );
-        ctx.term_inst = handlers::term() as *mut u8;
+        ctx.hot.term_inst = handlers::term();
 
         let entry = code.as_mut_ptr();
         unsafe {
@@ -265,9 +265,9 @@ mod tests {
 
         let trap = if let Some(ref error) = ctx.error {
             Some(error.message())
-        } else if !ctx.trap_message.is_null() {
+        } else if !ctx.hot.trap_message.is_null() {
             Some(unsafe {
-                core::ffi::CStr::from_ptr(ctx.trap_message)
+                core::ffi::CStr::from_ptr(ctx.hot.trap_message)
                     .to_str()
                     .unwrap_or("trap")
                     .to_string()

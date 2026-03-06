@@ -35,6 +35,14 @@ struct CtxHot {
     struct Instruction* term_inst;  // offset 40: cached TERM_INST pointer
 };
 
+_Static_assert(offsetof(struct CtxHot, stack_end) == 0, "CtxHot.stack_end offset mismatch");
+_Static_assert(offsetof(struct CtxHot, call_depth) == 8, "CtxHot.call_depth offset mismatch");
+_Static_assert(offsetof(struct CtxHot, mem0_base) == 16, "CtxHot.mem0_base offset mismatch");
+_Static_assert(offsetof(struct CtxHot, mem0_size) == 24, "CtxHot.mem0_size offset mismatch");
+_Static_assert(offsetof(struct CtxHot, trap_message) == 32, "CtxHot.trap_message offset mismatch");
+_Static_assert(offsetof(struct CtxHot, term_inst) == 40, "CtxHot.term_inst offset mismatch");
+_Static_assert(sizeof(struct CtxHot) == 48, "CtxHot size mismatch");
+
 #define MAX_CALL_DEPTH 300
 
 // Access macros for Context fields
