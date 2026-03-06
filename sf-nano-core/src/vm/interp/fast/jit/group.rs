@@ -9,6 +9,7 @@ use super::code_buf::CodeBuffer;
 use super::codegen::JitEmitter;
 use super::debug_map;
 use super::op_meta;
+use super::samply_jitdump;
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
 use crate::vm::interp::fast::handlers::OpHandler;
@@ -205,6 +206,17 @@ pub fn resolve_jit_with_context(
                     {
                         let code_len = buf.len() - code_start;
                         debug_map::record_group(
+                            buf.base_ptr(),
+                            code_start,
+                            code_len,
+                            module_name,
+                            func_idx,
+                            group_start,
+                            &ir[group_start..i],
+                            terminator_name(terminator),
+                            branch_target,
+                        );
+                        samply_jitdump::record_group(
                             buf.base_ptr(),
                             code_start,
                             code_len,

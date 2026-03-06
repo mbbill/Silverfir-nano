@@ -11,4 +11,6 @@ pub mod codegen;
 pub mod op_meta;
 pub mod semantics;
 pub mod group;
+mod group_meta;
 mod debug_map;
+mod samply_jitdump;

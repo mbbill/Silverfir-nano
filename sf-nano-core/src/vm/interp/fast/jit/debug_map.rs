@@ -5,13 +5,10 @@
 //! start-address, end-address, module, function index, IR range,
 //! terminator, branch target, and a compact op summary.
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::{String, ToString}};
 
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex};
+use crate::vm::interp::fast::jit::group_meta::{sanitize_token, summarize_group};
 
 #[cfg(any(feature = "wasi", feature = "std", test))]
 use std::{
@@ -117,36 +114,6 @@ fn render_line(
         target,
         summarize_group(group),
     )
-}
-
-fn summarize_group(group: &[IrOp]) -> String {
-    const MAX_OPS: usize = 6;
-
-    let mut parts = Vec::new();
-    for op in group.iter().take(MAX_OPS) {
-        parts.push(kind_tag(&op.kind));
-    }
-    if group.len() > MAX_OPS {
-        parts.push(format!("plus{}", group.len() - MAX_OPS));
-    }
-    parts.join("_")
-}
-
-fn kind_tag(kind: &IrOpKind) -> String {
-    let debug = format!("{:?}", kind);
-    let end = debug
-        .find(|c: char| c == ' ' || c == '{')
-        .unwrap_or(debug.len());
-    sanitize_token(&debug[..end])
-}
-
-fn sanitize_token(raw: &str) -> String {
-    raw.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' => c,
-            _ => '_',
-        })
-        .collect()
 }
 
 #[cfg(test)]
