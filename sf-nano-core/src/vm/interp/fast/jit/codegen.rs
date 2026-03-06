@@ -330,6 +330,30 @@ impl<'a> JitEmitter<'a> {
         // No code emitted — value is simply forgotten
     }
 
+    // ==================== TOS Spill/Fill ====================
+
+    /// Spill `count` TOS registers to memory at fp[slot..slot-count+1].
+    ///
+    /// The `variant` (from the IrOp) determines which physical registers to store.
+    /// Height is unchanged (spill/fill have (0,0) stack effect in IR).
+    pub fn spill(&mut self, slot: u16, count: u8, variant: u8) {
+        for i in 0..count as u32 {
+            let reg = tos_reg(variant, (i + 1) as u8);
+            self.buf.emit(arm64_enc::str_64(reg, Reg::FP, slot as u32 - i));
+        }
+    }
+
+    /// Fill `count` TOS registers from memory at fp[slot..slot-count+1].
+    ///
+    /// The `variant` (from the IrOp) determines which physical registers to load.
+    /// Height is unchanged (spill/fill have (0,0) stack effect in IR).
+    pub fn fill(&mut self, slot: u16, count: u8, variant: u8) {
+        for i in 0..count as u32 {
+            let reg = tos_reg(variant, (i + 1) as u8);
+            self.buf.emit(arm64_enc::ldr_64(reg, Reg::FP, slot as u32 - i));
+        }
+    }
+
     // ==================== Memory bounds check (shared) ====================
 
     /// Emit bounds check prologue for a memory access.
