@@ -20,6 +20,37 @@ DEFAULT_CLI = os.path.join(REPO_ROOT, "target", "release", "sf-nano-cli")
 # Parameters are tuned so each test runs ~3-10 s on a typical machine.
 # simple: fib(20) is hardcoded, can't increase (~0.5s).
 TESTS = [
+    # --- Primary benchmarks (paper Table 8) ---
+    {
+        "name": "coremark/coremark.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "coremark"),
+        "args": ["coremark.wasm"],
+        "pattern": r"CoreMark 1\.0 :\s*(\S+)",
+        "source": "stdout",
+    },
+    {
+        "name": "sha256/sha256.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "sha256"),
+        "args": ["sha256.wasm"],
+        "pattern": r"sha256: throughput = (\S+ MB/s)",
+        "source": "stdout",
+    },
+    {
+        "name": "bzip2/bzip2.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "bzip2"),
+        "args": ["bzip2.wasm"],
+        "pattern": r"bzip2: throughput = (\S+ MB/s)",
+        "source": "stdout",
+    },
+    {
+        "name": "lz4/lz4.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "lz4"),
+        "args": ["lz4.wasm"],
+        "pattern": r"(lz4 (?:compress|decompress): throughput = \S+ MB/s)",
+        "source": "stdout",
+        "multi": True,
+    },
+    # --- Supplementary benchmarks ---
     {
         "name": "mandelbrot/mandel.wasm",
         "cwd": os.path.join(SCRIPT_DIR, "mandelbrot"),
@@ -35,20 +66,13 @@ TESTS = [
         "pattern": r"Rendering took:\s*(.+\))",
         "source": "stderr",
     },
-{
+    {
         "name": "stream/stream.wasm",
         "cwd": os.path.join(SCRIPT_DIR, "stream"),
         "args": ["stream.wasm"],
         "pattern": r"(Copy|Scale|Add|Triad):\s+(\S+)",
         "source": "stdout",
         "multi": True,
-    },
-{
-        "name": "coremark/coremark.wasm",
-        "cwd": os.path.join(SCRIPT_DIR, "coremark"),
-        "args": ["coremark.wasm"],
-        "pattern": r"CoreMark 1\.0 :\s*(\S+)",
-        "source": "stdout",
     },
     {
         "name": "lua/fib",
