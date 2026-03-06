@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use super::code_buf::CodeBuffer;
 use super::codegen::JitEmitter;
-use crate::vm::interp::fast::builder::backend::ResolvedInst;
+use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, stack_effect};
 use crate::vm::interp::fast::handlers::OpHandler;
 
@@ -279,7 +279,7 @@ pub fn resolve_jit(
                                 kind: IrOpKind::BrIfSimple,
                                 alt_target: branch_target,
                                 has_target: true,
-                                structural: false,
+                                compaction: CompactionDisposition::Keep,
                             });
                         } else {
                             out.push(ResolvedInst {
@@ -287,7 +287,7 @@ pub fn resolve_jit(
                                 kind: IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 },
                                 alt_target: None,
                                 has_target: false,
-                                structural: false,
+                                compaction: CompactionDisposition::Keep,
                             });
                         }
                         // Skip remaining ops in group
@@ -702,18 +702,18 @@ mod tests {
 
         let resolved = resolve_jit(&ops, &mut buf, mask);
 
-        // Group 1: resolved[0] = JIT entry (non-structural), [1,2] = skip (structural)
-        assert!(!resolved[0].structural);
-        assert!(resolved[1].structural);
-        assert!(resolved[2].structural);
+        // Group 1: resolved[0] = JIT entry, [1,2] = internal-only removed slots.
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
+        assert!(resolved[2].is_internal_only());
 
-        // Separator: 1:1 Nop (structural)
-        assert!(resolved[3].structural);
+        // Separator: 1:1 Nop (removed, but a legal redirect target).
+        assert!(resolved[3].redirects_branch_target());
 
         // Group 2: resolved[4] = JIT entry, [5,6] = skip
-        assert!(!resolved[4].structural);
-        assert!(resolved[5].structural);
-        assert!(resolved[6].structural);
+        assert!(!resolved[4].is_removed());
+        assert!(resolved[5].is_internal_only());
+        assert!(resolved[6].is_internal_only());
     }
 
     #[test]
@@ -759,12 +759,12 @@ mod tests {
         assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
         assert!(resolved[0].has_target);
         assert_eq!(resolved[0].alt_target, Some(10));
-        assert!(!resolved[0].structural);
+        assert!(!resolved[0].is_removed());
 
         // Rest are skip
-        assert!(resolved[1].structural);
-        assert!(resolved[2].structural);
-        assert!(resolved[3].structural);
+        assert!(resolved[1].is_internal_only());
+        assert!(resolved[2].is_internal_only());
+        assert!(resolved[3].is_internal_only());
     }
 
     #[test]
@@ -788,9 +788,9 @@ mod tests {
 
         assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
         assert!(matches!(resolved[1].kind, IrOpKind::I32Const { .. }));
-        assert!(!resolved[1].structural, "incoming target must break the group before ir[2]");
-        assert!(!resolved[2].structural, "targeted op should remain a real entry");
-        assert!(resolved[3].structural, "ir[2..4] may still form a group starting at the target");
+        assert!(!resolved[1].is_removed(), "incoming target must break the group before ir[2]");
+        assert!(!resolved[2].is_removed(), "targeted op should remain a real entry");
+        assert!(resolved[3].is_internal_only(), "ir[2..4] may still form a group starting at the target");
     }
 
     // ==================== Execution tests ====================
@@ -1073,10 +1073,10 @@ mod tests {
         let resolved = resolve_jit(&ops, &mut buf, mask);
 
         // Should be 1 JIT group (7 ops)
-        assert!(!resolved[0].structural, "expected JIT entry");
+        assert!(!resolved[0].is_removed(), "expected JIT entry");
         // Remaining should be skips
         for i in 1..7 {
-            assert!(resolved[i].structural, "expected skip at {}", i);
+            assert!(resolved[i].is_internal_only(), "expected skip at {}", i);
         }
     }
 
@@ -1180,9 +1180,9 @@ mod tests {
         let resolved = resolve_jit(&ops, &mut buf, mask);
 
         // Should be 1 group of 11 ops
-        assert!(!resolved[0].structural, "expected JIT entry");
+        assert!(!resolved[0].is_removed(), "expected JIT entry");
         for i in 1..11 {
-            assert!(resolved[i].structural, "expected skip at {}", i);
+            assert!(resolved[i].is_internal_only(), "expected skip at {}", i);
         }
 
         // Execute it

@@ -83,11 +83,11 @@ pub fn dump_resolved(func_idx: u32, resolved: &[ResolvedInst], ir_ops: &[IrOp]) 
     while i < resolved.len() {
         let inst = &resolved[i];
 
-        if !inst.structural && matches!(inst.kind, IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 }) {
+        if !inst.is_removed() && matches!(inst.kind, IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 }) {
             // JIT group: find extent
             let start = i;
             let mut end = i + 1;
-            while end < resolved.len() && resolved[end].structural
+            while end < resolved.len() && resolved[end].is_internal_only()
                 && matches!(resolved[end].kind, IrOpKind::Nop) {
                 end += 1;
             }
@@ -97,7 +97,7 @@ pub fn dump_resolved(func_idx: u32, resolved: &[ResolvedInst], ir_ops: &[IrOp]) 
             }
             dump!("  [JIT group end]");
             i = end;
-        } else if inst.structural {
+        } else if inst.is_removed() {
             match &inst.kind {
                 IrOpKind::Block | IrOpKind::Loop | IrOpKind::End => {
                     dump!("  res[{:4}] ({:?})", i, inst.kind);

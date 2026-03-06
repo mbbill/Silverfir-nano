@@ -1,13 +1,13 @@
 //! Finalizer: Vec<ResolvedInst> → Box<[Instruction]>.
 //!
-//! Compacts structural no-ops, patches branch targets, encodes immediates.
+//! Compacts removed markers, patches branch targets, encodes immediates.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::vec;
 use core::mem;
 
-use super::backend::ResolvedInst;
+use super::backend::{CompactionDisposition, ResolvedInst};
 use super::ir::IrOpKind;
 use super::ir_resolve::{resolve_handler, encode_operands};
 use super::stack::StackTracker;
@@ -35,8 +35,11 @@ pub fn finalize(
     // Expand br_tables by inserting inline data pseudo-instructions
     let ops = expand_br_tables(ops);
 
-    // Compute which instructions to keep (remove structural no-ops)
-    let keep: Vec<bool> = ops.iter().map(|op| !op.structural).collect();
+    // Compute which instructions remain in final code.
+    let keep: Vec<bool> = ops.iter().map(|op| op.compaction.is_kept()).collect();
+
+    // Validate that any removed target is an explicitly redirectable marker.
+    validate_removed_targets(&ops, &keep);
 
     // Build old->new index mapping
     let index_map = build_index_map(&keep);
@@ -56,7 +59,7 @@ fn append_terminals(ops: &mut Vec<ResolvedInst>) {
         kind: IrOpKind::Term,
         alt_target: None,
         has_target: false,
-        structural: false,
+        compaction: CompactionDisposition::Keep,
     };
 
     ops.push(term.clone());
@@ -154,7 +157,7 @@ fn expand_br_tables(ops: Vec<ResolvedInst>) -> Vec<ResolvedInst> {
                 kind: IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 },
                 alt_target: None,
                 has_target: false,
-                structural: false,
+                compaction: CompactionDisposition::Keep,
             });
         }
     }
@@ -175,12 +178,79 @@ fn build_index_map(keep: &[bool]) -> Vec<Option<usize>> {
     map
 }
 
+/// Mark every resolved index that can be reached by a non-fallthrough branch.
+fn incoming_targets(ops: &[ResolvedInst]) -> Vec<bool> {
+    let mut incoming = vec![false; ops.len()];
+
+    for op in ops {
+        if let Some(target) = op.alt_target {
+            if target < incoming.len() {
+                incoming[target] = true;
+            }
+        }
+
+        if let IrOpKind::BrTable { entries, .. } = &op.kind {
+            for entry in entries {
+                if let Some(target) = entry.target_idx {
+                    if target < incoming.len() {
+                        incoming[target] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    incoming
+}
+
+fn validate_removed_targets(ops: &[ResolvedInst], keep: &[bool]) {
+    let incoming = incoming_targets(ops);
+
+    for (idx, op) in ops.iter().enumerate() {
+        if keep[idx] || !incoming[idx] {
+            continue;
+        }
+
+        assert!(
+            op.redirects_branch_target(),
+            "branch target {} points to removed internal-only op {:?}",
+            idx,
+            op.kind,
+        );
+    }
+}
+
+fn remap_target(
+    old_target: usize,
+    ops: &[ResolvedInst],
+    index_map: &[Option<usize>],
+) -> Option<usize> {
+    let mut target = old_target;
+
+    while target < index_map.len() {
+        if let Some(new_target) = index_map[target] {
+            return Some(new_target);
+        }
+
+        assert!(
+            ops[target].redirects_branch_target(),
+            "branch target {} points to removed internal-only op {:?}",
+            old_target,
+            ops[target].kind,
+        );
+        target += 1;
+    }
+
+    None
+}
+
 /// Compact ops and patch all indices.
 fn compact_and_patch(
     ops: Vec<ResolvedInst>,
     keep: &[bool],
     index_map: &[Option<usize>],
 ) -> Vec<ResolvedInst> {
+    let original_ops = ops.clone();
     let mut compacted = Vec::with_capacity(ops.len());
     let mut ops_iter = ops.into_iter().enumerate().peekable();
 
@@ -192,11 +262,8 @@ fn compact_and_patch(
         let mut op = op;
 
         // Patch alt_target
-        if let Some(mut alt) = op.alt_target {
-            while alt < index_map.len() && index_map[alt].is_none() {
-                alt += 1;
-            }
-            op.alt_target = index_map.get(alt).copied().flatten();
+        if let Some(alt) = op.alt_target {
+            op.alt_target = remap_target(alt, &original_ops, index_map);
         }
 
         // Handle br_table: fill inline data slots
@@ -216,11 +283,8 @@ fn compact_and_patch(
             let mut data_slots: Vec<(u64, u64, u64)> = vec![(0, 0, 0); dsc];
 
             for (entry_idx, entry) in taken_entries.iter().enumerate() {
-                if let Some(mut tgt_old) = entry.target_idx {
-                    while tgt_old < index_map.len() && index_map[tgt_old].is_none() {
-                        tgt_old += 1;
-                    }
-                    if let Some(tgt_new) = index_map.get(tgt_old).copied().flatten() {
+                if let Some(tgt_old) = entry.target_idx {
+                    if let Some(tgt_new) = remap_target(tgt_old, &original_ops, index_map) {
                         let rel = (tgt_new as i32) - (br_table_new_idx as i32);
                         let stack_drop = entry.stack_offset as u32;
                         let arity = entry.arity as u32;
@@ -258,6 +322,50 @@ fn compact_and_patch(
     }
 
     compacted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved(kind: IrOpKind, alt_target: Option<usize>, has_target: bool, compaction: CompactionDisposition) -> ResolvedInst {
+        ResolvedInst {
+            handler: resolve_handler(&kind, 0),
+            kind,
+            alt_target,
+            has_target,
+            compaction,
+        }
+    }
+
+    #[test]
+    fn test_removed_redirect_target_maps_to_next_kept() {
+        let ops = vec![
+            resolved(IrOpKind::If, Some(1), true, CompactionDisposition::Keep),
+            resolved(IrOpKind::Block, None, false, CompactionDisposition::RedirectBranchTarget),
+            resolved(IrOpKind::I32Const { value: 7 }, None, false, CompactionDisposition::Keep),
+        ];
+        let keep: Vec<bool> = ops.iter().map(|op| op.compaction.is_kept()).collect();
+        let index_map = build_index_map(&keep);
+
+        validate_removed_targets(&ops, &keep);
+        let compacted = compact_and_patch(ops, &keep, &index_map);
+
+        assert_eq!(compacted[0].alt_target, Some(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "removed internal-only op")]
+    fn test_removed_internal_only_target_panics() {
+        let ops = vec![
+            resolved(IrOpKind::If, Some(1), true, CompactionDisposition::Keep),
+            resolved(IrOpKind::Nop, None, false, CompactionDisposition::InternalOnly),
+            resolved(IrOpKind::I32Const { value: 7 }, None, false, CompactionDisposition::Keep),
+        ];
+        let keep: Vec<bool> = ops.iter().map(|op| op.compaction.is_kept()).collect();
+
+        validate_removed_targets(&ops, &keep);
+    }
 }
 
 /// Convert an operand slot placeholder to an absolute frame offset.

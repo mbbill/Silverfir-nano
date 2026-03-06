@@ -10,6 +10,32 @@ use super::ir_resolve::resolve_handler;
 use super::super::handlers::full_set::op_nop;
 use super::super::handlers::OpHandler as Handler;
 
+/// How the finalizer should treat an instruction during compaction.
+///
+/// This makes backend intent explicit:
+/// - `Keep`: remains in final code and is a real executable entry point.
+/// - `RedirectBranchTarget`: removed during compaction, but branches may legally
+///   target this slot and should be retargeted to the next kept instruction.
+/// - `InternalOnly`: removed during compaction and must never be a branch target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactionDisposition {
+    Keep,
+    RedirectBranchTarget,
+    InternalOnly,
+}
+
+impl CompactionDisposition {
+    #[inline]
+    pub fn is_kept(self) -> bool {
+        matches!(self, Self::Keep)
+    }
+
+    #[inline]
+    pub fn may_redirect_branch_target(self) -> bool {
+        matches!(self, Self::RedirectBranchTarget)
+    }
+}
+
 /// A fully resolved instruction — handler and encoding decided.
 ///
 /// Produced by the backend pass (JIT, fusion, or base 1:1).
@@ -26,8 +52,9 @@ pub struct ResolvedInst {
     pub alt_target: Option<usize>,
     /// Whether this instruction encodes a target field that needs pointer patching.
     pub has_target: bool,
-    /// Whether this is a structural no-op (removed during compaction).
-    pub structural: bool,
+    /// Whether this instruction remains in the final code, redirects branch labels,
+    /// or is an internal-only removed marker.
+    pub compaction: CompactionDisposition,
 }
 
 impl ResolvedInst {
@@ -39,14 +66,16 @@ impl ResolvedInst {
             kind: op.kind.clone(),
             alt_target: op.alt_target,
             has_target: op.has_target,
-            structural: matches!(
-                op.kind,
-                IrOpKind::Nop | IrOpKind::Block | IrOpKind::Loop | IrOpKind::End
-            ),
+            compaction: match op.kind {
+                IrOpKind::Nop | IrOpKind::Block | IrOpKind::Loop | IrOpKind::End => {
+                    CompactionDisposition::RedirectBranchTarget
+                }
+                _ => CompactionDisposition::Keep,
+            },
         }
     }
 
-    /// Create a structural no-op (removed during compaction).
+    /// Create an internal-only marker removed during compaction.
     #[inline]
     pub fn skip() -> Self {
         Self {
@@ -54,8 +83,23 @@ impl ResolvedInst {
             kind: IrOpKind::Nop,
             alt_target: None,
             has_target: false,
-            structural: true,
+            compaction: CompactionDisposition::InternalOnly,
         }
+    }
+
+    #[inline]
+    pub fn is_removed(&self) -> bool {
+        !self.compaction.is_kept()
+    }
+
+    #[inline]
+    pub fn redirects_branch_target(&self) -> bool {
+        self.compaction.may_redirect_branch_target()
+    }
+
+    #[inline]
+    pub fn is_internal_only(&self) -> bool {
+        matches!(self.compaction, CompactionDisposition::InternalOnly)
     }
 }
 

@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use super::super::builder::backend::ResolvedInst;
+use super::super::builder::backend::{CompactionDisposition, ResolvedInst};
 use super::super::builder::ir::{IrOp, IrOpKind};
 use super::super::handlers::OpHandler as Handler;
 use super::super::handlers::full_set;
@@ -40,9 +40,9 @@ pub fn resolve_fusion(ir: &[IrOp]) -> Vec<ResolvedInst> {
                 kind,
                 alt_target,
                 has_target,
-                structural: false,
+                compaction: CompactionDisposition::Keep,
             });
-            // Mark remaining ops in the group as structural (removed by finalizer)
+            // Mark remaining ops in the group as internal-only removed slots.
             for _ in 1..len {
                 out.push(ResolvedInst::skip());
             }
