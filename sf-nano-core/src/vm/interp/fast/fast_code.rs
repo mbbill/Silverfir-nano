@@ -3,15 +3,9 @@
 use super::instruction::Instruction;
 use alloc::boxed::Box;
 
-#[cfg(feature = "micro-jit")]
-use super::jit::code_buf::CodeBuffer;
-
 /// Compiled fast interpreter code for a function.
 pub struct FastCode {
     code: Box<[Instruction]>,
-    /// JIT code buffer — keeps mmap'd executable memory alive for this function.
-    #[cfg(feature = "micro-jit")]
-    _jit_buf: Option<CodeBuffer>,
 }
 
 impl core::fmt::Debug for FastCode {
@@ -24,17 +18,7 @@ impl core::fmt::Debug for FastCode {
 
 impl FastCode {
     pub fn new(code: Box<[Instruction]>) -> Self {
-        FastCode {
-            code,
-            #[cfg(feature = "micro-jit")]
-            _jit_buf: None,
-        }
-    }
-
-    /// Create with an optional JIT code buffer.
-    #[cfg(feature = "micro-jit")]
-    pub fn new_with_jit(code: Box<[Instruction]>, jit_buf: Option<CodeBuffer>) -> Self {
-        FastCode { code, _jit_buf: jit_buf }
+        FastCode { code }
     }
 
     #[inline]
@@ -124,20 +108,6 @@ pub fn create_fast_code(
     results_len: usize,
 ) -> (FastCode, FastCodeCache) {
     let fast_code = FastCode::new(code);
-    let cache = fast_code.build_cache(params_len, locals_len, results_len);
-    (fast_code, cache)
-}
-
-/// Create a FastCode with JIT buffer and cache.
-#[cfg(feature = "micro-jit")]
-pub fn create_fast_code_with_jit(
-    code: Box<[Instruction]>,
-    jit_buf: Option<CodeBuffer>,
-    params_len: usize,
-    locals_len: usize,
-    results_len: usize,
-) -> (FastCode, FastCodeCache) {
-    let fast_code = FastCode::new_with_jit(code, jit_buf);
     let cache = fast_code.build_cache(params_len, locals_len, results_len);
     (fast_code, cache)
 }

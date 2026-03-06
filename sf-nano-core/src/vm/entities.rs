@@ -9,6 +9,8 @@
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(feature = "micro-jit")]
+use core::cell::RefCell;
 
 use crate::error::WasmError;
 use crate::module::entities::FunctionSpec;
@@ -17,6 +19,8 @@ use crate::module::type_defs::FunctionType;
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 use crate::vm::value::{RefHandle, Value};
+#[cfg(feature = "micro-jit")]
+use crate::vm::interp::fast::jit::code_buf::CodeBuffer;
 
 // ---------------------------------------------------------------------------
 // ExternalFn / Caller
@@ -269,6 +273,8 @@ pub struct ModuleInst {
     pub globals: Vec<GlobalInst>,
     pub elements: Vec<ElementInst>,
     pub data: Vec<DataInst>,
+    #[cfg(feature = "micro-jit")]
+    jit_buf: RefCell<Option<CodeBuffer>>,
 }
 
 impl ModuleInst {
@@ -282,6 +288,8 @@ impl ModuleInst {
             globals: Vec::new(),
             elements: Vec::new(),
             data: Vec::new(),
+            #[cfg(feature = "micro-jit")]
+            jit_buf: RefCell::new(None),
         }
     }
 
@@ -289,5 +297,19 @@ impl ModuleInst {
     #[inline]
     pub fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
         self.types.get(index)
+    }
+
+    #[cfg(feature = "micro-jit")]
+    pub fn jit_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
+        let mut jit_buf = self
+            .jit_buf
+            .try_borrow_mut()
+            .map_err(|_| "module JIT code buffer is already borrowed")?;
+        if jit_buf.is_none() {
+            *jit_buf = Some(CodeBuffer::new()?);
+        }
+        Ok(core::cell::RefMut::map(jit_buf, |jit_buf| {
+            jit_buf.as_mut().expect("JIT code buffer initialized")
+        }))
     }
 }

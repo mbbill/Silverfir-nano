@@ -358,16 +358,13 @@ impl Instance {
             .collect();
 
         // --- Create ModuleInst and Store ---
-        let module_inst = ModuleInst {
-            name: "main".to_string(),
-            types,
-            functions,
-            tables,
-            memories,
-            globals,
-            elements,
-            data,
-        };
+        let mut module_inst = ModuleInst::new("main".to_string(), types);
+        module_inst.functions = functions;
+        module_inst.tables = tables;
+        module_inst.memories = memories;
+        module_inst.globals = globals;
+        module_inst.elements = elements;
+        module_inst.data = data;
         let mut store = Store::new(module_inst);
 
         // --- Initialize globals (const expr evaluation) ---

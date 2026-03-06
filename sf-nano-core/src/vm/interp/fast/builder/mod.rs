@@ -71,8 +71,7 @@ pub fn build_for_function(
 
     // Backend: resolve IR to handlers
     #[cfg(feature = "micro-jit")]
-    let (resolved, jit_buf) = {
-        use super::jit::code_buf::CodeBuffer;
+    let resolved = {
         use super::jit::group;
 
         let hot_mask = [
@@ -81,12 +80,9 @@ pub fn build_for_function(
             hot_locals[2].is_some(),
         ];
 
-        match CodeBuffer::new() {
-            Ok(mut buf) => {
-                let resolved = group::resolve_jit(&ir_ops, &mut buf, hot_mask);
-                (resolved, Some(buf))
-            }
-            Err(_) => (backend::resolve_base(&ir_ops), None),
+        match module.jit_code_buffer() {
+            Ok(mut buf) => group::resolve_jit(&ir_ops, &mut buf, hot_mask),
+            Err(_) => backend::resolve_base(&ir_ops),
         }
     };
 
@@ -107,20 +103,9 @@ pub fn build_for_function(
     let code_box = finalizer_ir::finalize(resolved, &mut stack);
 
     // Store in function spec
-    #[cfg(not(feature = "micro-jit"))]
-    {
-        use crate::vm::interp::fast::fast_code::create_fast_code;
-        let (fast_code, fast_cache) = create_fast_code(code_box, params_count, locals_count, results_count);
-        let entry = fast_cache.entry();
-        function.set_fast_code(fast_code, fast_cache);
-        Ok(entry)
-    }
-    #[cfg(feature = "micro-jit")]
-    {
-        use crate::vm::interp::fast::fast_code::create_fast_code_with_jit;
-        let (fast_code, fast_cache) = create_fast_code_with_jit(code_box, jit_buf, params_count, locals_count, results_count);
-        let entry = fast_cache.entry();
-        function.set_fast_code(fast_code, fast_cache);
-        Ok(entry)
-    }
+    use crate::vm::interp::fast::fast_code::create_fast_code;
+    let (fast_code, fast_cache) = create_fast_code(code_box, params_count, locals_count, results_count);
+    let entry = fast_cache.entry();
+    function.set_fast_code(fast_code, fast_cache);
+    Ok(entry)
 }

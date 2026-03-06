@@ -14,6 +14,12 @@ extern "C" {
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
 
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
+    fn __clear_cache(start: *mut u8, end: *mut u8);
+}
+
 #[cfg(target_os = "macos")]
 extern "C" {
     fn pthread_jit_write_protect_np(enabled: i32);
@@ -101,9 +107,15 @@ impl CodeBuffer {
         unsafe { pthread_jit_write_protect_np(0); }
     }
 
-    /// Begin a write session (Linux: no-op, pages are already writable).
+    /// Begin a write session (Linux: restore write access for subsequent emissions).
     #[cfg(target_os = "linux")]
-    pub fn begin_write(&mut self) {}
+    pub fn begin_write(&mut self) {
+        unsafe {
+            // Keep the whole arena in a single protection state for now.
+            let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_WRITE);
+            assert_eq!(rc, 0, "mprotect RW failed for JIT code buffer");
+        }
+    }
 
     /// End a write session. Makes the written code executable and flushes I-cache.
     /// `written_start` and `written_len` specify the range that was written.
@@ -118,14 +130,11 @@ impl CodeBuffer {
     /// End a write session (Linux: mprotect to RX and clear cache).
     #[cfg(target_os = "linux")]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
-        extern "C" {
-            fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
-            fn __clear_cache(start: *mut u8, end: *mut u8);
-        }
         unsafe {
             // Note: mprotect requires page-aligned address. For simplicity,
             // protect the entire buffer. A production impl would track dirty pages.
-            mprotect(self.base, self.capacity, PROT_READ | PROT_EXEC);
+            let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_EXEC);
+            assert_eq!(rc, 0, "mprotect RX failed for JIT code buffer");
             let start = self.base.add(written_start);
             let end = start.add(written_len);
             __clear_cache(start, end);

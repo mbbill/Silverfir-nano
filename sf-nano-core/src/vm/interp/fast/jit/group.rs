@@ -317,7 +317,7 @@ pub fn resolve_jit(
     }
 
     let total_len = buf.len();
-    buf.finish_write(0, total_len);
+    buf.finish_write(bytes_before, total_len - bytes_before);
 
     // Update global stats
     let bytes_emitted = total_len - bytes_before;
