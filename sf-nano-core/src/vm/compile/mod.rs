@@ -1,7 +1,7 @@
 pub mod common;
 pub mod context;
 pub mod core_op;
-pub mod ir_lower;
+pub mod decode;
 pub mod semantic_ir;
 pub mod stack;
 

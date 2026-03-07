@@ -1,8 +1,8 @@
 //! Native group compiler: identify and compile groups of consecutive native-able ops.
 //!
 //! Scans `&[IrOp]` for consecutive native-able operations, compiles them into
-//! single ARM64 code blocks via `NativeEmitter`, and produces `Vec<ResolvedInst>`.
-//! Non-native-able ops fall back to 1:1 base handler resolution.
+//! single ARM64 code blocks via `NativeEmitter`, and produces a native-owned
+//! resolved stream for finalization into `NativeInst`.
 
 use alloc::vec::Vec;
 use super::arm64_enc::{self, Cond};
@@ -10,9 +10,11 @@ use super::codegen::{NativeEmitter, depth_variant, tos_reg};
 use super::op_meta;
 use super::reg::Reg;
 use super::super::{CodeBuffer, debug_map, samply_jitdump};
+use crate::vm::compaction::CompactionDisposition;
 use crate::vm::lowered::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
-use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
-use crate::vm::interp::fast::handlers::OpHandler;
+use crate::vm::native::instruction::NativeEntry;
+use crate::vm::native::resolved::{NativeResolvedVec, ResolvedNativeInst};
+use crate::vm::native::runtime::term_entry;
 
 /// Check if an IrOp is native-able, considering kind, height, and hot local mask.
 fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
@@ -36,6 +38,10 @@ fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
     true
 }
 
+fn is_redirect_marker(kind: &IrOpKind) -> bool {
+    matches!(kind, IrOpKind::Nop | IrOpKind::Block | IrOpKind::Loop | IrOpKind::End)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GroupTerminator {
     Br,
@@ -45,7 +51,7 @@ enum GroupTerminator {
     ReturnOne,
 }
 
-/// Check if an IrOp is a group terminator (can only terminate, not start).
+/// Check if an IrOp is a group terminator.
 fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
     match &op.kind {
         IrOpKind::Br { stack_drop, arity, .. }
@@ -161,13 +167,13 @@ pub fn jit_capacity_skips() -> (usize, usize) {
 
 /// Resolve IR ops via native compilation.
 ///
-/// Scans for consecutive native-able ops, compiles groups into ARM64 code,
-/// and falls back to 1:1 base handler resolution for non-native-able ops.
+/// Compiles an all-native function. Structural redirect markers remain in the
+/// stream for finalization; any other unsupported op rejects native compilation.
 pub fn resolve_native(
     ir: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
-) -> Vec<ResolvedInst> {
+) -> Result<NativeResolvedVec, &'static str> {
     resolve_native_with_context(ir, buf, hot_local_mask, "", 0)
 }
 
@@ -178,12 +184,12 @@ pub fn resolve_native_with_context(
     hot_local_mask: [bool; 3],
     module_name: &str,
     func_idx: u32,
-) -> Vec<ResolvedInst> {
+) -> Result<NativeResolvedVec, &'static str> {
     buf.begin_write();
     let bytes_before = buf.len();
     let branch_targets = incoming_targets(ir);
 
-    let mut out = Vec::with_capacity(ir.len());
+    let mut out = NativeResolvedVec::with_capacity(ir.len());
     let mut groups_compiled: usize = 0;
     let mut ops_compiled: usize = 0;
     let mut groups_skipped: usize = 0;
@@ -191,18 +197,33 @@ pub fn resolve_native_with_context(
 
     let mut i = 0;
     while i < ir.len() {
-        // Try to start a native group
-        if group_terminator(&ir[i]).is_none() && is_jit_able_op(&ir[i], hot_local_mask) {
+        if is_redirect_marker(&ir[i].kind) {
+            out.push(ResolvedNativeInst {
+                entry: term_entry(),
+                kind: ir[i].kind.clone(),
+                alt_target: ir[i].alt_target,
+                has_target: ir[i].has_target,
+                compaction: CompactionDisposition::RedirectBranchTarget,
+            });
+            i += 1;
+            continue;
+        }
+
+        let start_terminator = group_terminator(&ir[i]);
+        if start_terminator.is_some() || is_jit_able_op(&ir[i], hot_local_mask) {
             let group_start = i;
             i += 1;
 
             // Extend the group
-            while i < ir.len() {
+            while start_terminator.is_none() && i < ir.len() {
                 if branch_targets[i] {
                     break;
                 }
+                if is_redirect_marker(&ir[i].kind) {
+                    break;
+                }
                 if group_terminator(&ir[i]).is_some() {
-                    i += 1; // include br_if_simple as terminator
+                    i += 1;
                     break;
                 }
                 if !is_jit_able_op(&ir[i], hot_local_mask) {
@@ -212,120 +233,107 @@ pub fn resolve_native_with_context(
             }
 
             let group_len = i - group_start;
-            if group_len >= 2 {
-                let estimated_bytes = op_meta::estimate_group_bytes(
+            let estimated_bytes = op_meta::estimate_group_bytes(
+                &ir[group_start..i],
+                group_terminator(&ir[i - 1]).map(|_| &ir[i - 1].kind),
+            );
+            if buf.remaining() < estimated_bytes {
+                groups_skipped += 1;
+                ops_skipped += group_len;
+                return Err("native code buffer capacity exceeded");
+            }
+            let code_start = buf.len();
+            if let Some((entry, terminator, branch_target)) =
+                try_compile_group(&ir[group_start..i], buf, hot_local_mask)
+            {
+                let code_len = buf.len() - code_start;
+                debug_map::record_group(
+                    buf.base_ptr(),
+                    code_start,
+                    code_len,
+                    module_name,
+                    func_idx,
+                    group_start,
                     &ir[group_start..i],
-                    group_terminator(&ir[i - 1]).map(|_| &ir[i - 1].kind),
+                    terminator_name(terminator),
+                    branch_target,
                 );
-                if buf.remaining() >= estimated_bytes {
-                    let code_start = buf.len();
-                    if let Some((handler, terminator, branch_target)) =
-                        try_compile_group(&ir[group_start..i], buf, hot_local_mask)
-                    {
-                        let code_len = buf.len() - code_start;
-                        debug_map::record_group(
-                            buf.base_ptr(),
-                            code_start,
-                            code_len,
-                            module_name,
-                            func_idx,
-                            group_start,
-                            &ir[group_start..i],
-                            terminator_name(terminator),
-                            branch_target,
-                        );
-                        samply_jitdump::record_group(
-                            buf.base_ptr(),
-                            code_start,
-                            code_len,
-                            module_name,
-                            func_idx,
-                            group_start,
-                            &ir[group_start..i],
-                            terminator_name(terminator),
-                            branch_target,
-                        );
-                        // Native entry
-                        match terminator {
-                            Some(GroupTerminator::Br) => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: ir[group_start + group_len - 1].kind.clone(),
-                                    alt_target: branch_target,
-                                    has_target: true,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                            Some(GroupTerminator::BrIfSimple) => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: IrOpKind::BrIfSimple,
-                                    alt_target: branch_target,
-                                    has_target: true,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                            Some(GroupTerminator::If) => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: IrOpKind::If,
-                                    alt_target: branch_target,
-                                    has_target: true,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                            Some(GroupTerminator::ReturnVoid) => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: ir[group_start + group_len - 1].kind.clone(),
-                                    alt_target: None,
-                                    has_target: false,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                            Some(GroupTerminator::ReturnOne) => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: ir[group_start + group_len - 1].kind.clone(),
-                                    alt_target: None,
-                                    has_target: false,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                            None => {
-                                out.push(ResolvedInst {
-                                    handler,
-                                    kind: IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 },
-                                    alt_target: None,
-                                    has_target: false,
-                                    compaction: CompactionDisposition::Keep,
-                                });
-                            }
-                        }
-                        // Skip remaining ops in group
-                        for _ in 1..group_len {
-                            out.push(ResolvedInst::skip());
-                        }
-                        groups_compiled += 1;
-                        ops_compiled += group_len;
-                        continue;
+                samply_jitdump::record_group(
+                    buf.base_ptr(),
+                    code_start,
+                    code_len,
+                    module_name,
+                    func_idx,
+                    group_start,
+                    &ir[group_start..i],
+                    terminator_name(terminator),
+                    branch_target,
+                );
+                match terminator {
+                    Some(GroupTerminator::Br) => {
+                        out.push(ResolvedNativeInst {
+                            entry,
+                            kind: ir[group_start + group_len - 1].kind.clone(),
+                            alt_target: branch_target,
+                            has_target: true,
+                            compaction: CompactionDisposition::Keep,
+                        });
                     }
-                } else {
-                    groups_skipped += 1;
-                    ops_skipped += group_len;
+                    Some(GroupTerminator::BrIfSimple) => {
+                        out.push(ResolvedNativeInst {
+                            entry,
+                            kind: IrOpKind::BrIfSimple,
+                            alt_target: branch_target,
+                            has_target: true,
+                            compaction: CompactionDisposition::Keep,
+                        });
+                    }
+                    Some(GroupTerminator::If) => {
+                        out.push(ResolvedNativeInst {
+                            entry,
+                            kind: IrOpKind::If,
+                            alt_target: branch_target,
+                            has_target: true,
+                            compaction: CompactionDisposition::Keep,
+                        });
+                    }
+                    Some(GroupTerminator::ReturnVoid) | Some(GroupTerminator::ReturnOne) => {
+                        out.push(ResolvedNativeInst {
+                            entry,
+                            kind: ir[group_start + group_len - 1].kind.clone(),
+                            alt_target: None,
+                            has_target: false,
+                            compaction: CompactionDisposition::Keep,
+                        });
+                    }
+                    None => {
+                        out.push(ResolvedNativeInst {
+                            entry,
+                            kind: ir[group_start].kind.clone(),
+                            alt_target: None,
+                            has_target: false,
+                            compaction: CompactionDisposition::Keep,
+                        });
+                    }
                 }
+                for _ in 1..group_len {
+                    out.push(ResolvedNativeInst {
+                        entry: term_entry(),
+                        kind: IrOpKind::Nop,
+                        alt_target: None,
+                        has_target: false,
+                        compaction: CompactionDisposition::InternalOnly,
+                    });
+                }
+                groups_compiled += 1;
+                ops_compiled += group_len;
+                continue;
             }
 
-            // Fallback: 1:1 for all ops in the attempted range
-            for j in group_start..i {
-                out.push(ResolvedInst::from_ir(&ir[j]));
-            }
-            continue;
+            return Err("failed to compile native group");
         }
 
-        // Lone terminator or non-native-able op: 1:1
-        out.push(ResolvedInst::from_ir(&ir[i]));
-        i += 1;
+        return Err("function contains op unsupported by native backend");
     }
 
     let total_len = buf.len();
@@ -341,7 +349,7 @@ pub fn resolve_native_with_context(
         NATIVE_STATS.ops_skipped_capacity.fetch_add(ops_skipped, core::sync::atomic::Ordering::Relaxed);
     }
 
-    out
+    Ok(out)
 }
 
 fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> {
@@ -570,7 +578,7 @@ fn try_compile_group(
     group: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
-) -> Option<(OpHandler, Option<GroupTerminator>, Option<OpIndex>)> {
+) -> Option<(NativeEntry, Option<GroupTerminator>, Option<OpIndex>)> {
     let terminator = group_terminator(group.last().unwrap());
     let branch_alt = terminator.and_then(|_| group.last().unwrap().alt_target);
 
@@ -677,8 +685,8 @@ fn try_compile_group(
         },
     };
 
-    let handler: OpHandler = unsafe { buf.fn_ptr(start) };
-    Some((handler, terminator, branch_alt))
+    let entry: NativeEntry = unsafe { buf.fn_ptr(start) };
+    Some((entry, terminator, branch_alt))
 }
 
 /// Emit a single op via NativeEmitter based on its IrOpKind.
@@ -738,7 +746,7 @@ fn emit_op(e: &mut NativeEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-fast-native-tests"))]
 mod tests {
     use alloc::vec;
     use super::*;

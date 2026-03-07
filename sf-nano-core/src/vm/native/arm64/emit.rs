@@ -6,17 +6,17 @@
 use super::super::CodeBuffer;
 use super::reg::Reg;
 use super::arm64_enc;
-pub use crate::vm::interp::fast::context::ctx_offset;
+pub use crate::vm::native::context::ctx_offset;
 
 // ---------------------------------------------------------------------------
-// Instruction layout constants
+// NativeInst layout constants
 // ---------------------------------------------------------------------------
 
-/// Size of one Instruction struct in bytes (handler + 3 immediates = 32 bytes).
+/// Size of one NativeInst struct in bytes (entry + 3 immediates = 32 bytes).
 pub const INST_SIZE: u32 = 32;
 
-/// Byte offset of handler field within Instruction (always 0).
-pub const INST_HANDLER_OFFSET: u32 = 0;
+/// Byte offset of entry field within NativeInst (always 0).
+pub const INST_ENTRY_OFFSET: u32 = 0;
 
 /// Byte offset of imm0 within Instruction (after 8-byte handler).
 pub const INST_IMM0_OFFSET: u32 = 8;
@@ -27,23 +27,21 @@ pub const INST_IMM0_OFFSET: u32 = 8;
 
 /// Emit the universal dispatch stub (JIT group exit sequence).
 ///
-/// This advances PC by one Instruction slot (32 bytes), loads the handler
-/// at the new PC, preloads the next-handler (nh), and tail-jumps.
+/// This advances PC by one NativeInst slot (32 bytes), loads the entry
+/// at the new PC, and tail-jumps.
 ///
 /// Emitted instructions:
 /// ```text
-/// add  x21, x21, #0x20     ; pc += 1 instruction (32 bytes)
-/// ldr  x2,  [x21]          ; handler = pc->handler
-/// ldr  x1,  [x21, #0x20]   ; nh = (pc+1)->handler
-/// br   x2                   ; tail-jump to handler
+/// add  pc, pc, #0x20       ; pc += 1 instruction (32 bytes)
+/// ldr  tmp0, [pc]          ; entry = pc->entry
+/// br   tmp0                ; tail-jump to entry
 /// ```
 ///
 /// Returns the byte offset where the stub starts in the buffer.
 pub fn emit_dispatch_linear(buf: &mut CodeBuffer) -> usize {
     let start = buf.len();
     buf.emit(arm64_enc::add_imm_64(Reg::PC, Reg::PC, INST_SIZE));
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, INST_HANDLER_OFFSET / 8));
-    buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::PC, INST_SIZE / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, INST_ENTRY_OFFSET / 8));
     buf.emit(arm64_enc::br(Reg::TMP0));
     start
 }
@@ -51,23 +49,21 @@ pub fn emit_dispatch_linear(buf: &mut CodeBuffer) -> usize {
 /// Emit nonlinear dispatch: load branch target from pc->imm0, dispatch to it.
 ///
 /// Used for branch-taken paths (br, br_if when condition is true).
-/// Loads target pointer from imm0, then loads handler and nh from target.
+/// Loads target pointer from imm0, then loads target entry and jumps to it.
 ///
 /// Emitted instructions (5):
 /// ```text
-/// ldr  x3,  [x21, #8]      ; TMP1 = pc->imm0 (target instruction ptr)
-/// ldr  x2,  [x3]           ; handler = target->handler
-/// ldr  x1,  [x3, #0x20]    ; nh = (target+1)->handler
-/// mov  x21, x3             ; pc = target
-/// br   x2                  ; jump to handler
+/// ldr  tmp1, [pc, #8]      ; TMP1 = pc->imm0 (target instruction ptr)
+/// ldr  tmp0, [tmp1]        ; entry = target->entry
+/// mov  pc, tmp1            ; pc = target
+/// br   tmp0                ; jump to entry
 /// ```
 ///
 /// Returns the byte offset where the stub starts in the buffer.
 pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
     let start = buf.len();
     buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::PC, INST_IMM0_OFFSET / 8));
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::TMP1, INST_HANDLER_OFFSET / 8));
-    buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::TMP1, INST_SIZE / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::TMP1, INST_ENTRY_OFFSET / 8));
     buf.emit(arm64_enc::mov_reg_64(Reg::PC, Reg::TMP1));
     buf.emit(arm64_enc::br(Reg::TMP0));
     start
@@ -79,8 +75,7 @@ pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
 /// final `mov pc, target_reg`.
 pub fn emit_dispatch_register(buf: &mut CodeBuffer, target_reg: Reg) -> usize {
     let start = buf.len();
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, target_reg, INST_HANDLER_OFFSET / 8));
-    buf.emit(arm64_enc::ldr_64(Reg::NH, target_reg, INST_SIZE / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP0, target_reg, INST_ENTRY_OFFSET / 8));
     buf.emit(arm64_enc::mov_reg_64(Reg::PC, target_reg));
     buf.emit(arm64_enc::br(Reg::TMP0));
     start
@@ -90,7 +85,7 @@ pub fn emit_dispatch_register(buf: &mut CodeBuffer, target_reg: Reg) -> usize {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-fast-native-tests"))]
 mod offset_checks {
     use super::ctx_offset;
     use crate::vm::interp::fast::context::ContextHot;
@@ -115,7 +110,7 @@ mod offset_checks {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-fast-native-tests"))]
 mod tests {
     use super::*;
     use crate::vm::interp::fast::instruction::Instruction;

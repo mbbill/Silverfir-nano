@@ -6,7 +6,7 @@
 use crate::error::WasmError;
 use crate::vm::entities::FunctionInst;
 use crate::vm::interp::fast::{
-    builder::build_for_function,
+    compiler::build_for_function,
     frame_layout,
     handlers::full_set::{op_call_internal, op_call_local},
     instruction::Instruction,

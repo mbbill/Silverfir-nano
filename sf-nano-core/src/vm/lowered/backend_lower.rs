@@ -75,6 +75,11 @@ fn lower_semantic_kind(
                 _ => LoweredIrOpKind::LocalTeeFrame { idx: remapped as u16 },
             }
         }
+        SemanticOpKind::Block { .. } => LoweredIrOpKind::Block,
+        SemanticOpKind::Loop { .. } => LoweredIrOpKind::Loop,
+        SemanticOpKind::If { .. } => LoweredIrOpKind::If,
+        SemanticOpKind::Else => LoweredIrOpKind::Else,
+        SemanticOpKind::End => LoweredIrOpKind::End,
         SemanticOpKind::CacheSpill { slot, count } => LoweredIrOpKind::Spill { slot, count },
         SemanticOpKind::CacheFill { slot, count } => LoweredIrOpKind::Fill { slot, count },
         SemanticOpKind::Br { stack_drop, arity } => LoweredIrOpKind::Br {
@@ -102,9 +107,9 @@ fn lower_semantic_kind(
             height: pre_height,
             operand_base_offset: config.operand_base_offset(frame_size) as u32,
         },
-        SemanticOpKind::CallExternal { func_idx, delta } => LoweredIrOpKind::CallExternal { func_idx, delta },
-        SemanticOpKind::CallInternal { callee, delta } => LoweredIrOpKind::CallInternal { callee, delta },
-        SemanticOpKind::CallIndirect { type_idx, table_idx, delta } => LoweredIrOpKind::CallIndirect {
+        SemanticOpKind::CallExternal { func_idx, delta, .. } => LoweredIrOpKind::CallExternal { func_idx, delta },
+        SemanticOpKind::CallInternal { callee, delta, .. } => LoweredIrOpKind::CallInternal { callee, delta },
+        SemanticOpKind::CallIndirect { type_idx, table_idx, delta, .. } => LoweredIrOpKind::CallIndirect {
             type_idx,
             table_idx,
             delta,
@@ -232,7 +237,7 @@ mod tests {
         let lowered = lower_to_lowered_ir(
             vec![
                 SemanticOp {
-                    kind: SemanticOpKind::Core(CoreOpKind::If),
+                    kind: SemanticOpKind::If { params: 0, results: 0 },
                     variant: 1,
                     pre_height: 1,
                     fallthrough: Some(OpIndex::new(1)),
@@ -240,7 +245,7 @@ mod tests {
                     has_target: true,
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::Core(CoreOpKind::Else),
+                    kind: SemanticOpKind::Else,
                     variant: 0,
                     pre_height: 0,
                     fallthrough: Some(OpIndex::new(2)),

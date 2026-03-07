@@ -6,7 +6,7 @@
 //! Filter with `SF_TRACE_FUNC=42` or `SF_TRACE_FUNC=5,12,47` env var.
 //! Unset = dump all functions.
 
-use super::backend::ResolvedInst;
+use super::super::resolved::ResolvedInst;
 use crate::vm::{lowered::{IrOp, IrOpKind}, planner::{HOT_LOCAL_COUNT, hot_local}};
 use std::sync::OnceLock;
 use std::collections::HashSet;

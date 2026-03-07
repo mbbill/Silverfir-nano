@@ -10,13 +10,11 @@
 //!     → Box<[Instruction]>
 //!
 //! Modules:
-//! - `backend`: ResolvedInst type, base 1:1 resolution
 //! - `ir_resolve`: Handler/operand resolution for IR ops
 //! - `finalizer_ir`: Compact, patch, and build final instructions
 //!
 //! The backend-neutral compile frontend now lives in `vm::compile`.
 
-pub mod backend;
 mod finalizer_ir;
 #[cfg(feature = "ir-dump")]
 mod ir_dump;
@@ -26,10 +24,11 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
-        backend::{BackendKind, BackendMode, active_backend, backend_mode},
+        backend::{BackendMode, backend_mode},
         compile::{self, CompileContext, StackTracker},
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
+        interp::fast::resolved,
         lowered,
         planner::CompilePlan,
         store::Store,
@@ -40,12 +39,12 @@ use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
 
 #[cfg(feature = "fusion")]
-fn resolve_fusion_backend(ir_ops: &[lowered::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(ir_ops: &[lowered::IrOp]) -> Result<Vec<resolved::ResolvedInst>, &'static str> {
     Ok(super::fusion::resolve::resolve_fusion(ir_ops))
 }
 
 #[cfg(not(feature = "fusion"))]
-fn resolve_fusion_backend(_ir_ops: &[lowered::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(_ir_ops: &[lowered::IrOp]) -> Result<Vec<resolved::ResolvedInst>, &'static str> {
     Err("fusion backend not compiled in")
 }
 
@@ -67,13 +66,7 @@ pub fn build_for_function(
     let results_count = func_type.results().len();
     let locals_count = function.locals().len();
 
-    let selected_backend = match backend_mode() {
-        BackendMode::Base => BackendKind::Base,
-        BackendMode::Fusion => BackendKind::Fusion,
-        BackendMode::Native => BackendKind::Native,
-        BackendMode::Auto => active_backend().unwrap_or(BackendKind::Base),
-    };
-    let compile_config = selected_backend.compile_config();
+    let compile_config = crate::vm::backend::BackendKind::Base.compile_config();
 
     let frame_size = params_count + locals_count;
     let compile_plan = CompilePlan::for_config(code, frame_size, compile_config);
@@ -99,25 +92,22 @@ pub fn build_for_function(
 
     // Backend: resolve IR to handlers.
     let resolved = match backend_mode() {
-        BackendMode::Base => backend::resolve_base(&ir_ops),
+        BackendMode::Base => resolved::resolve_base(&ir_ops),
         BackendMode::Fusion => resolve_fusion_backend(&ir_ops)
             .map_err(|err| WasmError::invalid(alloc::format!("requested backend fusion is unavailable: {}", err)))?,
-        BackendMode::Native => crate::vm::native::resolve_backend(&ir_ops, module, hot_mask, func_idx)
-            .map_err(|err| WasmError::invalid(alloc::format!("requested backend native is unavailable: {}", err)))?,
-        BackendMode::Auto => match active_backend().unwrap_or(BackendKind::Base) {
-            BackendKind::Native => match crate::vm::native::resolve_backend(&ir_ops, module, hot_mask, func_idx) {
-                Ok(resolved) => resolved,
-                Err(_) => match resolve_fusion_backend(&ir_ops) {
+        BackendMode::Native | BackendMode::Auto => {
+            #[cfg(feature = "fusion")]
+            {
+                match resolve_fusion_backend(&ir_ops) {
                     Ok(resolved) => resolved,
-                    Err(_) => backend::resolve_base(&ir_ops),
-                },
-            },
-            BackendKind::Fusion => match resolve_fusion_backend(&ir_ops) {
-                Ok(resolved) => resolved,
-                Err(_) => backend::resolve_base(&ir_ops),
-            },
-            BackendKind::Base => backend::resolve_base(&ir_ops),
-        },
+                    Err(_) => resolved::resolve_base(&ir_ops),
+                }
+            }
+            #[cfg(not(feature = "fusion"))]
+            {
+                resolved::resolve_base(&ir_ops)
+            }
+        }
     };
 
     #[cfg(feature = "ir-dump")]
@@ -134,7 +124,7 @@ pub fn build_for_function(
     Ok(entry)
 }
 
-#[cfg(all(test, feature = "micro-jit"))]
+#[cfg(all(test, feature = "micro-jit", feature = "legacy-fast-native-tests"))]
 mod tests {
     use super::*;
     use alloc::{
@@ -227,7 +217,7 @@ mod tests {
 
         let mut maybe_jit_buf = None;
         let resolved = match backend_impl {
-            BackendUnderTest::Base => backend::resolve_base(ir_ops),
+            BackendUnderTest::Base => resolved::resolve_base(ir_ops),
             BackendUnderTest::Jit => {
                 let mut buf = CodeBuffer::new().expect("mmap failed");
                 let resolved = resolve_native(ir_ops, &mut buf, hot_mask);

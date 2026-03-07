@@ -26,7 +26,8 @@ use crate::vm::entities::{
     DataInst, ElementInst, ExternalFn, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
-use crate::vm::interp::fast::{precompile, runtime};
+use crate::vm::interp::fast::precompile;
+use crate::vm::runtime;
 use crate::vm::store::Store;
 use crate::vm::value::{RefHandle, Value};
 
@@ -425,8 +426,10 @@ impl Instance {
             }
         }
 
-        // --- Precompile fast IR ---
-        precompile::precompile_module_two_pass(&store)?;
+        // --- Precompile handler-based fast IR when the active runtime family needs it ---
+        if !matches!(crate::vm::backend::backend_mode(), crate::vm::backend::BackendMode::Native) {
+            precompile::precompile_module_two_pass(&store)?;
+        }
 
         // --- Run start function ---
         if let Some(start_idx) = start_func_index {

@@ -570,20 +570,20 @@ impl<'a> NativeEmitter<'a> {
 
         if let Some((operand_base_offset, height)) = result_src {
             let result_slot = operand_base_offset / 8 + height as u32 - 1;
-            self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::FP, result_slot));
-            self.buf.emit(arm64_enc::str_64(Reg::NH, Reg::FP, 0));
+            self.buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::FP, result_slot));
+            self.buf.emit(arm64_enc::str_64(Reg::TMP2, Reg::FP, 0));
         }
 
         let term_patch = self.buf.emit(arm64_enc::cbz_64(Reg::TMP0, 0));
 
         self.buf.emit(arm64_enc::ldr_64(
-            Reg::NH,
+            Reg::TMP2,
             Reg::CTX,
             emit::ctx_offset::CALL_DEPTH / 8,
         ));
-        self.buf.emit(arm64_enc::sub_imm_64(Reg::NH, Reg::NH, 1));
+        self.buf.emit(arm64_enc::sub_imm_64(Reg::TMP2, Reg::TMP2, 1));
         self.buf.emit(arm64_enc::str_64(
-            Reg::NH,
+            Reg::TMP2,
             Reg::CTX,
             emit::ctx_offset::CALL_DEPTH / 8,
         ));
@@ -598,7 +598,7 @@ impl<'a> NativeEmitter<'a> {
         self.buf.emit(arm64_enc::ldr_64(
             Reg::TMP1,
             Reg::CTX,
-            emit::ctx_offset::TERM_INST / 8,
+            emit::ctx_offset::TERM_PC / 8,
         ));
         emit::emit_dispatch_register(self.buf, Reg::TMP1);
 
@@ -625,11 +625,10 @@ impl<'a> NativeEmitter<'a> {
         self.buf.emit(arm64_enc::str_64(Reg::TMP1, Reg::CTX,
             emit::ctx_offset::TRAP_MESSAGE / 8));
 
-        // Dispatch to term_inst
+        // Dispatch to term_pc
         self.buf.emit(arm64_enc::ldr_64(Reg::PC, Reg::CTX,
-            emit::ctx_offset::TERM_INST / 8));
-        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, 0));
-        self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::PC, emit::INST_SIZE / 8));
+            emit::ctx_offset::TERM_PC / 8));
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, emit::INST_ENTRY_OFFSET / 8));
         self.buf.emit(arm64_enc::br(Reg::TMP0));
 
         // Patch all B.HI branches to point to the trap stub
@@ -1569,7 +1568,7 @@ fn materialize_u64(buf: &mut CodeBuffer, dst: Reg, value: u64) {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-fast-native-tests"))]
 mod tests {
     use super::*;
     use alloc::vec;

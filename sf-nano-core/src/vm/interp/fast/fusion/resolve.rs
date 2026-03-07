@@ -6,13 +6,13 @@
 use alloc::vec::Vec;
 
 use crate::vm::lowered::{IrOp, IrOpKind, OpIndex};
-use super::super::builder::backend::{CompactionDisposition, ResolvedInst};
+use super::super::resolved::{CompactionDisposition, ResolvedInst};
 use super::super::handlers::OpHandler as Handler;
 use super::super::handlers::full_set;
 #[allow(unused_imports)]
 use super::super::handler_lookup;
 use super::super::encoding;
-use super::super::builder::ir_resolve::resolve_handler;
+use super::super::compiler::ir_resolve::resolve_handler;
 
 // Include the generated IR-level fusion pattern matching code.
 // The generated file defines `try_fuse()` and per-pattern `try_fuse_*()` functions.

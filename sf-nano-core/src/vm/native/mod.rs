@@ -6,11 +6,18 @@
 
 use crate::vm::entities::ModuleInst;
 use crate::vm::lowered::IrOp;
-use crate::vm::interp::fast::builder::backend::ResolvedInst;
 
 mod code_buf;
+pub mod code;
+pub mod compiler;
+pub mod context;
 mod group_meta;
 mod debug_map;
+mod finalizer;
+pub mod instruction;
+pub mod precompile;
+pub mod resolved;
+pub mod runtime;
 mod samply_jitdump;
 mod arm64;
 
@@ -32,13 +39,13 @@ pub fn resolve_backend(
     module: &ModuleInst,
     hot_local_mask: [bool; 3],
     func_idx: u32,
-) -> Result<alloc::vec::Vec<ResolvedInst>, &'static str> {
+) -> Result<alloc::vec::Vec<resolved::ResolvedNativeInst>, &'static str> {
     let mut buf = module.native_code_buffer()?;
-    Ok(arm64::resolve_native_with_context(
+    arm64::resolve_native_with_context(
         ir_ops,
         &mut buf,
         hot_local_mask,
         &module.name,
         func_idx,
-    ))
+    )
 }

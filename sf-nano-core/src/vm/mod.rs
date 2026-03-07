@@ -1,12 +1,15 @@
 pub mod backend;
 pub mod compile;
+pub mod compaction;
 pub mod entities;
 pub(crate) mod expr_eval;
 pub mod instance;
 pub mod interp;
 pub mod lowered;
+pub mod operand_encoding;
 #[cfg(feature = "micro-jit")]
 pub mod native;
 pub mod planner;
+pub mod runtime;
 pub mod store;
 pub mod value;

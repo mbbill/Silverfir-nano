@@ -6,13 +6,14 @@
 //! - `context`: Hot state + opaque context container.
 //! - `fast_code`: FastCode storage and FastCodeCache.
 //! - `handlers/`: Handler implementations organized by category.
-//! - `builder/`: Modular IR builder components.
+//! - `resolved`: Shared resolved instruction form for base/fusion/native.
+//! - `compiler/`: Fast-instruction assembly and finalization.
 //! - `encoding`: Generated instruction encoding/decoding.
 
 /// Number of TOS (Top-of-Stack) registers in the fast interpreter.
 pub const TOS_REGISTER_COUNT: usize = 4;
 
-pub mod builder;
+pub mod compiler;
 pub mod context;
 pub mod encoding;
 pub mod fast_code;
@@ -30,3 +31,4 @@ pub mod precompile;
 pub mod runtime;
 
 pub mod fusion;
+pub mod resolved;

@@ -4,7 +4,7 @@
 //! In SP-based model, we don't track individual slot types - just height.
 
 use super::common::OpIndex;
-use crate::vm::planner::CompileConfig;
+use crate::vm::planner::{CompileConfig, TosState};
 
 use alloc::vec::Vec;
 
@@ -65,10 +65,8 @@ pub struct StackTracker {
     height: usize,
     max_height: usize,
 
-    /// Number of stack values currently in memory (not in TOS registers)
-    /// Invariant: spill_depth <= height
-    /// Invariant: height - spill_depth <= config.tos_register_count
-    spill_depth: usize,
+    /// Backend-managed TOS cache state.
+    tos: TosState,
 
     // Control flow
     control_stack: Vec<ControlFrame>,
@@ -89,7 +87,7 @@ impl StackTracker {
             results_count,
             height: 0,
             max_height: 0,
-            spill_depth: 0,
+            tos: TosState::new(config.tos_register_count),
             control_stack: Vec::with_capacity(16),
             unreachable: false,
         };
@@ -143,11 +141,7 @@ impl StackTracker {
     pub fn pop(&mut self) {
         if !self.unreachable {
             self.height = self.height.saturating_sub(1);
-            // Adjust spill_depth if it exceeds height
-            if self.spill_depth > self.height {
-                self.spill_depth = self.height;
-            }
-            self.assert_invariants();
+            self.tos.clamp_to_height(self.height);
         }
     }
 
@@ -156,11 +150,7 @@ impl StackTracker {
     pub fn pop_n(&mut self, n: usize) {
         if !self.unreachable {
             self.height = self.height.saturating_sub(n);
-            // Adjust spill_depth if it exceeds height
-            if self.spill_depth > self.height {
-                self.spill_depth = self.height;
-            }
-            self.assert_invariants();
+            self.tos.clamp_to_height(self.height);
         }
     }
 
@@ -189,19 +179,19 @@ impl StackTracker {
     /// Number of stack values currently spilled to memory.
     #[inline]
     pub fn spill_depth(&self) -> usize {
-        self.spill_depth
+        self.tos.spill_depth()
     }
 
     /// Minimum spill depth: height - tos_register_count (clamped to 0).
     #[inline]
     pub fn min_spill_depth(&self) -> usize {
-        self.height.saturating_sub(self.config.tos_register_count)
+        self.tos.min_spill_depth(self.height)
     }
 
     /// Number of values currently in TOS registers.
     #[inline]
     pub fn tos_count(&self) -> usize {
-        self.height - self.spill_depth
+        self.tos.tos_count(self.height)
     }
 
     /// Returns depth variant (1-tos_register_count) for handler selection.
@@ -211,73 +201,51 @@ impl StackTracker {
     /// - otherwise: ((depth - 1) % TOS_REGISTER_COUNT) + 1
     #[inline]
     pub fn depth_variant(&self) -> u8 {
-        if self.height == 0 {
-            1
-        } else {
-            (((self.height - 1) % self.config.tos_register_count) + 1) as u8
-        }
+        self.tos.depth_variant(self.height)
     }
 
     /// Returns true if TOS cache is full and a spill is needed before push.
     #[inline]
     pub fn needs_spill_before_push(&self) -> bool {
-        self.tos_count() >= self.config.tos_register_count
+        self.tos.needs_spill_before_push(self.height)
     }
 
     /// Returns true if spill_depth > min_spill_depth (needs fill before control flow).
     #[inline]
     pub fn needs_fill_before_control_flow(&self) -> bool {
-        self.spill_depth > self.min_spill_depth()
+        self.tos.needs_fill_before_control_flow(self.height)
     }
 
     /// Record that `count` values were spilled from TOS to memory.
     #[inline]
     pub fn record_spill(&mut self, count: usize) {
-        self.spill_depth += count;
-        self.assert_invariants();
+        self.tos.record_spill(self.height, count);
     }
 
     /// Record that `count` values were filled from memory to TOS.
     #[inline]
     pub fn record_fill(&mut self, count: usize) {
-        self.spill_depth = self.spill_depth.saturating_sub(count);
-        self.assert_invariants();
+        self.tos.record_fill(self.height, count);
     }
 
     /// Reset TOS state: all values are in memory (spill_depth = height).
     /// Used after calls, control flow merges, etc.
     #[inline]
     pub fn reset_tos_state(&mut self) {
-        self.spill_depth = self.height;
-        self.assert_invariants();
+        self.tos.reset(self.height);
     }
 
     /// Normalize for control flow: reduce spill_depth to minimum.
     /// Returns the number of fills needed.
     #[inline]
     pub fn normalize_for_control_flow(&mut self) -> usize {
-        let min = self.min_spill_depth();
-        let fill_count = self.spill_depth.saturating_sub(min);
-        self.spill_depth = min;
-        self.assert_invariants();
-        fill_count
+        self.tos.normalize_for_control_flow(self.height)
     }
 
     /// Debug assertions for TOS invariants.
     #[inline]
     pub fn assert_invariants(&self) {
-        debug_assert!(
-            self.spill_depth <= self.height,
-            "spill_depth ({}) must be <= height ({})",
-            self.spill_depth,
-            self.height
-        );
-        debug_assert!(
-            self.height - self.spill_depth <= self.config.tos_register_count,
-            "TOS invariant violated: tos_count ({}) > TOS_REGISTER_COUNT ({})",
-            self.height - self.spill_depth,
-            self.config.tos_register_count
-        );
+        self.tos.assert_invariants(self.height);
     }
 
     // =========================================================================
@@ -364,7 +332,7 @@ impl StackTracker {
             // Reset height to start + params
             self.height = frame.start_height + frame.param_count;
             // Reset TOS state: all values are in memory after control flow merge
-            self.spill_depth = self.height;
+            self.tos.reset(self.height);
             self.unreachable = false;
         }
     }
@@ -390,10 +358,7 @@ impl StackTracker {
         let can_preserve = !has_stack_drop && new_height == self.height;
 
         // Calculate preserved TOS depth: min(new_height, current_tos_depth)
-        let current_tos_depth = self
-            .height
-            .saturating_sub(self.spill_depth)
-            .min(self.config.tos_register_count);
+        let current_tos_depth = self.tos.tos_count(self.height);
         let preserved_tos_depth = if can_preserve {
             current_tos_depth.min(new_height)
         } else {
@@ -401,7 +366,7 @@ impl StackTracker {
         };
 
         self.height = new_height;
-        self.spill_depth = new_height.saturating_sub(preserved_tos_depth);
+        self.tos.restore_preserved_depth(self.height, preserved_tos_depth);
         self.unreachable = false;
         self.assert_invariants();
 

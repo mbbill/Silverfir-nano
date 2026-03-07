@@ -24,7 +24,7 @@ pub fn lower_to_ir<'a>(
     stack: &'a mut StackTracker,
     hot_locals: HotLocalPlan,
 ) -> Result<Vec<IrOp>, WasmError> {
-    let semantic_ops = crate::vm::compile::ir_lower::lower_to_semantic_ir(code, ctx, stack)?;
+    let semantic_ops = crate::vm::compile::decode::lower_to_semantic_ir(code, ctx, stack)?;
     Ok(backend_lower::lower_to_lowered_ir(
         semantic_ops,
         hot_locals,

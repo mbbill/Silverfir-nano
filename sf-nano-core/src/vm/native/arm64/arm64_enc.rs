@@ -1376,7 +1376,7 @@ mod tests {
         // ldr x2, [x21, #0]
         assert_eq!(ldr_64(Reg::TMP0, Reg::PC, 0), 0xF94002A2);
         // ldr x1, [x21, #0x20] (offset=0x20, scale=8, imm12=4)
-        assert_eq!(ldr_64(Reg::NH, Reg::PC, 4), 0xF94012A1);
+        assert_eq!(ldr_64(Reg::TMP1, Reg::PC, 4), 0xF94012AA);
     }
 
     #[test]
@@ -1432,25 +1432,25 @@ mod tests {
     #[test]
     fn test_str_f64() {
         // str d0, [x1, #8]
-        assert_eq!(str_f64(0, Reg::NH, 1), 0xFD000420);
+        assert_eq!(str_f64(0, Reg::TMP1, 1), 0xFD000560);
     }
 
     #[test]
     fn test_ldr_f64() {
         // ldr d0, [x1, #8]
-        assert_eq!(ldr_f64(0, Reg::NH, 1), 0xFD400420);
+        assert_eq!(ldr_f64(0, Reg::TMP1, 1), 0xFD400560);
     }
 
     #[test]
     fn test_str_f32() {
         // str s0, [x1, #4]
-        assert_eq!(str_f32(0, Reg::NH, 1), 0xBD000420);
+        assert_eq!(str_f32(0, Reg::TMP1, 1), 0xBD000560);
     }
 
     #[test]
     fn test_ldr_f32() {
         // ldr s0, [x1, #4]
-        assert_eq!(ldr_f32(0, Reg::NH, 1), 0xBD400420);
+        assert_eq!(ldr_f32(0, Reg::TMP1, 1), 0xBD400560);
     }
 
     // --- Load / Store register offset ---

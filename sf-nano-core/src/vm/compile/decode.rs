@@ -684,13 +684,25 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(BLOCK) => {
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
-                let idx = self.emit(CoreOpKind::Block, 0);
+                let idx = self.emit(
+                    SemanticOpKind::Block {
+                        params: params as u16,
+                        results: results as u16,
+                    },
+                    0,
+                );
                 self.stack.enter_block(BlockKind::Block, params, results, idx);
             }
             OP(LOOP) => {
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
                 self.emit_cache_spill_all();
-                self.emit(CoreOpKind::Loop, 0);
+                self.emit(
+                    SemanticOpKind::Loop {
+                        params: params as u16,
+                        results: results as u16,
+                    },
+                    0,
+                );
                 let loop_target = self.current_index();
                 self.emit_cache_fill_if_needed();
                 self.stack.enter_block(BlockKind::Loop, params, results, loop_target);
@@ -701,13 +713,19 @@ impl<'a> IrLower<'a> {
                 let v = self.pre_pop_variant();
                 self.stack.pop();
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
-                let idx = self.emit_with_target(CoreOpKind::If, v);
+                let idx = self.emit_with_target(
+                    SemanticOpKind::If {
+                        params: params as u16,
+                        results: results as u16,
+                    },
+                    v,
+                );
                 self.stack.enter_block(BlockKind::If, params, results, idx);
                 self.stack.set_if_inst(idx);
             }
             OP(ELSE) => {
                 self.emit_cache_spill_all();
-                let idx = self.emit_with_target(CoreOpKind::Else, 0);
+                let idx = self.emit_with_target(SemanticOpKind::Else, 0);
                 self.stack.set_else_inst(idx);
                 self.stack.enter_else();
                 let else_body_start = self.current_index();
@@ -736,7 +754,7 @@ impl<'a> IrLower<'a> {
                 if needs_fill {
                     self.emit_cache_fill_if_needed();
                 }
-                self.emit(CoreOpKind::End, 0);
+                self.emit(SemanticOpKind::End, 0);
                 if let Some((frame, _can_preserve)) = self.stack.exit_block() {
                     for fixup in &frame.pending_fixups {
                         if let Some(entry_idx) = fixup.br_table_entry {
@@ -867,18 +885,30 @@ impl<'a> IrLower<'a> {
                                 SemanticOpKind::CallInternal {
                                     callee: callee_inst as *const _ as u64,
                                     delta,
+                                    params: params as u16,
+                                    results: results as u16,
                                 },
                                 0,
                             );
                         } else {
                             self.emit(
-                                SemanticOpKind::CallExternal { func_idx: *func_idx, delta },
+                                SemanticOpKind::CallExternal {
+                                    func_idx: *func_idx,
+                                    delta,
+                                    params: params as u16,
+                                    results: results as u16,
+                                },
                                 0,
                             );
                         }
                     } else {
                         self.emit(
-                            SemanticOpKind::CallExternal { func_idx: *func_idx, delta },
+                            SemanticOpKind::CallExternal {
+                                func_idx: *func_idx,
+                                delta,
+                                params: params as u16,
+                                results: results as u16,
+                            },
                             0,
                         );
                     }
@@ -897,6 +927,8 @@ impl<'a> IrLower<'a> {
                             type_idx: *typeidx,
                             table_idx: *tableidx,
                             delta,
+                            params: params as u16,
+                            results: results as u16,
                         },
                         0,
                     );

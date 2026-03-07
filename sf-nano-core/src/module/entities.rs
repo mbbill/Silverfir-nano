@@ -16,6 +16,8 @@ use crate::error::WasmError;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::ValueType;
 use crate::vm::interp::fast::fast_code::{FastCode, FastCodeCache};
+#[cfg(feature = "micro-jit")]
+use crate::vm::native::code::{NativeCode, NativeCodeCache};
 
 pub use super::type_defs::FunctionType;
 
@@ -90,6 +92,10 @@ pub struct FunctionSpec {
     code_offset: usize,
     fast_code: UnsafeCell<Option<FastCode>>,
     fast_cache: UnsafeCell<FastCodeCache>,
+    #[cfg(feature = "micro-jit")]
+    native_code: UnsafeCell<Option<NativeCode>>,
+    #[cfg(feature = "micro-jit")]
+    native_cache: UnsafeCell<NativeCodeCache>,
 }
 
 // SAFETY: FunctionSpec is only mutated during compilation (single-threaded).
@@ -106,6 +112,10 @@ impl FunctionSpec {
             code_offset: 0,
             fast_code: UnsafeCell::new(None),
             fast_cache: UnsafeCell::new(FastCodeCache::default()),
+            #[cfg(feature = "micro-jit")]
+            native_code: UnsafeCell::new(None),
+            #[cfg(feature = "micro-jit")]
+            native_cache: UnsafeCell::new(NativeCodeCache::default()),
         }
     }
 
@@ -172,6 +182,31 @@ impl FunctionSpec {
         unsafe {
             *self.fast_code.get() = Some(code);
             *self.fast_cache.get() = cache;
+        }
+    }
+
+    #[cfg(feature = "micro-jit")]
+    #[inline(always)]
+    pub fn has_native_code(&self) -> bool {
+        unsafe { (*self.native_cache.get()).is_compiled() }
+    }
+
+    #[cfg(feature = "micro-jit")]
+    #[inline(always)]
+    pub fn native_cache(&self) -> NativeCodeCache {
+        unsafe { *self.native_cache.get() }
+    }
+
+    #[cfg(feature = "micro-jit")]
+    pub fn get_native_code(&self) -> Option<&NativeCode> {
+        unsafe { (*self.native_code.get()).as_ref() }
+    }
+
+    #[cfg(feature = "micro-jit")]
+    pub fn set_native_code(&self, code: NativeCode, cache: NativeCodeCache) {
+        unsafe {
+            *self.native_code.get() = Some(code);
+            *self.native_cache.get() = cache;
         }
     }
 }
