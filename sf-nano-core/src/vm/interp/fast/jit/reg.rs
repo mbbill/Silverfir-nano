@@ -17,6 +17,8 @@ pub enum Reg {
     TMP1 = 3,  // x3  - scratch
     TMP2 = 4,  // x4  - JIT-private scratch / frame-alias register 0
     TMP3 = 5,  // x5  - JIT-private scratch / frame-alias register 1
+    TMP4 = 6,  // x6  - JIT-private group-local cache register 0
+    TMP5 = 7,  // x7  - JIT-private group-local cache register 1
     CTX = 20,  // x20 - context pointer
     PC  = 21,  // x21 - program counter (Instruction*)
     FP  = 22,  // x22 - frame pointer (locals array)
