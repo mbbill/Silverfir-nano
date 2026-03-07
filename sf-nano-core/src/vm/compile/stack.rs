@@ -3,14 +3,13 @@
 //! Tracks compile-time stack height and control flow structure.
 //! In SP-based model, we don't track individual slot types - just height.
 
-use super::super::TOS_REGISTER_COUNT;
+use super::config::{CompileConfig, MAX_HOT_LOCAL_COUNT};
 use super::ir::OpIndex;
-use crate::vm::interp::fast::frame_layout;
 
 use alloc::vec::Vec;
 
-/// Number of hot local register slots (l0, l1, ...).
-pub const HOT_LOCAL_COUNT: usize = 3;
+/// Number of hot local register slots currently representable in lowered IR.
+pub const HOT_LOCAL_COUNT: usize = MAX_HOT_LOCAL_COUNT;
 
 /// Control frame kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +58,7 @@ pub struct ControlFrame {
 /// In SP-based model, we only track stack height, not individual slot contents.
 /// Values are always at sp-relative positions, accessed via sp[-1], sp[-2], etc.
 pub struct StackTracker {
+    config: CompileConfig,
     // Frame layout
     params_count: usize,
     locals_count: usize,
@@ -74,7 +74,7 @@ pub struct StackTracker {
 
     /// Number of stack values currently in memory (not in TOS registers)
     /// Invariant: spill_depth <= height
-    /// Invariant: height - spill_depth <= TOS_REGISTER_COUNT (at most TOS_REGISTER_COUNT in TOS cache)
+    /// Invariant: height - spill_depth <= config.tos_register_count
     spill_depth: usize,
 
     // Control flow
@@ -83,8 +83,15 @@ pub struct StackTracker {
 }
 
 impl StackTracker {
-    pub fn new(params_count: usize, locals_count: usize, results_count: usize, hot_locals: [Option<u32>; HOT_LOCAL_COUNT]) -> Self {
+    pub fn new(
+        config: CompileConfig,
+        params_count: usize,
+        locals_count: usize,
+        results_count: usize,
+        hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
+    ) -> Self {
         let mut tracker = Self {
+            config,
             params_count,
             locals_count,
             results_count,
@@ -109,6 +116,11 @@ impl StackTracker {
         });
 
         tracker
+    }
+
+    #[inline]
+    pub fn config(&self) -> CompileConfig {
+        self.config
     }
 
     // =========================================================================
@@ -189,11 +201,10 @@ impl StackTracker {
         self.spill_depth
     }
 
-    /// Minimum spill depth: height - TOS_REGISTER_COUNT (clamped to 0).
-    /// At most TOS_REGISTER_COUNT values can be in TOS registers.
+    /// Minimum spill depth: height - tos_register_count (clamped to 0).
     #[inline]
     pub fn min_spill_depth(&self) -> usize {
-        self.height.saturating_sub(TOS_REGISTER_COUNT)
+        self.height.saturating_sub(self.config.tos_register_count)
     }
 
     /// Number of values currently in TOS registers.
@@ -202,7 +213,7 @@ impl StackTracker {
         self.height - self.spill_depth
     }
 
-    /// Returns depth variant (1-TOS_REGISTER_COUNT) for handler selection.
+    /// Returns depth variant (1-tos_register_count) for handler selection.
     ///
     /// This matches the generated wrapper mapping in `build/fast_interp/gen_c_wrappers.rs`:
     /// - depth == 0 => D1
@@ -212,14 +223,14 @@ impl StackTracker {
         if self.height == 0 {
             1
         } else {
-            (((self.height - 1) % TOS_REGISTER_COUNT) + 1) as u8
+            (((self.height - 1) % self.config.tos_register_count) + 1) as u8
         }
     }
 
     /// Returns true if TOS cache is full and a spill is needed before push.
     #[inline]
     pub fn needs_spill_before_push(&self) -> bool {
-        self.tos_count() >= TOS_REGISTER_COUNT
+        self.tos_count() >= self.config.tos_register_count
     }
 
     /// Returns true if spill_depth > min_spill_depth (needs fill before control flow).
@@ -271,10 +282,10 @@ impl StackTracker {
             self.height
         );
         debug_assert!(
-            self.height - self.spill_depth <= TOS_REGISTER_COUNT,
+            self.height - self.spill_depth <= self.config.tos_register_count,
             "TOS invariant violated: tos_count ({}) > TOS_REGISTER_COUNT ({})",
             self.height - self.spill_depth,
-            TOS_REGISTER_COUNT
+            self.config.tos_register_count
         );
     }
 
@@ -306,7 +317,7 @@ impl StackTracker {
     /// operand[0] is at fp[operand_base()]
     #[inline]
     pub fn operand_base(&self) -> usize {
-        frame_layout::operand_stack_base(self.frame_size())
+        self.config.operand_stack_base(self.frame_size())
     }
 
     /// End of the entire frame (slot index).
@@ -323,7 +334,7 @@ impl StackTracker {
     /// Whether hot local register `n` is enabled for this function (0=l0, 1=l1, ...).
     #[inline]
     pub fn has_hot_local(&self, n: usize) -> bool {
-        n < HOT_LOCAL_COUNT && self.hot_locals[n].is_some()
+        n < self.config.hot_local_count && n < HOT_LOCAL_COUNT && self.hot_locals[n].is_some()
     }
 
     /// Convenience aliases.
@@ -424,7 +435,10 @@ impl StackTracker {
         let can_preserve = !has_stack_drop && new_height == self.height;
 
         // Calculate preserved TOS depth: min(new_height, current_tos_depth)
-        let current_tos_depth = self.height.saturating_sub(self.spill_depth).min(TOS_REGISTER_COUNT);
+        let current_tos_depth = self
+            .height
+            .saturating_sub(self.spill_depth)
+            .min(self.config.tos_register_count);
         let preserved_tos_depth = if can_preserve {
             current_tos_depth.min(new_height)
         } else {

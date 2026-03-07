@@ -7,9 +7,7 @@
 //! Unset = dump all functions.
 
 use super::backend::ResolvedInst;
-use super::hot_local;
-use super::ir::{IrOp, IrOpKind};
-use super::stack::HOT_LOCAL_COUNT;
+use crate::vm::compile::{HOT_LOCAL_COUNT, hot_local, ir::{IrOp, IrOpKind}};
 use std::sync::OnceLock;
 use std::collections::HashSet;
 use alloc::{vec, vec::Vec};

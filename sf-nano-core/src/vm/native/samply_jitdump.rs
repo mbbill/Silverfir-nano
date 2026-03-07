@@ -1,6 +1,6 @@
 use alloc::format;
 
-use crate::vm::interp::fast::builder::ir::{IrOp, OpIndex};
+use crate::vm::compile::ir::{IrOp, OpIndex};
 use crate::vm::native::group_meta::render_symbol_name;
 
 #[cfg(any(feature = "wasi", feature = "std", test))]

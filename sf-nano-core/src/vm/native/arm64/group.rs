@@ -6,14 +6,12 @@
 
 use alloc::vec::Vec;
 use super::arm64_enc::{self, Cond};
-use super::code_buf::CodeBuffer;
 use super::codegen::{NativeEmitter, depth_variant, tos_reg};
-use super::debug_map;
 use super::op_meta;
 use super::reg::Reg;
-use super::samply_jitdump;
+use super::super::{CodeBuffer, debug_map, samply_jitdump};
+use crate::vm::compile::ir::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
-use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
 use crate::vm::interp::fast::handlers::OpHandler;
 
 /// Check if an IrOp is native-able, considering kind, height, and hot local mask.
@@ -744,15 +742,15 @@ fn emit_op(e: &mut NativeEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
 mod tests {
     use alloc::vec;
     use super::*;
-    use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind};
+    use crate::vm::compile::ir::{IrOp, IrOpKind};
     use crate::vm::interp::fast::instruction::Instruction;
     use crate::vm::interp::fast::handlers::{self, OpHandler, NextHandler, run_trampoline};
     use crate::vm::interp::fast::handlers::full_set;
     use crate::vm::interp::fast::context::Context;
-    use crate::vm::native::codegen::{depth_variant, tos_reg};
-    use crate::vm::native::reg::Reg;
-    use crate::vm::native::arm64_enc;
-    use crate::vm::native::emit;
+    use super::super::arm64_enc;
+    use super::super::codegen::{depth_variant, tos_reg};
+    use super::super::emit;
+    use super::super::reg::Reg;
 
     /// Helper: create an IrOp with given kind and pre_height.
     fn make_op(kind: IrOpKind, pre_height: u16) -> IrOp {
@@ -860,7 +858,7 @@ mod tests {
 
         let ops = vec![
             make_op(IrOpKind::I32Const { value: 5 }, 0),
-            make_op(IrOpKind::CallExternal { func_idx: 0, delta: crate::vm::interp::fast::builder::ir::SlotRef::operand_relative(0) }, 0),
+            make_op(IrOpKind::CallExternal { func_idx: 0, delta: SlotRef::operand_relative(0) }, 0),
             make_op(IrOpKind::I32Const { value: 3 }, 0),
         ];
 
@@ -885,7 +883,7 @@ mod tests {
             {
                 let mut op = make_op(IrOpKind::BrIfSimple, 1);
                 op.has_target = true;
-                op.alt_target = Some(crate::vm::interp::fast::builder::ir::OpIndex::from(10));
+                op.alt_target = Some(OpIndex::from(10));
                 op
             },
         ];
@@ -895,7 +893,7 @@ mod tests {
         // JIT entry with br_if encoding
         assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
         assert!(resolved[0].has_target);
-        assert_eq!(resolved[0].alt_target, Some(crate::vm::interp::fast::builder::ir::OpIndex::from(10)));
+        assert_eq!(resolved[0].alt_target, Some(OpIndex::from(10)));
         assert!(!resolved[0].is_removed());
 
         // Rest are skip
@@ -1098,7 +1096,7 @@ mod tests {
             {
                 let mut op = make_op(IrOpKind::BrIfSimple, 1);
                 op.has_target = true;
-                op.alt_target = Some(crate::vm::interp::fast::builder::ir::OpIndex::from(2));
+                op.alt_target = Some(OpIndex::from(2));
                 op
             },
             make_op(IrOpKind::I32Const { value: 5 }, 0),

@@ -1,36 +1,27 @@
-//! Modular IR builder for the fast interpreter.
+//! Backend assembly for the fast interpreter instruction format.
 //!
 //! Pipeline:
 //!   Wasm bytecode → ir_lower → Vec<IrOp> → selected backend → Vec<ResolvedInst> → finalizer → Box<[Instruction]>
 //!
 //! Modules:
-//! - `context`: Function metadata and type resolution
-//! - `stack`: Compile-time stack tracking
-//! - `ir`: Neutral IR types (purely semantic)
-//! - `ir_lower`: Wasm→IR lowering
-//! - `ir_resolve`: Handler/operand resolution for IR ops
 //! - `backend`: ResolvedInst type, base 1:1 resolution
+//! - `ir_resolve`: Handler/operand resolution for IR ops
 //! - `finalizer_ir`: Compact, patch, and build final instructions
+//!
+//! The backend-neutral compile frontend now lives in `vm::compile`.
 
 pub mod backend;
-mod context;
 mod finalizer_ir;
-pub mod hot_local;
-pub mod ir;
 #[cfg(feature = "ir-dump")]
 mod ir_dump;
-pub mod ir_lower;
 pub mod ir_resolve;
-mod stack;
-
-pub use context::CompileContext;
-pub use stack::{BlockKind, ControlFrame, StackTracker, HOT_LOCAL_COUNT};
 
 use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
         backend::{BackendKind, BackendMode, active_backend, backend_mode},
+        compile::{self, CompileContext, StackTracker},
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
         store::Store,
@@ -41,12 +32,12 @@ use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
 
 #[cfg(feature = "fusion")]
-fn resolve_fusion_backend(ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(ir_ops: &[compile::ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Ok(super::fusion::resolve::resolve_fusion(ir_ops))
 }
 
 #[cfg(not(feature = "fusion"))]
-fn resolve_fusion_backend(_ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(_ir_ops: &[compile::ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Err("fusion backend not compiled in")
 }
 
@@ -68,15 +59,29 @@ pub fn build_for_function(
     let results_count = func_type.results().len();
     let locals_count = function.locals().len();
 
+    let selected_backend = match backend_mode() {
+        BackendMode::Base => BackendKind::Base,
+        BackendMode::Fusion => BackendKind::Fusion,
+        BackendMode::Native => BackendKind::Native,
+        BackendMode::Auto => active_backend().unwrap_or(BackendKind::Base),
+    };
+    let compile_config = selected_backend.compile_config();
+
     let ctx = CompileContext::new(types, store, module, results_count);
     let frame_size = params_count + locals_count;
-    let raw_hot_locals = hot_local::find_hot_locals(code, frame_size);
-    let hot_locals = hot_local::compute_effective_indices(&raw_hot_locals, frame_size);
+    let raw_hot_locals = compile::hot_local::find_hot_locals(code, frame_size, compile_config);
+    let hot_locals = compile::hot_local::compute_effective_indices(&raw_hot_locals, frame_size);
 
-    let mut stack = StackTracker::new(params_count, locals_count, results_count, hot_locals);
+    let mut stack = StackTracker::new(
+        compile_config,
+        params_count,
+        locals_count,
+        results_count,
+        hot_locals,
+    );
 
     // IR pipeline: lower to neutral IR
-    let ir_ops = ir_lower::lower_to_ir(code, &ctx, &mut stack, hot_locals)?;
+    let ir_ops = compile::ir_lower::lower_to_ir(code, &ctx, &mut stack, hot_locals)?;
 
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
@@ -132,11 +137,11 @@ mod tests {
         vec,
         vec::Vec,
     };
+    use crate::vm::compile::{self, FAST_COMPILE_CONFIG, HOT_LOCAL_COUNT, ir};
     use crate::vm::interp::fast::{
         context::Context,
         handlers::{self, run_trampoline, NextHandler},
         instruction::Instruction,
-        TOS_REGISTER_COUNT,
     };
     use crate::vm::native::{CodeBuffer, resolve_native};
 
@@ -157,7 +162,7 @@ mod tests {
         if depth == 0 {
             1
         } else {
-            ((((depth - 1) as usize) % TOS_REGISTER_COUNT) + 1) as u8
+            ((((depth - 1) as usize) % FAST_COMPILE_CONFIG.tos_register_count) + 1) as u8
         }
     }
 
@@ -169,8 +174,8 @@ mod tests {
         depth_variant_for(pre_height)
     }
 
-    fn make_op(kind: ir::IrOpKind, pre_height: u16, variant: u8) -> ir::IrOp {
-        ir::IrOp {
+    fn make_op(kind: compile::ir::IrOpKind, pre_height: u16, variant: u8) -> compile::ir::IrOp {
+        compile::ir::IrOp {
             kind,
             variant,
             pre_height,
@@ -214,7 +219,7 @@ mod tests {
         hot_values: [u64; 3],
     ) -> ExecOutcome {
         let hot_locals = [None; HOT_LOCAL_COUNT];
-        let mut stack = StackTracker::new(0, locals_count, 0, hot_locals);
+        let mut stack = StackTracker::new(FAST_COMPILE_CONFIG, 0, locals_count, 0, hot_locals);
 
         let mut maybe_jit_buf = None;
         let resolved = match backend_impl {

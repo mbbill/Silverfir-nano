@@ -225,8 +225,8 @@ unsafe impl Send for CodeBuffer {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::arm64_enc;
-    use super::super::reg::Reg;
+    use super::super::arm64::arm64_enc;
+    use super::super::arm64::reg::Reg;
 
     #[test]
     fn test_mmap_allocation() {

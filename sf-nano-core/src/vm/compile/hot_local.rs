@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 use crate::utils::leb128;
-use super::stack::HOT_LOCAL_COUNT;
+use super::config::{CompileConfig, MAX_HOT_LOCAL_COUNT};
 
 /// Read an unsigned LEB128 u32 from `code` at position `i`, returning (value, new_position).
 /// Silently returns 0 on malformed input (best-effort for analysis).
@@ -207,16 +207,20 @@ pub fn local_weights(code: &[u8], frame_size: usize) -> Vec<u64> {
     weights
 }
 
-pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCAL_COUNT] {
+pub fn find_hot_locals(
+    code: &[u8],
+    frame_size: usize,
+    config: CompileConfig,
+) -> [Option<u32>; MAX_HOT_LOCAL_COUNT] {
     if frame_size == 0 {
-        return [None; HOT_LOCAL_COUNT];
+        return [None; MAX_HOT_LOCAL_COUNT];
     }
 
     let weights = local_weights(code, frame_size);
 
     // Find top-N by weight
     // Each element is (local_index, weight), sorted descending by weight.
-    let mut best: [(u32, u64); HOT_LOCAL_COUNT] = [(0, 0); HOT_LOCAL_COUNT];
+    let mut best: [(u32, u64); MAX_HOT_LOCAL_COUNT] = [(0, 0); MAX_HOT_LOCAL_COUNT];
     let mut found = 0usize;
 
     for (idx, &w) in weights.iter().enumerate() {
@@ -224,16 +228,17 @@ pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCA
             continue;
         }
         // Insert into sorted best array
-        let mut insert_at = found.min(HOT_LOCAL_COUNT);
-        for i in 0..found.min(HOT_LOCAL_COUNT) {
+        let active = config.hot_local_count.min(MAX_HOT_LOCAL_COUNT);
+        let mut insert_at = found.min(active);
+        for i in 0..found.min(active) {
             if w > best[i].1 {
                 insert_at = i;
                 break;
             }
         }
-        if insert_at < HOT_LOCAL_COUNT {
+        if insert_at < active {
             // Shift down
-            let mut j = (found.min(HOT_LOCAL_COUNT)).min(HOT_LOCAL_COUNT - 1);
+            let mut j = (found.min(active)).min(MAX_HOT_LOCAL_COUNT - 1);
             while j > insert_at {
                 best[j] = best[j - 1];
                 j -= 1;
@@ -243,8 +248,8 @@ pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCA
         }
     }
 
-    let mut result = [None; HOT_LOCAL_COUNT];
-    for i in 0..found.min(HOT_LOCAL_COUNT) {
+    let mut result = [None; MAX_HOT_LOCAL_COUNT];
+    for i in 0..found.min(config.hot_local_count).min(MAX_HOT_LOCAL_COUNT) {
         if best[i].1 > 0 {
             result[i] = Some(best[i].0);
         }
@@ -262,11 +267,11 @@ pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCA
 /// `raw` contains the original (pre-swap) hot local indices from `find_hot_locals`.
 /// Returns effective indices suitable for passing to StackTracker and init_lN.
 pub fn compute_effective_indices(
-    raw: &[Option<u32>; HOT_LOCAL_COUNT],
+    raw: &[Option<u32>; MAX_HOT_LOCAL_COUNT],
     frame_size: usize,
-) -> [Option<u32>; HOT_LOCAL_COUNT] {
-    let mut eff = [None; HOT_LOCAL_COUNT];
-    for slot in 0..HOT_LOCAL_COUNT {
+) -> [Option<u32>; MAX_HOT_LOCAL_COUNT] {
+    let mut eff = [None; MAX_HOT_LOCAL_COUNT];
+    for slot in 0..MAX_HOT_LOCAL_COUNT {
         if frame_size <= slot {
             break; // not enough locals for this register
         }
@@ -319,6 +324,7 @@ fn skip_block_type(code: &[u8], i: usize) -> usize {
 mod tests {
     use alloc::vec;
     use super::{compute_effective_indices, find_hot_locals, local_weights};
+    use crate::vm::compile::config::FAST_COMPILE_CONFIG;
 
     #[test]
     fn test_local_weights_keep_loop_depth_through_nested_block_end() {
@@ -334,7 +340,7 @@ mod tests {
 
         let weights = local_weights(&code, 3);
         assert_eq!(weights, vec![10, 10, 1]);
-        assert_eq!(find_hot_locals(&code, 3), [Some(0), Some(1), Some(2)]);
+        assert_eq!(find_hot_locals(&code, 3, FAST_COMPILE_CONFIG), [Some(0), Some(1), Some(2)]);
     }
 
     #[test]

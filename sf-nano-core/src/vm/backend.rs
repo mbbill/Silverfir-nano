@@ -1,4 +1,5 @@
 use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
+use crate::vm::compile::{CompileConfig, FAST_COMPILE_CONFIG};
 
 /// Requested backend policy for future fast-code compilation.
 ///
@@ -48,6 +49,12 @@ impl BackendKind {
             Self::Base => "base",
             Self::Fusion => "fusion",
             Self::Native => "native",
+        }
+    }
+
+    pub fn compile_config(self) -> CompileConfig {
+        match self {
+            Self::Base | Self::Fusion | Self::Native => FAST_COMPILE_CONFIG,
         }
     }
 }

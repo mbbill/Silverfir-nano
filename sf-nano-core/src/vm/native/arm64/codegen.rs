@@ -5,7 +5,7 @@
 //! interpreter's TOS register window convention.
 
 use alloc::vec::Vec;
-use super::code_buf::CodeBuffer;
+use super::super::CodeBuffer;
 use super::reg::Reg;
 use super::arm64_enc::{self, Cond};
 use super::emit;
@@ -1576,7 +1576,7 @@ mod tests {
     use crate::vm::interp::fast::instruction::Instruction;
     use crate::vm::interp::fast::handlers::{self, OpHandler, NextHandler, run_trampoline};
     use crate::vm::interp::fast::context::Context;
-    use super::super::code_buf::CodeBuffer;
+    use crate::vm::native::CodeBuffer;
 
     /// Map Reg to TOS index (for test setup).
     fn tos_idx(r: Reg) -> usize {

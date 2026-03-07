@@ -2,8 +2,8 @@
 //!
 //! Maps IrOpKind directly to handler function pointers and encoded immediates.
 
+use crate::vm::compile::ir::{IrOpKind, SlotRef};
 use super::super::handler_lookup;
-use super::ir::{IrOpKind, SlotRef};
 use super::super::handlers::full_set::*;
 use super::super::handlers::OpHandler as Handler;
 use super::super::encoding;

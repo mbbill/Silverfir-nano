@@ -3,7 +3,7 @@
 //! Provides the dispatch stub (universal JIT group exit sequence)
 //! and hot-context field offset constants.
 
-use super::code_buf::CodeBuffer;
+use super::super::CodeBuffer;
 use super::reg::Reg;
 use super::arm64_enc;
 pub use crate::vm::interp::fast::context::ctx_offset;

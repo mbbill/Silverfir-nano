@@ -8,14 +8,13 @@
 
 use alloc::vec::Vec;
 
+use super::config::HOT_LOCAL_COUNT;
 use super::context::CompileContext;
 use super::ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
 use super::stack::{BlockKind, StackTracker};
-use super::super::TOS_REGISTER_COUNT;
 use crate::error::WasmError;
 use crate::op_decoder::{Decoder, Immediate, OpcodeHandler, OpStream};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
-use crate::vm::interp::fast::frame_layout;
 
 /// Lower Wasm function body to IR.
 ///
@@ -25,7 +24,7 @@ pub fn lower_to_ir<'a>(
     code: &'a [u8],
     ctx: &'a CompileContext<'a>,
     stack: &'a mut StackTracker,
-    hot_locals: [Option<u32>; super::HOT_LOCAL_COUNT],
+    hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
 ) -> Result<Vec<IrOp>, WasmError> {
     let mut ir = IrLower {
         ctx,
@@ -163,7 +162,11 @@ impl<'a> IrLower<'a> {
     #[inline]
     fn post_push_variant(&self) -> u8 {
         let post_depth = self.stack.depth() + 1;
-        if post_depth == 0 { 1 } else { (((post_depth - 1) % TOS_REGISTER_COUNT) + 1) as u8 }
+        if post_depth == 0 {
+            1
+        } else {
+            (((post_depth - 1) % self.stack.config().tos_register_count) + 1) as u8
+        }
     }
 
     /// Variant for pop ops: pre-pop depth.
@@ -182,7 +185,7 @@ impl<'a> IrLower<'a> {
         if self.stack.needs_spill_before_push() {
             let spill_depth = self.stack.spill_depth();
             let slot = (self.stack.operand_base() + spill_depth) as u16;
-            let variant = ((spill_depth % TOS_REGISTER_COUNT) + 1) as u8;
+            let variant = ((spill_depth % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(1);
             self.emit(IrOpKind::Spill { slot, count: 1 }, variant);
         }
@@ -197,7 +200,7 @@ impl<'a> IrLower<'a> {
         if spill_depth > min_spill_for_operands {
             let fill_count = spill_depth - min_spill_for_operands;
             let slot = (self.stack.operand_base() + spill_depth - 1) as u16;
-            let variant = (((spill_depth - 1) % TOS_REGISTER_COUNT) + 1) as u8;
+            let variant = (((spill_depth - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_fill(fill_count);
             self.emit(IrOpKind::Fill { slot, count: fill_count as u8 }, variant);
         }
@@ -210,7 +213,7 @@ impl<'a> IrLower<'a> {
         let fill_count = self.stack.normalize_for_control_flow();
         if fill_count > 0 {
             let slot = (self.stack.operand_base() + old_spill_depth - 1) as u16;
-            let variant = (((old_spill_depth - 1) % TOS_REGISTER_COUNT) + 1) as u8;
+            let variant = (((old_spill_depth - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.emit(IrOpKind::Fill { slot, count: fill_count as u8 }, variant);
         }
     }
@@ -222,7 +225,7 @@ impl<'a> IrLower<'a> {
         if tos_count > 0 {
             let height = self.stack.height();
             let slot = (self.stack.operand_base() + height - 1) as u16;
-            let variant = (((height - 1) % TOS_REGISTER_COUNT) + 1) as u8;
+            let variant = (((height - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(tos_count);
             self.emit(IrOpKind::Spill { slot, count: tos_count as u8 }, variant);
         }
@@ -236,7 +239,7 @@ impl<'a> IrLower<'a> {
         if to_spill > 0 {
             let spill_depth = self.stack.spill_depth();
             let slot = (self.stack.operand_base() + spill_depth + to_spill - 1) as u16;
-            let variant = (((spill_depth + to_spill - 1) % TOS_REGISTER_COUNT) + 1) as u8;
+            let variant = (((spill_depth + to_spill - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(to_spill);
             self.emit(IrOpKind::Spill { slot, count: to_spill as u8 }, variant);
         }
@@ -818,7 +821,9 @@ impl<'a> IrLower<'a> {
                     self.emit_fill_for_operands(1);
                     let tos_count_before_spill = self.stack.tos_count();
                     self.emit_spill_all_except_top(1);
-                    let variant_idx = ((self.stack.height().saturating_sub(1) % TOS_REGISTER_COUNT) + 1) as u8;
+                    let variant_idx = ((self.stack.height().saturating_sub(1)
+                        % self.stack.config().tos_register_count)
+                        + 1) as u8;
                     let pre_pop_height = self.stack.height();
                     self.stack.pop();
                     let arity = self.stack.branch_arity(*label);
@@ -998,7 +1003,7 @@ impl<'a> IrLower<'a> {
 
     /// Emit return (specialized by arity).
     fn emit_return(&mut self, arity: usize, frame_size: usize, current_height: usize) {
-        let operand_base_offset = frame_layout::operand_base_offset(frame_size) as u32;
+        let operand_base_offset = self.stack.config().operand_base_offset(frame_size) as u32;
         match arity {
             0 => {
                 self.emit_terminal(

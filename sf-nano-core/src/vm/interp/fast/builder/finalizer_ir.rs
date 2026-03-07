@@ -7,10 +7,9 @@ use alloc::vec::Vec;
 use alloc::vec;
 use core::mem;
 
+use crate::vm::compile::{StackTracker, ir::{IrOpKind, OpIndex, SlotRef}};
 use super::backend::{CompactionDisposition, ResolvedInst};
-use super::ir::{IrOpKind, OpIndex, SlotRef};
 use super::ir_resolve::{resolve_handler, encode_operands};
-use super::stack::StackTracker;
 use super::super::handlers::OpHandler as Handler;
 use crate::vm::interp::fast::instruction::Instruction;
 
