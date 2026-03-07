@@ -71,11 +71,22 @@ FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
     }
     ctx_call_depth(ctx)++;
 
-    // Zero callee's locals
-    // Use volatile to prevent LLVM from converting this loop into bl _bzero,
-    // which would force stp/ldp x29,x30 prologue/epilogue on the entire handler.
-    for (uint16_t i = 0; i < locals_count; i++) {
-        ((volatile uint64_t*)(callee_fp + params_count))[i] = 0;
+    // Zero callee's locals.
+    //
+    // Spell this as an explicit pair-store friendly loop instead of a generic
+    // memset pattern: on AArch64 clang reliably lowers the 2-at-a-time body to
+    // `stp xzr, xzr`, which halves the store count in local-heavy callers like
+    // c-ray without turning the handler into a non-leaf `_bzero` call.
+    uint64_t* local_dst = callee_fp + params_count;
+    uint16_t remaining = locals_count;
+    while (remaining >= 2) {
+        local_dst[0] = 0;
+        local_dst[1] = 0;
+        local_dst += 2;
+        remaining -= 2;
+    }
+    if (remaining != 0) {
+        local_dst[0] = 0;
     }
 
     // Push metadata AFTER frame (at callee_fp[frame_size], [frame_size+1], [frame_size+2])
