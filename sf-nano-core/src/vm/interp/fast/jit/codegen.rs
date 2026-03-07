@@ -15,6 +15,7 @@ const TOS_REGS: [Reg; 4] = [Reg::T0, Reg::T1, Reg::T2, Reg::T3];
 
 /// Hot local registers: L0=x23, L1=x24, L2=x25.
 const LOCAL_REGS: [Reg; 3] = [Reg::L0, Reg::L1, Reg::L2];
+const FRAME_ALIAS_GPR: Reg = Reg::TMP2;
 const FP_ALIAS_REGS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 /// Static OOB trap message (null-terminated C string).
@@ -39,9 +40,9 @@ struct FpLoc {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FrameFpAlias {
+struct FrameAlias {
     idx: u16,
-    fp: FpLoc,
+    loc: SlotLoc,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,8 +99,11 @@ pub struct JitEmitter<'a> {
     slots: [SlotLoc; 4],
     /// Current FP aliases for hot locals L0-L2, when they are known to still match.
     local_fp_aliases: [Option<FpLoc>; 3],
-    /// Best-effort FP alias for one uncached frame local within the current group.
-    frame_fp_alias: Option<FrameFpAlias>,
+    /// Best-effort alias for one uncached frame local within the current group.
+    ///
+    /// The alias location must be stable across stack shifts:
+    /// either a reserved FPR or the dedicated `FRAME_ALIAS_GPR`.
+    frame_alias: Option<FrameAlias>,
     /// Byte offset where this group's code starts.
     pub start_offset: usize,
     /// Byte offsets of B.HI instructions to patch to the OOB trap stub.
@@ -114,7 +118,7 @@ impl<'a> JitEmitter<'a> {
             height: initial_height,
             slots: [SlotLoc::canonical(); 4],
             local_fp_aliases: [None; 3],
-            frame_fp_alias: None,
+            frame_alias: None,
             start_offset,
             trap_patches: Vec::new(),
         }
@@ -203,7 +207,7 @@ impl<'a> JitEmitter<'a> {
             self.slots[pos - 1].fp = None;
         }
         self.local_fp_aliases = [None; 3];
-        self.frame_fp_alias = None;
+        self.frame_alias = None;
     }
 
     fn materialize_slot_to_canonical(&mut self, pos: u8) {
@@ -272,7 +276,10 @@ impl<'a> JitEmitter<'a> {
                 .iter()
                 .flatten()
                 .any(|fp| fp.reg == reg)
-            || self.frame_fp_alias.is_some_and(|alias| alias.fp.reg == reg)
+            || self
+                .frame_alias
+                .and_then(|alias| alias.loc.fp)
+                .is_some_and(|fp| fp.reg == reg)
     }
 
     fn alloc_fp_reg(&self) -> u8 {
@@ -311,20 +318,28 @@ impl<'a> JitEmitter<'a> {
         self.alloc_fp_reg()
     }
 
-    fn clear_frame_fp_alias(&mut self, idx: u16) {
-        if self.frame_fp_alias.is_some_and(|alias| alias.idx == idx) {
-            self.frame_fp_alias = None;
+    fn materialize_gpr_alias_reg(&mut self, reg: Reg) {
+        let live = self.height.min(self.slots.len());
+        for pos in 1..=live {
+            let idx = pos - 1;
+            if self.slots[idx].gpr == Some(GprLoc::Alias(reg)) {
+                let dst = tos_reg(self.dv(), pos as u8);
+                if dst != reg {
+                    self.buf.emit(arm64_enc::mov_reg_64(dst, reg));
+                }
+                self.slots[idx].gpr = Some(GprLoc::Canonical);
+            }
         }
     }
 
-    fn remember_frame_fp_alias(&mut self, idx: u16, fp: FpLoc) {
-        self.frame_fp_alias = Some(FrameFpAlias { idx, fp });
+    fn remember_frame_alias(&mut self, idx: u16, loc: SlotLoc) {
+        self.frame_alias = Some(FrameAlias { idx, loc });
     }
 
-    fn lookup_frame_fp_alias(&self, idx: u16) -> Option<FpLoc> {
-        self.frame_fp_alias
+    fn lookup_frame_alias(&self, idx: u16) -> Option<SlotLoc> {
+        self.frame_alias
             .filter(|alias| alias.idx == idx)
-            .map(|alias| alias.fp)
+            .map(|alias| alias.loc)
     }
 
     /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
@@ -750,8 +765,10 @@ impl<'a> JitEmitter<'a> {
     // ==================== Non-hot locals (push1 / pop1) ====================
 
     pub fn local_get(&mut self, idx: u16) {
-        if let Some(fp) = self.lookup_frame_fp_alias(idx) {
-            self.push_fp_alias_slot(fp);
+        if let Some(loc) = self.lookup_frame_alias(idx) {
+            self.height += 1;
+            self.shift_slots_for_push();
+            self.slots[0] = loc;
             return;
         }
         self.push_materialized_slot();
@@ -762,28 +779,27 @@ impl<'a> JitEmitter<'a> {
 
     pub fn local_set(&mut self, idx: u16) {
         let scaled = idx as u32;
-        if let Some(fp) = self.slots[0].fp {
+        let alias_loc = if let Some(fp) = self.slots[0].fp {
             match fp.width {
                 FpWidth::F64 => {
                     self.buf.emit(arm64_enc::str_f64(fp.reg as u32, Reg::FP, scaled));
+                    SlotLoc::fp_only(fp)
                 }
                 FpWidth::F32 => {
-                    self.copy_slot_to_gpr(1, Reg::TMP0);
-                    self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, scaled));
+                    self.materialize_gpr_alias_reg(FRAME_ALIAS_GPR);
+                    self.copy_slot_to_gpr(1, FRAME_ALIAS_GPR);
+                    self.buf.emit(arm64_enc::str_64(FRAME_ALIAS_GPR, Reg::FP, scaled));
+                    SlotLoc::gpr_alias(FRAME_ALIAS_GPR).with_fp(Some(fp))
                 }
             }
-            self.remember_frame_fp_alias(idx, fp);
         } else {
-            let src = match self.slots[0].gpr {
-                Some(_) => self.resolve_tos_reg(1),
-                None => {
-                    self.copy_slot_to_gpr(1, Reg::TMP0);
-                    Reg::TMP0
-                }
-            };
-            self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
-            self.clear_frame_fp_alias(idx);
-        }
+            self.materialize_gpr_alias_reg(FRAME_ALIAS_GPR);
+            self.copy_slot_to_gpr(1, FRAME_ALIAS_GPR);
+            self.buf.emit(arm64_enc::str_64(FRAME_ALIAS_GPR, Reg::FP, scaled));
+            SlotLoc::gpr_alias(FRAME_ALIAS_GPR)
+        };
+
+        self.remember_frame_alias(idx, alias_loc);
         self.height -= 1;
         self.shift_slots_for_pop();
     }
@@ -794,24 +810,24 @@ impl<'a> JitEmitter<'a> {
             match fp.width {
                 FpWidth::F64 => {
                     self.buf.emit(arm64_enc::str_f64(fp.reg as u32, Reg::FP, scaled));
+                    self.remember_frame_alias(idx, SlotLoc::fp_only(fp));
                 }
                 FpWidth::F32 => {
-                    self.copy_slot_to_gpr(1, Reg::TMP0);
-                    self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, scaled));
+                    self.materialize_gpr_alias_reg(FRAME_ALIAS_GPR);
+                    self.copy_slot_to_gpr(1, FRAME_ALIAS_GPR);
+                    self.buf.emit(arm64_enc::str_64(FRAME_ALIAS_GPR, Reg::FP, scaled));
+                    self.remember_frame_alias(
+                        idx,
+                        SlotLoc::gpr_alias(FRAME_ALIAS_GPR).with_fp(Some(fp)),
+                    );
                 }
             }
-            self.remember_frame_fp_alias(idx, fp);
             return;
         }
-        let src = match self.slots[0].gpr {
-            Some(_) => self.resolve_tos_reg(1),
-            None => {
-                self.copy_slot_to_gpr(1, Reg::TMP0);
-                Reg::TMP0
-            }
-        };
-        self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
-        self.clear_frame_fp_alias(idx);
+        self.materialize_gpr_alias_reg(FRAME_ALIAS_GPR);
+        self.copy_slot_to_gpr(1, FRAME_ALIAS_GPR);
+        self.buf.emit(arm64_enc::str_64(FRAME_ALIAS_GPR, Reg::FP, scaled));
+        self.remember_frame_alias(idx, SlotLoc::gpr_alias(FRAME_ALIAS_GPR));
         // height unchanged (tee keeps value on stack)
     }
 
@@ -822,7 +838,7 @@ impl<'a> JitEmitter<'a> {
     /// This mirrors `impl_init_locals` in `handlers_c/const_local.c`:
     /// each `Kn` swaps `fp[n]` with `fp[Kn]`, then fills `Ln` from `fp[n]`.
     pub fn init_locals(&mut self, k0: u16, k1: u16, k2: u16) {
-        self.frame_fp_alias = None;
+        self.frame_alias = None;
         self.init_one_hot_local(0, k0, Reg::L0);
         self.init_one_hot_local(1, k1, Reg::L1);
         self.init_one_hot_local(2, k2, Reg::L2);
@@ -2282,6 +2298,39 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0,
         );
         assert_eq!(result, 3.0f64.to_bits());
+    }
+
+    #[test]
+    fn test_local_tee_frame_i32_roundtrip() {
+        let result = run_jit_test(
+            |e| {
+                e.i32_const(11);
+                e.local_tee(1);
+                e.drop_val();
+                e.local_get(1);
+                e.i32_const(7);
+                e.i32_add();
+            },
+            0, 0, 0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(result, 18);
+    }
+
+    #[test]
+    fn test_frame_alias_gpr_materializes_before_reuse() {
+        let result = run_jit_test(
+            |e| {
+                e.i32_const(11);
+                e.local_tee(1);
+                e.local_get(1);
+                e.i32_const(7);
+                e.local_tee(2);
+                e.drop_val();
+                e.i32_add();
+            },
+            0, 0, 0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(result, 22);
     }
 
     #[test]

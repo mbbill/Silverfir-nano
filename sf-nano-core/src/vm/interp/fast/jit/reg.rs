@@ -15,6 +15,7 @@ pub enum Reg {
     NH  = 1,   // x1  - next handler preload
     TMP0 = 2,  // x2  - scratch (trap msg, address computation)
     TMP1 = 3,  // x3  - scratch
+    TMP2 = 4,  // x4  - JIT-private scratch / frame-alias register
     CTX = 20,  // x20 - context pointer
     PC  = 21,  // x21 - program counter (Instruction*)
     FP  = 22,  // x22 - frame pointer (locals array)
