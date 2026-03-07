@@ -10,7 +10,7 @@ use super::codegen::{NativeEmitter, depth_variant, tos_reg};
 use super::op_meta;
 use super::reg::Reg;
 use super::super::{CodeBuffer, debug_map, samply_jitdump};
-use crate::vm::compile::lowered_ir::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
+use crate::vm::lowered::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
 use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedInst};
 use crate::vm::interp::fast::handlers::OpHandler;
 
@@ -742,7 +742,7 @@ fn emit_op(e: &mut NativeEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
 mod tests {
     use alloc::vec;
     use super::*;
-    use crate::vm::compile::lowered_ir::{IrOp, IrOpKind};
+    use crate::vm::lowered::{IrOp, IrOpKind};
     use crate::vm::interp::fast::instruction::Instruction;
     use crate::vm::interp::fast::handlers::{self, OpHandler, NextHandler, run_trampoline};
     use crate::vm::interp::fast::handlers::full_set;

@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 use crate::utils::leb128;
-use super::config::{CompileConfig, MAX_HOT_LOCAL_COUNT};
+use super::{CompileConfig, MAX_HOT_LOCAL_COUNT};
 
 /// Read an unsigned LEB128 u32 from `code` at position `i`, returning (value, new_position).
 /// Silently returns 0 on malformed input (best-effort for analysis).
@@ -324,7 +324,7 @@ fn skip_block_type(code: &[u8], i: usize) -> usize {
 mod tests {
     use alloc::vec;
     use super::{compute_effective_indices, find_hot_locals, local_weights};
-    use crate::vm::compile::config::FAST_COMPILE_CONFIG;
+    use crate::vm::planner::FAST_COMPILE_CONFIG;
 
     #[test]
     fn test_local_weights_keep_loop_depth_through_nested_block_end() {

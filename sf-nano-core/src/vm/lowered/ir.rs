@@ -9,38 +9,8 @@
 
 use alloc::vec::Vec;
 
-pub use super::common::{BrTableEntry, OpIndex};
-
-/// Logical reference to a frame slot used by encoded handlers.
-///
-/// Most IR ops already carry absolute frame slots. Branch/call/return operands
-/// sometimes need a slot that is relative to the function's operand base, which
-/// is only known during finalization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SlotRef {
-    Absolute(u16),
-    OperandRelative(u16),
-}
-
-impl SlotRef {
-    #[inline]
-    pub const fn absolute(slot: u16) -> Self {
-        Self::Absolute(slot)
-    }
-
-    #[inline]
-    pub const fn operand_relative(offset: u16) -> Self {
-        Self::OperandRelative(offset)
-    }
-
-    #[inline]
-    pub fn resolve(self, operand_base: usize) -> u16 {
-        match self {
-            Self::Absolute(slot) => slot,
-            Self::OperandRelative(offset) => (operand_base + offset as usize) as u16,
-        }
-    }
-}
+pub use crate::vm::compile::common::{BrTableEntry, OpIndex, SlotRef};
+use crate::vm::compile::{CoreOpKind, core_op::for_each_core_op};
 
 /// A single resolved IR instruction.
 ///
@@ -412,6 +382,22 @@ pub enum IrOpKind {
     /// holds the branch target pointer, or 0xFF if none.
     Fused { imm0: u64, imm1: u64, imm2: u64, target_imm: u8 },
 }
+
+macro_rules! impl_from_core_op {
+    ($(
+        $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),
+    )* ) => {
+        impl From<CoreOpKind> for IrOpKind {
+            fn from(kind: CoreOpKind) -> Self {
+                match kind {
+                    $( CoreOpKind::$name $( { $($field),* } )? => IrOpKind::$name $( { $($field),* } )?, )*
+                }
+            }
+        }
+    };
+}
+
+for_each_core_op!(impl_from_core_op);
 
 /// Canonical stack effect: (pops, pushes) for every `IrOpKind`.
 ///

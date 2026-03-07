@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::compile::lowered_ir::{IrOp, IrOpKind, OpIndex};
+use crate::vm::lowered::{IrOp, IrOpKind, OpIndex};
 use super::super::builder::backend::{CompactionDisposition, ResolvedInst};
 use super::super::handlers::OpHandler as Handler;
 use super::super::handlers::full_set;

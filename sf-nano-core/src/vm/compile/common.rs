@@ -1,5 +1,32 @@
 //! Shared compile-time IR metadata used by both semantic and lowered stages.
 
+/// Logical reference to a frame slot used by encoded handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRef {
+    Absolute(u16),
+    OperandRelative(u16),
+}
+
+impl SlotRef {
+    #[inline]
+    pub const fn absolute(slot: u16) -> Self {
+        Self::Absolute(slot)
+    }
+
+    #[inline]
+    pub const fn operand_relative(offset: u16) -> Self {
+        Self::OperandRelative(offset)
+    }
+
+    #[inline]
+    pub fn resolve(self, operand_base: usize) -> u16 {
+        match self {
+            Self::Absolute(slot) => slot,
+            Self::OperandRelative(offset) => (operand_base + offset as usize) as u16,
+        }
+    }
+}
+
 /// Index into the pre-compaction op stream used across compile lowering,
 /// backend resolution, and finalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

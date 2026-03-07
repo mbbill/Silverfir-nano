@@ -1,17 +1,17 @@
-//! Wasm semantic decode + lowering to backend-lowered IR.
+//! Wasm semantic decode.
 //!
-//! The decode stage produces semantic ops. A small follow-up lowering step then
-//! applies backend local placement and inserts the `InitLocals` prologue.
+//! This stage produces semantic ops plus abstract cache-management markers.
+//! Backend-specific local placement and the final lowered-IR materialization now
+//! live in `vm::lowered`.
 //!
 //! This replaces `dispatch.rs` as the primary decode driver in the IR pipeline.
 //! The existing dispatch.rs path remains working alongside this one.
 
 use alloc::vec::Vec;
 
-use super::common::{BrTableEntry, OpIndex};
+use super::common::{BrTableEntry, OpIndex, SlotRef};
 use super::context::CompileContext;
-use super::lowered_ir::{self, IrOp, IrOpKind, SlotRef};
-use super::plan::HotLocalPlan;
+use super::core_op::CoreOpKind;
 use super::semantic_ir::{self, SemanticOp, SemanticOpKind};
 use super::stack::{BlockKind, StackTracker};
 use crate::error::WasmError;
@@ -41,22 +41,6 @@ pub fn lower_to_semantic_ir<'a>(
     decoder.decode_function()?;
 
     Ok(ir.ops)
-}
-
-/// Lower Wasm function body to backend-lowered IR.
-pub fn lower_to_lowered_ir<'a>(
-    code: &'a [u8],
-    ctx: &'a CompileContext<'a>,
-    stack: &'a mut StackTracker,
-    hot_locals: HotLocalPlan,
-) -> Result<Vec<IrOp>, WasmError> {
-    let semantic_ops = lower_to_semantic_ir(code, ctx, stack)?;
-    Ok(super::backend_lower::lower_to_lowered_ir(
-        semantic_ops,
-        hot_locals,
-        stack.config(),
-        stack.frame_size(),
-    ))
 }
 
 /// IR lowering state.
@@ -264,7 +248,7 @@ impl<'a> IrLower<'a> {
     // =========================================================================
 
     /// Handle a push-1 op (constant, global_get, etc.).
-    fn handle_push_op(&mut self, kind: IrOpKind) {
+    fn handle_push_op(&mut self, kind: CoreOpKind) {
         self.emit_cache_spill_if_needed();
         let v = self.post_push_variant();
         self.emit(kind, v);
@@ -272,7 +256,7 @@ impl<'a> IrLower<'a> {
     }
 
     /// Handle a binary op (pop 2, push 1).
-    fn handle_binop(&mut self, kind: IrOpKind) {
+    fn handle_binop(&mut self, kind: CoreOpKind) {
         self.emit_cache_fill_for_operands(2);
         let v = self.pre_pop_variant();
         self.stack.pop();
@@ -282,7 +266,7 @@ impl<'a> IrLower<'a> {
     }
 
     /// Handle a unary op (pop 1, push 1).
-    fn handle_unop(&mut self, kind: IrOpKind) {
+    fn handle_unop(&mut self, kind: CoreOpKind) {
         self.emit_cache_fill_for_operands(1);
         let v = self.pre_pop_variant();
         self.stack.pop();
@@ -291,7 +275,7 @@ impl<'a> IrLower<'a> {
     }
 
     /// Handle a ternary op (pop 3, push 0).
-    fn handle_ternary(&mut self, kind: IrOpKind) {
+    fn handle_ternary(&mut self, kind: CoreOpKind) {
         self.emit_cache_fill_for_operands(3);
         let v = self.pre_pop_variant();
         self.stack.pop();
@@ -338,227 +322,227 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(I32_CONST) => {
                 if let Immediate::I32(v) = imm {
-                    self.handle_push_op(IrOpKind::I32Const { value: *v as u32 });
+                    self.handle_push_op(CoreOpKind::I32Const { value: *v as u32 });
                 }
             }
             OP(I64_CONST) => {
                 if let Immediate::I64(v) = imm {
-                    self.handle_push_op(IrOpKind::I64Const { value: *v as u64 });
+                    self.handle_push_op(CoreOpKind::I64Const { value: *v as u64 });
                 }
             }
             OP(F32_CONST) => {
                 if let Immediate::F32(v) = imm {
-                    self.handle_push_op(IrOpKind::F32Const { value: v.to_bits() });
+                    self.handle_push_op(CoreOpKind::F32Const { value: v.to_bits() });
                 }
             }
             OP(F64_CONST) => {
                 if let Immediate::F64(v) = imm {
-                    self.handle_push_op(IrOpKind::F64Const { value: v.to_bits() });
+                    self.handle_push_op(CoreOpKind::F64Const { value: v.to_bits() });
                 }
             }
 
             // =================================================================
             // Binary ops (pop 2, push 1)
             // =================================================================
-            OP(I32_ADD) => self.handle_binop(IrOpKind::I32Add),
-            OP(I32_SUB) => self.handle_binop(IrOpKind::I32Sub),
-            OP(I32_MUL) => self.handle_binop(IrOpKind::I32Mul),
-            OP(I32_DIV_S) => self.handle_binop(IrOpKind::I32DivS),
-            OP(I32_DIV_U) => self.handle_binop(IrOpKind::I32DivU),
-            OP(I32_REM_S) => self.handle_binop(IrOpKind::I32RemS),
-            OP(I32_REM_U) => self.handle_binop(IrOpKind::I32RemU),
-            OP(I32_AND) => self.handle_binop(IrOpKind::I32And),
-            OP(I32_OR) => self.handle_binop(IrOpKind::I32Or),
-            OP(I32_XOR) => self.handle_binop(IrOpKind::I32Xor),
-            OP(I32_SHL) => self.handle_binop(IrOpKind::I32Shl),
-            OP(I32_SHR_S) => self.handle_binop(IrOpKind::I32ShrS),
-            OP(I32_SHR_U) => self.handle_binop(IrOpKind::I32ShrU),
-            OP(I32_ROTL) => self.handle_binop(IrOpKind::I32Rotl),
-            OP(I32_ROTR) => self.handle_binop(IrOpKind::I32Rotr),
+            OP(I32_ADD) => self.handle_binop(CoreOpKind::I32Add),
+            OP(I32_SUB) => self.handle_binop(CoreOpKind::I32Sub),
+            OP(I32_MUL) => self.handle_binop(CoreOpKind::I32Mul),
+            OP(I32_DIV_S) => self.handle_binop(CoreOpKind::I32DivS),
+            OP(I32_DIV_U) => self.handle_binop(CoreOpKind::I32DivU),
+            OP(I32_REM_S) => self.handle_binop(CoreOpKind::I32RemS),
+            OP(I32_REM_U) => self.handle_binop(CoreOpKind::I32RemU),
+            OP(I32_AND) => self.handle_binop(CoreOpKind::I32And),
+            OP(I32_OR) => self.handle_binop(CoreOpKind::I32Or),
+            OP(I32_XOR) => self.handle_binop(CoreOpKind::I32Xor),
+            OP(I32_SHL) => self.handle_binop(CoreOpKind::I32Shl),
+            OP(I32_SHR_S) => self.handle_binop(CoreOpKind::I32ShrS),
+            OP(I32_SHR_U) => self.handle_binop(CoreOpKind::I32ShrU),
+            OP(I32_ROTL) => self.handle_binop(CoreOpKind::I32Rotl),
+            OP(I32_ROTR) => self.handle_binop(CoreOpKind::I32Rotr),
 
-            OP(I64_ADD) => self.handle_binop(IrOpKind::I64Add),
-            OP(I64_SUB) => self.handle_binop(IrOpKind::I64Sub),
-            OP(I64_MUL) => self.handle_binop(IrOpKind::I64Mul),
-            OP(I64_DIV_S) => self.handle_binop(IrOpKind::I64DivS),
-            OP(I64_DIV_U) => self.handle_binop(IrOpKind::I64DivU),
-            OP(I64_REM_S) => self.handle_binop(IrOpKind::I64RemS),
-            OP(I64_REM_U) => self.handle_binop(IrOpKind::I64RemU),
-            OP(I64_AND) => self.handle_binop(IrOpKind::I64And),
-            OP(I64_OR) => self.handle_binop(IrOpKind::I64Or),
-            OP(I64_XOR) => self.handle_binop(IrOpKind::I64Xor),
-            OP(I64_SHL) => self.handle_binop(IrOpKind::I64Shl),
-            OP(I64_SHR_S) => self.handle_binop(IrOpKind::I64ShrS),
-            OP(I64_SHR_U) => self.handle_binop(IrOpKind::I64ShrU),
-            OP(I64_ROTL) => self.handle_binop(IrOpKind::I64Rotl),
-            OP(I64_ROTR) => self.handle_binop(IrOpKind::I64Rotr),
+            OP(I64_ADD) => self.handle_binop(CoreOpKind::I64Add),
+            OP(I64_SUB) => self.handle_binop(CoreOpKind::I64Sub),
+            OP(I64_MUL) => self.handle_binop(CoreOpKind::I64Mul),
+            OP(I64_DIV_S) => self.handle_binop(CoreOpKind::I64DivS),
+            OP(I64_DIV_U) => self.handle_binop(CoreOpKind::I64DivU),
+            OP(I64_REM_S) => self.handle_binop(CoreOpKind::I64RemS),
+            OP(I64_REM_U) => self.handle_binop(CoreOpKind::I64RemU),
+            OP(I64_AND) => self.handle_binop(CoreOpKind::I64And),
+            OP(I64_OR) => self.handle_binop(CoreOpKind::I64Or),
+            OP(I64_XOR) => self.handle_binop(CoreOpKind::I64Xor),
+            OP(I64_SHL) => self.handle_binop(CoreOpKind::I64Shl),
+            OP(I64_SHR_S) => self.handle_binop(CoreOpKind::I64ShrS),
+            OP(I64_SHR_U) => self.handle_binop(CoreOpKind::I64ShrU),
+            OP(I64_ROTL) => self.handle_binop(CoreOpKind::I64Rotl),
+            OP(I64_ROTR) => self.handle_binop(CoreOpKind::I64Rotr),
 
-            OP(F32_ADD) => self.handle_binop(IrOpKind::F32Add),
-            OP(F32_SUB) => self.handle_binop(IrOpKind::F32Sub),
-            OP(F32_MUL) => self.handle_binop(IrOpKind::F32Mul),
-            OP(F32_DIV) => self.handle_binop(IrOpKind::F32Div),
-            OP(F32_MIN) => self.handle_binop(IrOpKind::F32Min),
-            OP(F32_MAX) => self.handle_binop(IrOpKind::F32Max),
-            OP(F32_COPYSIGN) => self.handle_binop(IrOpKind::F32Copysign),
+            OP(F32_ADD) => self.handle_binop(CoreOpKind::F32Add),
+            OP(F32_SUB) => self.handle_binop(CoreOpKind::F32Sub),
+            OP(F32_MUL) => self.handle_binop(CoreOpKind::F32Mul),
+            OP(F32_DIV) => self.handle_binop(CoreOpKind::F32Div),
+            OP(F32_MIN) => self.handle_binop(CoreOpKind::F32Min),
+            OP(F32_MAX) => self.handle_binop(CoreOpKind::F32Max),
+            OP(F32_COPYSIGN) => self.handle_binop(CoreOpKind::F32Copysign),
 
-            OP(F64_ADD) => self.handle_binop(IrOpKind::F64Add),
-            OP(F64_SUB) => self.handle_binop(IrOpKind::F64Sub),
-            OP(F64_MUL) => self.handle_binop(IrOpKind::F64Mul),
-            OP(F64_DIV) => self.handle_binop(IrOpKind::F64Div),
-            OP(F64_MIN) => self.handle_binop(IrOpKind::F64Min),
-            OP(F64_MAX) => self.handle_binop(IrOpKind::F64Max),
-            OP(F64_COPYSIGN) => self.handle_binop(IrOpKind::F64Copysign),
+            OP(F64_ADD) => self.handle_binop(CoreOpKind::F64Add),
+            OP(F64_SUB) => self.handle_binop(CoreOpKind::F64Sub),
+            OP(F64_MUL) => self.handle_binop(CoreOpKind::F64Mul),
+            OP(F64_DIV) => self.handle_binop(CoreOpKind::F64Div),
+            OP(F64_MIN) => self.handle_binop(CoreOpKind::F64Min),
+            OP(F64_MAX) => self.handle_binop(CoreOpKind::F64Max),
+            OP(F64_COPYSIGN) => self.handle_binop(CoreOpKind::F64Copysign),
 
             // =================================================================
             // Comparisons (pop 2, push 1)
             // =================================================================
-            OP(I32_EQ) => self.handle_binop(IrOpKind::I32Eq),
-            OP(I32_NE) => self.handle_binop(IrOpKind::I32Ne),
-            OP(I32_LT_S) => self.handle_binop(IrOpKind::I32LtS),
-            OP(I32_LT_U) => self.handle_binop(IrOpKind::I32LtU),
-            OP(I32_GT_S) => self.handle_binop(IrOpKind::I32GtS),
-            OP(I32_GT_U) => self.handle_binop(IrOpKind::I32GtU),
-            OP(I32_LE_S) => self.handle_binop(IrOpKind::I32LeS),
-            OP(I32_LE_U) => self.handle_binop(IrOpKind::I32LeU),
-            OP(I32_GE_S) => self.handle_binop(IrOpKind::I32GeS),
-            OP(I32_GE_U) => self.handle_binop(IrOpKind::I32GeU),
+            OP(I32_EQ) => self.handle_binop(CoreOpKind::I32Eq),
+            OP(I32_NE) => self.handle_binop(CoreOpKind::I32Ne),
+            OP(I32_LT_S) => self.handle_binop(CoreOpKind::I32LtS),
+            OP(I32_LT_U) => self.handle_binop(CoreOpKind::I32LtU),
+            OP(I32_GT_S) => self.handle_binop(CoreOpKind::I32GtS),
+            OP(I32_GT_U) => self.handle_binop(CoreOpKind::I32GtU),
+            OP(I32_LE_S) => self.handle_binop(CoreOpKind::I32LeS),
+            OP(I32_LE_U) => self.handle_binop(CoreOpKind::I32LeU),
+            OP(I32_GE_S) => self.handle_binop(CoreOpKind::I32GeS),
+            OP(I32_GE_U) => self.handle_binop(CoreOpKind::I32GeU),
 
-            OP(I64_EQ) => self.handle_binop(IrOpKind::I64Eq),
-            OP(I64_NE) => self.handle_binop(IrOpKind::I64Ne),
-            OP(I64_LT_S) => self.handle_binop(IrOpKind::I64LtS),
-            OP(I64_LT_U) => self.handle_binop(IrOpKind::I64LtU),
-            OP(I64_GT_S) => self.handle_binop(IrOpKind::I64GtS),
-            OP(I64_GT_U) => self.handle_binop(IrOpKind::I64GtU),
-            OP(I64_LE_S) => self.handle_binop(IrOpKind::I64LeS),
-            OP(I64_LE_U) => self.handle_binop(IrOpKind::I64LeU),
-            OP(I64_GE_S) => self.handle_binop(IrOpKind::I64GeS),
-            OP(I64_GE_U) => self.handle_binop(IrOpKind::I64GeU),
+            OP(I64_EQ) => self.handle_binop(CoreOpKind::I64Eq),
+            OP(I64_NE) => self.handle_binop(CoreOpKind::I64Ne),
+            OP(I64_LT_S) => self.handle_binop(CoreOpKind::I64LtS),
+            OP(I64_LT_U) => self.handle_binop(CoreOpKind::I64LtU),
+            OP(I64_GT_S) => self.handle_binop(CoreOpKind::I64GtS),
+            OP(I64_GT_U) => self.handle_binop(CoreOpKind::I64GtU),
+            OP(I64_LE_S) => self.handle_binop(CoreOpKind::I64LeS),
+            OP(I64_LE_U) => self.handle_binop(CoreOpKind::I64LeU),
+            OP(I64_GE_S) => self.handle_binop(CoreOpKind::I64GeS),
+            OP(I64_GE_U) => self.handle_binop(CoreOpKind::I64GeU),
 
-            OP(F32_EQ) => self.handle_binop(IrOpKind::F32Eq),
-            OP(F32_NE) => self.handle_binop(IrOpKind::F32Ne),
-            OP(F32_LT) => self.handle_binop(IrOpKind::F32Lt),
-            OP(F32_GT) => self.handle_binop(IrOpKind::F32Gt),
-            OP(F32_LE) => self.handle_binop(IrOpKind::F32Le),
-            OP(F32_GE) => self.handle_binop(IrOpKind::F32Ge),
+            OP(F32_EQ) => self.handle_binop(CoreOpKind::F32Eq),
+            OP(F32_NE) => self.handle_binop(CoreOpKind::F32Ne),
+            OP(F32_LT) => self.handle_binop(CoreOpKind::F32Lt),
+            OP(F32_GT) => self.handle_binop(CoreOpKind::F32Gt),
+            OP(F32_LE) => self.handle_binop(CoreOpKind::F32Le),
+            OP(F32_GE) => self.handle_binop(CoreOpKind::F32Ge),
 
-            OP(F64_EQ) => self.handle_binop(IrOpKind::F64Eq),
-            OP(F64_NE) => self.handle_binop(IrOpKind::F64Ne),
-            OP(F64_LT) => self.handle_binop(IrOpKind::F64Lt),
-            OP(F64_GT) => self.handle_binop(IrOpKind::F64Gt),
-            OP(F64_LE) => self.handle_binop(IrOpKind::F64Le),
-            OP(F64_GE) => self.handle_binop(IrOpKind::F64Ge),
+            OP(F64_EQ) => self.handle_binop(CoreOpKind::F64Eq),
+            OP(F64_NE) => self.handle_binop(CoreOpKind::F64Ne),
+            OP(F64_LT) => self.handle_binop(CoreOpKind::F64Lt),
+            OP(F64_GT) => self.handle_binop(CoreOpKind::F64Gt),
+            OP(F64_LE) => self.handle_binop(CoreOpKind::F64Le),
+            OP(F64_GE) => self.handle_binop(CoreOpKind::F64Ge),
 
             // =================================================================
             // Unary ops (pop 1, push 1)
             // =================================================================
-            OP(I32_EQZ) => self.handle_unop(IrOpKind::I32Eqz),
-            OP(I32_CLZ) => self.handle_unop(IrOpKind::I32Clz),
-            OP(I32_CTZ) => self.handle_unop(IrOpKind::I32Ctz),
-            OP(I32_POPCNT) => self.handle_unop(IrOpKind::I32Popcnt),
+            OP(I32_EQZ) => self.handle_unop(CoreOpKind::I32Eqz),
+            OP(I32_CLZ) => self.handle_unop(CoreOpKind::I32Clz),
+            OP(I32_CTZ) => self.handle_unop(CoreOpKind::I32Ctz),
+            OP(I32_POPCNT) => self.handle_unop(CoreOpKind::I32Popcnt),
 
-            OP(I64_EQZ) => self.handle_unop(IrOpKind::I64Eqz),
-            OP(I64_CLZ) => self.handle_unop(IrOpKind::I64Clz),
-            OP(I64_CTZ) => self.handle_unop(IrOpKind::I64Ctz),
-            OP(I64_POPCNT) => self.handle_unop(IrOpKind::I64Popcnt),
+            OP(I64_EQZ) => self.handle_unop(CoreOpKind::I64Eqz),
+            OP(I64_CLZ) => self.handle_unop(CoreOpKind::I64Clz),
+            OP(I64_CTZ) => self.handle_unop(CoreOpKind::I64Ctz),
+            OP(I64_POPCNT) => self.handle_unop(CoreOpKind::I64Popcnt),
 
-            OP(F32_ABS) => self.handle_unop(IrOpKind::F32Abs),
-            OP(F32_NEG) => self.handle_unop(IrOpKind::F32Neg),
-            OP(F32_CEIL) => self.handle_unop(IrOpKind::F32Ceil),
-            OP(F32_FLOOR) => self.handle_unop(IrOpKind::F32Floor),
-            OP(F32_TRUNC) => self.handle_unop(IrOpKind::F32Trunc),
-            OP(F32_NEAREST) => self.handle_unop(IrOpKind::F32Nearest),
-            OP(F32_SQRT) => self.handle_unop(IrOpKind::F32Sqrt),
+            OP(F32_ABS) => self.handle_unop(CoreOpKind::F32Abs),
+            OP(F32_NEG) => self.handle_unop(CoreOpKind::F32Neg),
+            OP(F32_CEIL) => self.handle_unop(CoreOpKind::F32Ceil),
+            OP(F32_FLOOR) => self.handle_unop(CoreOpKind::F32Floor),
+            OP(F32_TRUNC) => self.handle_unop(CoreOpKind::F32Trunc),
+            OP(F32_NEAREST) => self.handle_unop(CoreOpKind::F32Nearest),
+            OP(F32_SQRT) => self.handle_unop(CoreOpKind::F32Sqrt),
 
-            OP(F64_ABS) => self.handle_unop(IrOpKind::F64Abs),
-            OP(F64_NEG) => self.handle_unop(IrOpKind::F64Neg),
-            OP(F64_CEIL) => self.handle_unop(IrOpKind::F64Ceil),
-            OP(F64_FLOOR) => self.handle_unop(IrOpKind::F64Floor),
-            OP(F64_TRUNC) => self.handle_unop(IrOpKind::F64Trunc),
-            OP(F64_NEAREST) => self.handle_unop(IrOpKind::F64Nearest),
-            OP(F64_SQRT) => self.handle_unop(IrOpKind::F64Sqrt),
+            OP(F64_ABS) => self.handle_unop(CoreOpKind::F64Abs),
+            OP(F64_NEG) => self.handle_unop(CoreOpKind::F64Neg),
+            OP(F64_CEIL) => self.handle_unop(CoreOpKind::F64Ceil),
+            OP(F64_FLOOR) => self.handle_unop(CoreOpKind::F64Floor),
+            OP(F64_TRUNC) => self.handle_unop(CoreOpKind::F64Trunc),
+            OP(F64_NEAREST) => self.handle_unop(CoreOpKind::F64Nearest),
+            OP(F64_SQRT) => self.handle_unop(CoreOpKind::F64Sqrt),
 
             // =================================================================
             // Conversions (pop 1, push 1)
             // =================================================================
-            OP(I32_WRAP_I64) => self.handle_unop(IrOpKind::I32WrapI64),
-            OP(I32_TRUNC_F32_S) => self.handle_unop(IrOpKind::I32TruncF32S),
-            OP(I32_TRUNC_F32_U) => self.handle_unop(IrOpKind::I32TruncF32U),
-            OP(I32_TRUNC_F64_S) => self.handle_unop(IrOpKind::I32TruncF64S),
-            OP(I32_TRUNC_F64_U) => self.handle_unop(IrOpKind::I32TruncF64U),
-            OP(I64_EXTEND_I32_S) => self.handle_unop(IrOpKind::I64ExtendI32S),
-            OP(I64_EXTEND_I32_U) => self.handle_unop(IrOpKind::I64ExtendI32U),
-            OP(I64_TRUNC_F32_S) => self.handle_unop(IrOpKind::I64TruncF32S),
-            OP(I64_TRUNC_F32_U) => self.handle_unop(IrOpKind::I64TruncF32U),
-            OP(I64_TRUNC_F64_S) => self.handle_unop(IrOpKind::I64TruncF64S),
-            OP(I64_TRUNC_F64_U) => self.handle_unop(IrOpKind::I64TruncF64U),
-            OP(F32_CONVERT_I32_S) => self.handle_unop(IrOpKind::F32ConvertI32S),
-            OP(F32_CONVERT_I32_U) => self.handle_unop(IrOpKind::F32ConvertI32U),
-            OP(F32_CONVERT_I64_S) => self.handle_unop(IrOpKind::F32ConvertI64S),
-            OP(F32_CONVERT_I64_U) => self.handle_unop(IrOpKind::F32ConvertI64U),
-            OP(F32_DEMOTE_F64) => self.handle_unop(IrOpKind::F32DemoteF64),
-            OP(F64_CONVERT_I32_S) => self.handle_unop(IrOpKind::F64ConvertI32S),
-            OP(F64_CONVERT_I32_U) => self.handle_unop(IrOpKind::F64ConvertI32U),
-            OP(F64_CONVERT_I64_S) => self.handle_unop(IrOpKind::F64ConvertI64S),
-            OP(F64_CONVERT_I64_U) => self.handle_unop(IrOpKind::F64ConvertI64U),
-            OP(F64_PROMOTE_F32) => self.handle_unop(IrOpKind::F64PromoteF32),
-            OP(I32_REINTERPRET_F32) => self.handle_unop(IrOpKind::I32ReinterpretF32),
-            OP(I64_REINTERPRET_F64) => self.handle_unop(IrOpKind::I64ReinterpretF64),
-            OP(F32_REINTERPRET_I32) => self.handle_unop(IrOpKind::F32ReinterpretI32),
-            OP(F64_REINTERPRET_I64) => self.handle_unop(IrOpKind::F64ReinterpretI64),
+            OP(I32_WRAP_I64) => self.handle_unop(CoreOpKind::I32WrapI64),
+            OP(I32_TRUNC_F32_S) => self.handle_unop(CoreOpKind::I32TruncF32S),
+            OP(I32_TRUNC_F32_U) => self.handle_unop(CoreOpKind::I32TruncF32U),
+            OP(I32_TRUNC_F64_S) => self.handle_unop(CoreOpKind::I32TruncF64S),
+            OP(I32_TRUNC_F64_U) => self.handle_unop(CoreOpKind::I32TruncF64U),
+            OP(I64_EXTEND_I32_S) => self.handle_unop(CoreOpKind::I64ExtendI32S),
+            OP(I64_EXTEND_I32_U) => self.handle_unop(CoreOpKind::I64ExtendI32U),
+            OP(I64_TRUNC_F32_S) => self.handle_unop(CoreOpKind::I64TruncF32S),
+            OP(I64_TRUNC_F32_U) => self.handle_unop(CoreOpKind::I64TruncF32U),
+            OP(I64_TRUNC_F64_S) => self.handle_unop(CoreOpKind::I64TruncF64S),
+            OP(I64_TRUNC_F64_U) => self.handle_unop(CoreOpKind::I64TruncF64U),
+            OP(F32_CONVERT_I32_S) => self.handle_unop(CoreOpKind::F32ConvertI32S),
+            OP(F32_CONVERT_I32_U) => self.handle_unop(CoreOpKind::F32ConvertI32U),
+            OP(F32_CONVERT_I64_S) => self.handle_unop(CoreOpKind::F32ConvertI64S),
+            OP(F32_CONVERT_I64_U) => self.handle_unop(CoreOpKind::F32ConvertI64U),
+            OP(F32_DEMOTE_F64) => self.handle_unop(CoreOpKind::F32DemoteF64),
+            OP(F64_CONVERT_I32_S) => self.handle_unop(CoreOpKind::F64ConvertI32S),
+            OP(F64_CONVERT_I32_U) => self.handle_unop(CoreOpKind::F64ConvertI32U),
+            OP(F64_CONVERT_I64_S) => self.handle_unop(CoreOpKind::F64ConvertI64S),
+            OP(F64_CONVERT_I64_U) => self.handle_unop(CoreOpKind::F64ConvertI64U),
+            OP(F64_PROMOTE_F32) => self.handle_unop(CoreOpKind::F64PromoteF32),
+            OP(I32_REINTERPRET_F32) => self.handle_unop(CoreOpKind::I32ReinterpretF32),
+            OP(I64_REINTERPRET_F64) => self.handle_unop(CoreOpKind::I64ReinterpretF64),
+            OP(F32_REINTERPRET_I32) => self.handle_unop(CoreOpKind::F32ReinterpretI32),
+            OP(F64_REINTERPRET_I64) => self.handle_unop(CoreOpKind::F64ReinterpretI64),
 
             // Sign extension
-            OP(I32_EXTEND8_S) => self.handle_unop(IrOpKind::I32Extend8S),
-            OP(I32_EXTEND16_S) => self.handle_unop(IrOpKind::I32Extend16S),
-            OP(I64_EXTEND8_S) => self.handle_unop(IrOpKind::I64Extend8S),
-            OP(I64_EXTEND16_S) => self.handle_unop(IrOpKind::I64Extend16S),
-            OP(I64_EXTEND32_S) => self.handle_unop(IrOpKind::I64Extend32S),
+            OP(I32_EXTEND8_S) => self.handle_unop(CoreOpKind::I32Extend8S),
+            OP(I32_EXTEND16_S) => self.handle_unop(CoreOpKind::I32Extend16S),
+            OP(I64_EXTEND8_S) => self.handle_unop(CoreOpKind::I64Extend8S),
+            OP(I64_EXTEND16_S) => self.handle_unop(CoreOpKind::I64Extend16S),
+            OP(I64_EXTEND32_S) => self.handle_unop(CoreOpKind::I64Extend32S),
 
             // Saturating truncation
-            FC(OpcodeFC::I32_TRUNC_SAT_F32_S) => self.handle_unop(IrOpKind::I32TruncSatF32S),
-            FC(OpcodeFC::I32_TRUNC_SAT_F32_U) => self.handle_unop(IrOpKind::I32TruncSatF32U),
-            FC(OpcodeFC::I32_TRUNC_SAT_F64_S) => self.handle_unop(IrOpKind::I32TruncSatF64S),
-            FC(OpcodeFC::I32_TRUNC_SAT_F64_U) => self.handle_unop(IrOpKind::I32TruncSatF64U),
-            FC(OpcodeFC::I64_TRUNC_SAT_F32_S) => self.handle_unop(IrOpKind::I64TruncSatF32S),
-            FC(OpcodeFC::I64_TRUNC_SAT_F32_U) => self.handle_unop(IrOpKind::I64TruncSatF32U),
-            FC(OpcodeFC::I64_TRUNC_SAT_F64_S) => self.handle_unop(IrOpKind::I64TruncSatF64S),
-            FC(OpcodeFC::I64_TRUNC_SAT_F64_U) => self.handle_unop(IrOpKind::I64TruncSatF64U),
+            FC(OpcodeFC::I32_TRUNC_SAT_F32_S) => self.handle_unop(CoreOpKind::I32TruncSatF32S),
+            FC(OpcodeFC::I32_TRUNC_SAT_F32_U) => self.handle_unop(CoreOpKind::I32TruncSatF32U),
+            FC(OpcodeFC::I32_TRUNC_SAT_F64_S) => self.handle_unop(CoreOpKind::I32TruncSatF64S),
+            FC(OpcodeFC::I32_TRUNC_SAT_F64_U) => self.handle_unop(CoreOpKind::I32TruncSatF64U),
+            FC(OpcodeFC::I64_TRUNC_SAT_F32_S) => self.handle_unop(CoreOpKind::I64TruncSatF32S),
+            FC(OpcodeFC::I64_TRUNC_SAT_F32_U) => self.handle_unop(CoreOpKind::I64TruncSatF32U),
+            FC(OpcodeFC::I64_TRUNC_SAT_F64_S) => self.handle_unop(CoreOpKind::I64TruncSatF64S),
+            FC(OpcodeFC::I64_TRUNC_SAT_F64_U) => self.handle_unop(CoreOpKind::I64TruncSatF64U),
 
             // =================================================================
             // Memory loads (pop 1, push 1)
             // =================================================================
-            OP(I32_LOAD) => self.handle_load(imm, |o, m| IrOpKind::I32Load { offset: o, memidx: m }),
-            OP(I64_LOAD) => self.handle_load(imm, |o, m| IrOpKind::I64Load { offset: o, memidx: m }),
-            OP(F32_LOAD) => self.handle_load(imm, |o, m| IrOpKind::F32Load { offset: o, memidx: m }),
-            OP(F64_LOAD) => self.handle_load(imm, |o, m| IrOpKind::F64Load { offset: o, memidx: m }),
-            OP(I32_LOAD8_S) => self.handle_load(imm, |o, m| IrOpKind::I32Load8S { offset: o, memidx: m }),
-            OP(I32_LOAD8_U) => self.handle_load(imm, |o, m| IrOpKind::I32Load8U { offset: o, memidx: m }),
-            OP(I32_LOAD16_S) => self.handle_load(imm, |o, m| IrOpKind::I32Load16S { offset: o, memidx: m }),
-            OP(I32_LOAD16_U) => self.handle_load(imm, |o, m| IrOpKind::I32Load16U { offset: o, memidx: m }),
-            OP(I64_LOAD8_S) => self.handle_load(imm, |o, m| IrOpKind::I64Load8S { offset: o, memidx: m }),
-            OP(I64_LOAD8_U) => self.handle_load(imm, |o, m| IrOpKind::I64Load8U { offset: o, memidx: m }),
-            OP(I64_LOAD16_S) => self.handle_load(imm, |o, m| IrOpKind::I64Load16S { offset: o, memidx: m }),
-            OP(I64_LOAD16_U) => self.handle_load(imm, |o, m| IrOpKind::I64Load16U { offset: o, memidx: m }),
-            OP(I64_LOAD32_S) => self.handle_load(imm, |o, m| IrOpKind::I64Load32S { offset: o, memidx: m }),
-            OP(I64_LOAD32_U) => self.handle_load(imm, |o, m| IrOpKind::I64Load32U { offset: o, memidx: m }),
+            OP(I32_LOAD) => self.handle_load(imm, |o, m| CoreOpKind::I32Load { offset: o, memidx: m }),
+            OP(I64_LOAD) => self.handle_load(imm, |o, m| CoreOpKind::I64Load { offset: o, memidx: m }),
+            OP(F32_LOAD) => self.handle_load(imm, |o, m| CoreOpKind::F32Load { offset: o, memidx: m }),
+            OP(F64_LOAD) => self.handle_load(imm, |o, m| CoreOpKind::F64Load { offset: o, memidx: m }),
+            OP(I32_LOAD8_S) => self.handle_load(imm, |o, m| CoreOpKind::I32Load8S { offset: o, memidx: m }),
+            OP(I32_LOAD8_U) => self.handle_load(imm, |o, m| CoreOpKind::I32Load8U { offset: o, memidx: m }),
+            OP(I32_LOAD16_S) => self.handle_load(imm, |o, m| CoreOpKind::I32Load16S { offset: o, memidx: m }),
+            OP(I32_LOAD16_U) => self.handle_load(imm, |o, m| CoreOpKind::I32Load16U { offset: o, memidx: m }),
+            OP(I64_LOAD8_S) => self.handle_load(imm, |o, m| CoreOpKind::I64Load8S { offset: o, memidx: m }),
+            OP(I64_LOAD8_U) => self.handle_load(imm, |o, m| CoreOpKind::I64Load8U { offset: o, memidx: m }),
+            OP(I64_LOAD16_S) => self.handle_load(imm, |o, m| CoreOpKind::I64Load16S { offset: o, memidx: m }),
+            OP(I64_LOAD16_U) => self.handle_load(imm, |o, m| CoreOpKind::I64Load16U { offset: o, memidx: m }),
+            OP(I64_LOAD32_S) => self.handle_load(imm, |o, m| CoreOpKind::I64Load32S { offset: o, memidx: m }),
+            OP(I64_LOAD32_U) => self.handle_load(imm, |o, m| CoreOpKind::I64Load32U { offset: o, memidx: m }),
 
             // =================================================================
             // Memory stores (pop 2, push 0)
             // =================================================================
-            OP(I32_STORE) => self.handle_store(imm, |o, m| IrOpKind::I32Store { offset: o, memidx: m }),
-            OP(I64_STORE) => self.handle_store(imm, |o, m| IrOpKind::I64Store { offset: o, memidx: m }),
-            OP(F32_STORE) => self.handle_store(imm, |o, m| IrOpKind::F32Store { offset: o, memidx: m }),
-            OP(F64_STORE) => self.handle_store(imm, |o, m| IrOpKind::F64Store { offset: o, memidx: m }),
-            OP(I32_STORE8) => self.handle_store(imm, |o, m| IrOpKind::I32Store8 { offset: o, memidx: m }),
-            OP(I32_STORE16) => self.handle_store(imm, |o, m| IrOpKind::I32Store16 { offset: o, memidx: m }),
-            OP(I64_STORE8) => self.handle_store(imm, |o, m| IrOpKind::I64Store8 { offset: o, memidx: m }),
-            OP(I64_STORE16) => self.handle_store(imm, |o, m| IrOpKind::I64Store16 { offset: o, memidx: m }),
-            OP(I64_STORE32) => self.handle_store(imm, |o, m| IrOpKind::I64Store32 { offset: o, memidx: m }),
+            OP(I32_STORE) => self.handle_store(imm, |o, m| CoreOpKind::I32Store { offset: o, memidx: m }),
+            OP(I64_STORE) => self.handle_store(imm, |o, m| CoreOpKind::I64Store { offset: o, memidx: m }),
+            OP(F32_STORE) => self.handle_store(imm, |o, m| CoreOpKind::F32Store { offset: o, memidx: m }),
+            OP(F64_STORE) => self.handle_store(imm, |o, m| CoreOpKind::F64Store { offset: o, memidx: m }),
+            OP(I32_STORE8) => self.handle_store(imm, |o, m| CoreOpKind::I32Store8 { offset: o, memidx: m }),
+            OP(I32_STORE16) => self.handle_store(imm, |o, m| CoreOpKind::I32Store16 { offset: o, memidx: m }),
+            OP(I64_STORE8) => self.handle_store(imm, |o, m| CoreOpKind::I64Store8 { offset: o, memidx: m }),
+            OP(I64_STORE16) => self.handle_store(imm, |o, m| CoreOpKind::I64Store16 { offset: o, memidx: m }),
+            OP(I64_STORE32) => self.handle_store(imm, |o, m| CoreOpKind::I64Store32 { offset: o, memidx: m }),
 
             // =================================================================
             // Memory size/grow
             // =================================================================
             OP(MEMORY_SIZE) => {
                 if let Immediate::MemoryIndex(mem_idx) = imm {
-                    self.handle_push_op(IrOpKind::MemorySize { mem_idx: *mem_idx });
+                    self.handle_push_op(CoreOpKind::MemorySize { mem_idx: *mem_idx });
                 }
             }
             OP(MEMORY_GROW) => {
@@ -566,7 +550,7 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
-                    self.emit(IrOpKind::MemoryGrow { mem_idx: *mem_idx }, v);
+                    self.emit(CoreOpKind::MemoryGrow { mem_idx: *mem_idx }, v);
                     self.stack.push();
                 }
             }
@@ -576,19 +560,19 @@ impl<'a> IrLower<'a> {
             // =================================================================
             FC(OpcodeFC::MEMORY_FILL) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::MemoryFill { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::MemoryFill { imm0, imm1 });
             }
             FC(OpcodeFC::MEMORY_COPY) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::MemoryCopy { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::MemoryCopy { imm0, imm1 });
             }
             FC(OpcodeFC::MEMORY_INIT) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::MemoryInit { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::MemoryInit { imm0, imm1 });
             }
             FC(OpcodeFC::DATA_DROP) => {
                 if let Immediate::DataIndex(data_idx) = imm {
-                    self.emit(IrOpKind::DataDrop { data_idx: *data_idx }, 0);
+                    self.emit(CoreOpKind::DataDrop { data_idx: *data_idx }, 0);
                 }
             }
 
@@ -597,7 +581,7 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(GLOBAL_GET) => {
                 if let Immediate::GlobalIndex(global_idx) = imm {
-                    self.handle_push_op(IrOpKind::GlobalGet { idx: *global_idx });
+                    self.handle_push_op(CoreOpKind::GlobalGet { idx: *global_idx });
                 }
             }
             OP(GLOBAL_SET) => {
@@ -605,7 +589,7 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
-                    self.emit(IrOpKind::GlobalSet { idx: *global_idx }, v);
+                    self.emit(CoreOpKind::GlobalSet { idx: *global_idx }, v);
                 }
             }
 
@@ -617,7 +601,7 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
-                    self.emit(IrOpKind::TableGet { table_idx: *table_idx }, v);
+                    self.emit(CoreOpKind::TableGet { table_idx: *table_idx }, v);
                     self.stack.push();
                 }
             }
@@ -627,12 +611,12 @@ impl<'a> IrLower<'a> {
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.stack.pop();
-                    self.emit(IrOpKind::TableSet { table_idx: *table_idx }, v);
+                    self.emit(CoreOpKind::TableSet { table_idx: *table_idx }, v);
                 }
             }
             FC(OpcodeFC::TABLE_SIZE) => {
                 if let Immediate::TableIndex(table_idx) = imm {
-                    self.handle_push_op(IrOpKind::TableSize { table_idx: *table_idx });
+                    self.handle_push_op(CoreOpKind::TableSize { table_idx: *table_idx });
                 }
             }
             FC(OpcodeFC::TABLE_GROW) => {
@@ -641,25 +625,25 @@ impl<'a> IrLower<'a> {
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.stack.pop();
-                    self.emit(IrOpKind::TableGrow { table_idx: *table_idx }, v);
+                    self.emit(CoreOpKind::TableGrow { table_idx: *table_idx }, v);
                     self.stack.push();
                 }
             }
             FC(OpcodeFC::TABLE_FILL) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::TableFill { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::TableFill { imm0, imm1 });
             }
             FC(OpcodeFC::TABLE_COPY) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::TableCopy { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::TableCopy { imm0, imm1 });
             }
             FC(OpcodeFC::TABLE_INIT) => {
                 let (imm0, imm1) = extract_imm01(imm);
-                self.handle_ternary(IrOpKind::TableInit { imm0, imm1 });
+                self.handle_ternary(CoreOpKind::TableInit { imm0, imm1 });
             }
             FC(OpcodeFC::ELEM_DROP) => {
                 if let Immediate::ElementIndex(elem_idx) = imm {
-                    self.emit(IrOpKind::ElemDrop { elem_idx: *elem_idx }, 0);
+                    self.emit(CoreOpKind::ElemDrop { elem_idx: *elem_idx }, 0);
                 }
             }
 
@@ -667,12 +651,12 @@ impl<'a> IrLower<'a> {
             // References
             // =================================================================
             OP(REF_NULL) => {
-                self.handle_push_op(IrOpKind::RefNull);
+                self.handle_push_op(CoreOpKind::RefNull);
             }
-            OP(REF_IS_NULL) => self.handle_unop(IrOpKind::RefIsNull),
+            OP(REF_IS_NULL) => self.handle_unop(CoreOpKind::RefIsNull),
             OP(REF_FUNC) => {
                 if let Immediate::FunctionIndex(func_idx) = imm {
-                    self.handle_push_op(IrOpKind::RefFunc { func_idx: *func_idx });
+                    self.handle_push_op(CoreOpKind::RefFunc { func_idx: *func_idx });
                 }
             }
 
@@ -683,7 +667,7 @@ impl<'a> IrLower<'a> {
                 self.emit_cache_fill_for_operands(1);
                 let v = self.pre_pop_variant();
                 self.stack.pop();
-                self.emit(IrOpKind::Drop, v);
+                self.emit(CoreOpKind::Drop, v);
             }
             OP(SELECT) | OP(SELECT_T) => {
                 self.emit_cache_fill_for_operands(3);
@@ -691,7 +675,7 @@ impl<'a> IrLower<'a> {
                 self.stack.pop(); // cond
                 self.stack.pop(); // val2
                 self.stack.pop(); // val1
-                self.emit(IrOpKind::Select, v);
+                self.emit(CoreOpKind::Select, v);
                 self.stack.push();
             }
 
@@ -700,13 +684,13 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(BLOCK) => {
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
-                let idx = self.emit(IrOpKind::Block, 0);
+                let idx = self.emit(CoreOpKind::Block, 0);
                 self.stack.enter_block(BlockKind::Block, params, results, idx);
             }
             OP(LOOP) => {
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
                 self.emit_cache_spill_all();
-                self.emit(IrOpKind::Loop, 0);
+                self.emit(CoreOpKind::Loop, 0);
                 let loop_target = self.current_index();
                 self.emit_cache_fill_if_needed();
                 self.stack.enter_block(BlockKind::Loop, params, results, loop_target);
@@ -717,13 +701,13 @@ impl<'a> IrLower<'a> {
                 let v = self.pre_pop_variant();
                 self.stack.pop();
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
-                let idx = self.emit_with_target(IrOpKind::If, v);
+                let idx = self.emit_with_target(CoreOpKind::If, v);
                 self.stack.enter_block(BlockKind::If, params, results, idx);
                 self.stack.set_if_inst(idx);
             }
             OP(ELSE) => {
                 self.emit_cache_spill_all();
-                let idx = self.emit_with_target(IrOpKind::Else, 0);
+                let idx = self.emit_with_target(CoreOpKind::Else, 0);
                 self.stack.set_else_inst(idx);
                 self.stack.enter_else();
                 let else_body_start = self.current_index();
@@ -752,7 +736,7 @@ impl<'a> IrLower<'a> {
                 if needs_fill {
                     self.emit_cache_fill_if_needed();
                 }
-                self.emit(IrOpKind::End, 0);
+                self.emit(CoreOpKind::End, 0);
                 if let Some((frame, _can_preserve)) = self.stack.exit_block() {
                     for fixup in &frame.pending_fixups {
                         if let Some(entry_idx) = fixup.br_table_entry {
@@ -807,17 +791,13 @@ impl<'a> IrLower<'a> {
                     self.stack.pop();
                     let arity = self.stack.branch_arity(*label);
                     let (stack_offset, target) = self.stack.branch_info(*label);
-                    let idx = if arity == 0 && stack_offset == 0 {
-                        self.emit_with_target(IrOpKind::BrIfSimple, variant_idx)
-                    } else {
-                        self.emit_with_target(
-                            SemanticOpKind::BrIf {
-                                stack_drop: stack_offset as u32,
-                                arity: arity as u16,
-                            },
-                            variant_idx,
-                        )
-                    };
+                    let idx = self.emit_with_target(
+                        SemanticOpKind::BrIf {
+                            stack_drop: stack_offset as u32,
+                            arity: arity as u16,
+                        },
+                        variant_idx,
+                    );
                     self.stack.record_fill(tos_count_before_spill.saturating_sub(1));
                     if let Some(tgt) = target {
                         self.patch_alt(idx, tgt);
@@ -869,7 +849,7 @@ impl<'a> IrLower<'a> {
                 self.stack.set_unreachable();
             }
             OP(UNREACHABLE) => {
-                self.emit_terminal(IrOpKind::Unreachable, 0);
+                self.emit_terminal(CoreOpKind::Unreachable, 0);
                 self.stack.set_unreachable();
             }
 
@@ -929,7 +909,7 @@ impl<'a> IrLower<'a> {
             // NOP
             // =================================================================
             OP(NOP) => {
-                self.emit(IrOpKind::Nop, 0);
+                self.emit(CoreOpKind::Nop, 0);
             }
 
             // =================================================================
@@ -937,13 +917,13 @@ impl<'a> IrLower<'a> {
             // =================================================================
             _ => {
                 self.emit_cache_fill_if_needed();
-                self.emit(IrOpKind::Nop, 0);
+                self.emit(CoreOpKind::Nop, 0);
             }
         }
     }
 
     /// Handle load op: pop address, push value.
-    fn handle_load(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> IrOpKind) {
+    fn handle_load(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> CoreOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.emit_cache_fill_for_operands(1);
             let v = self.pre_pop_variant();
@@ -954,7 +934,7 @@ impl<'a> IrLower<'a> {
     }
 
     /// Handle store op: pop value + address.
-    fn handle_store(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> IrOpKind) {
+    fn handle_store(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> CoreOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.emit_cache_fill_for_operands(2);
             let v = self.pre_pop_variant();

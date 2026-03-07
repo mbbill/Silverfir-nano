@@ -5,8 +5,8 @@
 //! lowering pipeline. Backend-local placement, `InitLocals`, and concrete
 //! lowered spill/fill opcodes are applied by `backend_lower`.
 
-use super::common::{BrTableEntry, OpIndex};
-use super::lowered_ir::{self, IrOpKind as LoweredIrOpKind};
+use super::common::{BrTableEntry, OpIndex, SlotRef};
+use super::core_op::{self, CoreOpKind};
 
 #[derive(Debug, Clone)]
 pub struct SemanticOp {
@@ -20,7 +20,7 @@ pub struct SemanticOp {
 
 #[derive(Debug, Clone)]
 pub enum SemanticOpKind {
-    Core(LoweredIrOpKind),
+    Core(CoreOpKind),
     LocalGet { idx: u16 },
     LocalSet { idx: u16 },
     LocalTee { idx: u16 },
@@ -29,24 +29,24 @@ pub enum SemanticOpKind {
     Br { stack_drop: u32, arity: u16 },
     BrIf { stack_drop: u32, arity: u16 },
     BrTable { entries: alloc::vec::Vec<BrTableEntry> },
-    CallExternal { func_idx: u32, delta: lowered_ir::SlotRef },
-    CallInternal { callee: u64, delta: lowered_ir::SlotRef },
-    CallIndirect { type_idx: u32, table_idx: u32, delta: lowered_ir::SlotRef },
+    CallExternal { func_idx: u32, delta: SlotRef },
+    CallInternal { callee: u64, delta: SlotRef },
+    CallIndirect { type_idx: u32, table_idx: u32, delta: SlotRef },
     ReturnVoid,
     ReturnOne,
     Return { arity: u16 },
 }
 
-impl From<LoweredIrOpKind> for SemanticOpKind {
+impl From<CoreOpKind> for SemanticOpKind {
     #[inline]
-    fn from(kind: LoweredIrOpKind) -> Self {
+    fn from(kind: CoreOpKind) -> Self {
         Self::Core(kind)
     }
 }
 
 pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
     match kind {
-        SemanticOpKind::Core(kind) => lowered_ir::stack_effect(kind),
+        SemanticOpKind::Core(kind) => core_op::stack_effect(kind),
         SemanticOpKind::LocalGet { .. } => (0, 1),
         SemanticOpKind::LocalSet { .. } => (1, 0),
         SemanticOpKind::LocalTee { .. } => (0, 0),

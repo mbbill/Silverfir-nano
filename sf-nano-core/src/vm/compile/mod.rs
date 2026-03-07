@@ -1,19 +1,12 @@
-pub mod backend_lower;
 pub mod common;
-pub mod config;
 pub mod context;
-pub mod hot_local;
-pub mod lowered_ir;
+pub mod core_op;
 pub mod ir_lower;
-pub mod plan;
 pub mod semantic_ir;
 pub mod stack;
 
-pub use config::{CompileConfig, FAST_COMPILE_CONFIG, HOT_LOCAL_COUNT, MAX_HOT_LOCAL_COUNT};
-pub use common::{BrTableEntry, OpIndex};
+pub use common::{BrTableEntry, OpIndex, SlotRef};
 pub use context::CompileContext;
-pub use plan::{CompilePlan, HotLocalPlan};
+pub use core_op::CoreOpKind;
 pub use semantic_ir::{SemanticOp, SemanticOpKind};
 pub use stack::{BlockKind, ControlFrame, StackTracker};
-
-pub use lowered_ir as ir;

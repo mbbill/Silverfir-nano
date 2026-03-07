@@ -2,15 +2,25 @@
 
 use alloc::vec::Vec;
 
-use super::{
-    BrTableEntry, CompileConfig, HotLocalPlan, HOT_LOCAL_COUNT, OpIndex,
-    lowered_ir::{self, IrOp as LoweredIrOp, IrOpKind as LoweredIrOpKind},
-    semantic_ir::{SemanticOp, SemanticOpKind},
+use crate::vm::{
+    compile::{
+        BrTableEntry, CoreOpKind, OpIndex,
+        semantic_ir::{SemanticOp, SemanticOpKind},
+    },
+    lowered::ir::{self, IrOp as LoweredIrOp, IrOpKind as LoweredIrOpKind},
+    planner::{CompileConfig, HOT_LOCAL_COUNT, HotLocalPlan},
 };
 
 #[inline]
-fn remap_index(index_map: &[usize], index: Option<OpIndex>) -> Option<OpIndex> {
-    index.map(|idx| OpIndex::new(index_map[idx.as_usize()]))
+fn remap_index(index_map: &[usize], end_index: usize, index: Option<OpIndex>) -> Option<OpIndex> {
+    index.map(|idx| {
+        let raw = idx.as_usize();
+        if raw == index_map.len() {
+            OpIndex::new(end_index)
+        } else {
+            OpIndex::new(index_map[raw])
+        }
+    })
 }
 
 #[inline]
@@ -37,7 +47,7 @@ fn lower_semantic_kind(
     pre_height: u16,
 ) -> LoweredIrOpKind {
     match kind {
-        SemanticOpKind::Core(lowered) => lowered,
+        SemanticOpKind::Core(core) => core.into(),
         SemanticOpKind::LocalGet { idx } => {
             let remapped = hot_locals.remap_local(idx as u32);
             match remapped {
@@ -73,12 +83,18 @@ fn lower_semantic_kind(
             height: pre_height,
             operand_base_offset: config.operand_base_offset(frame_size) as u32,
         },
-        SemanticOpKind::BrIf { stack_drop, arity } => LoweredIrOpKind::BrIf {
-            stack_drop,
-            arity,
-            height: pre_height,
-            operand_base_offset: config.operand_base_offset(frame_size) as u32,
-        },
+        SemanticOpKind::BrIf { stack_drop, arity } => {
+            if stack_drop == 0 && arity == 0 {
+                LoweredIrOpKind::BrIfSimple
+            } else {
+                LoweredIrOpKind::BrIf {
+                    stack_drop,
+                    arity,
+                    height: pre_height,
+                    operand_base_offset: config.operand_base_offset(frame_size) as u32,
+                }
+            }
+        }
         SemanticOpKind::BrTable { entries } => LoweredIrOpKind::BrTable {
             entries,
             entry_count: 0,
@@ -147,9 +163,10 @@ pub fn lower_to_lowered_ir(
         });
     }
 
+    let end_index = lowered.len();
     for (semantic_op, lowered_op) in ops.into_iter().zip(lowered.iter_mut().skip(1)) {
-        lowered_op.fallthrough = remap_index(&index_map, semantic_op.fallthrough);
-        lowered_op.alt_target = remap_index(&index_map, semantic_op.alt_target);
+        lowered_op.fallthrough = remap_index(&index_map, end_index, semantic_op.fallthrough);
+        lowered_op.alt_target = remap_index(&index_map, end_index, semantic_op.alt_target);
         remap_kind_targets(&mut lowered_op.kind, &index_map);
     }
 
@@ -160,7 +177,7 @@ pub fn lower_to_lowered_ir(
 mod tests {
     use super::*;
     use alloc::vec;
-    use crate::vm::compile::FAST_COMPILE_CONFIG;
+    use crate::vm::planner::FAST_COMPILE_CONFIG;
 
     fn test_hot_locals(effective: [Option<u32>; HOT_LOCAL_COUNT]) -> HotLocalPlan {
         HotLocalPlan::from_parts([None; HOT_LOCAL_COUNT], effective)
@@ -215,7 +232,7 @@ mod tests {
         let lowered = lower_to_lowered_ir(
             vec![
                 SemanticOp {
-                    kind: SemanticOpKind::Core(LoweredIrOpKind::If),
+                    kind: SemanticOpKind::Core(CoreOpKind::If),
                     variant: 1,
                     pre_height: 1,
                     fallthrough: Some(OpIndex::new(1)),
@@ -223,7 +240,7 @@ mod tests {
                     has_target: true,
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::Core(LoweredIrOpKind::Else),
+                    kind: SemanticOpKind::Core(CoreOpKind::Else),
                     variant: 0,
                     pre_height: 0,
                     fallthrough: Some(OpIndex::new(2)),
@@ -231,7 +248,7 @@ mod tests {
                     has_target: true,
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::Core(LoweredIrOpKind::BrTable {
+                    kind: SemanticOpKind::BrTable {
                         entries: vec![
                             BrTableEntry {
                                 target_idx: Some(OpIndex::new(0)),
@@ -244,11 +261,7 @@ mod tests {
                                 arity: 0,
                             },
                         ],
-                        entry_count: 2,
-                        data_slot_count: 0,
-                        height: 1,
-                        operand_base_offset: 0,
-                    }),
+                    },
                     variant: 1,
                     pre_height: 1,
                     fallthrough: None,
@@ -360,5 +373,28 @@ mod tests {
             }
             _ => panic!("expected lowered return_one"),
         }
+    }
+
+    #[test]
+    fn test_lower_specializes_zero_fixup_br_if_to_simple_form() {
+        let lowered = lower_to_lowered_ir(
+            vec![SemanticOp {
+                kind: SemanticOpKind::BrIf {
+                    stack_drop: 0,
+                    arity: 0,
+                },
+                variant: 2,
+                pre_height: 3,
+                fallthrough: None,
+                alt_target: Some(OpIndex::new(0)),
+                has_target: true,
+            }],
+            test_hot_locals([None; HOT_LOCAL_COUNT]),
+            FAST_COMPILE_CONFIG,
+            4,
+        );
+
+        assert!(matches!(lowered[1].kind, LoweredIrOpKind::BrIfSimple));
+        assert_eq!(lowered[1].alt_target, Some(OpIndex::new(1)));
     }
 }

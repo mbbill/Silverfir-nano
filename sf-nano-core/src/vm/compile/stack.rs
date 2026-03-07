@@ -3,8 +3,8 @@
 //! Tracks compile-time stack height and control flow structure.
 //! In SP-based model, we don't track individual slot types - just height.
 
-use super::config::CompileConfig;
 use super::common::OpIndex;
+use crate::vm::planner::CompileConfig;
 
 use alloc::vec::Vec;
 

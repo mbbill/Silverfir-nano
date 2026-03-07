@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::compile::lowered_ir::{IrOp, IrOpKind, OpIndex};
+use crate::vm::lowered::{IrOp, IrOpKind, OpIndex};
 use super::ir_resolve::resolve_handler;
 use super::super::handlers::full_set::op_nop;
 use super::super::handlers::OpHandler as Handler;

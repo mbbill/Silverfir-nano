@@ -1,5 +1,5 @@
 use super::semantics::SemanticsEmitter;
-use crate::vm::compile::lowered_ir::{IrOp, IrOpKind};
+use crate::vm::lowered::{IrOp, IrOpKind};
 
 const LINEAR_FINISH_BYTES: usize = 16;
 const COND_TERMINATOR_FINISH_BYTES: usize = 40;

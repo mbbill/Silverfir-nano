@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
-use crate::vm::compile::{CompileConfig, FAST_COMPILE_CONFIG};
+use crate::vm::planner::{CompileConfig, FAST_COMPILE_CONFIG};
 
 /// Requested backend policy for future fast-code compilation.
 ///

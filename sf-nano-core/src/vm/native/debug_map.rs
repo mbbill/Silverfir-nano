@@ -7,7 +7,7 @@
 
 use alloc::{format, string::{String, ToString}};
 
-use crate::vm::compile::lowered_ir::{IrOp, IrOpKind, OpIndex};
+use crate::vm::lowered::{IrOp, IrOpKind, OpIndex};
 use crate::vm::native::group_meta::{sanitize_token, summarize_group};
 
 #[cfg(any(feature = "wasi", feature = "std", test))]
@@ -119,7 +119,7 @@ fn render_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::compile::lowered_ir::IrOp;
+    use crate::vm::lowered::IrOp;
 
     fn make_op(kind: IrOpKind) -> IrOp {
         IrOp {

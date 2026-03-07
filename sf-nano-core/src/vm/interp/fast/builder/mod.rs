@@ -27,9 +27,11 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         backend::{BackendKind, BackendMode, active_backend, backend_mode},
-        compile::{self, CompileContext, CompilePlan, StackTracker},
+        compile::{self, CompileContext, StackTracker},
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
+        lowered,
+        planner::CompilePlan,
         store::Store,
     },
 };
@@ -38,12 +40,12 @@ use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
 
 #[cfg(feature = "fusion")]
-fn resolve_fusion_backend(ir_ops: &[compile::lowered_ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(ir_ops: &[lowered::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Ok(super::fusion::resolve::resolve_fusion(ir_ops))
 }
 
 #[cfg(not(feature = "fusion"))]
-fn resolve_fusion_backend(_ir_ops: &[compile::lowered_ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(_ir_ops: &[lowered::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Err("fusion backend not compiled in")
 }
 
@@ -88,7 +90,7 @@ pub fn build_for_function(
     );
 
     // Compile pipeline: lower to backend-lowered IR
-    let ir_ops = compile::ir_lower::lower_to_lowered_ir(code, &ctx, &mut stack, hot_local_plan)?;
+    let ir_ops = lowered::lower_to_ir(code, &ctx, &mut stack, hot_local_plan)?;
 
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
@@ -140,7 +142,7 @@ mod tests {
         vec,
         vec::Vec,
     };
-    use crate::vm::compile::{self, FAST_COMPILE_CONFIG, ir};
+    use crate::vm::{lowered as ir, planner::FAST_COMPILE_CONFIG};
     use crate::vm::interp::fast::{
         context::Context,
         handlers::{self, run_trampoline, NextHandler},
@@ -177,8 +179,8 @@ mod tests {
         depth_variant_for(pre_height)
     }
 
-    fn make_op(kind: compile::lowered_ir::IrOpKind, pre_height: u16, variant: u8) -> compile::lowered_ir::IrOp {
-        compile::lowered_ir::IrOp {
+    fn make_op(kind: lowered::IrOpKind, pre_height: u16, variant: u8) -> lowered::IrOp {
+        lowered::IrOp {
             kind,
             variant,
             pre_height,
