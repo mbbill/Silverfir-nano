@@ -50,6 +50,7 @@ pub fn local_weights(code: &[u8], frame_size: usize) -> Vec<u64> {
 
     let mut weights: Vec<u64> = alloc::vec![0u64; frame_size];
     let mut loop_depth: u32 = 0;
+    let mut control_stack: Vec<bool> = Vec::new();
     let mut i = 0;
 
     while i < code.len() {
@@ -60,17 +61,21 @@ pub fn local_weights(code: &[u8], frame_size: usize) -> Vec<u64> {
             // block, if: enter block (not loop)
             0x02 | 0x04 => {
                 i = skip_block_type(code, i);
+                control_stack.push(false);
             }
             // loop: increment depth
             0x03 => {
                 loop_depth = loop_depth.saturating_add(1);
                 i = skip_block_type(code, i);
+                control_stack.push(true);
             }
-            // end: decrement loop depth if we were in a loop
-            // (simplified: we can't distinguish loop-end from block-end
-            //  without a control stack, but the weighting is approximate anyway)
+            // else: stay within the same if-frame, no loop-depth change
+            0x05 => {}
+            // end: pop one control frame and decrement loop depth only for loops
             0x0B => {
-                loop_depth = loop_depth.saturating_sub(1);
+                if control_stack.pop().unwrap_or(false) {
+                    loop_depth = loop_depth.saturating_sub(1);
+                }
             }
             // local.get, local.set, local.tee (0x20, 0x21, 0x22)
             0x20 | 0x21 | 0x22 => {
@@ -307,5 +312,56 @@ fn skip_block_type(code: &[u8], i: usize) -> usize {
         // s33 type index (LEB128)
         let (_, new_i) = read_i32(code, i);
         new_i
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use super::{compute_effective_indices, find_hot_locals, local_weights};
+
+    #[test]
+    fn test_local_weights_keep_loop_depth_through_nested_block_end() {
+        let code = [
+            0x03, 0x40,       // loop
+            0x02, 0x40,       // block
+            0x20, 0x00,       // local.get 0
+            0x0B,             // end block
+            0x20, 0x01,       // local.get 1
+            0x0B,             // end loop
+            0x20, 0x02,       // local.get 2
+        ];
+
+        let weights = local_weights(&code, 3);
+        assert_eq!(weights, vec![10, 10, 1]);
+        assert_eq!(find_hot_locals(&code, 3), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn test_local_weights_keep_loop_depth_across_if_else() {
+        let code = [
+            0x03, 0x40,       // loop
+            0x04, 0x40,       // if
+            0x20, 0x00,       // local.get 0
+            0x05,             // else
+            0x20, 0x01,       // local.get 1
+            0x0B,             // end if
+            0x20, 0x02,       // local.get 2
+            0x0B,             // end loop
+        ];
+
+        let weights = local_weights(&code, 3);
+        assert_eq!(weights, vec![10, 10, 10]);
+    }
+
+    #[test]
+    fn test_compute_effective_indices_still_applies_swaps_in_order() {
+        let raw = [Some(4), Some(5), Some(6)];
+        let eff = compute_effective_indices(&raw, 8);
+        assert_eq!(eff, [Some(4), Some(5), Some(6)]);
+
+        let raw = [Some(1), Some(0), Some(2)];
+        let eff = compute_effective_indices(&raw, 8);
+        assert_eq!(eff, [Some(1), Some(1), Some(2)]);
     }
 }
