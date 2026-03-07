@@ -760,4 +760,25 @@ mod tests {
 
         assert_base_equals_jit(&ops, 2, 8, 2, &[0, 0], &[]);
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_two_frame_aliases_and_eviction() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 11 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::Drop, 1, current_variant(1)),
+            make_op(ir::IrOpKind::I32Const { value: 7 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 1 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::Drop, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 0 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::I32Const { value: 3 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 2 }, 2, current_variant(2)),
+            make_op(ir::IrOpKind::Drop, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 1 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::I32Add, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 3 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 4, 8, 4, &[0, 0, 0, 0], &[]);
+    }
 }
