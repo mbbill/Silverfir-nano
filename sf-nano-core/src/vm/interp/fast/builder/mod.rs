@@ -649,4 +649,18 @@ mod tests {
             [0, 3.0f64.to_bits(), 0],
         );
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_float_convert_chain() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 9 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::F64ConvertI32S, 1, current_variant(1)),
+            make_op(ir::IrOpKind::F32DemoteF64, 1, current_variant(1)),
+            make_op(ir::IrOpKind::F64PromoteF32, 1, current_variant(1)),
+            make_op(ir::IrOpKind::F64Sqrt, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 1, 8, 1, &[0], &[]);
+    }
 }
