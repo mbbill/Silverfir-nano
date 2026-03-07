@@ -420,6 +420,73 @@ impl<'a> JitEmitter<'a> {
         self.start_offset
     }
 
+    /// Finish with a specialized `return_void` epilogue.
+    pub fn finish_return_void(mut self, frame_size: u16) -> usize {
+        self.finish_return(None, frame_size, 0, 0)
+    }
+
+    /// Finish with a specialized `return_one` epilogue.
+    pub fn finish_return_one(
+        mut self,
+        frame_size: u16,
+        operand_base_offset: u32,
+        height: u16,
+    ) -> usize {
+        self.finish_return(Some((operand_base_offset, height)), frame_size, operand_base_offset, height)
+    }
+
+    fn finish_return(
+        &mut self,
+        result_src: Option<(u32, u16)>,
+        frame_size: u16,
+        _operand_base_offset: u32,
+        _height: u16,
+    ) -> usize {
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::FP, frame_size as u32));
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::FP, frame_size as u32 + 1));
+
+        if let Some((operand_base_offset, height)) = result_src {
+            let result_slot = operand_base_offset / 8 + height as u32 - 1;
+            self.buf.emit(arm64_enc::ldr_64(Reg::NH, Reg::FP, result_slot));
+            self.buf.emit(arm64_enc::str_64(Reg::NH, Reg::FP, 0));
+        }
+
+        let term_patch = self.buf.emit(arm64_enc::cbz_64(Reg::TMP0, 0));
+
+        self.buf.emit(arm64_enc::ldr_64(
+            Reg::NH,
+            Reg::CTX,
+            emit::ctx_offset::CALL_DEPTH / 8,
+        ));
+        self.buf.emit(arm64_enc::sub_imm_64(Reg::NH, Reg::NH, 1));
+        self.buf.emit(arm64_enc::str_64(
+            Reg::NH,
+            Reg::CTX,
+            emit::ctx_offset::CALL_DEPTH / 8,
+        ));
+
+        self.buf.emit(arm64_enc::mov_reg_64(Reg::FP, Reg::TMP0));
+        self.buf.emit(arm64_enc::ldr_64(Reg::L0, Reg::FP, 0));
+        self.buf.emit(arm64_enc::ldr_64(Reg::L1, Reg::FP, 1));
+        self.buf.emit(arm64_enc::ldr_64(Reg::L2, Reg::FP, 2));
+        emit::emit_dispatch_register(self.buf, Reg::TMP1);
+
+        let term_offset = self.buf.len();
+        self.buf.emit(arm64_enc::ldr_64(
+            Reg::TMP1,
+            Reg::CTX,
+            emit::ctx_offset::TERM_INST / 8,
+        ));
+        emit::emit_dispatch_register(self.buf, Reg::TMP1);
+
+        let delta = (term_offset - term_patch) as i32 / 4;
+        self.buf
+            .patch_u32(term_patch, arm64_enc::cbz_64(Reg::TMP0, delta));
+
+        self.emit_trap_stub_if_needed();
+        self.start_offset
+    }
+
     /// Emit the OOB trap stub and patch all B.HI branches to it.
     fn emit_trap_stub_if_needed(&mut self) {
         if self.trap_patches.is_empty() {

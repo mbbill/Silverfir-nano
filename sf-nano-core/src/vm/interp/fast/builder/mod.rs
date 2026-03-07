@@ -612,6 +612,36 @@ mod tests {
     }
 
     #[test]
+    fn test_base_vs_jit_equivalent_with_return_one_terminator() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 42 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::Spill { slot: 3, count: 1 }, 1, current_variant(1)),
+            make_op(
+                ir::IrOpKind::ReturnOne {
+                    frame_size: 0,
+                    operand_base_offset: 24,
+                    height: 1,
+                },
+                1,
+                0,
+            ),
+        ];
+
+        assert_base_equals_jit(&ops, 0, 8, 1, &[0, 0, 0], &[]);
+    }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_return_void_terminator() {
+        let ops = vec![make_op(
+            ir::IrOpKind::ReturnVoid { frame_size: 0 },
+            0,
+            0,
+        )];
+
+        assert_base_equals_jit(&ops, 0, 8, 3, &[0, 0, 0], &[]);
+    }
+
+    #[test]
     fn test_base_vs_jit_equivalent_with_hot_local_alias_chain() {
         let hot = 3.0f64.to_bits();
         let ops = vec![

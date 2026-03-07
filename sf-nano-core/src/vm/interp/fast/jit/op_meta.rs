@@ -4,6 +4,7 @@ use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind};
 const LINEAR_FINISH_BYTES: usize = 16;
 const COND_TERMINATOR_FINISH_BYTES: usize = 40;
 const BR_TERMINATOR_FINISH_BYTES: usize = 20;
+const RETURN_TERMINATOR_FINISH_BYTES: usize = 64;
 const TRAP_STUB_MAX_BYTES: usize = 32;
 
 /// Whether an IR op kind can be lowered by the ARM64 micro-JIT at all.
@@ -130,6 +131,9 @@ pub fn estimate_group_bytes(group: &[IrOp], terminator: Option<&IrOpKind>) -> us
     let finish = match terminator {
         Some(IrOpKind::BrIfSimple | IrOpKind::If) => COND_TERMINATOR_FINISH_BYTES,
         Some(IrOpKind::Br { .. }) => BR_TERMINATOR_FINISH_BYTES,
+        Some(IrOpKind::ReturnVoid { .. } | IrOpKind::ReturnOne { .. }) => {
+            RETURN_TERMINATOR_FINISH_BYTES
+        }
         _ => LINEAR_FINISH_BYTES,
     };
     let trap = if group[..body_end].iter().any(|op| uses_trap_stub(&op.kind)) {

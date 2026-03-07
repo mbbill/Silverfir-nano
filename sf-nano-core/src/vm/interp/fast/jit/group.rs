@@ -43,6 +43,8 @@ enum GroupTerminator {
     Br,
     BrIfSimple,
     If,
+    ReturnVoid,
+    ReturnOne,
 }
 
 /// Check if an IrOp is a group terminator (can only terminate, not start).
@@ -55,6 +57,8 @@ fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
         }
         IrOpKind::BrIfSimple if op.pre_height >= 1 => Some(GroupTerminator::BrIfSimple),
         IrOpKind::If if op.pre_height >= 1 => Some(GroupTerminator::If),
+        IrOpKind::ReturnVoid { .. } => Some(GroupTerminator::ReturnVoid),
+        IrOpKind::ReturnOne { .. } => Some(GroupTerminator::ReturnOne),
         _ => None,
     }
 }
@@ -258,6 +262,24 @@ pub fn resolve_jit_with_context(
                                     compaction: CompactionDisposition::Keep,
                                 });
                             }
+                            Some(GroupTerminator::ReturnVoid) => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: ir[group_start + group_len - 1].kind.clone(),
+                                    alt_target: None,
+                                    has_target: false,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
+                            Some(GroupTerminator::ReturnOne) => {
+                                out.push(ResolvedInst {
+                                    handler,
+                                    kind: ir[group_start + group_len - 1].kind.clone(),
+                                    alt_target: None,
+                                    has_target: false,
+                                    compaction: CompactionDisposition::Keep,
+                                });
+                            }
                             None => {
                                 out.push(ResolvedInst {
                                     handler,
@@ -315,6 +337,8 @@ fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> 
         Some(GroupTerminator::Br) => Some("br"),
         Some(GroupTerminator::BrIfSimple) => Some("br_if_simple"),
         Some(GroupTerminator::If) => Some("if"),
+        Some(GroupTerminator::ReturnVoid) => Some("return_void"),
+        Some(GroupTerminator::ReturnOne) => Some("return_one"),
         None => None,
     }
 }
@@ -625,6 +649,18 @@ fn try_compile_group(
             Some(GroupTerminator::Br) => e.finish_br(),
             Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
             Some(GroupTerminator::If) => e.finish_if(),
+            Some(GroupTerminator::ReturnVoid) => match &group.last().unwrap().kind {
+                IrOpKind::ReturnVoid { frame_size } => e.finish_return_void(*frame_size),
+                _ => unreachable!("terminator kind mismatch"),
+            },
+            Some(GroupTerminator::ReturnOne) => match &group.last().unwrap().kind {
+                IrOpKind::ReturnOne {
+                    frame_size,
+                    operand_base_offset,
+                    height,
+                } => e.finish_return_one(*frame_size, *operand_base_offset, *height),
+                _ => unreachable!("terminator kind mismatch"),
+            },
             None => e.finish(),
         },
     };
@@ -969,6 +1005,49 @@ mod tests {
         assert!(matches!(resolved[0].kind, IrOpKind::If));
         assert!(resolved[0].has_target);
         assert_eq!(resolved[0].alt_target, Some(OpIndex::from(10)));
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
+    }
+
+    #[test]
+    fn test_group_with_return_one_terminator() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 7 }, 0),
+            make_op(IrOpKind::Spill { slot: 3, count: 1 }, 1),
+            make_op(
+                IrOpKind::ReturnOne {
+                    frame_size: 0,
+                    operand_base_offset: 24,
+                    height: 1,
+                },
+                1,
+            ),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::ReturnOne { .. }));
+        assert!(!resolved[0].is_removed());
+        assert!(resolved[1].is_internal_only());
+        assert!(resolved[2].is_internal_only());
+    }
+
+    #[test]
+    fn test_group_with_return_void_terminator() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::InitLocals { k0: 0, k1: 1, k2: 2 }, 0),
+            make_op(IrOpKind::ReturnVoid { frame_size: 0 }, 0),
+        ];
+
+        let resolved = resolve_jit(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::ReturnVoid { .. }));
         assert!(!resolved[0].is_removed());
         assert!(resolved[1].is_internal_only());
     }

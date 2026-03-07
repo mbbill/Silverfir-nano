@@ -73,6 +73,19 @@ pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
     start
 }
 
+/// Emit dispatch to an already-loaded target instruction pointer in `target_reg`.
+///
+/// The caller is responsible for ensuring `target_reg` remains live until the
+/// final `mov pc, target_reg`.
+pub fn emit_dispatch_register(buf: &mut CodeBuffer, target_reg: Reg) -> usize {
+    let start = buf.len();
+    buf.emit(arm64_enc::ldr_64(Reg::TMP0, target_reg, INST_HANDLER_OFFSET / 8));
+    buf.emit(arm64_enc::ldr_64(Reg::NH, target_reg, INST_SIZE / 8));
+    buf.emit(arm64_enc::mov_reg_64(Reg::PC, target_reg));
+    buf.emit(arm64_enc::br(Reg::TMP0));
+    start
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
