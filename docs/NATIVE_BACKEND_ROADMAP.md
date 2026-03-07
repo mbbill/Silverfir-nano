@@ -170,13 +170,20 @@ Properties:
 The native backend should define its own internal ABI:
 
 - `ctx`
-- `pc`
 - `fp`
 - hot locals
 - TOS registers
 - any temporary/cached state that belongs to the native backend
 
 This ABI should be defined by the backend, not by Clang's calling convention.
+
+Important clarification:
+
+- this does not mean "keep an interpreter-style `pc` register in the native
+  ABI"
+- hot native code should execute by direct code-to-code control flow
+- wrapper-specific metadata should come from generated code or native-owned
+  metadata records, not from `Instruction*`
 
 ### No `nh`
 
@@ -188,6 +195,14 @@ In the native backend, direct entry points are the right model. That means:
 - `nh` is no longer needed
 - one more register becomes available
 - every entry/exit shape simplifies
+
+The same mindset should apply to `pc` and `Instruction` inside the native
+backend:
+
+- `Instruction` is interpreter machinery
+- the native backend should not model its hot path as an instruction stream
+  dispatched by handler pointers
+- native code should jump directly to the next native entry
 
 ### Hot code is generated, cold code is bridged
 
@@ -214,12 +229,28 @@ Cold path:
 
 These can remain Rust helpers behind bridge stubs.
 
+Cold wrappers are still native code. Their job is:
+
+- materialize any native-only live state that the helper must observe
+- pass canonical state plus wrapper metadata to a Rust helper
+- reload the required native hot state after the helper returns
+- jump directly to the next native entry
+
 ### Bridge stubs are for cold transitions only
 
 Bridge stubs are still useful, but only at the boundary to cold helpers.
 
 They should not sit on the hot path for every opcode. If they do, the normal ABI
 prologue/epilogue cost comes back and defeats the point.
+
+These wrappers should use a normal, well-supported platform ABI when calling
+Rust helpers. The custom native VM ABI should stay internal to native-generated
+code.
+
+That means the design has two ABIs:
+
+- internal native VM ABI for hot generated code
+- standard platform ABI for cold helper calls
 
 ### Direct entry pointers instead of handler-only thinking
 
@@ -235,6 +266,58 @@ Once that exists, several later optimizations become natural:
 - direct JIT-to-JIT branch chaining
 - direct fallthrough from one native entry to the next
 - mixed native-to-cold transitions without re-entering the old handler model
+
+## Native Cold Helper ABI
+
+The native backend should converge on one unified Rust-helper signature.
+
+Conceptually:
+
+```rust
+extern "C" fn helper(
+    ctx: *mut NativeContext,
+    fp: *mut u64,
+    meta: *const HelperMetadata,
+) -> HelperResult
+```
+
+Where:
+
+- `ctx` is the native runtime context
+- `fp` is the current frame pointer in canonical memory form
+- `meta` is an immutable wrapper-specific metadata record
+- `HelperResult` tells the wrapper where to continue in native code
+
+This is cleaner than giving every helper a unique Rust signature and cleaner
+than passing anonymous `imm0` / `imm1` / `imm2` values directly as ABI
+arguments.
+
+The wrapper may still internally decode metadata fields however it wants, but
+the helper boundary itself should stay uniform.
+
+## Metadata Ownership and Lifetime
+
+Wrapper metadata should be owned by the compiled native code artifact.
+
+That means:
+
+- metadata lifetime = native code lifetime
+- wrappers do not own metadata
+- Rust helpers do not own metadata
+- metadata is dropped together with `NativeCode`
+
+Practically, `NativeCode` should own:
+
+- executable native entries
+- immutable metadata records used by cold wrappers
+
+Wrappers should hold either:
+
+- direct pointers to metadata records
+- or compact offsets into a metadata region owned by `NativeCode`
+
+The important invariant is that the metadata is part of the compiled native
+artifact, not an external side allocation with separate lifetime tracking.
 
 ## What Happens to the C Handlers
 
@@ -257,6 +340,19 @@ The current C handlers are still useful during migration as:
 - a correctness oracle
 - a reference semantics source
 - fallback backend material
+
+## Immediate Migration Consequences
+
+The next native migration steps should follow directly from the model above:
+
+1. Stop treating native execution as `Instruction` dispatch with different code
+   pointers.
+2. Replace ad hoc bridge entrypoints with native-owned cold wrappers built
+   around the unified helper ABI.
+3. Move wrapper metadata ownership into `NativeCode`.
+4. Gradually replace remaining interpreter-shaped assumptions (`pc`, handler
+   lookup, C handler entry compatibility) with native-owned control flow and
+   metadata.
 
 They should not be deleted early. They should be demoted gradually from "main
 execution engine" to "reference/fallback implementation".
