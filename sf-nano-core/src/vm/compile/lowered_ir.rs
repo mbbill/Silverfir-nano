@@ -9,6 +9,8 @@
 
 use alloc::vec::Vec;
 
+pub use super::common::{BrTableEntry, OpIndex};
+
 /// Logical reference to a frame slot used by encoded handlers.
 ///
 /// Most IR ops already carry absolute frame slots. Branch/call/return operands
@@ -38,52 +40,6 @@ impl SlotRef {
             Self::OperandRelative(offset) => (operand_base + offset as usize) as u16,
         }
     }
-}
-
-/// Index into the pre-compaction op stream used by lowering/backends/finalizer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OpIndex(usize);
-
-impl OpIndex {
-    #[inline]
-    pub const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    #[inline]
-    pub const fn as_usize(self) -> usize {
-        self.0
-    }
-
-    #[inline]
-    pub const fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}
-
-impl From<usize> for OpIndex {
-    #[inline]
-    fn from(index: usize) -> Self {
-        Self::new(index)
-    }
-}
-
-impl From<OpIndex> for usize {
-    #[inline]
-    fn from(index: OpIndex) -> Self {
-        index.as_usize()
-    }
-}
-
-/// Entry for br_table: target info for each label.
-#[derive(Debug, Clone)]
-pub struct BrTableEntry {
-    /// Target instruction index (None for forward refs)
-    pub target_idx: Option<OpIndex>,
-    /// Stack offset for this branch
-    pub stack_offset: usize,
-    /// Branch arity
-    pub arity: usize,
 }
 
 /// A single resolved IR instruction.

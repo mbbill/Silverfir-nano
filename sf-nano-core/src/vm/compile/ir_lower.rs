@@ -8,8 +8,9 @@
 
 use alloc::vec::Vec;
 
+use super::common::{BrTableEntry, OpIndex};
 use super::context::CompileContext;
-use super::lowered_ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
+use super::lowered_ir::{self, IrOp, IrOpKind, SlotRef};
 use super::plan::HotLocalPlan;
 use super::semantic_ir::{self, SemanticOp, SemanticOpKind};
 use super::stack::{BlockKind, StackTracker};
@@ -50,7 +51,12 @@ pub fn lower_to_lowered_ir<'a>(
     hot_locals: HotLocalPlan,
 ) -> Result<Vec<IrOp>, WasmError> {
     let semantic_ops = lower_to_semantic_ir(code, ctx, stack)?;
-    Ok(semantic_ir::lower_to_lowered_ir(semantic_ops, hot_locals, stack.config()))
+    Ok(super::backend_lower::lower_to_lowered_ir(
+        semantic_ops,
+        hot_locals,
+        stack.config(),
+        stack.frame_size(),
+    ))
 }
 
 /// IR lowering state.
@@ -138,11 +144,11 @@ impl<'a> IrLower<'a> {
     fn patch_br_data(&mut self, idx: OpIndex, stack_offset: u64, arity: u64) {
         if let Some(op) = self.ops.get_mut(idx.as_usize()) {
             match &mut op.kind {
-                SemanticOpKind::Lowered(IrOpKind::Br { stack_drop, arity: a, .. }) => {
+                SemanticOpKind::Br { stack_drop, arity: a } => {
                     *stack_drop = stack_offset as u32;
                     *a = arity as u16;
                 }
-                SemanticOpKind::Lowered(IrOpKind::BrIf { stack_drop, arity: a, .. }) => {
+                SemanticOpKind::BrIf { stack_drop, arity: a } => {
                     *stack_drop = stack_offset as u32;
                     *a = arity as u16;
                 }
@@ -154,7 +160,7 @@ impl<'a> IrLower<'a> {
     /// Patch br_table entry target.
     fn patch_br_table_target(&mut self, inst_idx: OpIndex, entry_idx: usize, target_idx: OpIndex) {
         if let Some(op) = self.ops.get_mut(inst_idx.as_usize()) {
-            if let SemanticOpKind::Lowered(IrOpKind::BrTable { entries, .. }) = &mut op.kind {
+            if let SemanticOpKind::BrTable { entries } = &mut op.kind {
                 if let Some(entry) = entries.get_mut(entry_idx) {
                     entry.target_idx = Some(target_idx);
                 }
@@ -775,14 +781,10 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_spill_all();
                     let arity = self.stack.branch_arity(*label);
                     let (stack_offset, target) = self.stack.branch_info(*label);
-                    let current_height = self.stack.height();
-                    let operand_base_offset = (self.stack.operand_base() * 8) as u32;
                     let idx = self.emit_with_target(
-                        IrOpKind::Br {
+                        SemanticOpKind::Br {
                             stack_drop: stack_offset as u32,
                             arity: arity as u16,
-                            height: current_height as u16,
-                            operand_base_offset,
                         },
                         0,
                     );
@@ -802,20 +804,16 @@ impl<'a> IrLower<'a> {
                     let variant_idx = ((self.stack.height().saturating_sub(1)
                         % self.stack.config().tos_register_count)
                         + 1) as u8;
-                    let pre_pop_height = self.stack.height();
                     self.stack.pop();
                     let arity = self.stack.branch_arity(*label);
                     let (stack_offset, target) = self.stack.branch_info(*label);
                     let idx = if arity == 0 && stack_offset == 0 {
                         self.emit_with_target(IrOpKind::BrIfSimple, variant_idx)
                     } else {
-                        let operand_base_offset = (self.stack.operand_base() * 8) as u32;
                         self.emit_with_target(
-                            IrOpKind::BrIf {
+                            SemanticOpKind::BrIf {
                                 stack_drop: stack_offset as u32,
                                 arity: arity as u16,
-                                height: pre_pop_height as u16,
-                                operand_base_offset,
                             },
                             variant_idx,
                         )
@@ -833,9 +831,7 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_fill_for_operands(1);
                     self.emit_cache_spill_all_except_top(1);
                     let v = self.pre_pop_variant();
-                    let pre_pop_height = self.stack.height();
                     self.stack.pop();
-                    let effective_height = pre_pop_height;
                     let mut entries = Vec::with_capacity(labels.len() + 1);
                     let all_labels: Vec<u32> = labels.iter().copied().chain(core::iter::once(*default_label)).collect();
                     for &label in &all_labels {
@@ -847,14 +843,9 @@ impl<'a> IrLower<'a> {
                             arity,
                         });
                     }
-                    let operand_base_offset = (self.stack.operand_base() * 8) as u32;
                     let inst_idx = self.emit_with_target(
-                        IrOpKind::BrTable {
+                        SemanticOpKind::BrTable {
                             entries,
-                            entry_count: 0,
-                            data_slot_count: 0,
-                            height: effective_height as u16,
-                            operand_base_offset,
                         },
                         v,
                     );
@@ -874,9 +865,7 @@ impl<'a> IrLower<'a> {
             OP(RETURN) => {
                 self.emit_cache_spill_all();
                 let arity = self.ctx.results_count();
-                let frame_size = self.stack.frame_size();
-                let current_height = self.stack.height();
-                self.emit_return(arity, frame_size, current_height);
+                self.emit_return(arity);
                 self.stack.set_unreachable();
             }
             OP(UNREACHABLE) => {
@@ -895,7 +884,7 @@ impl<'a> IrLower<'a> {
                     if self.ctx.is_func_internal(*func_idx as usize) {
                         if let Some(callee_inst) = self.ctx.get_func_inst(*func_idx as usize) {
                             self.emit(
-                                IrOpKind::CallInternal {
+                                SemanticOpKind::CallInternal {
                                     callee: callee_inst as *const _ as u64,
                                     delta,
                                 },
@@ -903,13 +892,13 @@ impl<'a> IrLower<'a> {
                             );
                         } else {
                             self.emit(
-                                IrOpKind::CallExternal { func_idx: *func_idx, delta },
+                                SemanticOpKind::CallExternal { func_idx: *func_idx, delta },
                                 0,
                             );
                         }
                     } else {
                         self.emit(
-                            IrOpKind::CallExternal { func_idx: *func_idx, delta },
+                            SemanticOpKind::CallExternal { func_idx: *func_idx, delta },
                             0,
                         );
                     }
@@ -922,16 +911,12 @@ impl<'a> IrLower<'a> {
                     self.emit_cache_spill_all();
                     let (params, results) = self.ctx.resolve_type_index(*typeidx as usize);
                     let delta = SlotRef::operand_relative((self.stack.height() - params - 1) as u16);
-                    let operand_base_offset = (self.stack.operand_base() * 8) as u32;
-                    let height = self.stack.height() as u16;
                     self.stack.pop(); // Pop materialized index
                     self.emit(
-                        IrOpKind::CallIndirect {
+                        SemanticOpKind::CallIndirect {
                             type_idx: *typeidx,
                             table_idx: *tableidx,
                             delta,
-                            operand_base_offset,
-                            height,
                         },
                         0,
                     );
@@ -980,35 +965,16 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit return (specialized by arity).
-    fn emit_return(&mut self, arity: usize, frame_size: usize, current_height: usize) {
-        let operand_base_offset = self.stack.config().operand_base_offset(frame_size) as u32;
+    fn emit_return(&mut self, arity: usize) {
         match arity {
             0 => {
-                self.emit_terminal(
-                    IrOpKind::ReturnVoid { frame_size: frame_size as u16 },
-                    0,
-                );
+                self.emit_terminal(SemanticOpKind::ReturnVoid, 0);
             }
             1 => {
-                self.emit_terminal(
-                    IrOpKind::ReturnOne {
-                        frame_size: frame_size as u16,
-                        operand_base_offset,
-                        height: current_height as u16,
-                    },
-                    0,
-                );
+                self.emit_terminal(SemanticOpKind::ReturnOne, 0);
             }
             _ => {
-                self.emit_terminal(
-                    IrOpKind::Return {
-                        arity: arity as u16,
-                        frame_size: frame_size as u16,
-                        operand_base_offset,
-                        height: current_height as u16,
-                    },
-                    0,
-                );
+                self.emit_terminal(SemanticOpKind::Return { arity: arity as u16 }, 0);
             }
         }
     }
@@ -1052,9 +1018,7 @@ impl<'a, 'b> OpcodeHandler for LowerHandler<'a, 'b> {
         if !self.ir.stack.is_unreachable() {
             self.ir.emit_cache_spill_all();
             let arity = self.ir.ctx.results_count();
-            let frame_size = self.ir.stack.frame_size();
-            let current_height = self.ir.stack.height();
-            self.ir.emit_return(arity, frame_size, current_height);
+            self.ir.emit_return(arity);
         }
         Ok(())
     }
