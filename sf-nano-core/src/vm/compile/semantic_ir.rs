@@ -1,9 +1,10 @@
 //! Semantic Wasm decode IR before backend-local placement.
 //!
-//! This layer is intentionally small for now. It keeps control-flow metadata,
-//! variants, and stack-management ops from the current lowering pipeline, but
-//! leaves local placement and the `InitLocals` prologue to a separate lowering
-//! step driven by backend compile planning.
+//! This layer is intentionally incremental. It keeps control-flow metadata,
+//! variants, and abstract TOS-cache management markers from the current
+//! lowering pipeline, but leaves local placement, `InitLocals`, and concrete
+//! lowered spill/fill opcodes to a separate lowering step driven by backend
+//! compile planning.
 
 use alloc::vec::Vec;
 
@@ -28,6 +29,8 @@ pub enum SemanticOpKind {
     LocalGet { idx: u16 },
     LocalSet { idx: u16 },
     LocalTee { idx: u16 },
+    CacheSpill { slot: u16, count: u8 },
+    CacheFill { slot: u16, count: u8 },
 }
 
 impl From<LoweredIrOpKind> for SemanticOpKind {
@@ -38,16 +41,16 @@ impl From<LoweredIrOpKind> for SemanticOpKind {
 }
 
 #[inline]
-fn shifted_index(index: Option<OpIndex>) -> Option<OpIndex> {
-    index.map(|idx| OpIndex::new(idx.as_usize() + 1))
+fn remap_index(index_map: &[usize], index: Option<OpIndex>) -> Option<OpIndex> {
+    index.map(|idx| OpIndex::new(index_map[idx.as_usize()]))
 }
 
 #[inline]
-fn shift_kind_targets(kind: &mut LoweredIrOpKind) {
+fn remap_kind_targets(kind: &mut LoweredIrOpKind, index_map: &[usize]) {
     if let LoweredIrOpKind::BrTable { entries, .. } = kind {
         for entry in entries.iter_mut() {
             if let Some(target_idx) = entry.target_idx {
-                entry.target_idx = Some(OpIndex::new(target_idx.as_usize() + 1));
+                entry.target_idx = Some(OpIndex::new(index_map[target_idx.as_usize()]));
             }
         }
     }
@@ -62,39 +65,38 @@ fn lower_local_kind(
     kind: SemanticOpKind,
     hot_locals: HotLocalPlan,
     config: CompileConfig,
-) -> LoweredIrOpKind {
+) -> Option<LoweredIrOpKind> {
     match kind {
-        SemanticOpKind::Lowered(mut lowered) => {
-            shift_kind_targets(&mut lowered);
-            lowered
-        }
+        SemanticOpKind::Lowered(lowered) => Some(lowered),
         SemanticOpKind::LocalGet { idx } => {
             let remapped = hot_locals.remap_local(idx as u32);
             match remapped {
-                0 if hot_slot_enabled(hot_locals, config, 0) => LoweredIrOpKind::LocalGetHot { reg: 0 },
-                1 if hot_slot_enabled(hot_locals, config, 1) => LoweredIrOpKind::LocalGetHot { reg: 1 },
-                2 if hot_slot_enabled(hot_locals, config, 2) => LoweredIrOpKind::LocalGetHot { reg: 2 },
-                _ => LoweredIrOpKind::LocalGetFrame { idx: remapped as u16 },
+                0 if hot_slot_enabled(hot_locals, config, 0) => Some(LoweredIrOpKind::LocalGetHot { reg: 0 }),
+                1 if hot_slot_enabled(hot_locals, config, 1) => Some(LoweredIrOpKind::LocalGetHot { reg: 1 }),
+                2 if hot_slot_enabled(hot_locals, config, 2) => Some(LoweredIrOpKind::LocalGetHot { reg: 2 }),
+                _ => Some(LoweredIrOpKind::LocalGetFrame { idx: remapped as u16 }),
             }
         }
         SemanticOpKind::LocalSet { idx } => {
             let remapped = hot_locals.remap_local(idx as u32);
             match remapped {
-                0 if hot_slot_enabled(hot_locals, config, 0) => LoweredIrOpKind::LocalSetHot { reg: 0 },
-                1 if hot_slot_enabled(hot_locals, config, 1) => LoweredIrOpKind::LocalSetHot { reg: 1 },
-                2 if hot_slot_enabled(hot_locals, config, 2) => LoweredIrOpKind::LocalSetHot { reg: 2 },
-                _ => LoweredIrOpKind::LocalSetFrame { idx: remapped as u16 },
+                0 if hot_slot_enabled(hot_locals, config, 0) => Some(LoweredIrOpKind::LocalSetHot { reg: 0 }),
+                1 if hot_slot_enabled(hot_locals, config, 1) => Some(LoweredIrOpKind::LocalSetHot { reg: 1 }),
+                2 if hot_slot_enabled(hot_locals, config, 2) => Some(LoweredIrOpKind::LocalSetHot { reg: 2 }),
+                _ => Some(LoweredIrOpKind::LocalSetFrame { idx: remapped as u16 }),
             }
         }
         SemanticOpKind::LocalTee { idx } => {
             let remapped = hot_locals.remap_local(idx as u32);
             match remapped {
-                0 if hot_slot_enabled(hot_locals, config, 0) => LoweredIrOpKind::LocalTeeHot { reg: 0 },
-                1 if hot_slot_enabled(hot_locals, config, 1) => LoweredIrOpKind::LocalTeeHot { reg: 1 },
-                2 if hot_slot_enabled(hot_locals, config, 2) => LoweredIrOpKind::LocalTeeHot { reg: 2 },
-                _ => LoweredIrOpKind::LocalTeeFrame { idx: remapped as u16 },
+                0 if hot_slot_enabled(hot_locals, config, 0) => Some(LoweredIrOpKind::LocalTeeHot { reg: 0 }),
+                1 if hot_slot_enabled(hot_locals, config, 1) => Some(LoweredIrOpKind::LocalTeeHot { reg: 1 }),
+                2 if hot_slot_enabled(hot_locals, config, 2) => Some(LoweredIrOpKind::LocalTeeHot { reg: 2 }),
+                _ => Some(LoweredIrOpKind::LocalTeeFrame { idx: remapped as u16 }),
             }
         }
+        SemanticOpKind::CacheSpill { slot, count } => Some(LoweredIrOpKind::Spill { slot, count }),
+        SemanticOpKind::CacheFill { slot, count } => Some(LoweredIrOpKind::Fill { slot, count }),
     }
 }
 
@@ -119,15 +121,25 @@ pub fn lower_to_lowered_ir(
     let mut lowered = Vec::with_capacity(ops.len() + 1);
     lowered.push(init);
 
-    for op in ops {
-        lowered.push(LoweredIrOp {
-            kind: lower_local_kind(op.kind, hot_locals, config),
-            variant: op.variant,
-            pre_height: op.pre_height,
-            fallthrough: shifted_index(op.fallthrough),
-            alt_target: shifted_index(op.alt_target),
-            has_target: op.has_target,
-        });
+    let mut index_map = Vec::with_capacity(ops.len());
+    for op in &ops {
+        index_map.push(lowered.len());
+        if let Some(kind) = lower_local_kind(op.kind.clone(), hot_locals, config) {
+            lowered.push(LoweredIrOp {
+                kind,
+                variant: op.variant,
+                pre_height: op.pre_height,
+                fallthrough: None,
+                alt_target: None,
+                has_target: op.has_target,
+            });
+        }
+    }
+
+    for (semantic_op, lowered_op) in ops.into_iter().zip(lowered.iter_mut().skip(1)) {
+        lowered_op.fallthrough = remap_index(&index_map, semantic_op.fallthrough);
+        lowered_op.alt_target = remap_index(&index_map, semantic_op.alt_target);
+        remap_kind_targets(&mut lowered_op.kind, &index_map);
     }
 
     lowered
@@ -139,6 +151,7 @@ pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
         SemanticOpKind::LocalGet { .. } => (0, 1),
         SemanticOpKind::LocalSet { .. } => (1, 0),
         SemanticOpKind::LocalTee { .. } => (0, 0),
+        SemanticOpKind::CacheSpill { .. } | SemanticOpKind::CacheFill { .. } => (0, 0),
     }
 }
 
@@ -256,5 +269,35 @@ mod tests {
             }
             _ => panic!("expected br_table"),
         }
+    }
+
+    #[test]
+    fn test_lower_converts_cache_markers_to_lowered_ops() {
+        let lowered = lower_to_lowered_ir(
+            vec![
+                SemanticOp {
+                    kind: SemanticOpKind::CacheSpill { slot: 8, count: 1 },
+                    variant: 1,
+                    pre_height: 4,
+                    fallthrough: Some(OpIndex::new(1)),
+                    alt_target: None,
+                    has_target: false,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::CacheFill { slot: 8, count: 1 },
+                    variant: 4,
+                    pre_height: 4,
+                    fallthrough: None,
+                    alt_target: None,
+                    has_target: false,
+                },
+            ],
+            test_hot_locals([None; HOT_LOCAL_COUNT]),
+            FAST_COMPILE_CONFIG,
+        );
+
+        assert!(matches!(lowered[1].kind, LoweredIrOpKind::Spill { slot: 8, count: 1 }));
+        assert!(matches!(lowered[2].kind, LoweredIrOpKind::Fill { slot: 8, count: 1 }));
+        assert_eq!(lowered[1].fallthrough, Some(OpIndex::new(2)));
     }
 }

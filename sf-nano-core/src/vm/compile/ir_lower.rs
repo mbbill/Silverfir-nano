@@ -184,23 +184,23 @@ impl<'a> IrLower<'a> {
     }
 
     // =========================================================================
-    // Spill/Fill helpers (mirrors dispatch.rs)
+    // TOS-cache helpers (mirrors dispatch.rs)
     // =========================================================================
 
-    /// Emit spill if TOS cache is full before a push.
-    fn emit_spill_if_needed(&mut self) {
+    /// Emit an abstract spill marker if TOS cache is full before a push.
+    fn emit_cache_spill_if_needed(&mut self) {
         if self.stack.is_unreachable() { return; }
         if self.stack.needs_spill_before_push() {
             let spill_depth = self.stack.spill_depth();
             let slot = (self.stack.operand_base() + spill_depth) as u16;
             let variant = ((spill_depth % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(1);
-            self.emit(IrOpKind::Spill { slot, count: 1 }, variant);
+            self.emit(SemanticOpKind::CacheSpill { slot, count: 1 }, variant);
         }
     }
 
-    /// Emit fill if operands are in memory.
-    fn emit_fill_for_operands(&mut self, operand_count: usize) {
+    /// Emit an abstract fill marker when operands must be materialized.
+    fn emit_cache_fill_for_operands(&mut self, operand_count: usize) {
         if self.stack.is_unreachable() { return; }
         let spill_depth = self.stack.spill_depth();
         let height = self.stack.height();
@@ -210,24 +210,24 @@ impl<'a> IrLower<'a> {
             let slot = (self.stack.operand_base() + spill_depth - 1) as u16;
             let variant = (((spill_depth - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_fill(fill_count);
-            self.emit(IrOpKind::Fill { slot, count: fill_count as u8 }, variant);
+            self.emit(SemanticOpKind::CacheFill { slot, count: fill_count as u8 }, variant);
         }
     }
 
-    /// Emit fill for control flow normalization.
-    fn emit_fill_if_needed(&mut self) {
+    /// Emit an abstract fill marker for control-flow normalization.
+    fn emit_cache_fill_if_needed(&mut self) {
         if self.stack.is_unreachable() { return; }
         let old_spill_depth = self.stack.spill_depth();
         let fill_count = self.stack.normalize_for_control_flow();
         if fill_count > 0 {
             let slot = (self.stack.operand_base() + old_spill_depth - 1) as u16;
             let variant = (((old_spill_depth - 1) % self.stack.config().tos_register_count) + 1) as u8;
-            self.emit(IrOpKind::Fill { slot, count: fill_count as u8 }, variant);
+            self.emit(SemanticOpKind::CacheFill { slot, count: fill_count as u8 }, variant);
         }
     }
 
-    /// Spill all TOS values.
-    fn emit_spill_all(&mut self) {
+    /// Emit abstract spill markers for all live TOS values.
+    fn emit_cache_spill_all(&mut self) {
         if self.stack.is_unreachable() { return; }
         let tos_count = self.stack.tos_count();
         if tos_count > 0 {
@@ -235,12 +235,12 @@ impl<'a> IrLower<'a> {
             let slot = (self.stack.operand_base() + height - 1) as u16;
             let variant = (((height - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(tos_count);
-            self.emit(IrOpKind::Spill { slot, count: tos_count as u8 }, variant);
+            self.emit(SemanticOpKind::CacheSpill { slot, count: tos_count as u8 }, variant);
         }
     }
 
-    /// Spill all except top N.
-    fn emit_spill_all_except_top(&mut self, keep_top: usize) {
+    /// Emit abstract spill markers for all but the top `keep_top` values.
+    fn emit_cache_spill_all_except_top(&mut self, keep_top: usize) {
         if self.stack.is_unreachable() { return; }
         let tos_count = self.stack.tos_count();
         let to_spill = tos_count.saturating_sub(keep_top);
@@ -249,7 +249,7 @@ impl<'a> IrLower<'a> {
             let slot = (self.stack.operand_base() + spill_depth + to_spill - 1) as u16;
             let variant = (((spill_depth + to_spill - 1) % self.stack.config().tos_register_count) + 1) as u8;
             self.stack.record_spill(to_spill);
-            self.emit(IrOpKind::Spill { slot, count: to_spill as u8 }, variant);
+            self.emit(SemanticOpKind::CacheSpill { slot, count: to_spill as u8 }, variant);
         }
     }
 
@@ -259,7 +259,7 @@ impl<'a> IrLower<'a> {
 
     /// Handle a push-1 op (constant, global_get, etc.).
     fn handle_push_op(&mut self, kind: IrOpKind) {
-        self.emit_spill_if_needed();
+        self.emit_cache_spill_if_needed();
         let v = self.post_push_variant();
         self.emit(kind, v);
         self.stack.push();
@@ -267,7 +267,7 @@ impl<'a> IrLower<'a> {
 
     /// Handle a binary op (pop 2, push 1).
     fn handle_binop(&mut self, kind: IrOpKind) {
-        self.emit_fill_for_operands(2);
+        self.emit_cache_fill_for_operands(2);
         let v = self.pre_pop_variant();
         self.stack.pop();
         self.stack.pop();
@@ -277,7 +277,7 @@ impl<'a> IrLower<'a> {
 
     /// Handle a unary op (pop 1, push 1).
     fn handle_unop(&mut self, kind: IrOpKind) {
-        self.emit_fill_for_operands(1);
+        self.emit_cache_fill_for_operands(1);
         let v = self.pre_pop_variant();
         self.stack.pop();
         self.emit(kind, v);
@@ -286,7 +286,7 @@ impl<'a> IrLower<'a> {
 
     /// Handle a ternary op (pop 3, push 0).
     fn handle_ternary(&mut self, kind: IrOpKind) {
-        self.emit_fill_for_operands(3);
+        self.emit_cache_fill_for_operands(3);
         let v = self.pre_pop_variant();
         self.stack.pop();
         self.stack.pop();
@@ -305,7 +305,7 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(LOCAL_GET) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    self.emit_spill_if_needed();
+                    self.emit_cache_spill_if_needed();
                     let v = self.post_push_variant();
                     self.emit(SemanticOpKind::LocalGet { idx: *idx as u16 }, v);
                     self.stack.push();
@@ -313,7 +313,7 @@ impl<'a> IrLower<'a> {
             }
             OP(LOCAL_SET) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.emit(SemanticOpKind::LocalSet { idx: *idx as u16 }, v);
@@ -321,7 +321,7 @@ impl<'a> IrLower<'a> {
             }
             OP(LOCAL_TEE) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.emit(SemanticOpKind::LocalTee { idx: *idx as u16 }, v);
                 }
@@ -557,7 +557,7 @@ impl<'a> IrLower<'a> {
             }
             OP(MEMORY_GROW) => {
                 if let Immediate::MemoryIndex(mem_idx) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.emit(IrOpKind::MemoryGrow { mem_idx: *mem_idx }, v);
@@ -596,7 +596,7 @@ impl<'a> IrLower<'a> {
             }
             OP(GLOBAL_SET) => {
                 if let Immediate::GlobalIndex(global_idx) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.emit(IrOpKind::GlobalSet { idx: *global_idx }, v);
@@ -608,7 +608,7 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(TABLE_GET) => {
                 if let Immediate::TableIndex(table_idx) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.emit(IrOpKind::TableGet { table_idx: *table_idx }, v);
@@ -617,7 +617,7 @@ impl<'a> IrLower<'a> {
             }
             OP(TABLE_SET) => {
                 if let Immediate::TableIndex(table_idx) = imm {
-                    self.emit_fill_for_operands(2);
+                    self.emit_cache_fill_for_operands(2);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.stack.pop();
@@ -631,7 +631,7 @@ impl<'a> IrLower<'a> {
             }
             FC(OpcodeFC::TABLE_GROW) => {
                 if let Immediate::TableIndex(table_idx) = imm {
-                    self.emit_fill_for_operands(2);
+                    self.emit_cache_fill_for_operands(2);
                     let v = self.pre_pop_variant();
                     self.stack.pop();
                     self.stack.pop();
@@ -674,13 +674,13 @@ impl<'a> IrLower<'a> {
             // Stack ops
             // =================================================================
             OP(DROP) => {
-                self.emit_fill_for_operands(1);
+                self.emit_cache_fill_for_operands(1);
                 let v = self.pre_pop_variant();
                 self.stack.pop();
                 self.emit(IrOpKind::Drop, v);
             }
             OP(SELECT) | OP(SELECT_T) => {
-                self.emit_fill_for_operands(3);
+                self.emit_cache_fill_for_operands(3);
                 let v = self.pre_pop_variant();
                 self.stack.pop(); // cond
                 self.stack.pop(); // val2
@@ -699,15 +699,15 @@ impl<'a> IrLower<'a> {
             }
             OP(LOOP) => {
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
-                self.emit_spill_all();
+                self.emit_cache_spill_all();
                 self.emit(IrOpKind::Loop, 0);
                 let loop_target = self.current_index();
-                self.emit_fill_if_needed();
+                self.emit_cache_fill_if_needed();
                 self.stack.enter_block(BlockKind::Loop, params, results, loop_target);
             }
             OP(IF) => {
-                self.emit_fill_for_operands(1);
-                self.emit_spill_all_except_top(1);
+                self.emit_cache_fill_for_operands(1);
+                self.emit_cache_spill_all_except_top(1);
                 let v = self.pre_pop_variant();
                 self.stack.pop();
                 let (params, results) = self.ctx.resolve_block_type_from_imm(imm);
@@ -716,7 +716,7 @@ impl<'a> IrLower<'a> {
                 self.stack.set_if_inst(idx);
             }
             OP(ELSE) => {
-                self.emit_spill_all();
+                self.emit_cache_spill_all();
                 let idx = self.emit_with_target(IrOpKind::Else, 0);
                 self.stack.set_else_inst(idx);
                 self.stack.enter_else();
@@ -739,12 +739,12 @@ impl<'a> IrLower<'a> {
                     .unwrap_or(false);
                 let needs_sync = has_stack_drop_branch && self.stack.spill_depth() < self.stack.height();
                 if needs_sync {
-                    self.emit_spill_all();
+                    self.emit_cache_spill_all();
                 }
                 let needs_fill = has_forward_branches || is_if_block;
                 let target_idx = self.current_index();
                 if needs_fill {
-                    self.emit_fill_if_needed();
+                    self.emit_cache_fill_if_needed();
                 }
                 self.emit(IrOpKind::End, 0);
                 if let Some((frame, _can_preserve)) = self.stack.exit_block() {
@@ -772,7 +772,7 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(BR) => {
                 if let Immediate::LabelIndex(label) = imm {
-                    self.emit_spill_all();
+                    self.emit_cache_spill_all();
                     let arity = self.stack.branch_arity(*label);
                     let (stack_offset, target) = self.stack.branch_info(*label);
                     let current_height = self.stack.height();
@@ -796,9 +796,9 @@ impl<'a> IrLower<'a> {
             }
             OP(BR_IF) => {
                 if let Immediate::LabelIndex(label) = imm {
-                    self.emit_fill_for_operands(1);
+                    self.emit_cache_fill_for_operands(1);
                     let tos_count_before_spill = self.stack.tos_count();
-                    self.emit_spill_all_except_top(1);
+                    self.emit_cache_spill_all_except_top(1);
                     let variant_idx = ((self.stack.height().saturating_sub(1)
                         % self.stack.config().tos_register_count)
                         + 1) as u8;
@@ -830,8 +830,8 @@ impl<'a> IrLower<'a> {
             }
             OP(BR_TABLE) => {
                 if let Immediate::BrLabels(labels, default_label) = imm {
-                    self.emit_fill_for_operands(1);
-                    self.emit_spill_all_except_top(1);
+                    self.emit_cache_fill_for_operands(1);
+                    self.emit_cache_spill_all_except_top(1);
                     let v = self.pre_pop_variant();
                     let pre_pop_height = self.stack.height();
                     self.stack.pop();
@@ -872,7 +872,7 @@ impl<'a> IrLower<'a> {
             // Return / Unreachable
             // =================================================================
             OP(RETURN) => {
-                self.emit_spill_all();
+                self.emit_cache_spill_all();
                 let arity = self.ctx.results_count();
                 let frame_size = self.stack.frame_size();
                 let current_height = self.stack.height();
@@ -889,7 +889,7 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(CALL) => {
                 if let Immediate::FunctionIndex(func_idx) = imm {
-                    self.emit_spill_all();
+                    self.emit_cache_spill_all();
                     let (params, results) = self.ctx.resolve_func_type(*func_idx as usize);
                     let delta = SlotRef::operand_relative((self.stack.height() - params) as u16);
                     if self.ctx.is_func_internal(*func_idx as usize) {
@@ -919,7 +919,7 @@ impl<'a> IrLower<'a> {
             }
             OP(CALL_INDIRECT) => {
                 if let Immediate::CallIndirectArgs { typeidx, tableidx } = imm {
-                    self.emit_spill_all();
+                    self.emit_cache_spill_all();
                     let (params, results) = self.ctx.resolve_type_index(*typeidx as usize);
                     let delta = SlotRef::operand_relative((self.stack.height() - params - 1) as u16);
                     let operand_base_offset = (self.stack.operand_base() * 8) as u32;
@@ -951,7 +951,7 @@ impl<'a> IrLower<'a> {
             // Catch-all for unhandled opcodes
             // =================================================================
             _ => {
-                self.emit_fill_if_needed();
+                self.emit_cache_fill_if_needed();
                 self.emit(IrOpKind::Nop, 0);
             }
         }
@@ -960,7 +960,7 @@ impl<'a> IrLower<'a> {
     /// Handle load op: pop address, push value.
     fn handle_load(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> IrOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
-            self.emit_fill_for_operands(1);
+            self.emit_cache_fill_for_operands(1);
             let v = self.pre_pop_variant();
             self.stack.pop();
             self.emit(make_kind(*offset as u32, *memidx), v);
@@ -971,7 +971,7 @@ impl<'a> IrLower<'a> {
     /// Handle store op: pop value + address.
     fn handle_store(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> IrOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
-            self.emit_fill_for_operands(2);
+            self.emit_cache_fill_for_operands(2);
             let v = self.pre_pop_variant();
             self.stack.pop();
             self.stack.pop();
@@ -1050,7 +1050,7 @@ impl<'a, 'b> OpcodeHandler for LowerHandler<'a, 'b> {
     fn on_decode_end(&mut self) -> Result<(), WasmError> {
         // Emit implicit RETURN at function end (if not unreachable)
         if !self.ir.stack.is_unreachable() {
-            self.ir.emit_spill_all();
+            self.ir.emit_cache_spill_all();
             let arity = self.ir.ctx.results_count();
             let frame_size = self.ir.stack.frame_size();
             let current_height = self.ir.stack.height();
