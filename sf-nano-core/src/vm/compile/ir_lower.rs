@@ -1,43 +1,37 @@
-//! Wasm→lowered-IR lowering pass.
+//! Wasm semantic decode + lowering to backend-lowered IR.
 //!
-//! Decodes Wasm opcodes and produces `Vec<IrOp>` with all stack-management
-//! resolved: TOS variants, spill/fill, hot local mapping, control flow.
+//! The decode stage produces semantic ops. A small follow-up lowering step then
+//! applies backend local placement and inserts the `InitLocals` prologue.
 //!
 //! This replaces `dispatch.rs` as the primary decode driver in the IR pipeline.
 //! The existing dispatch.rs path remains working alongside this one.
 
 use alloc::vec::Vec;
 
-use super::config::HOT_LOCAL_COUNT;
 use super::context::CompileContext;
 use super::lowered_ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
+use super::plan::HotLocalPlan;
+use super::semantic_ir::{self, SemanticOp, SemanticOpKind};
 use super::stack::{BlockKind, StackTracker};
 use crate::error::WasmError;
 use crate::op_decoder::{Decoder, Immediate, OpcodeHandler, OpStream};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
-/// Lower Wasm function body to backend-lowered IR.
+/// Decode Wasm function body into semantic IR.
 ///
-/// Returns `Vec<IrOp>` with all stack management resolved.
-/// `hot_locals` are needed to emit the InitLocals prologue.
-pub fn lower_to_lowered_ir<'a>(
+/// This stage resolves stack-management ops such as spill/fill and variants,
+/// but still leaves local placement and the `InitLocals` prologue to a
+/// follow-up lowering pass driven by backend planning.
+pub fn lower_to_semantic_ir<'a>(
     code: &'a [u8],
     ctx: &'a CompileContext<'a>,
     stack: &'a mut StackTracker,
-    hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
-) -> Result<Vec<IrOp>, WasmError> {
+) -> Result<Vec<SemanticOp>, WasmError> {
     let mut ir = IrLower {
         ctx,
         stack,
         ops: Vec::with_capacity(256),
     };
-
-    // Emit InitLocals prologue (mirrors build_for_function's emitter.emit_init_locals)
-    ir.emit(IrOpKind::InitLocals {
-        k0: hot_locals[0].unwrap_or(0) as u16,
-        k1: hot_locals[1].unwrap_or(1) as u16,
-        k2: hot_locals[2].unwrap_or(2) as u16,
-    }, 0);
 
     // Decode and dispatch
     let mut decoder = Decoder::new(code);
@@ -48,11 +42,22 @@ pub fn lower_to_lowered_ir<'a>(
     Ok(ir.ops)
 }
 
+/// Lower Wasm function body to backend-lowered IR.
+pub fn lower_to_lowered_ir<'a>(
+    code: &'a [u8],
+    ctx: &'a CompileContext<'a>,
+    stack: &'a mut StackTracker,
+    hot_locals: HotLocalPlan,
+) -> Result<Vec<IrOp>, WasmError> {
+    let semantic_ops = lower_to_semantic_ir(code, ctx, stack)?;
+    Ok(semantic_ir::lower_to_lowered_ir(semantic_ops, hot_locals, stack.config()))
+}
+
 /// IR lowering state.
 struct IrLower<'a> {
     ctx: &'a CompileContext<'a>,
     stack: &'a mut StackTracker,
-    ops: Vec<IrOp>,
+    ops: Vec<SemanticOp>,
 }
 
 impl<'a> IrLower<'a> {
@@ -69,16 +74,17 @@ impl<'a> IrLower<'a> {
     /// from `ir::stack_effect`, since callers pop the stack before calling
     /// emit.  This ensures pre_height reflects the true pre-op height.
     #[inline]
-    fn pre_op_height(&self, kind: &IrOpKind) -> u16 {
-        let (pops, _) = lowered_ir::stack_effect(kind);
+    fn pre_op_height(&self, kind: &SemanticOpKind) -> u16 {
+        let (pops, _) = semantic_ir::stack_effect(kind);
         (self.stack.height() + pops as usize) as u16
     }
 
     /// Emit an IR op with automatic fallthrough.
-    fn emit(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+    fn emit<K: Into<SemanticOpKind>>(&mut self, kind: K, variant: u8) -> OpIndex {
+        let kind = kind.into();
         let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
-        self.ops.push(IrOp {
+        self.ops.push(SemanticOp {
             kind,
             variant,
             pre_height,
@@ -90,10 +96,11 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit an IR op without fallthrough (terminal).
-    fn emit_terminal(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+    fn emit_terminal<K: Into<SemanticOpKind>>(&mut self, kind: K, variant: u8) -> OpIndex {
+        let kind = kind.into();
         let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
-        self.ops.push(IrOp {
+        self.ops.push(SemanticOp {
             kind,
             variant,
             pre_height,
@@ -105,10 +112,11 @@ impl<'a> IrLower<'a> {
     }
 
     /// Emit an IR op with has_target set.
-    fn emit_with_target(&mut self, kind: IrOpKind, variant: u8) -> OpIndex {
+    fn emit_with_target<K: Into<SemanticOpKind>>(&mut self, kind: K, variant: u8) -> OpIndex {
+        let kind = kind.into();
         let idx = OpIndex::new(self.ops.len());
         let pre_height = self.pre_op_height(&kind);
-        self.ops.push(IrOp {
+        self.ops.push(SemanticOp {
             kind,
             variant,
             pre_height,
@@ -130,11 +138,11 @@ impl<'a> IrLower<'a> {
     fn patch_br_data(&mut self, idx: OpIndex, stack_offset: u64, arity: u64) {
         if let Some(op) = self.ops.get_mut(idx.as_usize()) {
             match &mut op.kind {
-                IrOpKind::Br { stack_drop, arity: a, .. } => {
+                SemanticOpKind::Lowered(IrOpKind::Br { stack_drop, arity: a, .. }) => {
                     *stack_drop = stack_offset as u32;
                     *a = arity as u16;
                 }
-                IrOpKind::BrIf { stack_drop, arity: a, .. } => {
+                SemanticOpKind::Lowered(IrOpKind::BrIf { stack_drop, arity: a, .. }) => {
                     *stack_drop = stack_offset as u32;
                     *a = arity as u16;
                 }
@@ -146,7 +154,7 @@ impl<'a> IrLower<'a> {
     /// Patch br_table entry target.
     fn patch_br_table_target(&mut self, inst_idx: OpIndex, entry_idx: usize, target_idx: OpIndex) {
         if let Some(op) = self.ops.get_mut(inst_idx.as_usize()) {
-            if let IrOpKind::BrTable { entries, .. } = &mut op.kind {
+            if let SemanticOpKind::Lowered(IrOpKind::BrTable { entries, .. }) = &mut op.kind {
                 if let Some(entry) = entries.get_mut(entry_idx) {
                     entry.target_idx = Some(target_idx);
                 }
@@ -297,55 +305,25 @@ impl<'a> IrLower<'a> {
             // =================================================================
             OP(LOCAL_GET) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    let remapped = self.stack.remap_local(*idx);
                     self.emit_spill_if_needed();
                     let v = self.post_push_variant();
-                    let kind = if remapped == 0 && self.stack.has_l0() {
-                        IrOpKind::LocalGetHot { reg: 0 }
-                    } else if remapped == 1 && self.stack.has_l1() {
-                        IrOpKind::LocalGetHot { reg: 1 }
-                    } else if remapped == 2 && self.stack.has_hot_local(2) {
-                        IrOpKind::LocalGetHot { reg: 2 }
-                    } else {
-                        IrOpKind::LocalGetFrame { idx: remapped as u16 }
-                    };
-                    self.emit(kind, v);
+                    self.emit(SemanticOpKind::LocalGet { idx: *idx as u16 }, v);
                     self.stack.push();
                 }
             }
             OP(LOCAL_SET) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    let remapped = self.stack.remap_local(*idx);
                     self.emit_fill_for_operands(1);
                     let v = self.pre_pop_variant();
-                    let kind = if remapped == 0 && self.stack.has_l0() {
-                        IrOpKind::LocalSetHot { reg: 0 }
-                    } else if remapped == 1 && self.stack.has_l1() {
-                        IrOpKind::LocalSetHot { reg: 1 }
-                    } else if remapped == 2 && self.stack.has_hot_local(2) {
-                        IrOpKind::LocalSetHot { reg: 2 }
-                    } else {
-                        IrOpKind::LocalSetFrame { idx: remapped as u16 }
-                    };
                     self.stack.pop();
-                    self.emit(kind, v);
+                    self.emit(SemanticOpKind::LocalSet { idx: *idx as u16 }, v);
                 }
             }
             OP(LOCAL_TEE) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    let remapped = self.stack.remap_local(*idx);
                     self.emit_fill_for_operands(1);
                     let v = self.pre_pop_variant();
-                    let kind = if remapped == 0 && self.stack.has_l0() {
-                        IrOpKind::LocalTeeHot { reg: 0 }
-                    } else if remapped == 1 && self.stack.has_l1() {
-                        IrOpKind::LocalTeeHot { reg: 1 }
-                    } else if remapped == 2 && self.stack.has_hot_local(2) {
-                        IrOpKind::LocalTeeHot { reg: 2 }
-                    } else {
-                        IrOpKind::LocalTeeFrame { idx: remapped as u16 }
-                    };
-                    self.emit(kind, v);
+                    self.emit(SemanticOpKind::LocalTee { idx: *idx as u16 }, v);
                 }
             }
 

@@ -3,13 +3,10 @@
 //! Tracks compile-time stack height and control flow structure.
 //! In SP-based model, we don't track individual slot types - just height.
 
-use super::config::{CompileConfig, MAX_HOT_LOCAL_COUNT};
+use super::config::CompileConfig;
 use super::lowered_ir::OpIndex;
 
 use alloc::vec::Vec;
-
-/// Number of hot local register slots currently representable in lowered IR.
-pub const HOT_LOCAL_COUNT: usize = MAX_HOT_LOCAL_COUNT;
 
 /// Control frame kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,10 +60,6 @@ pub struct StackTracker {
     params_count: usize,
     locals_count: usize,
     results_count: usize,
-    /// Effective hot local indices after sequential swaps.
-    /// hot_locals[0] = l0's effective index, hot_locals[1] = l1's effective index, etc.
-    /// None means that register slot is unused for this function.
-    hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
 
     // Stack height tracking
     height: usize,
@@ -88,14 +81,12 @@ impl StackTracker {
         params_count: usize,
         locals_count: usize,
         results_count: usize,
-        hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
     ) -> Self {
         let mut tracker = Self {
             config,
             params_count,
             locals_count,
             results_count,
-            hot_locals,
             height: 0,
             max_height: 0,
             spill_depth: 0,
@@ -325,42 +316,6 @@ impl StackTracker {
     #[inline]
     pub fn frame_end(&self) -> usize {
         self.operand_base() + self.max_height
-    }
-
-    // =========================================================================
-    // Hot Local Register Cache
-    // =========================================================================
-
-    /// Whether hot local register `n` is enabled for this function (0=l0, 1=l1, ...).
-    #[inline]
-    pub fn has_hot_local(&self, n: usize) -> bool {
-        n < self.config.hot_local_count && n < HOT_LOCAL_COUNT && self.hot_locals[n].is_some()
-    }
-
-    /// Convenience aliases.
-    #[inline]
-    pub fn has_l0(&self) -> bool { self.has_hot_local(0) }
-    #[inline]
-    pub fn has_l1(&self) -> bool { self.has_hot_local(1) }
-
-    /// Remap a local index through sequential transpositions: swap(0,K0), swap(1,K1_eff), ...
-    ///
-    /// Each init_lN swaps fp[N]↔fp[KN_eff], so a Wasm local index maps to
-    /// the physical slot by applying each transposition in order.
-    #[inline]
-    pub fn remap_local(&self, idx: u32) -> u32 {
-        let mut pos = idx;
-        for (slot, k) in self.hot_locals.iter().enumerate() {
-            if let Some(k) = *k {
-                let slot = slot as u32;
-                if pos == k {
-                    pos = slot;
-                } else if pos == slot {
-                    pos = k;
-                }
-            }
-        }
-        pos
     }
 
     // =========================================================================

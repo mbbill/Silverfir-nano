@@ -106,10 +106,11 @@ pub struct IrOp {
     pub has_target: bool,
 }
 
-/// Purely semantic opcode — no handler pointers, no encoding concerns.
+/// Backend-lowered opcode — still handler/backend agnostic, but no longer
+/// purely semantic.
 ///
-/// Every variant that `dispatch.rs` handles is represented here. Hot locals are
-/// distinguished from frame locals. Spill/fill are first-class ops.
+/// Hot-local placement, `InitLocals`, and explicit spill/fill ops are already
+/// committed at this stage.
 #[derive(Debug, Clone)]
 pub enum IrOpKind {
     // =========================================================================

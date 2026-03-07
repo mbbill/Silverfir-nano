@@ -7,10 +7,17 @@ pub struct HotLocalPlan {
 }
 
 impl HotLocalPlan {
+    pub(crate) const fn from_parts(
+        raw: [Option<u32>; HOT_LOCAL_COUNT],
+        effective: [Option<u32>; HOT_LOCAL_COUNT],
+    ) -> Self {
+        Self { raw, effective }
+    }
+
     pub fn analyze(code: &[u8], frame_size: usize, config: CompileConfig) -> Self {
         let raw = hot_local::find_hot_locals(code, frame_size, config);
         let effective = hot_local::compute_effective_indices(&raw, frame_size);
-        Self { raw, effective }
+        Self::from_parts(raw, effective)
     }
 
     #[inline]
@@ -30,6 +37,22 @@ impl HotLocalPlan {
             self.effective[1].is_some(),
             self.effective[2].is_some(),
         ]
+    }
+
+    #[inline]
+    pub fn remap_local(self, idx: u32) -> u32 {
+        let mut pos = idx;
+        for (slot, k) in self.effective.iter().enumerate() {
+            if let Some(k) = *k {
+                let slot = slot as u32;
+                if pos == k {
+                    pos = slot;
+                } else if pos == slot {
+                    pos = k;
+                }
+            }
+        }
+        pos
     }
 }
 

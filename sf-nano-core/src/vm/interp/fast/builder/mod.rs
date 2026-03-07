@@ -1,7 +1,13 @@
 //! Backend assembly for the fast interpreter instruction format.
 //!
 //! Pipeline:
-//!   Wasm bytecode → ir_lower → Vec<IrOp> → selected backend → Vec<ResolvedInst> → finalizer → Box<[Instruction]>
+//!   Wasm bytecode
+//!     → semantic decode
+//!     → backend-lowered IR
+//!     → selected backend
+//!     → Vec<ResolvedInst>
+//!     → finalizer
+//!     → Box<[Instruction]>
 //!
 //! Modules:
 //! - `backend`: ResolvedInst type, base 1:1 resolution
@@ -41,11 +47,11 @@ fn resolve_fusion_backend(_ir_ops: &[compile::lowered_ir::IrOp]) -> Result<Vec<b
     Err("fusion backend not compiled in")
 }
 
-/// Build fast IR via the unified IR pipeline.
+/// Build fast code via the shared compile frontend + backend-specific resolution.
 ///
-/// Lowers Wasm bytecode to neutral IR, resolves via backend (native, fusion,
-/// or base 1:1),
-/// then finalizes into the interpreter's `Box<[Instruction]>`.
+/// The compile frontend decodes Wasm into semantic IR and lowers it into the
+/// current backend-lowered IR. Backends then resolve that IR into the fast
+/// interpreter's `Instruction` stream.
 pub fn build_for_function(
     function: &FunctionSpec,
     types: Option<&[Rc<FunctionType>]>,
@@ -70,7 +76,8 @@ pub fn build_for_function(
     let frame_size = params_count + locals_count;
     let compile_plan = CompilePlan::for_config(code, frame_size, compile_config);
     let raw_hot_locals = compile_plan.hot_locals().raw();
-    let hot_locals = compile_plan.hot_locals().effective();
+    let hot_local_plan = compile_plan.hot_locals();
+    let hot_locals = hot_local_plan.effective();
     let ctx = CompileContext::new(types, store, module, results_count);
 
     let mut stack = StackTracker::new(
@@ -78,16 +85,15 @@ pub fn build_for_function(
         params_count,
         locals_count,
         results_count,
-        hot_locals,
     );
 
     // Compile pipeline: lower to backend-lowered IR
-    let ir_ops = compile::ir_lower::lower_to_lowered_ir(code, &ctx, &mut stack, hot_locals)?;
+    let ir_ops = compile::ir_lower::lower_to_lowered_ir(code, &ctx, &mut stack, hot_local_plan)?;
 
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
 
-    let hot_mask = compile_plan.hot_locals().hot_mask();
+    let hot_mask = hot_local_plan.hot_mask();
 
     // Backend: resolve IR to handlers.
     let resolved = match backend_mode() {
@@ -134,7 +140,7 @@ mod tests {
         vec,
         vec::Vec,
     };
-    use crate::vm::compile::{self, FAST_COMPILE_CONFIG, HOT_LOCAL_COUNT, ir};
+    use crate::vm::compile::{self, FAST_COMPILE_CONFIG, ir};
     use crate::vm::interp::fast::{
         context::Context,
         handlers::{self, run_trampoline, NextHandler},
@@ -215,8 +221,7 @@ mod tests {
         hot_mask: [bool; 3],
         hot_values: [u64; 3],
     ) -> ExecOutcome {
-        let hot_locals = [None; HOT_LOCAL_COUNT];
-        let mut stack = StackTracker::new(FAST_COMPILE_CONFIG, 0, locals_count, 0, hot_locals);
+        let mut stack = StackTracker::new(FAST_COMPILE_CONFIG, 0, locals_count, 0);
 
         let mut maybe_jit_buf = None;
         let resolved = match backend_impl {
