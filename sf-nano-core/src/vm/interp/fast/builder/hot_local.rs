@@ -43,9 +43,9 @@ fn read_i64(code: &[u8], i: usize) -> (i64, usize) {
 ///
 /// `code` is the raw Wasm function body bytecode (starting after the locals section).
 /// `frame_size` is params_count + locals_count.
-pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCAL_COUNT] {
+pub fn local_weights(code: &[u8], frame_size: usize) -> Vec<u64> {
     if frame_size == 0 {
-        return [None; HOT_LOCAL_COUNT];
+        return Vec::new();
     }
 
     let mut weights: Vec<u64> = alloc::vec![0u64; frame_size];
@@ -198,6 +198,16 @@ pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCA
             _ => {}
         }
     }
+
+    weights
+}
+
+pub fn find_hot_locals(code: &[u8], frame_size: usize) -> [Option<u32>; HOT_LOCAL_COUNT] {
+    if frame_size == 0 {
+        return [None; HOT_LOCAL_COUNT];
+    }
+
+    let weights = local_weights(code, frame_size);
 
     // Find top-N by weight
     // Each element is (local_index, weight), sorted descending by weight.

@@ -107,7 +107,7 @@ pub fn build_for_function(
     let ir_ops = ir_lower::lower_to_ir(code, &ctx, &mut stack, hot_locals)?;
 
     #[cfg(feature = "ir-dump")]
-    ir_dump::dump_ir(func_idx, &ir_ops, hot_locals);
+    ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
 
     let hot_mask = [
         hot_locals[0].is_some(),
