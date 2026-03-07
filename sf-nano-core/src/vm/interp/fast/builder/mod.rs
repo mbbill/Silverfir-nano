@@ -693,4 +693,29 @@ mod tests {
 
         assert_base_equals_jit(&ops, 1, 8, 1, &[0], &[]);
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_f64_load_store_chain() {
+        let ops = vec![
+            make_op(ir::IrOpKind::I32Const { value: 8 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::I32Const { value: 0 }, 1, post_push_variant(1)),
+            make_op(ir::IrOpKind::F64Load { offset: 0, memidx: 0 }, 2, current_variant(2)),
+            make_op(
+                ir::IrOpKind::F64Const {
+                    value: 2.0f64.to_bits(),
+                },
+                2,
+                post_push_variant(2),
+            ),
+            make_op(ir::IrOpKind::F64Mul, 3, current_variant(3)),
+            make_op(ir::IrOpKind::F64Store { offset: 0, memidx: 0 }, 2, current_variant(2)),
+            make_op(ir::IrOpKind::I32Const { value: 8 }, 0, post_push_variant(0)),
+            make_op(ir::IrOpKind::F64Load { offset: 0, memidx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 0 }, 1, current_variant(1)),
+        ];
+
+        let mut memory = vec![0u8; 16];
+        memory[0..8].copy_from_slice(&1.5f64.to_bits().to_le_bytes());
+        assert_base_equals_jit(&ops, 1, 8, 1, &[0], &memory);
+    }
 }

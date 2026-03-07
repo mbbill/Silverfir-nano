@@ -657,6 +657,40 @@ pub fn strb_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
     ldst_reg_offset(0b00, 0b00, rt, rn, rm)
 }
 
+fn fp_ldst_reg_offset(size: u32, opc: u32, vt: u32, rn: Reg, rm: Reg) -> u32 {
+    debug_assert!(vt < 32, "FP register out of range: {vt}");
+    (size << 30)
+        | (0b111_1_00 << 24)
+        | (opc << 22)
+        | (1 << 21)
+        | (rm.idx() << 16)
+        | (0b011 << 13)
+        | (0 << 12)
+        | (0b10 << 10)
+        | (rn.idx() << 5)
+        | vt
+}
+
+/// LDR St, [Xn, Xm] (32-bit floating-point load, register offset)
+pub fn ldr_f32_reg(vt: u32, rn: Reg, rm: Reg) -> u32 {
+    fp_ldst_reg_offset(0b10, 0b01, vt, rn, rm)
+}
+
+/// STR St, [Xn, Xm] (32-bit floating-point store, register offset)
+pub fn str_f32_reg(vt: u32, rn: Reg, rm: Reg) -> u32 {
+    fp_ldst_reg_offset(0b10, 0b00, vt, rn, rm)
+}
+
+/// LDR Dt, [Xn, Xm] (64-bit floating-point load, register offset)
+pub fn ldr_f64_reg(vt: u32, rn: Reg, rm: Reg) -> u32 {
+    fp_ldst_reg_offset(0b11, 0b01, vt, rn, rm)
+}
+
+/// STR Dt, [Xn, Xm] (64-bit floating-point store, register offset)
+pub fn str_f64_reg(vt: u32, rn: Reg, rm: Reg) -> u32 {
+    fp_ldst_reg_offset(0b11, 0b00, vt, rn, rm)
+}
+
 // ---------------------------------------------------------------------------
 // Sign/Zero Extension (Bitfield operations)
 // ---------------------------------------------------------------------------

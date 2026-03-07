@@ -140,11 +140,13 @@ define_semantics_emitter! {
     fn i64_extend16_s();
     fn i64_extend32_s();
     fn i32_load(offset: u32);
+    fn f32_load(offset: u32);
     fn i32_load8_s(offset: u32);
     fn i32_load8_u(offset: u32);
     fn i32_load16_s(offset: u32);
     fn i32_load16_u(offset: u32);
     fn i64_load(offset: u32);
+    fn f64_load(offset: u32);
     fn i64_load8_s(offset: u32);
     fn i64_load8_u(offset: u32);
     fn i64_load16_s(offset: u32);
@@ -152,9 +154,11 @@ define_semantics_emitter! {
     fn i64_load32_s(offset: u32);
     fn i64_load32_u(offset: u32);
     fn i32_store(offset: u32);
+    fn f32_store(offset: u32);
     fn i32_store8(offset: u32);
     fn i32_store16(offset: u32);
     fn i64_store(offset: u32);
+    fn f64_store(offset: u32);
     fn i64_store8(offset: u32);
     fn i64_store16(offset: u32);
     fn i64_store32(offset: u32);

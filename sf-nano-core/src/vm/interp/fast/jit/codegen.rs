@@ -145,6 +145,14 @@ impl<'a> JitEmitter<'a> {
         self.height -= 1;
     }
 
+    fn pop2(&mut self) {
+        self.slots[0] = self.slots[2];
+        self.slots[1] = self.slots[3];
+        self.slots[2] = SlotLoc::canonical();
+        self.slots[3] = SlotLoc::canonical();
+        self.height -= 2;
+    }
+
     fn push_materialized_slot(&mut self) {
         self.height += 1;
         self.shift_slots_for_push();
@@ -842,9 +850,19 @@ impl<'a> JitEmitter<'a> {
     // ==================== Memory loads (pop1_push1) ====================
 
     pub fn i32_load(&mut self, offset: u32) {
-        let reg = tos_reg(self.dv(), 1);
+        let reg = self.slot_gpr_source(1);
         self.emit_mem_bounds_check(reg, offset, 4);
-        self.buf.emit(arm64_enc::ldr_32_reg(reg, Reg::NH, Reg::TMP0));
+        let dst = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ldr_32_reg(dst, Reg::NH, Reg::TMP0));
+        self.slots[0] = SlotLoc::canonical();
+    }
+
+    pub fn f32_load(&mut self, offset: u32) {
+        let addr_reg = self.slot_gpr_source(1);
+        self.emit_mem_bounds_check(addr_reg, offset, 4);
+        let dst = self.alloc_fp_result();
+        self.buf.emit(arm64_enc::ldr_f32_reg(dst as u32, Reg::NH, Reg::TMP0));
+        self.replace_top_with_fp(FpLoc { reg: dst, width: FpWidth::F32 });
     }
 
     pub fn i32_load8_u(&mut self, offset: u32) {
@@ -874,9 +892,19 @@ impl<'a> JitEmitter<'a> {
     }
 
     pub fn i64_load(&mut self, offset: u32) {
-        let reg = tos_reg(self.dv(), 1);
+        let reg = self.slot_gpr_source(1);
         self.emit_mem_bounds_check(reg, offset, 8);
-        self.buf.emit(arm64_enc::ldr_64_reg(reg, Reg::NH, Reg::TMP0));
+        let dst = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ldr_64_reg(dst, Reg::NH, Reg::TMP0));
+        self.slots[0] = SlotLoc::canonical();
+    }
+
+    pub fn f64_load(&mut self, offset: u32) {
+        let addr_reg = self.slot_gpr_source(1);
+        self.emit_mem_bounds_check(addr_reg, offset, 8);
+        let dst = self.alloc_fp_result();
+        self.buf.emit(arm64_enc::ldr_f64_reg(dst as u32, Reg::NH, Reg::TMP0));
+        self.replace_top_with_fp(FpLoc { reg: dst, width: FpWidth::F64 });
     }
 
     pub fn i64_load8_u(&mut self, offset: u32) {
@@ -921,66 +949,87 @@ impl<'a> JitEmitter<'a> {
     // ==================== Memory stores (pop2_push0) ====================
 
     pub fn i32_store(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 4);
         self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
+    }
+
+    pub fn f32_store(&mut self, offset: u32) {
+        let addr_reg = self.slot_gpr_source(2);
+        self.emit_mem_bounds_check(addr_reg, offset, 4);
+
+        if let Some(fp) = self.slots[0].fp {
+            debug_assert_eq!(fp.width, FpWidth::F32);
+            self.buf.emit(arm64_enc::str_f32_reg(fp.reg as u32, Reg::NH, Reg::TMP0));
+        } else {
+            let val_reg = self.slot_gpr_source(1);
+            self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
+        }
+        self.pop2();
     }
 
     pub fn i32_store8(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 1);
         self.buf.emit(arm64_enc::strb_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
     }
 
     pub fn i32_store16(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 2);
         self.buf.emit(arm64_enc::strh_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
     }
 
     pub fn i64_store(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 8);
         self.buf.emit(arm64_enc::str_64_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
+    }
+
+    pub fn f64_store(&mut self, offset: u32) {
+        let addr_reg = self.slot_gpr_source(2);
+        self.emit_mem_bounds_check(addr_reg, offset, 8);
+
+        if let Some(fp) = self.slots[0].fp {
+            debug_assert_eq!(fp.width, FpWidth::F64);
+            self.buf.emit(arm64_enc::str_f64_reg(fp.reg as u32, Reg::NH, Reg::TMP0));
+        } else {
+            let val_reg = self.slot_gpr_source(1);
+            self.buf.emit(arm64_enc::str_64_reg(val_reg, Reg::NH, Reg::TMP0));
+        }
+        self.pop2();
     }
 
     pub fn i64_store8(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 1);
         self.buf.emit(arm64_enc::strb_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
     }
 
     pub fn i64_store16(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 2);
         self.buf.emit(arm64_enc::strh_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
     }
 
     pub fn i64_store32(&mut self, offset: u32) {
-        let d = self.dv();
-        let val_reg = tos_reg(d, 1);
-        let addr_reg = tos_reg(d, 2);
+        let val_reg = self.slot_gpr_source(1);
+        let addr_reg = self.slot_gpr_source(2);
         self.emit_mem_bounds_check(addr_reg, offset, 4);
         self.buf.emit(arm64_enc::str_32_reg(val_reg, Reg::NH, Reg::TMP0));
-        self.height -= 2;
+        self.pop2();
     }
 
     // ==================== Float constants (push1) ====================
@@ -1487,6 +1536,7 @@ mod tests {
         let mut emitter = JitEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
 
+        emitter.materialize_aliases();
         let result_reg = tos_reg(emitter.dv(), 1);
         emitter.emit_raw(arm64_enc::str_64(result_reg, Reg::FP, 0));
         let start = emitter.finish();
@@ -2680,6 +2730,31 @@ mod tests {
             1, 0, 0, 0, 0, 0, 0, 0, &mut mem,
         );
         assert_eq!(result, val);
+    }
+
+    #[test]
+    fn test_f64_load_mul_store_roundtrip() {
+        let mut mem = [0u8; 1024];
+        mem[0..8].copy_from_slice(&1.5f64.to_bits().to_le_bytes());
+
+        let result = run_jit_mem_test(
+            |e| {
+                e.i32_const(8);
+                e.i32_const(0);
+                e.f64_load(0);
+                e.f64_const(2.0f64.to_bits());
+                e.f64_mul();
+                e.f64_store(0);
+                e.i32_const(8);
+                e.f64_load(0);
+            },
+            0, 0, 0, 0, 0, 0, 0, 0, &mut mem,
+        );
+        assert_eq!(result, 3.0f64.to_bits());
+        assert_eq!(
+            u64::from_le_bytes(mem[8..16].try_into().unwrap()),
+            3.0f64.to_bits()
+        );
     }
 
     #[test]
