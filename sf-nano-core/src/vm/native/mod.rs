@@ -4,14 +4,47 @@
 //! micro-JIT backend after being split out from `interp/fast`.
 //! See `docs/NATIVE_BACKEND_ROADMAP.md` for the architectural direction.
 
-pub mod reg;
-pub mod arm64_enc;
-pub mod code_buf;
-pub mod emit;
-pub mod codegen;
-pub mod op_meta;
-pub mod semantics;
-pub mod group;
+use crate::vm::entities::ModuleInst;
+use crate::vm::interp::fast::builder::backend::ResolvedInst;
+use crate::vm::interp::fast::builder::ir::IrOp;
+
+mod reg;
+mod arm64_enc;
+mod code_buf;
+mod emit;
+mod codegen;
+mod op_meta;
+mod semantics;
 mod group_meta;
 mod debug_map;
 mod samply_jitdump;
+mod group;
+
+pub(crate) use code_buf::CodeBuffer;
+pub(crate) use group::{resolve_native, resolve_native_with_context};
+pub use group::{
+    JitStatsSnapshot,
+    NativeStatsSnapshot,
+    jit_capacity_skips,
+    jit_stats,
+    jit_stats_snapshot,
+    native_capacity_skips,
+    native_stats,
+    native_stats_snapshot,
+};
+
+pub fn resolve_backend(
+    ir_ops: &[IrOp],
+    module: &ModuleInst,
+    hot_local_mask: [bool; 3],
+    func_idx: u32,
+) -> Result<alloc::vec::Vec<ResolvedInst>, &'static str> {
+    let mut buf = module.native_code_buffer()?;
+    Ok(group::resolve_native_with_context(
+        ir_ops,
+        &mut buf,
+        hot_local_mask,
+        &module.name,
+        func_idx,
+    ))
+}

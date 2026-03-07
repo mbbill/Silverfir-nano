@@ -30,6 +30,7 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
+        backend::{BackendKind, BackendMode, active_backend, backend_mode},
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
         store::Store,
@@ -38,36 +39,6 @@ use crate::{
 
 use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
-use super::{BackendKind, BackendMode};
-
-#[cfg(feature = "micro-jit")]
-fn try_resolve_jit_backend(
-    ir_ops: &[ir::IrOp],
-    module: &ModuleInst,
-    hot_mask: [bool; 3],
-    func_idx: u32,
-) -> Result<Vec<backend::ResolvedInst>, &'static str> {
-    use crate::vm::native::group;
-
-    let mut buf = module.jit_code_buffer()?;
-    Ok(group::resolve_jit_with_context(
-        ir_ops,
-        &mut buf,
-        hot_mask,
-        &module.name,
-        func_idx,
-    ))
-}
-
-#[cfg(not(feature = "micro-jit"))]
-fn try_resolve_jit_backend(
-    _ir_ops: &[ir::IrOp],
-    _module: &ModuleInst,
-    _hot_mask: [bool; 3],
-    _func_idx: u32,
-) -> Result<Vec<backend::ResolvedInst>, &'static str> {
-    Err("micro-jit backend not compiled in")
-}
 
 #[cfg(feature = "fusion")]
 fn resolve_fusion_backend(ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
@@ -81,7 +52,8 @@ fn resolve_fusion_backend(_ir_ops: &[ir::IrOp]) -> Result<Vec<backend::ResolvedI
 
 /// Build fast IR via the unified IR pipeline.
 ///
-/// Lowers Wasm bytecode to neutral IR, resolves via backend (JIT or base 1:1),
+/// Lowers Wasm bytecode to neutral IR, resolves via backend (native, fusion,
+/// or base 1:1),
 /// then finalizes into the interpreter's `Box<[Instruction]>`.
 pub fn build_for_function(
     function: &FunctionSpec,
@@ -116,14 +88,14 @@ pub fn build_for_function(
     ];
 
     // Backend: resolve IR to handlers.
-    let resolved = match super::backend_mode() {
+    let resolved = match backend_mode() {
         BackendMode::Base => backend::resolve_base(&ir_ops),
         BackendMode::Fusion => resolve_fusion_backend(&ir_ops)
             .map_err(|err| WasmError::invalid(alloc::format!("requested backend fusion is unavailable: {}", err)))?,
-        BackendMode::Jit => try_resolve_jit_backend(&ir_ops, module, hot_mask, func_idx)
-            .map_err(|err| WasmError::invalid(alloc::format!("requested backend jit is unavailable: {}", err)))?,
-        BackendMode::Auto => match super::active_backend().unwrap_or(BackendKind::Base) {
-            BackendKind::Jit => match try_resolve_jit_backend(&ir_ops, module, hot_mask, func_idx) {
+        BackendMode::Native => crate::vm::native::resolve_backend(&ir_ops, module, hot_mask, func_idx)
+            .map_err(|err| WasmError::invalid(alloc::format!("requested backend native is unavailable: {}", err)))?,
+        BackendMode::Auto => match active_backend().unwrap_or(BackendKind::Base) {
+            BackendKind::Native => match crate::vm::native::resolve_backend(&ir_ops, module, hot_mask, func_idx) {
                 Ok(resolved) => resolved,
                 Err(_) => match resolve_fusion_backend(&ir_ops) {
                     Ok(resolved) => resolved,
@@ -166,7 +138,7 @@ mod tests {
         instruction::Instruction,
         TOS_REGISTER_COUNT,
     };
-    use crate::vm::native::{code_buf::CodeBuffer, group};
+    use crate::vm::native::{CodeBuffer, resolve_native};
 
     #[derive(Clone, Copy)]
     enum BackendUnderTest {
@@ -249,7 +221,7 @@ mod tests {
             BackendUnderTest::Base => backend::resolve_base(ir_ops),
             BackendUnderTest::Jit => {
                 let mut buf = CodeBuffer::new().expect("mmap failed");
-                let resolved = group::resolve_jit(ir_ops, &mut buf, hot_mask);
+                let resolved = resolve_native(ir_ops, &mut buf, hot_mask);
                 maybe_jit_buf = Some(buf);
                 resolved
             }

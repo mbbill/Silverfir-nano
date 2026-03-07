@@ -1,13 +1,13 @@
-//! JIT group compiler: identify and compile groups of consecutive JIT-able ops.
+//! Native group compiler: identify and compile groups of consecutive native-able ops.
 //!
-//! Scans `&[IrOp]` for consecutive JIT-able operations, compiles them into
-//! single ARM64 code blocks via `JitEmitter`, and produces `Vec<ResolvedInst>`.
-//! Non-JIT-able ops fall back to 1:1 base handler resolution.
+//! Scans `&[IrOp]` for consecutive native-able operations, compiles them into
+//! single ARM64 code blocks via `NativeEmitter`, and produces `Vec<ResolvedInst>`.
+//! Non-native-able ops fall back to 1:1 base handler resolution.
 
 use alloc::vec::Vec;
 use super::arm64_enc::{self, Cond};
 use super::code_buf::CodeBuffer;
-use super::codegen::{JitEmitter, depth_variant, tos_reg};
+use super::codegen::{NativeEmitter, depth_variant, tos_reg};
 use super::debug_map;
 use super::op_meta;
 use super::reg::Reg;
@@ -16,7 +16,7 @@ use crate::vm::interp::fast::builder::backend::{CompactionDisposition, ResolvedI
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex, stack_effect};
 use crate::vm::interp::fast::handlers::OpHandler;
 
-/// Check if an IrOp is JIT-able, considering kind, height, and hot local mask.
+/// Check if an IrOp is native-able, considering kind, height, and hot local mask.
 fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
     let kind = &op.kind;
     let h = op.pre_height as usize;
@@ -89,10 +89,10 @@ fn incoming_targets(ir: &[IrOp]) -> Vec<bool> {
 }
 
 // =========================================================================
-// JIT statistics
+// Native backend statistics
 // =========================================================================
 
-pub struct JitStats {
+pub struct NativeStats {
     pub groups: core::sync::atomic::AtomicUsize,
     pub ops: core::sync::atomic::AtomicUsize,
     pub bytes_emitted: core::sync::atomic::AtomicUsize,
@@ -102,7 +102,7 @@ pub struct JitStats {
 
 const AZ: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-pub static JIT_STATS: JitStats = JitStats {
+pub static NATIVE_STATS: NativeStats = NativeStats {
     groups: AZ,
     ops: AZ,
     bytes_emitted: AZ,
@@ -110,7 +110,7 @@ pub static JIT_STATS: JitStats = JitStats {
     ops_skipped_capacity: AZ,
 };
 
-pub struct JitStatsSnapshot {
+pub struct NativeStatsSnapshot {
     pub groups: usize,
     pub ops: usize,
     pub bytes_emitted: usize,
@@ -118,49 +118,63 @@ pub struct JitStatsSnapshot {
     pub ops_skipped: usize,
 }
 
-pub fn jit_stats_snapshot() -> JitStatsSnapshot {
+pub fn native_stats_snapshot() -> NativeStatsSnapshot {
     use core::sync::atomic::Ordering::Relaxed;
-    JitStatsSnapshot {
-        groups: JIT_STATS.groups.load(Relaxed),
-        ops: JIT_STATS.ops.load(Relaxed),
-        bytes_emitted: JIT_STATS.bytes_emitted.load(Relaxed),
-        groups_skipped: JIT_STATS.groups_skipped_capacity.load(Relaxed),
-        ops_skipped: JIT_STATS.ops_skipped_capacity.load(Relaxed),
+    NativeStatsSnapshot {
+        groups: NATIVE_STATS.groups.load(Relaxed),
+        ops: NATIVE_STATS.ops.load(Relaxed),
+        bytes_emitted: NATIVE_STATS.bytes_emitted.load(Relaxed),
+        groups_skipped: NATIVE_STATS.groups_skipped_capacity.load(Relaxed),
+        ops_skipped: NATIVE_STATS.ops_skipped_capacity.load(Relaxed),
     }
 }
 
-pub fn jit_stats() -> (usize, usize) {
+pub fn native_stats() -> (usize, usize) {
     (
-        JIT_STATS.groups.load(core::sync::atomic::Ordering::Relaxed),
-        JIT_STATS.ops.load(core::sync::atomic::Ordering::Relaxed),
+        NATIVE_STATS.groups.load(core::sync::atomic::Ordering::Relaxed),
+        NATIVE_STATS.ops.load(core::sync::atomic::Ordering::Relaxed),
     )
+}
+
+pub fn native_capacity_skips() -> (usize, usize) {
+    (
+        NATIVE_STATS.groups_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
+        NATIVE_STATS.ops_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+pub type JitStatsSnapshot = NativeStatsSnapshot;
+
+pub fn jit_stats_snapshot() -> NativeStatsSnapshot {
+    native_stats_snapshot()
+}
+
+pub fn jit_stats() -> (usize, usize) {
+    native_stats()
 }
 
 pub fn jit_capacity_skips() -> (usize, usize) {
-    (
-        JIT_STATS.groups_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
-        JIT_STATS.ops_skipped_capacity.load(core::sync::atomic::Ordering::Relaxed),
-    )
+    native_capacity_skips()
 }
 
 // =========================================================================
-// JIT backend: resolve IR ops via JIT compilation + 1:1 fallback
+// Native backend: resolve IR ops via native compilation + 1:1 fallback
 // =========================================================================
 
-/// Resolve IR ops via JIT compilation.
+/// Resolve IR ops via native compilation.
 ///
-/// Scans for consecutive JIT-able ops, compiles groups into ARM64 code,
-/// and falls back to 1:1 base handler resolution for non-JIT-able ops.
-pub fn resolve_jit(
+/// Scans for consecutive native-able ops, compiles groups into ARM64 code,
+/// and falls back to 1:1 base handler resolution for non-native-able ops.
+pub fn resolve_native(
     ir: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
 ) -> Vec<ResolvedInst> {
-    resolve_jit_with_context(ir, buf, hot_local_mask, "", 0)
+    resolve_native_with_context(ir, buf, hot_local_mask, "", 0)
 }
 
-/// Resolve IR ops via JIT compilation with optional source metadata for debug maps.
-pub fn resolve_jit_with_context(
+/// Resolve IR ops via native compilation with optional source metadata for debug maps.
+pub fn resolve_native_with_context(
     ir: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
@@ -179,7 +193,7 @@ pub fn resolve_jit_with_context(
 
     let mut i = 0;
     while i < ir.len() {
-        // Try to start a JIT group
+        // Try to start a native group
         if group_terminator(&ir[i]).is_none() && is_jit_able_op(&ir[i], hot_local_mask) {
             let group_start = i;
             i += 1;
@@ -233,7 +247,7 @@ pub fn resolve_jit_with_context(
                             terminator_name(terminator),
                             branch_target,
                         );
-                        // JIT entry
+                        // Native entry
                         match terminator {
                             Some(GroupTerminator::Br) => {
                                 out.push(ResolvedInst {
@@ -311,7 +325,7 @@ pub fn resolve_jit_with_context(
             continue;
         }
 
-        // Lone terminator or non-JIT-able op: 1:1
+        // Lone terminator or non-native-able op: 1:1
         out.push(ResolvedInst::from_ir(&ir[i]));
         i += 1;
     }
@@ -321,12 +335,12 @@ pub fn resolve_jit_with_context(
 
     // Update global stats
     let bytes_emitted = total_len - bytes_before;
-    JIT_STATS.groups.fetch_add(groups_compiled, core::sync::atomic::Ordering::Relaxed);
-    JIT_STATS.ops.fetch_add(ops_compiled, core::sync::atomic::Ordering::Relaxed);
-    JIT_STATS.bytes_emitted.fetch_add(bytes_emitted, core::sync::atomic::Ordering::Relaxed);
+    NATIVE_STATS.groups.fetch_add(groups_compiled, core::sync::atomic::Ordering::Relaxed);
+    NATIVE_STATS.ops.fetch_add(ops_compiled, core::sync::atomic::Ordering::Relaxed);
+    NATIVE_STATS.bytes_emitted.fetch_add(bytes_emitted, core::sync::atomic::Ordering::Relaxed);
     if groups_skipped > 0 {
-        JIT_STATS.groups_skipped_capacity.fetch_add(groups_skipped, core::sync::atomic::Ordering::Relaxed);
-        JIT_STATS.ops_skipped_capacity.fetch_add(ops_skipped, core::sync::atomic::Ordering::Relaxed);
+        NATIVE_STATS.groups_skipped_capacity.fetch_add(groups_skipped, core::sync::atomic::Ordering::Relaxed);
+        NATIVE_STATS.ops_skipped_capacity.fetch_add(ops_skipped, core::sync::atomic::Ordering::Relaxed);
     }
 
     out
@@ -508,7 +522,7 @@ fn pick_tail_fusion(group: &[IrOp], terminator: Option<GroupTerminator>, body_en
     None
 }
 
-fn emit_compare_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
+fn emit_compare_flags(e: &mut NativeEmitter, cmp: CompareFusionKind) {
     match cmp {
         CompareFusionKind::I32(_) => {
             let lhs = e.resolve_tos_reg(2);
@@ -533,7 +547,7 @@ fn emit_compare_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
     }
 }
 
-fn emit_compare_zero_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
+fn emit_compare_zero_flags(e: &mut NativeEmitter, cmp: CompareFusionKind) {
     match cmp {
         CompareFusionKind::F32(_) => {
             let lhs = e.ensure_tos_f32(1);
@@ -547,7 +561,7 @@ fn emit_compare_zero_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
     }
 }
 
-fn top_i32_reg(e: &JitEmitter) -> Reg {
+fn top_i32_reg(e: &NativeEmitter) -> Reg {
     e.resolve_tos_reg(1)
 }
 
@@ -584,7 +598,7 @@ fn try_compile_group(
     }
 
     // Compile
-    let mut e = JitEmitter::new(buf, group[0].pre_height as usize);
+    let mut e = NativeEmitter::new(buf, group[0].pre_height as usize);
     let tail_fusion = pick_tail_fusion(group, terminator, body_end);
     let compile_body_end = tail_fusion.map(|(_, end)| end).unwrap_or(body_end);
 
@@ -669,8 +683,8 @@ fn try_compile_group(
     Some((handler, terminator, branch_alt))
 }
 
-/// Emit a single op via JitEmitter based on its IrOpKind.
-fn emit_op(e: &mut JitEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
+/// Emit a single op via NativeEmitter based on its IrOpKind.
+fn emit_op(e: &mut NativeEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
     // Debug: verify emitter height matches IR pre_height
     debug_assert_eq!(
         e.height() as u16, op.pre_height,
@@ -823,7 +837,7 @@ mod tests {
             make_op(IrOpKind::I32Mul, 2),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         // Group 1: resolved[0] = JIT entry, [1,2] = internal-only removed slots.
         assert!(!resolved[0].is_removed());
@@ -850,7 +864,7 @@ mod tests {
             make_op(IrOpKind::I32Const { value: 3 }, 0),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         // All should be 1:1 (no group >= 2)
         assert_eq!(resolved.len(), 3);
@@ -876,7 +890,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         // JIT entry with br_if encoding
         assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
@@ -913,7 +927,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::Br { arity: 0, .. }));
         assert!(resolved[0].has_target);
@@ -945,7 +959,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::I32Const { .. }));
         assert!(matches!(resolved[1].kind, IrOpKind::Br { arity: 1, .. }));
@@ -976,7 +990,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::Br { arity: 1, stack_drop: 0, .. }));
         assert!(resolved[0].has_target);
@@ -1000,7 +1014,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::If));
         assert!(resolved[0].has_target);
@@ -1027,7 +1041,7 @@ mod tests {
             ),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::ReturnOne { .. }));
         assert!(!resolved[0].is_removed());
@@ -1045,7 +1059,7 @@ mod tests {
             make_op(IrOpKind::ReturnVoid { frame_size: 0 }, 0),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::ReturnVoid { .. }));
         assert!(!resolved[0].is_removed());
@@ -1068,7 +1082,7 @@ mod tests {
             make_op(IrOpKind::LocalSetFrame { idx: 0 }, 1),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
         assert!(matches!(resolved[0].kind, IrOpKind::If));
         assert!(!resolved[0].is_removed(), "If must remain a standalone entry");
         assert!(!resolved[1].is_removed(), "grouping must not start at the If terminator");
@@ -1092,7 +1106,7 @@ mod tests {
             make_op(IrOpKind::I32Eqz, 1),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         assert!(matches!(resolved[0].kind, IrOpKind::BrIfSimple));
         assert!(matches!(resolved[1].kind, IrOpKind::I32Const { .. }));
@@ -1144,7 +1158,7 @@ mod tests {
     fn test_compile_group_const_add() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
         e.i32_const(5);
         e.i32_const(3);
         e.i32_add();
@@ -1164,7 +1178,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
         e.local_get_ln(0);
         e.local_get_ln(1);
         e.i32_add();
@@ -1184,7 +1198,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
         e.i32_const(42);
         e.local_set_ln(0);
         let start_offset = e.start_offset;
@@ -1199,9 +1213,9 @@ mod tests {
     }
 
     #[test]
-    fn test_jit_stats_nonzero_after_compilation() {
-        JIT_STATS.groups.store(0, core::sync::atomic::Ordering::Relaxed);
-        JIT_STATS.ops.store(0, core::sync::atomic::Ordering::Relaxed);
+    fn test_native_stats_nonzero_after_compilation() {
+        NATIVE_STATS.groups.store(0, core::sync::atomic::Ordering::Relaxed);
+        NATIVE_STATS.ops.store(0, core::sync::atomic::Ordering::Relaxed);
 
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [true, true, true];
@@ -1212,10 +1226,10 @@ mod tests {
             make_op(IrOpKind::I32Add, 2),
         ];
 
-        let _ = resolve_jit(&ops, &mut buf, mask);
+        let _ = resolve_native(&ops, &mut buf, mask);
 
-        let (groups, ops_count) = jit_stats();
-        assert!(groups >= 1, "expected at least 1 JIT group, got {}", groups);
+        let (groups, ops_count) = native_stats();
+        assert!(groups >= 1, "expected at least 1 native group, got {}", groups);
         assert!(ops_count >= 3, "expected at least 3 ops, got {}", ops_count);
     }
 
@@ -1229,7 +1243,7 @@ mod tests {
 
         // Simulate what the IR lowering produces:
         // Push 4 consts (fills all 4 TOS regs)
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
         e.i32_const(1);  // height 0→1, T0
         e.i32_const(2);  // height 1→2, T1
         e.i32_const(3);  // height 2→3, T2
@@ -1297,7 +1311,7 @@ mod tests {
 
         // Pre-populate memory to simulate values that were spilled earlier.
         // We'll store known values at fp[10], fp[11], fp[12] (heights 1, 2, 3).
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
 
         // Push 3 values and spill all (like emit_spill_all before a call)
         e.i32_const(10); // height 0→1, T0=10
@@ -1355,10 +1369,10 @@ mod tests {
         assert_eq!(frame[0], 50, "expected 30+20=50, got {}", frame[0]);
     }
 
-    /// Test resolve_jit with spill/fill in the IR stream.
+    /// Test resolve_native with spill/fill in the IR stream.
     /// Simulates 5 pushes with a spill, then an add.
     #[test]
-    fn test_resolve_jit_with_spill() {
+    fn test_resolve_native_with_spill() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [true, true, true];
 
@@ -1378,7 +1392,7 @@ mod tests {
             make_op(IrOpKind::I32Add, 5),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         // Should be 1 JIT group (7 ops)
         assert!(!resolved[0].is_removed(), "expected JIT entry");
@@ -1396,7 +1410,7 @@ mod tests {
     fn test_spill_fill_roundtrip() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
-        let mut e = JitEmitter::new(&mut buf, 0);
+        let mut e = NativeEmitter::new(&mut buf, 0);
 
         // Push 4 consts
         e.i32_const(1);  // h0→1, T0=1
@@ -1460,10 +1474,10 @@ mod tests {
         assert_eq!(frame[0], 15, "expected 1+(2+(3+(4+5)))=15, got {}", frame[0]);
     }
 
-    /// Test that resolve_jit handles fill correctly via the full pipeline.
+    /// Test that resolve_native handles fill correctly via the full pipeline.
     /// Uses IrOps with correct variants and pre_heights.
     #[test]
-    fn test_resolve_jit_with_fill() {
+    fn test_resolve_native_with_fill() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [true, true, true];
 
@@ -1485,7 +1499,7 @@ mod tests {
             make_op_v(IrOpKind::I32Add, 2, 2),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
 
         // Should be 1 group of 11 ops
         assert!(!resolved[0].is_removed(), "expected JIT entry");
@@ -1528,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_jit_with_init_locals() {
+    fn test_resolve_native_with_init_locals() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [true, false, false];
 
@@ -1538,7 +1552,7 @@ mod tests {
             make_op(IrOpKind::LocalSetFrame { idx: 8 }, 1),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
         assert!(!resolved[0].is_removed(), "expected JIT entry");
         assert!(resolved[1].is_internal_only());
         assert!(resolved[2].is_internal_only());
@@ -1587,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_jit_with_if_terminator() {
+    fn test_resolve_native_with_if_terminator() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [true, true, true];
 
@@ -1602,7 +1616,7 @@ mod tests {
             },
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
         assert!(matches!(resolved[0].kind, IrOpKind::If));
         assert_eq!(resolved[0].alt_target, Some(OpIndex::from(3)));
         assert!(resolved[1].is_internal_only());
@@ -1610,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_jit_with_hot_float_chain() {
+    fn test_resolve_native_with_hot_float_chain() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [false, true, false];
 
@@ -1624,7 +1638,7 @@ mod tests {
             make_op(IrOpKind::LocalSetFrame { idx: 3 }, 1),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
         let handler = resolved[0].handler;
         let term = full_set::op_term;
         let mut insts = [
@@ -1664,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_jit_with_hot_frame_float_mix() {
+    fn test_resolve_native_with_hot_frame_float_mix() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let mask = [false, true, false];
 
@@ -1677,7 +1691,7 @@ mod tests {
             make_op(IrOpKind::LocalSetFrame { idx: 5 }, 1),
         ];
 
-        let resolved = resolve_jit(&ops, &mut buf, mask);
+        let resolved = resolve_native(&ops, &mut buf, mask);
         let handler = resolved[0].handler;
         let term = full_set::op_term;
         let mut insts = [

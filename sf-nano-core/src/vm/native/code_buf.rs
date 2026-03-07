@@ -1,4 +1,4 @@
-//! Executable code buffer for JIT emission.
+//! Executable code buffer for native backend emission.
 //!
 //! Arena-based bump allocator over mmap'd executable memory.
 //! Platform-specific: macOS Apple Silicon (MAP_JIT) and Linux (mmap+mprotect).
@@ -43,7 +43,7 @@ const MAP_FAILED: *mut u8 = !0usize as *mut u8;
 // CodeBuffer
 // ---------------------------------------------------------------------------
 
-/// A region of executable memory for JIT code emission.
+/// A region of executable memory for native code emission.
 pub struct CodeBuffer {
     /// Base address of the mmap'd region.
     base: *mut u8,
@@ -76,7 +76,7 @@ impl CodeBuffer {
             )
         };
         if base == MAP_FAILED {
-            return Err("mmap failed for JIT code buffer");
+            return Err("mmap failed for native code buffer");
         }
         Ok(Self { base, capacity, offset: 0 })
     }
@@ -95,7 +95,7 @@ impl CodeBuffer {
             )
         };
         if base == MAP_FAILED {
-            return Err("mmap failed for JIT code buffer");
+            return Err("mmap failed for native code buffer");
         }
         Ok(Self { base, capacity, offset: 0 })
     }
@@ -113,7 +113,7 @@ impl CodeBuffer {
         unsafe {
             // Keep the whole arena in a single protection state for now.
             let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_WRITE);
-            assert_eq!(rc, 0, "mprotect RW failed for JIT code buffer");
+            assert_eq!(rc, 0, "mprotect RW failed for native code buffer");
         }
     }
 
@@ -134,7 +134,7 @@ impl CodeBuffer {
             // Note: mprotect requires page-aligned address. For simplicity,
             // protect the entire buffer. A production impl would track dirty pages.
             let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_EXEC);
-            assert_eq!(rc, 0, "mprotect RX failed for JIT code buffer");
+            assert_eq!(rc, 0, "mprotect RX failed for native code buffer");
             let start = self.base.add(written_start);
             let end = start.add(written_len);
             __clear_cache(start, end);
@@ -145,7 +145,7 @@ impl CodeBuffer {
     /// Must be called between `begin_write()` and `finish_write()`.
     pub fn emit(&mut self, inst: u32) -> usize {
         let offset = self.offset;
-        assert!(offset + 4 <= self.capacity, "JIT code buffer overflow");
+        assert!(offset + 4 <= self.capacity, "native code buffer overflow");
         unsafe {
             let ptr = self.base.add(offset) as *mut u32;
             ptr.write(inst);

@@ -1,6 +1,6 @@
 //! JIT codegen: per-opcode emission and group assembly.
 //!
-//! `JitEmitter` tracks TOS height and emits ARM64 instructions for each
+//! `NativeEmitter` tracks TOS height and emits ARM64 instructions for each
 //! supported Wasm opcode. Depth-variant register selection matches the
 //! interpreter's TOS register window convention.
 
@@ -93,7 +93,7 @@ pub fn tos_reg(d: u8, pos: u8) -> Reg {
 }
 
 /// Emit a group of JIT instructions with automatic depth tracking.
-pub struct JitEmitter<'a> {
+pub struct NativeEmitter<'a> {
     buf: &'a mut CodeBuffer,
     height: usize,
     /// Per-slot location metadata for the live TOS window.
@@ -116,7 +116,7 @@ pub struct JitEmitter<'a> {
     mem0_size_loaded: bool,
 }
 
-impl<'a> JitEmitter<'a> {
+impl<'a> NativeEmitter<'a> {
     pub fn new(buf: &'a mut CodeBuffer, initial_height: usize) -> Self {
         let start_offset = buf.len();
         Self {
@@ -1588,10 +1588,10 @@ mod tests {
 
     /// Run a JIT group and return the top-of-stack value after execution.
     ///
-    /// `setup_fn` emits opcodes via the JitEmitter.
+    /// `setup_fn` emits opcodes via the NativeEmitter.
     /// After execution, the TOS top is stored to fp[0] and returned.
     fn run_jit_test(
-        setup_fn: impl FnOnce(&mut JitEmitter),
+        setup_fn: impl FnOnce(&mut NativeEmitter),
         initial_height: usize,
         t0: u64, t1: u64, t2: u64, t3: u64,
         l0: u64, l1: u64, l2: u64,
@@ -1599,7 +1599,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        let mut emitter = NativeEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
 
         // Store TOS top to fp[0] for verification
@@ -1648,7 +1648,7 @@ mod tests {
     /// Run a JIT group and return a hot local register value after execution.
     /// Stores the specified local register to fp[0] instead of TOS top.
     fn run_jit_test_local(
-        setup_fn: impl FnOnce(&mut JitEmitter),
+        setup_fn: impl FnOnce(&mut NativeEmitter),
         initial_height: usize,
         local_reg: Reg,
         t0: u64, t1: u64, t2: u64, t3: u64,
@@ -1657,7 +1657,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        let mut emitter = NativeEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
 
         // Store the local register to fp[0] for verification
@@ -1703,7 +1703,7 @@ mod tests {
 
     /// Run a JIT group with linear memory and return TOS top.
     fn run_jit_mem_test(
-        setup_fn: impl FnOnce(&mut JitEmitter),
+        setup_fn: impl FnOnce(&mut NativeEmitter),
         initial_height: usize,
         t0: u64, t1: u64, t2: u64, t3: u64,
         l0: u64, l1: u64, l2: u64,
@@ -1712,7 +1712,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        let mut emitter = NativeEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
 
         emitter.materialize_aliases();
@@ -1757,7 +1757,7 @@ mod tests {
 
     /// Run a JIT group with linear memory. Returns (frame[0], trap_message_ptr).
     fn run_jit_mem_store_test(
-        setup_fn: impl FnOnce(&mut JitEmitter),
+        setup_fn: impl FnOnce(&mut NativeEmitter),
         initial_height: usize,
         t0: u64, t1: u64, t2: u64, t3: u64,
         mem: &mut [u8],
@@ -1765,7 +1765,7 @@ mod tests {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         buf.begin_write();
 
-        let mut emitter = JitEmitter::new(&mut buf, initial_height);
+        let mut emitter = NativeEmitter::new(&mut buf, initial_height);
         setup_fn(&mut emitter);
         let start = emitter.finish();
 
@@ -2155,7 +2155,7 @@ mod tests {
 
         let start;
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.init_locals(5, 3, 2);
             e.emit_raw(arm64_enc::str_64(Reg::L0, Reg::FP, 8));
             e.emit_raw(arm64_enc::str_64(Reg::L1, Reg::FP, 9));
@@ -2449,7 +2449,7 @@ mod tests {
         buf.begin_write();
 
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(11);
             e.local_tee(1);
             e.drop_val();
@@ -2596,7 +2596,7 @@ mod tests {
 
         let start;
         {
-            let mut e = JitEmitter::new(&mut buf, 2);
+            let mut e = NativeEmitter::new(&mut buf, 2);
             let val_reg = tos_reg(e.dv(), 2); // T0 = value
             e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
             start = e.finish_br_if_simple();
@@ -2646,7 +2646,7 @@ mod tests {
 
         let start;
         {
-            let mut e = JitEmitter::new(&mut buf, 2);
+            let mut e = NativeEmitter::new(&mut buf, 2);
             let val_reg = tos_reg(e.dv(), 2);
             e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
             start = e.finish_br_if_simple();
@@ -2697,7 +2697,7 @@ mod tests {
 
         let start1;
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(42);  // height=1: value
             e.i32_const(1);   // height=2: condition=1 → branch taken
             let val_reg = tos_reg(e.dv(), 2); // value at pos2
@@ -2707,7 +2707,7 @@ mod tests {
 
         let start2 = buf.len();
         {
-            let mut e = JitEmitter::new(&mut buf, 1); // height=1 after br_if pop
+            let mut e = NativeEmitter::new(&mut buf, 1); // height=1 after br_if pop
             e.i32_const(99);
             let top = tos_reg(e.dv(), 1);
             e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1)); // fp[1] = 99
@@ -2761,7 +2761,7 @@ mod tests {
 
         let start1;
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(42);
             e.i32_const(0);  // condition=0 → fallthrough
             let val_reg = tos_reg(e.dv(), 2);
@@ -2771,7 +2771,7 @@ mod tests {
 
         let start2 = buf.len();
         {
-            let mut e = JitEmitter::new(&mut buf, 1);
+            let mut e = NativeEmitter::new(&mut buf, 1);
             e.i32_const(88);
             let top = tos_reg(e.dv(), 1);
             e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1));
@@ -2823,7 +2823,7 @@ mod tests {
 
         let start1;
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(42);
             let top = tos_reg(e.dv(), 1);
             e.emit_raw(arm64_enc::str_64(top, Reg::FP, 0));
@@ -2832,7 +2832,7 @@ mod tests {
 
         let start2 = buf.len();
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(99);
             let top = tos_reg(e.dv(), 1);
             e.emit_raw(arm64_enc::str_64(top, Reg::FP, 1));
@@ -2884,7 +2884,7 @@ mod tests {
 
         let start;
         {
-            let mut e = JitEmitter::new(&mut buf, 2);
+            let mut e = NativeEmitter::new(&mut buf, 2);
             let val_reg = tos_reg(e.dv(), 2);
             e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
             start = e.finish_if();
@@ -2933,7 +2933,7 @@ mod tests {
 
         let start;
         {
-            let mut e = JitEmitter::new(&mut buf, 2);
+            let mut e = NativeEmitter::new(&mut buf, 2);
             let val_reg = tos_reg(e.dv(), 2);
             e.emit_raw(arm64_enc::str_64(val_reg, Reg::FP, 0));
             start = e.finish_if();
@@ -3193,7 +3193,7 @@ mod tests {
         buf.begin_write();
 
         {
-            let mut e = JitEmitter::new(&mut buf, 0);
+            let mut e = NativeEmitter::new(&mut buf, 0);
             e.i32_const(0);
             e.i32_load(0);
             e.drop_val();

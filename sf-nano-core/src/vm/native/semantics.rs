@@ -1,4 +1,4 @@
-use super::codegen::JitEmitter;
+use super::codegen::NativeEmitter;
 
 macro_rules! define_semantics_emitter {
     ($(fn $name:ident($($arg:ident : $ty:ty),*);)*) => {
@@ -6,9 +6,9 @@ macro_rules! define_semantics_emitter {
             $(fn $name(&mut self, $($arg: $ty),*);)*
         }
 
-        impl SemanticsEmitter for JitEmitter<'_> {
+        impl SemanticsEmitter for NativeEmitter<'_> {
             $(fn $name(&mut self, $($arg: $ty),*) {
-                JitEmitter::$name(self, $($arg),*)
+                NativeEmitter::$name(self, $($arg),*)
             })*
         }
     };

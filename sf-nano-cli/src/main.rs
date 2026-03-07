@@ -5,7 +5,7 @@ use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
 #[cfg(feature = "micro-jit")]
-use sf_nano_core::jit_stats_snapshot;
+use sf_nano_core::native_stats_snapshot;
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -17,7 +17,7 @@ fn main() {
         eprintln!("Silverfir-nano — WebAssembly interpreter");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("  sf-nano-cli [--backend <auto|jit|fusion|base>] [--dir <path>] <wasm-file> [args...]");
+        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--dir <path>] <wasm-file> [args...]");
         #[cfg(feature = "profile")]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -55,22 +55,16 @@ fn main() {
             } else if args[i] == "--backend" {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("Error: --backend requires one of: auto, jit, fusion, base");
+                    eprintln!("Error: --backend requires one of: auto, native, fusion, base");
                     process::exit(1);
                 }
-                backend_mode = match args[i].as_str() {
-                    "auto" => BackendMode::Auto,
-                    "jit" => BackendMode::Jit,
-                    "fusion" => BackendMode::Fusion,
-                    "base" => BackendMode::Base,
-                    other => {
-                        eprintln!(
-                            "Error: invalid backend '{}'; expected one of: auto, jit, fusion, base",
-                            other
-                        );
-                        process::exit(1);
-                    }
-                };
+                backend_mode = BackendMode::parse_str(&args[i]).unwrap_or_else(|| {
+                    eprintln!(
+                        "Error: invalid backend '{}'; expected one of: auto, native, fusion, base (compat: jit)",
+                        args[i]
+                    );
+                    process::exit(1);
+                });
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -137,19 +131,19 @@ fn main() {
         _ => result,
     };
 
-    // Print JIT status on exit
+    // Print native backend status on exit
     #[cfg(feature = "micro-jit")]
     {
-        let s = jit_stats_snapshot();
+        let s = native_stats_snapshot();
         if s.groups > 0 || s.groups_skipped > 0 {
             let kb = s.bytes_emitted / 1024;
             if s.groups_skipped > 0 {
                 eprintln!(
-                    "[jit] {} groups ({} ops), {}KB emitted | {} groups ({} ops) skipped (buffer full)",
+                    "[native] {} groups ({} ops), {}KB emitted | {} groups ({} ops) skipped (buffer full)",
                     s.groups, s.ops, kb, s.groups_skipped, s.ops_skipped
                 );
             } else {
-                eprintln!("[jit] {} groups ({} ops), {}KB emitted", s.groups, s.ops, kb);
+                eprintln!("[native] {} groups ({} ops), {}KB emitted", s.groups, s.ops, kb);
             }
         }
     }

@@ -31,7 +31,16 @@ pub use module::type_defs::FunctionType;
 pub use utils::limits::Limitable;
 pub use vm::instance::{Import, ImportValue, Instance};
 pub use vm::entities::ExternalFn;
-pub use vm::interp::fast::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
+pub use vm::backend::{BackendKind, BackendMode, active_backend, backend_mode, set_backend_mode};
 #[cfg(feature = "micro-jit")]
-pub use vm::native::group::{jit_stats, jit_capacity_skips, jit_stats_snapshot, JitStatsSnapshot};
+pub use vm::native::{
+    NativeStatsSnapshot,
+    native_capacity_skips,
+    native_stats,
+    native_stats_snapshot,
+    native_capacity_skips as jit_capacity_skips,
+    native_stats as jit_stats,
+    native_stats_snapshot as jit_stats_snapshot,
+    NativeStatsSnapshot as JitStatsSnapshot,
+};
 pub use vm::value::Value;

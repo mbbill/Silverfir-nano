@@ -20,7 +20,7 @@ use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 use crate::vm::value::{RefHandle, Value};
 #[cfg(feature = "micro-jit")]
-use crate::vm::native::code_buf::CodeBuffer;
+use crate::vm::native::CodeBuffer;
 
 // ---------------------------------------------------------------------------
 // ExternalFn / Caller
@@ -274,7 +274,7 @@ pub struct ModuleInst {
     pub elements: Vec<ElementInst>,
     pub data: Vec<DataInst>,
     #[cfg(feature = "micro-jit")]
-    jit_buf: RefCell<Option<CodeBuffer>>,
+    native_buf: RefCell<Option<CodeBuffer>>,
 }
 
 impl ModuleInst {
@@ -289,7 +289,7 @@ impl ModuleInst {
             elements: Vec::new(),
             data: Vec::new(),
             #[cfg(feature = "micro-jit")]
-            jit_buf: RefCell::new(None),
+            native_buf: RefCell::new(None),
         }
     }
 
@@ -300,16 +300,16 @@ impl ModuleInst {
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn jit_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
-        let mut jit_buf = self
-            .jit_buf
+    pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
+        let mut native_buf = self
+            .native_buf
             .try_borrow_mut()
-            .map_err(|_| "module JIT code buffer is already borrowed")?;
-        if jit_buf.is_none() {
-            *jit_buf = Some(CodeBuffer::new()?);
+            .map_err(|_| "module native code buffer is already borrowed")?;
+        if native_buf.is_none() {
+            *native_buf = Some(CodeBuffer::new()?);
         }
-        Ok(core::cell::RefMut::map(jit_buf, |jit_buf| {
-            jit_buf.as_mut().expect("JIT code buffer initialized")
+        Ok(core::cell::RefMut::map(native_buf, |native_buf| {
+            native_buf.as_mut().expect("native code buffer initialized")
         }))
     }
 }
