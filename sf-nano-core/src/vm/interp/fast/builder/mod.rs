@@ -718,4 +718,31 @@ mod tests {
         memory[0..8].copy_from_slice(&1.5f64.to_bits().to_le_bytes());
         assert_base_equals_jit(&ops, 1, 8, 1, &[0], &memory);
     }
+
+    #[test]
+    fn test_base_vs_jit_equivalent_with_f64_frame_tee_reload_chain() {
+        let ops = vec![
+            make_op(
+                ir::IrOpKind::F64Const {
+                    value: 1.5f64.to_bits(),
+                },
+                0,
+                post_push_variant(0),
+            ),
+            make_op(ir::IrOpKind::LocalTeeFrame { idx: 0 }, 1, current_variant(1)),
+            make_op(ir::IrOpKind::Drop, 1, current_variant(1)),
+            make_op(ir::IrOpKind::LocalGetFrame { idx: 0 }, 0, post_push_variant(0)),
+            make_op(
+                ir::IrOpKind::F64Const {
+                    value: 2.0f64.to_bits(),
+                },
+                1,
+                post_push_variant(1),
+            ),
+            make_op(ir::IrOpKind::F64Mul, 2, current_variant(2)),
+            make_op(ir::IrOpKind::LocalSetFrame { idx: 1 }, 1, current_variant(1)),
+        ];
+
+        assert_base_equals_jit(&ops, 2, 8, 2, &[0, 0], &[]);
+    }
 }

@@ -39,6 +39,12 @@ struct FpLoc {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameFpAlias {
+    idx: u16,
+    fp: FpLoc,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SlotLoc {
     gpr: Option<GprLoc>,
     fp: Option<FpLoc>,
@@ -92,6 +98,8 @@ pub struct JitEmitter<'a> {
     slots: [SlotLoc; 4],
     /// Current FP aliases for hot locals L0-L2, when they are known to still match.
     local_fp_aliases: [Option<FpLoc>; 3],
+    /// Best-effort FP alias for one uncached frame local within the current group.
+    frame_fp_alias: Option<FrameFpAlias>,
     /// Byte offset where this group's code starts.
     pub start_offset: usize,
     /// Byte offsets of B.HI instructions to patch to the OOB trap stub.
@@ -106,6 +114,7 @@ impl<'a> JitEmitter<'a> {
             height: initial_height,
             slots: [SlotLoc::canonical(); 4],
             local_fp_aliases: [None; 3],
+            frame_fp_alias: None,
             start_offset,
             trap_patches: Vec::new(),
         }
@@ -164,6 +173,12 @@ impl<'a> JitEmitter<'a> {
         self.slots[0] = SlotLoc::gpr_alias(reg).with_fp(fp);
     }
 
+    fn push_fp_alias_slot(&mut self, fp: FpLoc) {
+        self.height += 1;
+        self.shift_slots_for_push();
+        self.slots[0] = SlotLoc::fp_only(fp);
+    }
+
     fn replace_top_with_fp(&mut self, fp: FpLoc) {
         debug_assert!(self.height > 0);
         self.slots[0] = SlotLoc::fp_only(fp);
@@ -188,6 +203,7 @@ impl<'a> JitEmitter<'a> {
             self.slots[pos - 1].fp = None;
         }
         self.local_fp_aliases = [None; 3];
+        self.frame_fp_alias = None;
     }
 
     fn materialize_slot_to_canonical(&mut self, pos: u8) {
@@ -256,6 +272,7 @@ impl<'a> JitEmitter<'a> {
                 .iter()
                 .flatten()
                 .any(|fp| fp.reg == reg)
+            || self.frame_fp_alias.is_some_and(|alias| alias.fp.reg == reg)
     }
 
     fn alloc_fp_reg(&self) -> u8 {
@@ -292,6 +309,22 @@ impl<'a> JitEmitter<'a> {
 
     fn alloc_fp_result(&self) -> u8 {
         self.alloc_fp_reg()
+    }
+
+    fn clear_frame_fp_alias(&mut self, idx: u16) {
+        if self.frame_fp_alias.is_some_and(|alias| alias.idx == idx) {
+            self.frame_fp_alias = None;
+        }
+    }
+
+    fn remember_frame_fp_alias(&mut self, idx: u16, fp: FpLoc) {
+        self.frame_fp_alias = Some(FrameFpAlias { idx, fp });
+    }
+
+    fn lookup_frame_fp_alias(&self, idx: u16) -> Option<FpLoc> {
+        self.frame_fp_alias
+            .filter(|alias| alias.idx == idx)
+            .map(|alias| alias.fp)
     }
 
     /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
@@ -717,6 +750,10 @@ impl<'a> JitEmitter<'a> {
     // ==================== Non-hot locals (push1 / pop1) ====================
 
     pub fn local_get(&mut self, idx: u16) {
+        if let Some(fp) = self.lookup_frame_fp_alias(idx) {
+            self.push_fp_alias_slot(fp);
+            return;
+        }
         self.push_materialized_slot();
         let dst = tos_reg(self.dv(), 1);
         let scaled = idx as u32; // ldr_64 imm12 is pre-scaled by 8
@@ -724,20 +761,48 @@ impl<'a> JitEmitter<'a> {
     }
 
     pub fn local_set(&mut self, idx: u16) {
-        let src = match self.slots[0].gpr {
-            Some(_) => self.resolve_tos_reg(1),
-            None => {
-                self.copy_slot_to_gpr(1, Reg::TMP0);
-                Reg::TMP0
-            }
-        };
         let scaled = idx as u32;
-        self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
+        if let Some(fp) = self.slots[0].fp {
+            match fp.width {
+                FpWidth::F64 => {
+                    self.buf.emit(arm64_enc::str_f64(fp.reg as u32, Reg::FP, scaled));
+                }
+                FpWidth::F32 => {
+                    self.copy_slot_to_gpr(1, Reg::TMP0);
+                    self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, scaled));
+                }
+            }
+            self.remember_frame_fp_alias(idx, fp);
+        } else {
+            let src = match self.slots[0].gpr {
+                Some(_) => self.resolve_tos_reg(1),
+                None => {
+                    self.copy_slot_to_gpr(1, Reg::TMP0);
+                    Reg::TMP0
+                }
+            };
+            self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
+            self.clear_frame_fp_alias(idx);
+        }
         self.height -= 1;
         self.shift_slots_for_pop();
     }
 
     pub fn local_tee(&mut self, idx: u16) {
+        let scaled = idx as u32;
+        if let Some(fp) = self.slots[0].fp {
+            match fp.width {
+                FpWidth::F64 => {
+                    self.buf.emit(arm64_enc::str_f64(fp.reg as u32, Reg::FP, scaled));
+                }
+                FpWidth::F32 => {
+                    self.copy_slot_to_gpr(1, Reg::TMP0);
+                    self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, scaled));
+                }
+            }
+            self.remember_frame_fp_alias(idx, fp);
+            return;
+        }
         let src = match self.slots[0].gpr {
             Some(_) => self.resolve_tos_reg(1),
             None => {
@@ -745,8 +810,8 @@ impl<'a> JitEmitter<'a> {
                 Reg::TMP0
             }
         };
-        let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
+        self.clear_frame_fp_alias(idx);
         // height unchanged (tee keeps value on stack)
     }
 
@@ -757,6 +822,7 @@ impl<'a> JitEmitter<'a> {
     /// This mirrors `impl_init_locals` in `handlers_c/const_local.c`:
     /// each `Kn` swaps `fp[n]` with `fp[Kn]`, then fills `Ln` from `fp[n]`.
     pub fn init_locals(&mut self, k0: u16, k1: u16, k2: u16) {
+        self.frame_fp_alias = None;
         self.init_one_hot_local(0, k0, Reg::L0);
         self.init_one_hot_local(1, k1, Reg::L1);
         self.init_one_hot_local(2, k2, Reg::L2);
@@ -2200,6 +2266,22 @@ mod tests {
             0,
         );
         assert_eq!(result, 9.0f64.to_bits());
+    }
+
+    #[test]
+    fn test_local_tee_frame_f64_roundtrip() {
+        let result = run_jit_test(
+            |e| {
+                e.f64_const(1.5f64.to_bits());
+                e.local_tee(1);
+                e.drop_val();
+                e.local_get(1);
+                e.f64_const(2.0f64.to_bits());
+                e.f64_mul();
+            },
+            0, 0, 0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(result, 3.0f64.to_bits());
     }
 
     #[test]

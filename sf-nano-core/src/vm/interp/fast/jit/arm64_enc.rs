@@ -542,6 +542,17 @@ fn ldst_unsigned_offset(size: u32, opc: u32, rt: Reg, rn: Reg, imm12: u32) -> u3
         | rt.idx()
 }
 
+fn fp_ldst_unsigned_offset(size: u32, opc: u32, vt: u32, rn: Reg, imm12: u32) -> u32 {
+    debug_assert!(vt < 32, "FP register out of range: {vt}");
+    debug_assert!(imm12 < 0x1000, "imm12 out of range: {:#x}", imm12);
+    (size << 30)
+        | (0b111_1_01 << 24)
+        | (opc << 22)
+        | (imm12 << 10)
+        | (rn.idx() << 5)
+        | vt
+}
+
 /// LDR Xt, [Xn, #imm12*8] (64-bit load, pre-scaled imm12)
 pub fn ldr_64(rt: Reg, rn: Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b01, rt, rn, imm12)
@@ -560,6 +571,26 @@ pub fn ldr_32(rt: Reg, rn: Reg, imm12: u32) -> u32 {
 /// STR Wt, [Xn, #imm12*4] (32-bit store, pre-scaled imm12)
 pub fn str_32(rt: Reg, rn: Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b10, 0b00, rt, rn, imm12)
+}
+
+/// LDR St, [Xn, #imm12*4] (32-bit floating-point load, pre-scaled imm12)
+pub fn ldr_f32(vt: u32, rn: Reg, imm12: u32) -> u32 {
+    fp_ldst_unsigned_offset(0b10, 0b01, vt, rn, imm12)
+}
+
+/// STR St, [Xn, #imm12*4] (32-bit floating-point store, pre-scaled imm12)
+pub fn str_f32(vt: u32, rn: Reg, imm12: u32) -> u32 {
+    fp_ldst_unsigned_offset(0b10, 0b00, vt, rn, imm12)
+}
+
+/// LDR Dt, [Xn, #imm12*8] (64-bit floating-point load, pre-scaled imm12)
+pub fn ldr_f64(vt: u32, rn: Reg, imm12: u32) -> u32 {
+    fp_ldst_unsigned_offset(0b11, 0b01, vt, rn, imm12)
+}
+
+/// STR Dt, [Xn, #imm12*8] (64-bit floating-point store, pre-scaled imm12)
+pub fn str_f64(vt: u32, rn: Reg, imm12: u32) -> u32 {
+    fp_ldst_unsigned_offset(0b11, 0b00, vt, rn, imm12)
 }
 
 /// LDRH Wt, [Xn, #imm12*2] (16-bit load, pre-scaled imm12)
@@ -1396,6 +1427,30 @@ mod tests {
         // = 0111_1001_0100_0000_0000_0000_0101_1010
         // = 0x7940005A
         assert_eq!(ldrh(Reg::T0, Reg::TMP0, 0), 0x7940005A);
+    }
+
+    #[test]
+    fn test_str_f64() {
+        // str d0, [x1, #8]
+        assert_eq!(str_f64(0, Reg::NH, 1), 0xFD000420);
+    }
+
+    #[test]
+    fn test_ldr_f64() {
+        // ldr d0, [x1, #8]
+        assert_eq!(ldr_f64(0, Reg::NH, 1), 0xFD400420);
+    }
+
+    #[test]
+    fn test_str_f32() {
+        // str s0, [x1, #4]
+        assert_eq!(str_f32(0, Reg::NH, 1), 0xBD000420);
+    }
+
+    #[test]
+    fn test_ldr_f32() {
+        // ldr s0, [x1, #4]
+        assert_eq!(ldr_f32(0, Reg::NH, 1), 0xBD400420);
     }
 
     // --- Load / Store register offset ---
