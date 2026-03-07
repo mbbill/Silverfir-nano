@@ -8,7 +8,7 @@
 use alloc::{format, string::{String, ToString}};
 
 use crate::vm::interp::fast::builder::ir::{IrOp, IrOpKind, OpIndex};
-use crate::vm::interp::fast::jit::group_meta::{sanitize_token, summarize_group};
+use crate::vm::native::group_meta::{sanitize_token, summarize_group};
 
 #[cfg(any(feature = "wasi", feature = "std", test))]
 use std::{

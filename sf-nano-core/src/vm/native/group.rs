@@ -735,10 +735,10 @@ mod tests {
     use crate::vm::interp::fast::handlers::{self, OpHandler, NextHandler, run_trampoline};
     use crate::vm::interp::fast::handlers::full_set;
     use crate::vm::interp::fast::context::Context;
-    use crate::vm::interp::fast::jit::codegen::{depth_variant, tos_reg};
-    use crate::vm::interp::fast::jit::reg::Reg;
-    use crate::vm::interp::fast::jit::arm64_enc;
-    use crate::vm::interp::fast::jit::emit;
+    use crate::vm::native::codegen::{depth_variant, tos_reg};
+    use crate::vm::native::reg::Reg;
+    use crate::vm::native::arm64_enc;
+    use crate::vm::native::emit;
 
     /// Helper: create an IrOp with given kind and pre_height.
     fn make_op(kind: IrOpKind, pre_height: u16) -> IrOp {

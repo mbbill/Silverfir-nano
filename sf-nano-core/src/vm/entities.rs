@@ -20,7 +20,7 @@ use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 use crate::vm::value::{RefHandle, Value};
 #[cfg(feature = "micro-jit")]
-use crate::vm::interp::fast::jit::code_buf::CodeBuffer;
+use crate::vm::native::code_buf::CodeBuffer;
 
 // ---------------------------------------------------------------------------
 // ExternalFn / Caller

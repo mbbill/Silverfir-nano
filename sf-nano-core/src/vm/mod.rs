@@ -2,5 +2,7 @@ pub mod entities;
 pub(crate) mod expr_eval;
 pub mod instance;
 pub mod interp;
+#[cfg(feature = "micro-jit")]
+pub mod native;
 pub mod store;
 pub mod value;

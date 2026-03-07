@@ -36,7 +36,8 @@ Today the project has three related execution modes:
 - Fast interpreter fusion mode.
 - Current micro-JIT mode.
 
-The current micro-JIT lives under `interp/fast/jit/` and is still shaped like a
+The current native backend code now lives under `vm/native/`, but it is still
+shaped like a
 hybrid handler-dispatch system:
 
 - It reuses the fast interpreter's lowered IR.
@@ -110,7 +111,8 @@ Therefore:
 
 ### 4. The current micro-JIT should evolve into a separate native backend
 
-The clean end state is not "`interp/fast/jit` inside the interpreter".
+The clean end state is not "a native backend that still behaves like a hidden
+subsystem of the fast interpreter".
 
 The clean end state is:
 
@@ -314,10 +316,11 @@ The native backend should be able to emit:
 
 That lets the fast path stop depending on C singleton handlers.
 
-### 3. Backend separation
+### 3. Complete backend separation
 
-Move the native backend out of `interp/fast/jit` and make it a sibling backend
-module.
+The module move to `vm/native/` is only the first structural step. The backend
+still needs to be completed as a true sibling backend family rather than a
+native code generator that happens to reuse fast-interpreter assumptions.
 
 This is not just a directory cleanup. It is the point where the project stops
 treating native code generation as "a special kind of fast-interpreter handler"
@@ -365,8 +368,8 @@ The intended order is:
 
 1. Keep the current architecture stable enough to serve as the migration base.
 2. Design the native backend's self-owned VM ABI.
-3. Create a sibling `native/` backend module and start moving JIT-specific code
-   out of `interp/fast/jit`.
+3. Use the new sibling `native/` backend module as the migration target and
+   continue moving architectural ownership out of the fast-interpreter world.
 4. Add native singleton stubs for already-supported hot ops.
 5. Add bridge stubs for cold Rust helpers.
 6. Allow direct native-entry chaining.
@@ -398,7 +401,8 @@ The current micro-JIT proved that runtime native code generation is worth doing.
 It also exposed the limits of keeping that code generator embedded inside a
 handler-threaded `preserve_none` interpreter architecture.
 
-The next step is not "more and more special cases inside `interp/fast/jit`".
+The next step is not "more and more native special cases that still behave like
+the old fast-interpreter JIT".
 
 The next step is:
 

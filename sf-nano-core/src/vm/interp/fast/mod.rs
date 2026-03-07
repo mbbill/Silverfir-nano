@@ -142,9 +142,6 @@ pub mod runtime;
 
 pub mod fusion;
 
-#[cfg(feature = "micro-jit")]
-pub mod jit;
-
 #[cfg(test)]
 mod tests {
     use super::*;

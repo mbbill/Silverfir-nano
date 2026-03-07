@@ -47,7 +47,7 @@ fn try_resolve_jit_backend(
     hot_mask: [bool; 3],
     func_idx: u32,
 ) -> Result<Vec<backend::ResolvedInst>, &'static str> {
-    use super::jit::group;
+    use crate::vm::native::group;
 
     let mut buf = module.jit_code_buffer()?;
     Ok(group::resolve_jit_with_context(
@@ -164,9 +164,9 @@ mod tests {
         context::Context,
         handlers::{self, run_trampoline, NextHandler},
         instruction::Instruction,
-        jit::{code_buf::CodeBuffer, group},
         TOS_REGISTER_COUNT,
     };
+    use crate::vm::native::{code_buf::CodeBuffer, group};
 
     #[derive(Clone, Copy)]
     enum BackendUnderTest {
