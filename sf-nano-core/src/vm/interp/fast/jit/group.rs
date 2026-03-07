@@ -485,40 +485,39 @@ fn pick_tail_fusion(group: &[IrOp], terminator: Option<GroupTerminator>, body_en
 }
 
 fn emit_compare_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
-    let lhs = e.resolve_tos_reg(2);
-    let rhs = e.resolve_tos_reg(1);
-
     match cmp {
         CompareFusionKind::I32(_) => {
+            let lhs = e.resolve_tos_reg(2);
+            let rhs = e.resolve_tos_reg(1);
             e.emit_raw(arm64_enc::subs_reg_32(Reg::XZR, lhs, rhs));
         }
         CompareFusionKind::I64(_) => {
+            let lhs = e.resolve_tos_reg(2);
+            let rhs = e.resolve_tos_reg(1);
             e.emit_raw(arm64_enc::subs_reg_64(Reg::XZR, lhs, rhs));
         }
         CompareFusionKind::F32(_) => {
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(0, lhs));
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(1, rhs));
-            e.emit_raw(arm64_enc::fcmp_32(0, 1));
+            let lhs = e.ensure_tos_f32(2);
+            let rhs = e.ensure_tos_f32(1);
+            e.emit_raw(arm64_enc::fcmp_32(lhs, rhs));
         }
         CompareFusionKind::F64(_) => {
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(0, lhs));
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(1, rhs));
-            e.emit_raw(arm64_enc::fcmp_64(0, 1));
+            let lhs = e.ensure_tos_f64(2);
+            let rhs = e.ensure_tos_f64(1);
+            e.emit_raw(arm64_enc::fcmp_64(lhs, rhs));
         }
     }
 }
 
 fn emit_compare_zero_flags(e: &mut JitEmitter, cmp: CompareFusionKind) {
-    let lhs = e.resolve_tos_reg(1);
-
     match cmp {
         CompareFusionKind::F32(_) => {
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp32(0, lhs));
-            e.emit_raw(arm64_enc::fcmp_32_zero(0));
+            let lhs = e.ensure_tos_f32(1);
+            e.emit_raw(arm64_enc::fcmp_32_zero(lhs));
         }
         CompareFusionKind::F64(_) => {
-            e.emit_raw(arm64_enc::fmov_gpr_to_fp64(0, lhs));
-            e.emit_raw(arm64_enc::fcmp_64_zero(0));
+            let lhs = e.ensure_tos_f64(1);
+            e.emit_raw(arm64_enc::fcmp_64_zero(lhs));
         }
         CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!("zero-float compare only"),
     }

@@ -15,9 +15,62 @@ const TOS_REGS: [Reg; 4] = [Reg::T0, Reg::T1, Reg::T2, Reg::T3];
 
 /// Hot local registers: L0=x23, L1=x24, L2=x25.
 const LOCAL_REGS: [Reg; 3] = [Reg::L0, Reg::L1, Reg::L2];
+const FP_ALIAS_REGS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 /// Static OOB trap message (null-terminated C string).
 const OOB_MSG: &[u8; 28] = b"out of bounds memory access\0";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GprLoc {
+    Canonical,
+    Alias(Reg),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FpWidth {
+    F32,
+    F64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FpLoc {
+    reg: u8,
+    width: FpWidth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlotLoc {
+    gpr: Option<GprLoc>,
+    fp: Option<FpLoc>,
+}
+
+impl SlotLoc {
+    const fn canonical() -> Self {
+        Self {
+            gpr: Some(GprLoc::Canonical),
+            fp: None,
+        }
+    }
+
+    const fn gpr_alias(reg: Reg) -> Self {
+        Self {
+            gpr: Some(GprLoc::Alias(reg)),
+            fp: None,
+        }
+    }
+
+    const fn with_fp(mut self, fp: Option<FpLoc>) -> Self {
+        self.fp = fp;
+        self
+    }
+
+    const fn fp_only(fp: FpLoc) -> Self {
+        Self {
+            gpr: None,
+            fp: Some(fp),
+        }
+    }
+}
 
 /// Compute depth variant from stack height.
 pub fn depth_variant(height: usize) -> u8 {
@@ -33,11 +86,12 @@ pub fn tos_reg(d: u8, pos: u8) -> Reg {
 pub struct JitEmitter<'a> {
     buf: &'a mut CodeBuffer,
     height: usize,
-    /// Optional non-canonical source register for each live TOS slot.
+    /// Per-slot location metadata for the live TOS window.
     ///
     /// Index 0 is the current top of stack, index 1 is the next value down, etc.
-    /// `None` means the slot already lives in its canonical TOS register.
-    tos_aliases: [Option<Reg>; 4],
+    slots: [SlotLoc; 4],
+    /// Current FP aliases for hot locals L0-L2, when they are known to still match.
+    local_fp_aliases: [Option<FpLoc>; 3],
     /// Byte offset where this group's code starts.
     pub start_offset: usize,
     /// Byte offsets of B.HI instructions to patch to the OOB trap stub.
@@ -50,7 +104,8 @@ impl<'a> JitEmitter<'a> {
         Self {
             buf,
             height: initial_height,
-            tos_aliases: [None; 4],
+            slots: [SlotLoc::canonical(); 4],
+            local_fp_aliases: [None; 3],
             start_offset,
             trap_patches: Vec::new(),
         }
@@ -60,41 +115,53 @@ impl<'a> JitEmitter<'a> {
 
     fn dv(&self) -> u8 { depth_variant(self.height) }
 
-    fn shift_aliases_for_push(&mut self) {
-        self.tos_aliases[3] = self.tos_aliases[2];
-        self.tos_aliases[2] = self.tos_aliases[1];
-        self.tos_aliases[1] = self.tos_aliases[0];
-        self.tos_aliases[0] = None;
+    fn shift_slots_for_push(&mut self) {
+        self.slots[3] = self.slots[2];
+        self.slots[2] = self.slots[1];
+        self.slots[1] = self.slots[0];
+        self.slots[0] = SlotLoc::canonical();
     }
 
-    fn shift_aliases_for_pop(&mut self) {
-        self.tos_aliases[0] = self.tos_aliases[1];
-        self.tos_aliases[1] = self.tos_aliases[2];
-        self.tos_aliases[2] = self.tos_aliases[3];
-        self.tos_aliases[3] = None;
+    fn shift_slots_for_pop(&mut self) {
+        self.slots[0] = self.slots[1];
+        self.slots[1] = self.slots[2];
+        self.slots[2] = self.slots[3];
+        self.slots[3] = SlotLoc::canonical();
     }
 
     fn pop2_push_materialized(&mut self) {
-        self.tos_aliases[0] = None;
-        self.tos_aliases[1] = self.tos_aliases[2];
-        self.tos_aliases[2] = self.tos_aliases[3];
-        self.tos_aliases[3] = None;
+        self.slots[0] = SlotLoc::canonical();
+        self.slots[1] = self.slots[2];
+        self.slots[2] = self.slots[3];
+        self.slots[3] = SlotLoc::canonical();
+        self.height -= 1;
+    }
+
+    fn pop2_push_fp(&mut self, fp: FpLoc) {
+        self.slots[0] = SlotLoc::fp_only(fp);
+        self.slots[1] = self.slots[2];
+        self.slots[2] = self.slots[3];
+        self.slots[3] = SlotLoc::canonical();
         self.height -= 1;
     }
 
     fn push_materialized_slot(&mut self) {
         self.height += 1;
-        self.shift_aliases_for_push();
+        self.shift_slots_for_push();
     }
 
-    fn push_alias_slot(&mut self, reg: Reg) {
+    fn push_gpr_alias_slot(&mut self, reg: Reg, fp: Option<FpLoc>) {
         self.height += 1;
-        self.shift_aliases_for_push();
-        self.tos_aliases[0] = Some(reg);
+        self.shift_slots_for_push();
+        self.slots[0] = SlotLoc::gpr_alias(reg).with_fp(fp);
     }
 
     pub fn resolve_tos_reg(&self, pos: u8) -> Reg {
-        self.tos_aliases[(pos - 1) as usize].unwrap_or_else(|| tos_reg(self.dv(), pos))
+        match self.slots[(pos - 1) as usize].gpr {
+            Some(GprLoc::Canonical) => tos_reg(self.dv(), pos),
+            Some(GprLoc::Alias(reg)) => reg,
+            None => tos_reg(self.dv(), pos),
+        }
     }
 
     pub fn materialize_aliases(&mut self) {
@@ -102,17 +169,116 @@ impl<'a> JitEmitter<'a> {
     }
 
     fn materialize_aliases_from(&mut self, start_pos: usize) {
-        let live = self.height.min(self.tos_aliases.len());
+        let live = self.height.min(self.slots.len());
         for pos in start_pos..=live {
-            let Some(src) = self.tos_aliases[pos - 1] else {
-                continue;
-            };
-            let dst = tos_reg(self.dv(), pos as u8);
-            if src != dst {
-                self.buf.emit(arm64_enc::mov_reg_64(dst, src));
-            }
-            self.tos_aliases[pos - 1] = None;
+            self.materialize_slot_to_canonical(pos as u8);
+            self.slots[pos - 1].fp = None;
         }
+        self.local_fp_aliases = [None; 3];
+    }
+
+    fn materialize_slot_to_canonical(&mut self, pos: u8) {
+        let idx = (pos - 1) as usize;
+        let dst = tos_reg(self.dv(), pos);
+        match self.slots[idx].gpr {
+            Some(GprLoc::Canonical) => {}
+            Some(GprLoc::Alias(src)) => {
+                if src != dst {
+                    self.buf.emit(arm64_enc::mov_reg_64(dst, src));
+                }
+                self.slots[idx].gpr = Some(GprLoc::Canonical);
+            }
+            None => {
+                let fp = self.slots[idx].fp.expect("slot must have a source location");
+                self.emit_fp_to_gpr(dst, fp);
+                self.slots[idx].gpr = Some(GprLoc::Canonical);
+            }
+        }
+    }
+
+    fn slot_gpr_source(&mut self, pos: u8) -> Reg {
+        let idx = (pos - 1) as usize;
+        if self.slots[idx].gpr.is_none() {
+            self.materialize_slot_to_canonical(pos);
+        }
+        self.resolve_tos_reg(pos)
+    }
+
+    fn copy_slot_to_gpr(&mut self, pos: u8, dst: Reg) {
+        let idx = (pos - 1) as usize;
+        match self.slots[idx].gpr {
+            Some(GprLoc::Canonical) => {
+                let src = tos_reg(self.dv(), pos);
+                if src != dst {
+                    self.buf.emit(arm64_enc::mov_reg_64(dst, src));
+                }
+            }
+            Some(GprLoc::Alias(src)) => {
+                if src != dst {
+                    self.buf.emit(arm64_enc::mov_reg_64(dst, src));
+                }
+            }
+            None => {
+                let fp = self.slots[idx].fp.expect("slot must have a source location");
+                self.emit_fp_to_gpr(dst, fp);
+            }
+        }
+    }
+
+    fn emit_fp_to_gpr(&mut self, dst: Reg, fp: FpLoc) {
+        match fp.width {
+            FpWidth::F32 => self.buf.emit(arm64_enc::fmov_fp32_to_gpr(dst, fp.reg as u32)),
+            FpWidth::F64 => self.buf.emit(arm64_enc::fmov_fp64_to_gpr(dst, fp.reg as u32)),
+        };
+    }
+
+    fn fp_reg_in_use(&self, reg: u8) -> bool {
+        let live = self.height.min(self.slots.len());
+        self.slots[..live]
+            .iter()
+            .filter_map(|slot| slot.fp)
+            .any(|fp| fp.reg == reg)
+            || self
+                .local_fp_aliases
+                .iter()
+                .flatten()
+                .any(|fp| fp.reg == reg)
+    }
+
+    fn alloc_fp_reg(&self) -> u8 {
+        FP_ALIAS_REGS
+            .into_iter()
+            .find(|&reg| !self.fp_reg_in_use(reg))
+            .expect("ran out of FP alias registers")
+    }
+
+    fn ensure_tos_fp(&mut self, pos: u8, width: FpWidth) -> u8 {
+        let idx = (pos - 1) as usize;
+        if let Some(fp) = self.slots[idx].fp {
+            debug_assert_eq!(fp.width, width);
+            return fp.reg;
+        }
+
+        let reg = self.alloc_fp_reg();
+        let src = self.slot_gpr_source(pos);
+        match width {
+            FpWidth::F32 => self.buf.emit(arm64_enc::fmov_gpr_to_fp32(reg as u32, src)),
+            FpWidth::F64 => self.buf.emit(arm64_enc::fmov_gpr_to_fp64(reg as u32, src)),
+        };
+        self.slots[idx].fp = Some(FpLoc { reg, width });
+        reg
+    }
+
+    pub fn ensure_tos_f32(&mut self, pos: u8) -> u32 {
+        self.ensure_tos_fp(pos, FpWidth::F32) as u32
+    }
+
+    pub fn ensure_tos_f64(&mut self, pos: u8) -> u32 {
+        self.ensure_tos_fp(pos, FpWidth::F64) as u32
+    }
+
+    fn alloc_fp_result(&self) -> u8 {
+        self.alloc_fp_reg()
     }
 
     /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
@@ -392,11 +558,11 @@ impl<'a> JitEmitter<'a> {
     // ==================== Unary i32 ops (pop1_push1) ====================
 
     pub fn i32_eqz(&mut self) {
-        let src = self.resolve_tos_reg(1);
+        let src = self.slot_gpr_source(1);
         let dst = tos_reg(self.dv(), 1);
         self.buf.emit(arm64_enc::cmp_imm_32(src, 0));
         self.buf.emit(arm64_enc::cset_32(dst, Cond::EQ));
-        self.tos_aliases[0] = None;
+        self.slots[0] = SlotLoc::canonical();
         // height unchanged
     }
 
@@ -414,11 +580,11 @@ impl<'a> JitEmitter<'a> {
     // ==================== Unary i64 ops (pop1_push1) ====================
 
     pub fn i64_eqz(&mut self) {
-        let src = self.resolve_tos_reg(1);
+        let src = self.slot_gpr_source(1);
         let dst = tos_reg(self.dv(), 1);
         self.buf.emit(arm64_enc::cmp_imm_64(src, 0));
         self.buf.emit(arm64_enc::cset_64(dst, Cond::EQ));
-        self.tos_aliases[0] = None;
+        self.slots[0] = SlotLoc::canonical();
     }
 
     pub fn i64_clz(&mut self) {
@@ -449,23 +615,22 @@ impl<'a> JitEmitter<'a> {
     // ==================== Hot locals (push1 / pop1) ====================
 
     pub fn local_get_ln(&mut self, n: u8) {
-        self.push_alias_slot(LOCAL_REGS[n as usize]);
+        self.push_gpr_alias_slot(LOCAL_REGS[n as usize], self.local_fp_aliases[n as usize]);
     }
 
     pub fn local_set_ln(&mut self, n: u8) {
-        let src = self.resolve_tos_reg(1);
-        self.buf.emit(arm64_enc::mov_reg_64(LOCAL_REGS[n as usize], src));
+        let dst = LOCAL_REGS[n as usize];
+        self.copy_slot_to_gpr(1, dst);
+        self.local_fp_aliases[n as usize] = self.slots[0].fp;
         self.height -= 1;
-        self.shift_aliases_for_pop();
+        self.shift_slots_for_pop();
     }
 
     pub fn local_tee_ln(&mut self, n: u8) {
         let dst = LOCAL_REGS[n as usize];
-        let src = self.resolve_tos_reg(1);
-        if src != dst {
-            self.buf.emit(arm64_enc::mov_reg_64(dst, src));
-        }
-        self.tos_aliases[0] = Some(dst);
+        self.copy_slot_to_gpr(1, dst);
+        self.local_fp_aliases[n as usize] = self.slots[0].fp;
+        self.slots[0].gpr = Some(GprLoc::Alias(dst));
         // height unchanged (tee keeps value on stack)
     }
 
@@ -479,15 +644,27 @@ impl<'a> JitEmitter<'a> {
     }
 
     pub fn local_set(&mut self, idx: u16) {
-        let src = self.resolve_tos_reg(1);
+        let src = match self.slots[0].gpr {
+            Some(_) => self.resolve_tos_reg(1),
+            None => {
+                self.copy_slot_to_gpr(1, Reg::TMP0);
+                Reg::TMP0
+            }
+        };
         let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
         self.height -= 1;
-        self.shift_aliases_for_pop();
+        self.shift_slots_for_pop();
     }
 
     pub fn local_tee(&mut self, idx: u16) {
-        let src = self.resolve_tos_reg(1);
+        let src = match self.slots[0].gpr {
+            Some(_) => self.resolve_tos_reg(1),
+            None => {
+                self.copy_slot_to_gpr(1, Reg::TMP0);
+                Reg::TMP0
+            }
+        };
         let scaled = idx as u32;
         self.buf.emit(arm64_enc::str_64(src, Reg::FP, scaled));
         // height unchanged (tee keeps value on stack)
@@ -521,7 +698,7 @@ impl<'a> JitEmitter<'a> {
 
     pub fn drop_val(&mut self) {
         self.height -= 1;
-        self.shift_aliases_for_pop();
+        self.shift_slots_for_pop();
         // No code emitted — value is simply forgotten
     }
 
@@ -806,19 +983,19 @@ impl<'a> JitEmitter<'a> {
 
     // ==================== f64 binary ops (pop2_push1) ====================
 
-    /// Scratch FP register indices (d0, d1).
+    /// Scratch FP register indices for unary ops and conversions.
     const FP0: u32 = 0;
     const FP1: u32 = 1;
 
     fn emit_f64_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
-        let lhs = self.resolve_tos_reg(2);
-        let rhs = self.resolve_tos_reg(1);
-        let dst = tos_reg(depth_variant(self.height - 1), 1);
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
-        self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::fmov_fp64_to_gpr(dst, Self::FP0));
-        self.pop2_push_materialized();
+        let lhs = self.ensure_tos_f64(2);
+        let rhs = self.ensure_tos_f64(1);
+        let dst = self.alloc_fp_result() as u32;
+        self.buf.emit(f(dst, lhs, rhs));
+        self.pop2_push_fp(FpLoc {
+            reg: dst as u8,
+            width: FpWidth::F64,
+        });
     }
 
     pub fn f64_add(&mut self) { self.emit_f64_binop(arm64_enc::fadd_64); }
@@ -831,14 +1008,14 @@ impl<'a> JitEmitter<'a> {
     // ==================== f32 binary ops (pop2_push1) ====================
 
     fn emit_f32_binop(&mut self, f: fn(u32, u32, u32) -> u32) {
-        let lhs = self.resolve_tos_reg(2);
-        let rhs = self.resolve_tos_reg(1);
-        let dst = tos_reg(depth_variant(self.height - 1), 1);
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
-        self.buf.emit(f(Self::FP0, Self::FP0, Self::FP1));
-        self.buf.emit(arm64_enc::fmov_fp32_to_gpr(dst, Self::FP0));
-        self.pop2_push_materialized();
+        let lhs = self.ensure_tos_f32(2);
+        let rhs = self.ensure_tos_f32(1);
+        let dst = self.alloc_fp_result() as u32;
+        self.buf.emit(f(dst, lhs, rhs));
+        self.pop2_push_fp(FpLoc {
+            reg: dst as u8,
+            width: FpWidth::F32,
+        });
     }
 
     pub fn f32_add(&mut self) { self.emit_f32_binop(arm64_enc::fadd_32); }
@@ -852,12 +1029,10 @@ impl<'a> JitEmitter<'a> {
     // NaN-aware: use MI/LS instead of LT/LE to get false for unordered
 
     fn emit_f64_cmp(&mut self, cond: Cond) {
-        let lhs = self.resolve_tos_reg(2);
-        let rhs = self.resolve_tos_reg(1);
+        let lhs = self.ensure_tos_f64(2);
+        let rhs = self.ensure_tos_f64(1);
         let dst = tos_reg(depth_variant(self.height - 1), 1);
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP0, lhs));
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp64(Self::FP1, rhs));
-        self.buf.emit(arm64_enc::fcmp_64(Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::fcmp_64(lhs, rhs));
         self.buf.emit(arm64_enc::cset_32(dst, cond));
         self.pop2_push_materialized();
     }
@@ -872,12 +1047,10 @@ impl<'a> JitEmitter<'a> {
     // ==================== f32 comparisons (pop2_push1) ====================
 
     fn emit_f32_cmp(&mut self, cond: Cond) {
-        let lhs = self.resolve_tos_reg(2);
-        let rhs = self.resolve_tos_reg(1);
+        let lhs = self.ensure_tos_f32(2);
+        let rhs = self.ensure_tos_f32(1);
         let dst = tos_reg(depth_variant(self.height - 1), 1);
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP0, lhs));
-        self.buf.emit(arm64_enc::fmov_gpr_to_fp32(Self::FP1, rhs));
-        self.buf.emit(arm64_enc::fcmp_32(Self::FP0, Self::FP1));
+        self.buf.emit(arm64_enc::fcmp_32(lhs, rhs));
         self.buf.emit(arm64_enc::cset_32(dst, cond));
         self.pop2_push_materialized();
     }
