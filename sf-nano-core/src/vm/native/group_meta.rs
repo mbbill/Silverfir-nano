@@ -4,7 +4,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::vm::compile::ir::{IrOp, IrOpKind, OpIndex};
+use crate::vm::compile::lowered_ir::{IrOp, IrOpKind, OpIndex};
 
 pub fn render_symbol_name(
     module_name: &str,

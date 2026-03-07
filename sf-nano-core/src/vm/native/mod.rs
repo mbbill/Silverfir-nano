@@ -5,7 +5,7 @@
 //! See `docs/NATIVE_BACKEND_ROADMAP.md` for the architectural direction.
 
 use crate::vm::entities::ModuleInst;
-use crate::vm::compile::ir::IrOp;
+use crate::vm::compile::lowered_ir::IrOp;
 use crate::vm::interp::fast::builder::backend::ResolvedInst;
 
 mod code_buf;

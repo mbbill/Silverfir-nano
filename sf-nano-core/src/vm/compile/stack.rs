@@ -4,7 +4,7 @@
 //! In SP-based model, we don't track individual slot types - just height.
 
 use super::config::{CompileConfig, MAX_HOT_LOCAL_COUNT};
-use super::ir::OpIndex;
+use super::lowered_ir::OpIndex;
 
 use alloc::vec::Vec;
 

@@ -1,10 +1,11 @@
-//! Neutral IR types for the unified interpreter/fusion/JIT pipeline.
+//! Backend-lowered IR types for the fast/fusion/native pipeline.
 //!
-//! `IrOp` is the single instruction representation produced by lowering (ir_lower.rs)
-//! and consumed by the backend (backend.rs / jit / fusion) and finalizer (finalizer_ir.rs).
-//! Stack management (variants, spill/fill, hot locals) is resolved once during lowering.
+//! `IrOp` is the instruction representation produced after backend planning has
+//! already resolved stack management details such as variants, spill/fill, and
+//! hot-local placement.
 //!
-//! This module is purely semantic — no JIT, fusion, or handler concerns.
+//! This is not the long-term semantic frontend IR. It is the current lowered IR
+//! consumed by backend resolution and finalization.
 
 use alloc::vec::Vec;
 

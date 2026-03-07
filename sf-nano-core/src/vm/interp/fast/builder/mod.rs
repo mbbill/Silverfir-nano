@@ -21,7 +21,7 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         backend::{BackendKind, BackendMode, active_backend, backend_mode},
-        compile::{self, CompileContext, StackTracker},
+        compile::{self, CompileContext, CompilePlan, StackTracker},
         entities::ModuleInst,
         interp::fast::instruction::Instruction,
         store::Store,
@@ -32,12 +32,12 @@ use alloc::{rc::Rc, vec::Vec};
 use crate::module::type_defs::FunctionType;
 
 #[cfg(feature = "fusion")]
-fn resolve_fusion_backend(ir_ops: &[compile::ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(ir_ops: &[compile::lowered_ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Ok(super::fusion::resolve::resolve_fusion(ir_ops))
 }
 
 #[cfg(not(feature = "fusion"))]
-fn resolve_fusion_backend(_ir_ops: &[compile::ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
+fn resolve_fusion_backend(_ir_ops: &[compile::lowered_ir::IrOp]) -> Result<Vec<backend::ResolvedInst>, &'static str> {
     Err("fusion backend not compiled in")
 }
 
@@ -67,30 +67,27 @@ pub fn build_for_function(
     };
     let compile_config = selected_backend.compile_config();
 
-    let ctx = CompileContext::new(types, store, module, results_count);
     let frame_size = params_count + locals_count;
-    let raw_hot_locals = compile::hot_local::find_hot_locals(code, frame_size, compile_config);
-    let hot_locals = compile::hot_local::compute_effective_indices(&raw_hot_locals, frame_size);
+    let compile_plan = CompilePlan::for_config(code, frame_size, compile_config);
+    let raw_hot_locals = compile_plan.hot_locals().raw();
+    let hot_locals = compile_plan.hot_locals().effective();
+    let ctx = CompileContext::new(types, store, module, results_count);
 
     let mut stack = StackTracker::new(
-        compile_config,
+        compile_plan.config(),
         params_count,
         locals_count,
         results_count,
         hot_locals,
     );
 
-    // IR pipeline: lower to neutral IR
-    let ir_ops = compile::ir_lower::lower_to_ir(code, &ctx, &mut stack, hot_locals)?;
+    // Compile pipeline: lower to backend-lowered IR
+    let ir_ops = compile::ir_lower::lower_to_lowered_ir(code, &ctx, &mut stack, hot_locals)?;
 
     #[cfg(feature = "ir-dump")]
     ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
 
-    let hot_mask = [
-        hot_locals[0].is_some(),
-        hot_locals[1].is_some(),
-        hot_locals[2].is_some(),
-    ];
+    let hot_mask = compile_plan.hot_locals().hot_mask();
 
     // Backend: resolve IR to handlers.
     let resolved = match backend_mode() {
@@ -174,8 +171,8 @@ mod tests {
         depth_variant_for(pre_height)
     }
 
-    fn make_op(kind: compile::ir::IrOpKind, pre_height: u16, variant: u8) -> compile::ir::IrOp {
-        compile::ir::IrOp {
+    fn make_op(kind: compile::lowered_ir::IrOpKind, pre_height: u16, variant: u8) -> compile::lowered_ir::IrOp {
+        compile::lowered_ir::IrOp {
             kind,
             variant,
             pre_height,

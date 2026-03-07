@@ -1,6 +1,6 @@
-//! Wasm→IR lowering pass.
+//! Wasm→lowered-IR lowering pass.
 //!
-//! Decodes Wasm opcodes and produces `Vec<IrOp>` with all stack management
+//! Decodes Wasm opcodes and produces `Vec<IrOp>` with all stack-management
 //! resolved: TOS variants, spill/fill, hot local mapping, control flow.
 //!
 //! This replaces `dispatch.rs` as the primary decode driver in the IR pipeline.
@@ -10,17 +10,17 @@ use alloc::vec::Vec;
 
 use super::config::HOT_LOCAL_COUNT;
 use super::context::CompileContext;
-use super::ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
+use super::lowered_ir::{self, BrTableEntry, IrOp, IrOpKind, OpIndex, SlotRef};
 use super::stack::{BlockKind, StackTracker};
 use crate::error::WasmError;
 use crate::op_decoder::{Decoder, Immediate, OpcodeHandler, OpStream};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
-/// Lower Wasm function body to IR.
+/// Lower Wasm function body to backend-lowered IR.
 ///
 /// Returns `Vec<IrOp>` with all stack management resolved.
 /// `hot_locals` are needed to emit the InitLocals prologue.
-pub fn lower_to_ir<'a>(
+pub fn lower_to_lowered_ir<'a>(
     code: &'a [u8],
     ctx: &'a CompileContext<'a>,
     stack: &'a mut StackTracker,
@@ -70,7 +70,7 @@ impl<'a> IrLower<'a> {
     /// emit.  This ensures pre_height reflects the true pre-op height.
     #[inline]
     fn pre_op_height(&self, kind: &IrOpKind) -> u16 {
-        let (pops, _) = ir::stack_effect(kind);
+        let (pops, _) = lowered_ir::stack_effect(kind);
         (self.stack.height() + pops as usize) as u16
     }
 
