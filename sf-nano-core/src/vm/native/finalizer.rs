@@ -524,6 +524,8 @@ fn build_instructions(
             );
         }
 
+        let mut resume_entry_cache: Vec<(usize, NativeEntry)> = Vec::new();
+
         for (i, op) in ops.iter().enumerate() {
             if let Some(literal_off) = op.entry_patches.fallthrough_literal {
                 patch_start = patch_start.min(literal_off);
@@ -539,7 +541,25 @@ fn build_instructions(
                     .alt_target
                     .and_then(|alt_idx| code_box.get(alt_idx.as_usize()).map(|inst| inst.entry))
                     .unwrap_or_else(term_entry);
-                buf.patch_u64(literal_off, target_entry as usize as u64);
+                let patched_entry = if needs_branch_resume(&op.kind) {
+                    let target_idx = op
+                        .alt_target
+                        .map(|idx| idx.as_usize())
+                        .unwrap_or(ops.len().saturating_sub(1));
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        target_entry,
+                    )
+                } else {
+                    target_entry
+                };
+                buf.patch_u64(literal_off, patched_entry as usize as u64);
             }
         }
 
@@ -549,7 +569,17 @@ fn build_instructions(
                 .get(target_idx)
                 .map(|inst| inst.entry)
                 .unwrap_or_else(term_entry);
-            buf.patch_u64(literal_off, target_entry as usize as u64);
+            let patched_entry = ensure_resume_entry(
+                &mut resume_entry_cache,
+                &code_box,
+                &ops,
+                buf,
+                module_name,
+                func_idx,
+                target_idx,
+                target_entry,
+            );
+            buf.patch_u64(literal_off, patched_entry as usize as u64);
         }
 
         for (target_idx, literal_off) in direct_call_next_entry_literals {
@@ -558,7 +588,17 @@ fn build_instructions(
                 .get(target_idx)
                 .map(|inst| inst.entry)
                 .unwrap_or_else(term_entry);
-            buf.patch_u64(literal_off, target_entry as usize as u64);
+            let patched_entry = ensure_resume_entry(
+                &mut resume_entry_cache,
+                &code_box,
+                &ops,
+                buf,
+                module_name,
+                func_idx,
+                target_idx,
+                target_entry,
+            );
+            buf.patch_u64(literal_off, patched_entry as usize as u64);
         }
 
         let written_len = buf.len() - patch_start;
@@ -572,12 +612,56 @@ fn build_instructions(
     )
 }
 
+fn needs_branch_resume(kind: &IrOpKind) -> bool {
+    matches!(
+        kind,
+        IrOpKind::Br {
+            stack_drop,
+            arity,
+            ..
+        } if *stack_drop > 0 && *arity > 0
+    ) || matches!(kind, IrOpKind::BrIf { .. })
+}
+
+fn ensure_resume_entry(
+    cache: &mut Vec<(usize, NativeEntry)>,
+    code_box: &[NativeInst],
+    ops: &[ResolvedNativeInst],
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+    target_idx: usize,
+    fallback_entry: NativeEntry,
+) -> NativeEntry {
+    let target_tos = code_box
+        .get(target_idx)
+        .map(|inst| inst.tos_slots)
+        .unwrap_or(EMPTY_TOS_SLOTS);
+    if target_tos == EMPTY_TOS_SLOTS {
+        return fallback_entry;
+    }
+    if let Some((_, entry)) = cache.iter().find(|(idx, _)| *idx == target_idx) {
+        return *entry;
+    }
+
+    let (start, len) = emit::emit_resume_entry(buf, fallback_entry, target_tos);
+    let entry: NativeEntry = unsafe { buf.fn_ptr(start) };
+    cache.push((target_idx, entry));
+    debug_map::record_wrapper(
+        buf.base_ptr(),
+        start,
+        len,
+        module_name,
+        func_idx,
+        target_idx,
+        "resume",
+        &ops[target_idx].kind,
+    );
+    entry
+}
+
 fn cold_helper_name(helper: bridge::ColdHelperKind) -> &'static str {
     match helper {
-        bridge::ColdHelperKind::Br => "br",
-        bridge::ColdHelperKind::BrIf => "br_if",
-        bridge::ColdHelperKind::If => "if",
-        bridge::ColdHelperKind::Else => "else",
         bridge::ColdHelperKind::CallExternal => "call_external",
         bridge::ColdHelperKind::CallInternal => "call_internal",
         bridge::ColdHelperKind::CallIndirect => "call_indirect",

@@ -504,6 +504,66 @@ impl<'a> NativeEmitter<'a> {
         }
     }
 
+    fn emit_branch_fixup_inline(
+        &mut self,
+        operand_base_offset: u32,
+        height: u16,
+        stack_drop: u32,
+        arity: u16,
+    ) {
+        if stack_drop == 0 || arity == 0 {
+            return;
+        }
+
+        materialize_u64(self.buf, Reg::TMP1, operand_base_offset as u64);
+        self.buf.emit(arm64_enc::add_reg_64(Reg::TMP1, Reg::FP, Reg::TMP1));
+
+        materialize_u64(
+            self.buf,
+            Reg::TMP3,
+            (height as u64).saturating_sub(arity as u64),
+        );
+        materialize_u64(self.buf, Reg::TMP5, arity as u64);
+        materialize_u64(self.buf, Reg::A0, stack_drop as u64);
+
+        self.buf.emit(arm64_enc::sub_reg_64(Reg::A0, Reg::TMP3, Reg::A0));
+        self.buf.emit(arm64_enc::lsl_imm_64(Reg::TMP3, Reg::TMP3, 3));
+        self.buf.emit(arm64_enc::lsl_imm_64(Reg::A0, Reg::A0, 3));
+        self.buf.emit(arm64_enc::add_reg_64(Reg::TMP3, Reg::TMP1, Reg::TMP3));
+        self.buf.emit(arm64_enc::add_reg_64(Reg::A0, Reg::TMP1, Reg::A0));
+
+        let loop_start = self.buf.len();
+        self.buf.emit(arm64_enc::ldr_64(Reg::A1, Reg::TMP3, 0));
+        self.buf.emit(arm64_enc::str_64(Reg::A1, Reg::A0, 0));
+        self.buf.emit(arm64_enc::add_imm_64(Reg::TMP3, Reg::TMP3, 8));
+        self.buf.emit(arm64_enc::add_imm_64(Reg::A0, Reg::A0, 8));
+        self.buf.emit(arm64_enc::subs_imm_64(Reg::TMP5, Reg::TMP5, 1));
+        self.buf.emit(arm64_enc::b_cond(
+            Cond::NE,
+            ((loop_start as i32) - (self.buf.len() as i32)) / 4,
+        ));
+    }
+
+    pub fn finish_br_general(
+        mut self,
+        stack_drop: u32,
+        arity: u16,
+        height: u16,
+        operand_base_offset: u32,
+    ) -> FinishInfo {
+        self.materialize_aliases();
+        self.emit_branch_fixup_inline(operand_base_offset, height, stack_drop, arity);
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        self.emit_trap_stub_if_needed();
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal: None,
+                alt_literal,
+            },
+        }
+    }
+
     /// Finish with a br_if_simple conditional dispatch.
     ///
     /// Pops the condition from TOS top (i32). If nonzero, branches to the
@@ -516,6 +576,42 @@ impl<'a> NativeEmitter<'a> {
         // CBZ w_cond, +5: if cond == 0, skip the taken-path branch literal.
         self.buf.emit(arm64_enc::cbz_32(cond, 5));
         let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+
+        self.emit_trap_stub_if_needed();
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
+    }
+
+    pub fn finish_br_if_general(
+        mut self,
+        stack_drop: u32,
+        arity: u16,
+        height: u16,
+        operand_base_offset: u32,
+    ) -> FinishInfo {
+        let cond = self.resolve_tos_reg(1);
+        self.materialize_aliases_from(2);
+        self.drop_val();
+
+        let branch_zero = self.buf.emit(arm64_enc::cbz_32(cond, 0));
+        self.emit_branch_fixup_inline(
+            operand_base_offset,
+            height.saturating_sub(1),
+            stack_drop,
+            arity,
+        );
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_start = self.buf.len();
+        self.buf.patch_u32(
+            branch_zero,
+            arm64_enc::cbz_32(cond, ((fallthrough_start - branch_zero) as i32) / 4),
+        );
         let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
 
         self.emit_trap_stub_if_needed();
@@ -708,6 +804,7 @@ impl<'a> NativeEmitter<'a> {
     ) -> FinishInfo {
         self.buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::FP, frame_size as u32));
         self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::FP, frame_size as u32 + 1));
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP5, Reg::FP, frame_size as u32 + 2));
 
         if let Some(results) = results {
             for i in 0..results.arity {
@@ -734,6 +831,13 @@ impl<'a> NativeEmitter<'a> {
         self.buf.emit(arm64_enc::ldr_64(Reg::L0, Reg::FP, 0));
         self.buf.emit(arm64_enc::ldr_64(Reg::L1, Reg::FP, 1));
         self.buf.emit(arm64_enc::ldr_64(Reg::L2, Reg::FP, 2));
+        let skip_reload = self.buf.emit(arm64_enc::cbz_64(Reg::TMP5, 0));
+        self.emit_reload_tos_from_packed(Reg::TMP5);
+        let after_reload = self.buf.len();
+        self.buf.patch_u32(
+            skip_reload,
+            arm64_enc::cbz_64(Reg::TMP5, ((after_reload - skip_reload) as i32) / 4),
+        );
         self.buf.emit(arm64_enc::br(Reg::TMP1));
 
         let term_offset = self.buf.len();

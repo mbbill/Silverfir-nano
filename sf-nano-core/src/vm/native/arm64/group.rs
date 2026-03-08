@@ -19,12 +19,6 @@ use crate::vm::native::runtime::term_entry;
 
 fn cold_helper_stack_slot(op: &IrOp, helper: bridge::ColdHelperKind) -> Option<SlotRef> {
     match helper {
-        bridge::ColdHelperKind::BrIf => {
-            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
-        }
-        bridge::ColdHelperKind::If => {
-            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
-        }
         bridge::ColdHelperKind::GlobalGet => Some(SlotRef::operand_relative(op.pre_height)),
         bridge::ColdHelperKind::GlobalSet => {
             op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
@@ -71,16 +65,12 @@ fn cold_helper_stack_slot(op: &IrOp, helper: bridge::ColdHelperKind) -> Option<S
 
 fn cold_helper_entry(helper: bridge::ColdHelperKind) -> NativeEntry {
     match helper {
-        bridge::ColdHelperKind::Br
-        | bridge::ColdHelperKind::Else
-        | bridge::ColdHelperKind::CallExternal
+        bridge::ColdHelperKind::CallExternal
         | bridge::ColdHelperKind::CallIndirect
         | bridge::ColdHelperKind::DataDrop
         | bridge::ColdHelperKind::ElemDrop => bridge::helper_entry(),
         bridge::ColdHelperKind::CallInternal => bridge::helper_entry_call_internal(),
-        bridge::ColdHelperKind::BrIf
-        | bridge::ColdHelperKind::If
-        | bridge::ColdHelperKind::GlobalGet
+        bridge::ColdHelperKind::GlobalGet
         | bridge::ColdHelperKind::GlobalSet
         | bridge::ColdHelperKind::MemoryGrow
         | bridge::ColdHelperKind::I32Popcnt
@@ -116,24 +106,6 @@ fn cold_helper_entry(helper: bridge::ColdHelperKind) -> NativeEntry {
 
 fn cold_helper_entry_for_op(op: &IrOp, helper: bridge::ColdHelperKind) -> NativeEntry {
     match helper {
-        bridge::ColdHelperKind::BrIf => {
-            match tos_reg(depth_variant(op.pre_height as usize), 1) {
-                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
-                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
-                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
-                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
-                _ => unreachable!("top-of-stack register must be a TOS register"),
-            }
-        }
-        bridge::ColdHelperKind::If => {
-            match tos_reg(depth_variant(op.pre_height as usize), 1) {
-                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
-                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
-                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
-                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
-                _ => unreachable!("top-of-stack register must be a TOS register"),
-            }
-        }
         bridge::ColdHelperKind::GlobalGet => {
             match tos_reg(depth_variant(op.pre_height as usize + 1), 1) {
                 Reg::T0 => bridge::helper_entry_write_t0(),
@@ -231,9 +203,7 @@ fn cold_helper_entry_for_op(op: &IrOp, helper: bridge::ColdHelperKind) -> Native
                 _ => unreachable!("depth variant must be 1..=4"),
             }
         }
-        bridge::ColdHelperKind::Br
-        | bridge::ColdHelperKind::Else
-        | bridge::ColdHelperKind::CallExternal
+        bridge::ColdHelperKind::CallExternal
         | bridge::ColdHelperKind::CallInternal
         | bridge::ColdHelperKind::CallIndirect
         | bridge::ColdHelperKind::DataDrop
@@ -647,6 +617,46 @@ pub fn resolve_native_with_context(
             ));
         }
 
+        if let Some((entry, entry_patches, code_start, code_len, name)) =
+            try_compile_standalone_control(&ir[i], buf)
+        {
+            debug_map::record_group(
+                buf.base_ptr(),
+                code_start,
+                code_len,
+                module_name,
+                func_idx,
+                i,
+                &ir[i..i + 1],
+                Some(name),
+                ir[i].alt_target,
+            );
+            samply_jitdump::record_group(
+                buf.base_ptr(),
+                code_start,
+                code_len,
+                module_name,
+                func_idx,
+                i,
+                &ir[i..i + 1],
+                Some(name),
+                ir[i].alt_target,
+            );
+            out.push(ResolvedNativeInst {
+                entry,
+                kind: ir[i].kind.clone(),
+                pre_height: ir[i].pre_height,
+                alt_target: ir[i].alt_target,
+                has_target: ir[i].has_target,
+                cold_helper: None,
+                cold_stack_slot: None,
+                entry_patches,
+                compaction: CompactionDisposition::Keep,
+            });
+            i += 1;
+            continue;
+        }
+
         if let Some(cold_helper) = bridge::cold_helper_kind(&ir[i].kind) {
             out.push(ResolvedNativeInst {
                 entry: cold_helper_entry_for_op(&ir[i], cold_helper),
@@ -723,6 +733,52 @@ fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> 
         Some(GroupTerminator::Unreachable) => Some("unreachable"),
         None => None,
     }
+}
+
+fn try_compile_standalone_control(
+    op: &IrOp,
+    buf: &mut CodeBuffer,
+) -> Option<(NativeEntry, EntryPatchSites, usize, usize, &'static str)> {
+    let mut e = NativeEmitter::new(buf, op.pre_height as usize);
+    let (finish, name) = match &op.kind {
+        IrOpKind::Br {
+            stack_drop,
+            arity,
+            height,
+            operand_base_offset,
+        } if op.alt_target.is_some() => {
+            let finish = if *stack_drop == 0 || *arity == 0 {
+                e.finish_br()
+            } else {
+                e.finish_br_general(*stack_drop, *arity, *height, *operand_base_offset)
+            };
+            (finish, "br")
+        }
+        IrOpKind::BrIfSimple if op.alt_target.is_some() && op.pre_height >= 1 => {
+            (e.finish_br_if_simple(), "br_if_simple")
+        }
+        IrOpKind::BrIf {
+            stack_drop,
+            arity,
+            height,
+            operand_base_offset,
+        } if op.alt_target.is_some() && op.pre_height >= 1 => {
+            let finish = if *stack_drop == 0 && *arity == 0 {
+                e.finish_br_if_simple()
+            } else {
+                e.finish_br_if_general(*stack_drop, *arity, *height, *operand_base_offset)
+            };
+            (finish, "br_if")
+        }
+        IrOpKind::If if op.alt_target.is_some() && op.pre_height >= 1 => (e.finish_if(), "if"),
+        IrOpKind::Else if op.alt_target.is_some() => (e.finish_br(), "else"),
+        _ => return None,
+    };
+
+    let start = finish.start_offset;
+    let len = buf.len() - start;
+    let entry: NativeEntry = unsafe { buf.fn_ptr(start) };
+    Some((entry, finish.patches, start, len, name))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1379,6 +1435,57 @@ mod tests {
         assert!(matches!(resolved[1].kind, IrOpKind::Br { arity: 1, .. }));
         assert!(!resolved[0].is_removed());
         assert!(!resolved[1].is_removed());
+        assert!(resolved[1].cold_helper.is_none());
+    }
+
+    #[test]
+    fn test_general_br_if_resolves_as_native_entry() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 1 }, 0),
+            {
+                let mut op = make_op(
+                    IrOpKind::BrIf {
+                        stack_drop: 1,
+                        arity: 1,
+                        height: 2,
+                        operand_base_offset: 0,
+                    },
+                    2,
+                );
+                op.has_target = true;
+                op.alt_target = Some(OpIndex::from(10));
+                op
+            },
+        ];
+
+        let resolved = resolve_native(&ops, &mut buf, mask);
+
+        assert!(matches!(resolved[0].kind, IrOpKind::I32Const { .. }));
+        assert!(matches!(resolved[1].kind, IrOpKind::BrIf { .. }));
+        assert!(resolved[1].cold_helper.is_none());
+    }
+
+    #[test]
+    fn test_else_resolves_as_native_entry() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![{
+            let mut op = make_op(IrOpKind::Else, 2);
+            op.has_target = true;
+            op.alt_target = Some(OpIndex::from(10));
+            op
+        }];
+
+        let resolved = resolve_native(&ops, &mut buf, mask);
+
+        assert_eq!(resolved.len(), 1);
+        assert!(matches!(resolved[0].kind, IrOpKind::Else));
+        assert!(resolved[0].cold_helper.is_none());
+        assert!(resolved[0].entry_patches.alt_literal.is_some());
     }
 
     #[test]

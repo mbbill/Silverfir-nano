@@ -308,6 +308,31 @@ pub fn emit_direct_call_internal_entry(
     }
 }
 
+pub fn emit_resume_entry(
+    buf: &mut CodeBuffer,
+    target_entry: NativeEntry,
+    target_tos_slots: u64,
+) -> (usize, usize) {
+    let start = buf.len();
+    materialize_u64(buf, Reg::A0, target_entry as usize as u64);
+    if target_tos_slots == crate::vm::native::instruction::EMPTY_TOS_SLOTS {
+        buf.emit(arm64_enc::mov_reg_64(Reg::T0, Reg::XZR));
+        buf.emit(arm64_enc::mov_reg_64(Reg::T1, Reg::XZR));
+        buf.emit(arm64_enc::mov_reg_64(Reg::T2, Reg::XZR));
+        buf.emit(arm64_enc::mov_reg_64(Reg::T3, Reg::XZR));
+    } else {
+        materialize_u64(buf, Reg::A1, target_tos_slots);
+        materialize_u64(
+            buf,
+            Reg::TMP1,
+            native_helper_reload_tos_from_x1 as usize as u64,
+        );
+        buf.emit(arm64_enc::blr(Reg::TMP1));
+    }
+    buf.emit(arm64_enc::br(Reg::A0));
+    (start, buf.len() - start)
+}
+
 /// Emit a direct branch wrapper that skips the generic cold-helper entry path.
 ///
 /// The wrapper materializes its metadata pointer in `x20`, loads the patched

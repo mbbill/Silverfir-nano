@@ -43,10 +43,6 @@ impl HelperResult {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ColdHelperKind {
-    Br,
-    BrIf,
-    If,
-    Else,
     CallExternal,
     CallInternal,
     CallIndirect,
@@ -151,10 +147,6 @@ const _: [(); 72] = [(); core::mem::size_of::<HelperMetadata>()];
 #[inline]
 pub fn cold_helper_kind(kind: &IrOpKind) -> Option<ColdHelperKind> {
     match kind {
-        IrOpKind::Br { .. } => Some(ColdHelperKind::Br),
-        IrOpKind::BrIf { .. } => Some(ColdHelperKind::BrIf),
-        IrOpKind::If => Some(ColdHelperKind::If),
-        IrOpKind::Else => Some(ColdHelperKind::Else),
         IrOpKind::CallExternal { .. } => Some(ColdHelperKind::CallExternal),
         IrOpKind::CallInternal { .. } => Some(ColdHelperKind::CallInternal),
         IrOpKind::CallIndirect { .. } => Some(ColdHelperKind::CallIndirect),
@@ -200,10 +192,6 @@ unsafe extern "C" {
     fn native_helper_entry_write_t1();
     fn native_helper_entry_write_t2();
     fn native_helper_entry_write_t3();
-    fn native_helper_entry_ctrl_read_t0();
-    fn native_helper_entry_ctrl_read_t1();
-    fn native_helper_entry_ctrl_read_t2();
-    fn native_helper_entry_ctrl_read_t3();
     fn native_helper_entry_read_t0();
     fn native_helper_entry_read_t1();
     fn native_helper_entry_read_t2();
@@ -246,26 +234,6 @@ pub fn helper_entry_write_t2() -> NativeEntry {
 #[inline]
 pub fn helper_entry_write_t3() -> NativeEntry {
     native_helper_entry_write_t3
-}
-
-#[inline]
-pub fn helper_entry_ctrl_read_t0() -> NativeEntry {
-    native_helper_entry_ctrl_read_t0
-}
-
-#[inline]
-pub fn helper_entry_ctrl_read_t1() -> NativeEntry {
-    native_helper_entry_ctrl_read_t1
-}
-
-#[inline]
-pub fn helper_entry_ctrl_read_t2() -> NativeEntry {
-    native_helper_entry_ctrl_read_t2
-}
-
-#[inline]
-pub fn helper_entry_ctrl_read_t3() -> NativeEntry {
-    native_helper_entry_ctrl_read_t3
 }
 
 #[inline]
@@ -472,38 +440,6 @@ _native_helper_entry_write_t3:
     call_helper
 
     .p2align 2
-    .global _native_helper_entry_ctrl_read_t0
-_native_helper_entry_ctrl_read_t0:
-    save_hot
-    ldr x9, [x20, #40]
-    str x25, [x21, x9, lsl #3]
-    call_helper
-
-    .p2align 2
-    .global _native_helper_entry_ctrl_read_t1
-_native_helper_entry_ctrl_read_t1:
-    save_hot
-    ldr x9, [x20, #40]
-    str x26, [x21, x9, lsl #3]
-    call_helper
-
-    .p2align 2
-    .global _native_helper_entry_ctrl_read_t2
-_native_helper_entry_ctrl_read_t2:
-    save_hot
-    ldr x9, [x20, #40]
-    str x27, [x21, x9, lsl #3]
-    call_helper
-
-    .p2align 2
-    .global _native_helper_entry_ctrl_read_t3
-_native_helper_entry_ctrl_read_t3:
-    save_hot
-    ldr x9, [x20, #40]
-    str x28, [x21, x9, lsl #3]
-    call_helper
-
-    .p2align 2
     .global _native_helper_entry_read_t0
 _native_helper_entry_read_t0:
     save_hot
@@ -671,24 +607,6 @@ fn operand_read(fp: *mut u64, operand_base_offset: usize, index: usize) -> u64 {
 #[inline]
 fn operand_base(fp: *mut u64, operand_base_offset: usize) -> *mut u64 {
     unsafe { fp.add(operand_base_offset / 8) }
-}
-
-#[inline]
-fn branch_fixup_frame(
-    operand_base: *mut u64,
-    height: usize,
-    stack_drop: usize,
-    arity: usize,
-) {
-    if stack_drop == 0 || arity == 0 {
-        return;
-    }
-    for i in 0..arity {
-        unsafe {
-            let val = *operand_base.add(height - arity + i);
-            *operand_base.add(height - stack_drop - arity + i) = val;
-        }
-    }
 }
 
 #[inline]
@@ -1049,30 +967,6 @@ fn meta_next(_ctx: *mut Context, fp: *mut u64, meta: *const HelperMetadata) -> H
 }
 
 #[inline]
-fn meta_branch_target(
-    _ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    resume_at(
-        _ctx,
-        fp,
-        unsafe { core::mem::transmute::<u64, NativeEntry>((*meta).branch_entry) },
-        unsafe { (*meta).branch_tos_slots },
-    )
-}
-
-#[inline]
-fn decode_branch_data(meta: *const HelperMetadata) -> (usize, usize, usize, usize) {
-    let packed = unsafe { (*meta).data1 };
-    let stack_drop = (packed >> 48) as u16 as usize;
-    let arity = ((packed >> 32) & 0xffff) as usize;
-    let height = (packed & 0xffff_ffff) as u32 as usize;
-    let operand_base_offset = unsafe { (*meta).data2 } as u32 as usize;
-    (stack_drop, arity, height, operand_base_offset)
-}
-
-#[inline]
 pub fn build_metadata<F: Fn(SlotRef) -> u16>(
     helper_kind: ColdHelperKind,
     kind: &IrOpKind,
@@ -1090,66 +984,6 @@ pub fn build_metadata<F: Fn(SlotRef) -> u16>(
         None => (0, EMPTY_TOS_SLOTS),
     };
     match (helper_kind, kind) {
-        (
-            ColdHelperKind::Br,
-            IrOpKind::Br {
-                stack_drop,
-                arity,
-                height,
-                operand_base_offset,
-            },
-        ) => HelperMetadata::new(
-            br_helper,
-            next_entry,
-            next_tos_slots,
-            branch_entry,
-            branch_tos_slots,
-            stack_slot,
-            0,
-            ((*stack_drop as u64) << 48) | ((*arity as u64) << 32) | (*height as u64),
-            *operand_base_offset as u64,
-        ),
-        (
-            ColdHelperKind::BrIf,
-            IrOpKind::BrIf {
-                stack_drop,
-                arity,
-                height,
-                operand_base_offset,
-            },
-        ) => HelperMetadata::new(
-            br_if_helper,
-            next_entry,
-            next_tos_slots,
-            branch_entry,
-            branch_tos_slots,
-            stack_slot,
-            0,
-            ((*stack_drop as u64) << 48) | ((*arity as u64) << 32) | (*height as u64),
-            *operand_base_offset as u64,
-        ),
-        (ColdHelperKind::If, IrOpKind::If) => HelperMetadata::new(
-            if_helper,
-            next_entry,
-            next_tos_slots,
-            branch_entry,
-            branch_tos_slots,
-            stack_slot,
-            0,
-            0,
-            0,
-        ),
-        (ColdHelperKind::Else, IrOpKind::Else) => HelperMetadata::new(
-            else_helper,
-            next_entry,
-            next_tos_slots,
-            branch_entry,
-            branch_tos_slots,
-            stack_slot,
-            0,
-            0,
-            0,
-        ),
         (ColdHelperKind::CallExternal, IrOpKind::CallExternal { func_idx, delta, .. }) => {
             HelperMetadata::new(
                 call_external_helper,
@@ -1708,60 +1542,6 @@ pub unsafe extern "C" fn call_indirect_helper(
             Err(e) => trap_with(ctx, fp, e),
         }
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn br_helper(
-    _ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    let (stack_drop, arity, height, operand_base_offset) = decode_branch_data(meta);
-    let operand_base = operand_base(fp, operand_base_offset);
-    branch_fixup_frame(operand_base, height, stack_drop, arity);
-    meta_branch_target(_ctx, fp, meta)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn br_if_helper(
-    _ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    let slot = (*meta).stack_slot as usize;
-    let cond = frame_read(fp, slot) as u32;
-    if cond == 0 {
-        return meta_next(_ctx, fp, meta);
-    }
-
-    let (stack_drop, arity, height, operand_base_offset) = decode_branch_data(meta);
-    let operand_base = operand_base(fp, operand_base_offset);
-    branch_fixup_frame(operand_base, height.saturating_sub(1), stack_drop, arity);
-    meta_branch_target(_ctx, fp, meta)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn if_helper(
-    _ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    let slot = (*meta).stack_slot as usize;
-    let cond = frame_read(fp, slot) as u32;
-    if cond == 0 {
-        meta_branch_target(_ctx, fp, meta)
-    } else {
-        meta_next(_ctx, fp, meta)
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn else_helper(
-    _ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    meta_branch_target(_ctx, fp, meta)
 }
 
 #[no_mangle]
@@ -2427,154 +2207,4 @@ pub unsafe extern "C" fn ref_func_helper(
 ) -> HelperResult {
     frame_write(fp, (*meta).stack_slot as usize, (*meta).data0);
     meta_next(_ctx, fp, meta)
-}
-
-#[cfg(all(test, feature = "legacy-fast-native-tests"))]
-mod tests {
-    use super::*;
-    use crate::vm::native::runtime::{term, term_entry};
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe extern "C" {
-        fn native_run_entry(
-            ctx: *mut Context,
-            pc: *mut NativeInst,
-            fp: *mut u64,
-            l0: u64,
-            l1: u64,
-            l2: u64,
-            t0: u64,
-            t1: u64,
-            t2: u64,
-            t3: u64,
-        );
-    }
-
-    fn make_inst() -> NativeInst {
-        NativeInst::new_entry_only(term_entry())
-    }
-
-    #[test]
-    fn test_br_helper_returns_branch_target() {
-        let mut stack = [0u64; 8];
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack.as_mut_ptr().wrapping_add(stack.len()),
-            core::ptr::null_mut(),
-            0,
-        );
-        let mut insts = [make_inst(), make_inst(), make_inst()];
-        let meta = HelperMetadata::new(
-            br_helper,
-            unsafe { insts.as_mut_ptr().add(1) },
-            0,
-            unsafe { insts.as_mut_ptr().add(2) as u64 },
-            0,
-            0,
-        );
-
-        let result = unsafe { br_helper(&mut ctx, stack.as_mut_ptr(), &meta) };
-        assert_eq!(result, unsafe { insts.as_mut_ptr().add(2) });
-    }
-
-    #[test]
-    fn test_br_if_helper_falls_through_on_zero() {
-        let mut stack = [0u64; 8];
-        stack[3] = 0;
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack.as_mut_ptr().wrapping_add(stack.len()),
-            core::ptr::null_mut(),
-            0,
-        );
-        let mut insts = [make_inst(), make_inst(), make_inst()];
-        let meta = HelperMetadata::new(
-            br_if_helper,
-            unsafe { insts.as_mut_ptr().add(1) },
-            3,
-            unsafe { insts.as_mut_ptr().add(2) as u64 },
-            0,
-            0,
-        );
-
-        let result = unsafe { br_if_helper(&mut ctx, stack.as_mut_ptr(), &meta) };
-        assert_eq!(result, unsafe { insts.as_mut_ptr().add(1) });
-    }
-
-    #[test]
-    fn test_br_if_helper_branches_on_nonzero() {
-        let mut stack = [0u64; 8];
-        stack[3] = 1;
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack.as_mut_ptr().wrapping_add(stack.len()),
-            core::ptr::null_mut(),
-            0,
-        );
-        let mut insts = [make_inst(), make_inst(), make_inst()];
-        let meta = HelperMetadata::new(
-            br_if_helper,
-            unsafe { insts.as_mut_ptr().add(1) },
-            3,
-            unsafe { insts.as_mut_ptr().add(2) as u64 },
-            0,
-            0,
-        );
-
-        let result = unsafe { br_if_helper(&mut ctx, stack.as_mut_ptr(), &meta) };
-        assert_eq!(result, unsafe { insts.as_mut_ptr().add(2) });
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[test]
-    fn test_br_if_helper_entry_read_t0_returns_cleanly() {
-        let mut stack = [0u64; 16];
-        let stack_end = stack.as_mut_ptr().wrapping_add(stack.len());
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack_end,
-            core::ptr::null_mut(),
-            0,
-        );
-        ctx.hot.term_pc = term();
-
-        let meta = HelperMetadata::new(
-            br_if_helper,
-            core::ptr::null_mut(),
-            3,
-            0,
-            0,
-            0,
-        );
-
-        let mut insts = [
-            NativeInst::new(helper_entry_read_t0(), &meta as *const _ as u64, 0, 0),
-            NativeInst::new_entry_only(term_entry()),
-            NativeInst::new_entry_only(term_entry()),
-        ];
-
-        let mut meta = meta;
-        meta.next = unsafe { insts.as_mut_ptr().add(1) };
-        meta.data0 = unsafe { insts.as_mut_ptr().add(2) as u64 };
-        insts[0].imm0 = &meta as *const _ as u64;
-
-        unsafe {
-            native_run_entry(
-                &mut ctx,
-                insts.as_mut_ptr(),
-                stack.as_mut_ptr(),
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-            );
-        }
-    }
 }

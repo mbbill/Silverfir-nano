@@ -267,6 +267,82 @@ Once that exists, several later optimizations become natural:
 - direct fallthrough from one native entry to the next
 - mixed native-to-cold transitions without re-entering the old handler model
 
+### Hard Invariant: No stack or TOS reasoning after lowered IR
+
+This is a non-negotiable design rule for the native backend.
+
+After lowered IR:
+
+- the backend must stop thinking in terms of the abstract operand stack
+- the backend must stop reasoning about TOS state or spill depth
+- the backend should see only lowered IR entries with fixed variants and fixed
+  operand/result locations
+
+In other words, after lowered IR the backend is no longer implementing a stack
+machine. It is only moving values between registers and frame slots, doing
+computation, and branching to the next lowered entry.
+
+That means:
+
+- every native entry must correspond to a concrete lowered IR entry
+- control-flow targets must target the exact lowered entry / variant they mean
+- a branch target must not require runtime reconstruction of stack or TOS state
+- wrappers and helpers must not smuggle stack-shape metadata past lowered IR
+
+This is the core reason the native backend should stay simple. The whole point
+of lowered IR is to isolate stack/TOS/cache policy from backend codegen.
+
+If native code starts reconstructing stack state at runtime, then the backend
+has violated the abstraction boundary and the design has regressed.
+
+### Red flags
+
+These are signs that native code is drifting back into interpreter-style
+thinking and should be treated as design bugs, not as acceptable long-term
+solutions:
+
+- metadata such as `spill_depth`, `current_tos_slots`, or similar state that
+  tries to describe the logical stack shape after lowered IR
+- generic "restore TOS before jump" or "rebuild current stack layout" logic
+- control-flow targets that land on a generic semantic entry instead of the
+  exact lowered variant entry
+- wrappers that need to know abstract stack state rather than only their own
+  lowered operands, results, and metadata
+- helper boundaries that behave like hidden interpreter dispatch instead of a
+  normal native-to-helper call boundary
+
+Some new machinery is still expected after removing `Instruction`, `pc`, and
+`nh`, but it must be mechanical replacement only:
+
+- native-owned target patching
+- native-owned metadata records
+- direct native entry pointers
+- cold wrapper metadata for Rust helpers
+
+Those are acceptable because they replace interpreter machinery. Post-IR stack
+reasoning is not acceptable because it reintroduces interpreter complexity in a
+different form.
+
+### Current cleanup focus
+
+Whenever native correctness or performance regresses, review the code against
+this rule first.
+
+The first places to keep checking are the former hot C-handler territory:
+
+- `br`
+- `br_if`
+- `if`
+- `else`
+- direct internal call / return flow
+- any remaining helper path that was previously a hot fast-interpreter handler
+
+The target end state is:
+
+- hot paths are native entries 1:1 with lowered IR variants
+- cold Rust helpers are only for truly cold or complex operations
+- no native path needs runtime stack/TOS reconstruction to be correct
+
 ## Native Cold Helper ABI
 
 The native backend should converge on one unified Rust-helper signature.

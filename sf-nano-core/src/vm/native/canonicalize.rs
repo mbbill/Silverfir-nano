@@ -6,14 +6,9 @@ use crate::vm::lowered::{BrTableEntry, IrOp, IrOpKind, OpIndex};
 use super::bridge::{self, ColdHelperKind};
 
 fn helper_keep_top(kind: &IrOpKind) -> Option<usize> {
-    if matches!(kind, IrOpKind::BrTable { .. }) {
-        return Some(1);
-    }
     let helper = bridge::cold_helper_kind(kind)?;
     Some(match helper {
-        ColdHelperKind::Br
-        | ColdHelperKind::Else
-        | ColdHelperKind::CallExternal
+        ColdHelperKind::CallExternal
         | ColdHelperKind::CallInternal
         | ColdHelperKind::CallIndirect
         | ColdHelperKind::GlobalGet
@@ -22,9 +17,7 @@ fn helper_keep_top(kind: &IrOpKind) -> Option<usize> {
         | ColdHelperKind::RefNull
         | ColdHelperKind::RefFunc
         | ColdHelperKind::TableSize => 0,
-        ColdHelperKind::BrIf
-        | ColdHelperKind::If
-        | ColdHelperKind::GlobalSet
+        ColdHelperKind::GlobalSet
         | ColdHelperKind::MemoryGrow
         | ColdHelperKind::I32Popcnt
         | ColdHelperKind::I64Popcnt
