@@ -7,7 +7,7 @@ mod semantics;
 mod group;
 
 pub(crate) use group::{resolve_native, resolve_native_with_context};
-pub(crate) use codegen::EntryPatchSites;
+pub(crate) use codegen::{EntryPatchSites, depth_variant, tos_reg};
 pub use group::{
     JitStatsSnapshot,
     NativeStatsSnapshot,

@@ -103,7 +103,7 @@ mod tests {
         let mut buf = module.native_code_buffer().expect("native code buffer");
         let resolved = resolve_native(&ops, &mut buf, [false; 3]).expect("native resolve");
         let mut stack = StackTracker::new(BackendKind::Native.compile_config(), params, locals, results);
-        let (code, metadata) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
+        let (code, metadata, _patches) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
         drop(buf);
         let (native_code, native_cache) = create_native_code(code, metadata, params, locals, results);
         spec.set_native_code(native_code, native_cache);
@@ -152,7 +152,7 @@ mod tests {
 
         let resolved = resolve_native(&ops, &mut buf, [false; 3]).expect("native resolve");
         let mut stack = StackTracker::new(BackendKind::Native.compile_config(), 1, 0, 1);
-        let (mut code, _meta) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
+        let (mut code, _meta, _patches) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
 
         for &(param, expected) in &[(0u64, 2u64), (1u64, 3u64)] {
             let mut frame = [0u64; 8];
@@ -209,7 +209,7 @@ mod tests {
 
         let resolved = resolve_native(&ops, &mut buf, [false; 3]).expect("native resolve");
         let mut stack = StackTracker::new(BackendKind::Native.compile_config(), 0, 0, 2);
-        let (mut code, _meta) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
+        let (mut code, _meta, _patches) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
 
         let mut frame = [0u64; 8];
         let stack_end = unsafe { frame.as_mut_ptr().add(frame.len()) };

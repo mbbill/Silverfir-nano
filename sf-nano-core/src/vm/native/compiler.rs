@@ -11,7 +11,7 @@ use crate::vm::{
     store::Store,
 };
 
-use super::code::create_native_code;
+use super::code::create_native_code_with_patches;
 use super::finalizer;
 
 pub fn build_for_function(
@@ -54,11 +54,18 @@ pub fn build_for_function(
     let mut buf = module
         .native_code_buffer()
         .map_err(|err| WasmError::invalid(err.into()))?;
-    let (code_box, helper_metadata) =
+    let (code_box, helper_metadata, direct_call_entry_patches) =
         finalizer::finalize(resolved, &mut stack, &mut buf, &module.name, func_idx);
     drop(buf);
     let (native_code, native_cache) =
-        create_native_code(code_box, helper_metadata, params_count, locals_count, results_count);
+        create_native_code_with_patches(
+            code_box,
+            helper_metadata,
+            direct_call_entry_patches,
+            params_count,
+            locals_count,
+            results_count,
+        );
     let entry = native_cache.entry();
     function.set_native_code(native_code, native_cache);
     Ok(entry)

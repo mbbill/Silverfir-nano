@@ -535,6 +535,7 @@ impl<'a> NativeEmitter<'a> {
     pub fn finish_if(mut self) -> FinishInfo {
         let cond = self.resolve_tos_reg(1);
         self.materialize_aliases_from(2);
+        self.drop_val();
 
         // CBNZ w_cond, +5: cond != 0 skips the else-target branch literal.
         self.buf.emit(arm64_enc::cbnz_32(cond, 5));
@@ -582,6 +583,7 @@ impl<'a> NativeEmitter<'a> {
     /// Otherwise nonzero enters the patched then-path.
     pub fn finish_if_from_reg(mut self, cond: Reg, linear_on_zero: bool) -> FinishInfo {
         self.materialize_aliases_from(2);
+        self.drop_val();
         let branch = if linear_on_zero {
             arm64_enc::cbz_32(cond, 5)
         } else {
@@ -629,8 +631,14 @@ impl<'a> NativeEmitter<'a> {
     ///
     /// `linear_cond` is the condition under which control enters the patched
     /// then-path.
-    pub fn finish_if_from_flags(mut self, linear_cond: Cond) -> FinishInfo {
+    pub fn finish_if_from_flags(mut self, linear_cond: Cond, stack_pops: u8) -> FinishInfo {
         self.materialize_aliases_from(3);
+        match stack_pops {
+            0 => {}
+            1 => self.drop_val(),
+            2 => self.pop2(),
+            _ => panic!("unsupported if flag pop count {}", stack_pops),
+        }
         self.buf.emit(arm64_enc::b_cond(linear_cond, 5));
         let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
@@ -722,12 +730,10 @@ impl<'a> NativeEmitter<'a> {
             emit::ctx_offset::CALL_DEPTH / 8,
         ));
 
-        self.buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::FP, frame_size as u32 + 2));
         self.buf.emit(arm64_enc::mov_reg_64(Reg::FP, Reg::TMP0));
         self.buf.emit(arm64_enc::ldr_64(Reg::L0, Reg::FP, 0));
         self.buf.emit(arm64_enc::ldr_64(Reg::L1, Reg::FP, 1));
         self.buf.emit(arm64_enc::ldr_64(Reg::L2, Reg::FP, 2));
-        self.emit_reload_tos_from_packed(Reg::TMP2);
         self.buf.emit(arm64_enc::br(Reg::TMP1));
 
         let term_offset = self.buf.len();

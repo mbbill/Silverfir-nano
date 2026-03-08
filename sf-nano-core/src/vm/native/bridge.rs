@@ -134,6 +134,8 @@ pub mod meta_offset {
     pub const BRANCH_TOS_SLOTS: u32 = core::mem::offset_of!(HelperMetadata, branch_tos_slots) as u32;
     pub const STACK_SLOT: u32 = core::mem::offset_of!(HelperMetadata, stack_slot) as u32;
     pub const DATA0: u32 = core::mem::offset_of!(HelperMetadata, data0) as u32;
+    pub const DATA1: u32 = core::mem::offset_of!(HelperMetadata, data1) as u32;
+    pub const DATA2: u32 = core::mem::offset_of!(HelperMetadata, data2) as u32;
 }
 
 const _: [(); 0] = [(); meta_offset::HELPER as usize];
@@ -143,6 +145,8 @@ const _: [(); 24] = [(); meta_offset::BRANCH_ENTRY as usize];
 const _: [(); 32] = [(); meta_offset::BRANCH_TOS_SLOTS as usize];
 const _: [(); 40] = [(); meta_offset::STACK_SLOT as usize];
 const _: [(); 48] = [(); meta_offset::DATA0 as usize];
+const _: [(); 56] = [(); meta_offset::DATA1 as usize];
+const _: [(); 64] = [(); meta_offset::DATA2 as usize];
 const _: [(); 72] = [(); core::mem::size_of::<HelperMetadata>()];
 
 #[inline]
@@ -193,6 +197,11 @@ pub fn cold_helper_kind(kind: &IrOpKind) -> Option<ColdHelperKind> {
 #[allow(improper_ctypes)]
 unsafe extern "C" {
     fn native_helper_entry();
+    fn native_helper_entry_call_internal();
+    fn native_helper_entry_br_table_t0();
+    fn native_helper_entry_br_table_t1();
+    fn native_helper_entry_br_table_t2();
+    fn native_helper_entry_br_table_t3();
     fn native_helper_entry_write_t0();
     fn native_helper_entry_write_t1();
     fn native_helper_entry_write_t2();
@@ -218,6 +227,31 @@ unsafe extern "C" {
 #[inline]
 pub fn helper_entry() -> NativeEntry {
     native_helper_entry
+}
+
+#[inline]
+pub fn helper_entry_call_internal() -> NativeEntry {
+    native_helper_entry_call_internal
+}
+
+#[inline]
+pub fn helper_entry_br_table_t0() -> NativeEntry {
+    native_helper_entry_br_table_t0
+}
+
+#[inline]
+pub fn helper_entry_br_table_t1() -> NativeEntry {
+    native_helper_entry_br_table_t1
+}
+
+#[inline]
+pub fn helper_entry_br_table_t2() -> NativeEntry {
+    native_helper_entry_br_table_t2
+}
+
+#[inline]
+pub fn helper_entry_br_table_t3() -> NativeEntry {
+    native_helper_entry_br_table_t3
 }
 
 #[inline]
@@ -325,6 +359,7 @@ global_asm!(
     r#"
     .text
     .p2align 2
+    .global _native_helper_reload_tos_from_x1
 _native_helper_reload_tos_from_x1:
     mov x11, x1
     mov x25, xzr
@@ -355,8 +390,7 @@ _native_helper_reload_tos_from_x1:
     ret
 
     .macro save_hot
-    str x22, [x21, #0]
-    str x23, [x21, #8]
+    stp x22, x23, [x21, #0]
     str x24, [x21, #16]
     .endm
 
@@ -367,10 +401,18 @@ _native_helper_reload_tos_from_x1:
     ldr x16, [x20, #0]
     blr x16
     ldr x21, [x19, #48]
-    ldr x22, [x21, #0]
-    ldr x23, [x21, #8]
+    ldp x22, x23, [x21, #0]
     ldr x24, [x21, #16]
+    cmn x1, #1
+    b.eq 0f
     bl _native_helper_reload_tos_from_x1
+    b 1f
+0:
+    mov x25, xzr
+    mov x26, xzr
+    mov x27, xzr
+    mov x28, xzr
+1:
     br x0
     .endm
 
@@ -379,6 +421,165 @@ _native_helper_reload_tos_from_x1:
 _native_helper_entry:
     save_hot
     call_helper
+
+    .p2align 2
+    .global _native_helper_entry_call_internal
+_native_helper_entry_call_internal:
+    save_hot
+    ldr x9, [x20, #64]
+    tbz x9, #63, 9f
+    ldr x16, [x20, #48]
+    cbz x16, 9f
+    ldr x10, [x20, #56]
+    ubfx x11, x9, #0, #16
+    ubfx x12, x9, #16, #16
+    add x13, x21, x10, lsl #3
+    add x14, x11, x12
+    add x15, x13, x14, lsl #3
+    add x15, x15, #24
+    ldr x17, [x19, #0]
+    cmp x15, x17
+    b.hi 9f
+    ldr x17, [x19, #8]
+    cmp x17, #300
+    b.hs 9f
+    add x17, x17, #1
+    str x17, [x19, #8]
+    cbz x12, 1f
+    add x15, x13, x11, lsl #3
+    mov x17, x12
+0:
+    cmp x17, #2
+    b.lo 2f
+    stp xzr, xzr, [x15], #16
+    sub x17, x17, #2
+    cbnz x17, 0b
+    b 1f
+2:
+    str xzr, [x15]
+1:
+    add x15, x13, x14, lsl #3
+    ldr x17, [x20, #8]
+    str x17, [x15]
+    str x21, [x15, #8]
+    ldr x17, [x20, #16]
+    str x17, [x15, #16]
+    mov x21, x13
+    mov x25, xzr
+    mov x26, xzr
+    mov x27, xzr
+    mov x28, xzr
+    br x16
+9:
+    call_helper
+
+    .macro br_table_fast_entry src
+    save_hot
+    ldr x10, [x20, #56]
+    cbz x10, 9f
+    sub x10, x10, #1
+    mov x9, \src
+    cmp x9, x10
+    b.ls 0f
+    mov x9, x10
+0:
+    ldr x8, [x20, #48]
+    lsr x11, x9, #1
+    mov w13, #40
+    madd x12, x11, x13, x8
+    add x12, x12, #40
+    tbz x9, #0, 1f
+    ldr x14, [x12, #24]
+    lsr x13, x14, #32
+    sxtw x13, w13
+    b 2f
+1:
+    ldr w13, [x12, #8]
+    sxtw x13, w13
+    ldr x14, [x12, #16]
+2:
+    ubfx x15, x14, #16, #16
+    ubfx x16, x14, #0, #16
+    ldr x17, [x20, #64]
+    lsr x18, x17, #32
+    mov w17, w17
+    sub x17, x17, #1
+    cbz x15, 3f
+    cbz x16, 3f
+    add x18, x21, x18
+    sub x10, x17, x16
+    sub x11, x10, x15
+    cmp x16, #8
+    b.lo 4f
+    and x12, x16, #7
+    sub x15, x16, x12
+    add x10, x18, x10, lsl #3
+    add x11, x18, x11, lsl #3
+5:
+    ldp q0, q1, [x10], #32
+    ldp q2, q3, [x10], #32
+    stp q0, q1, [x11], #32
+    stp q2, q3, [x11], #32
+    subs x15, x15, #8
+    b.ne 5b
+    cbz x12, 3f
+6:
+    ldr x14, [x10], #8
+    str x14, [x11], #8
+    subs x12, x12, #1
+    b.ne 6b
+    b 3f
+4:
+    add x10, x18, x10, lsl #3
+    add x11, x18, x11, lsl #3
+    mov x12, x16
+7:
+    ldr x14, [x10], #8
+    str x14, [x11], #8
+    subs x12, x12, #1
+    b.ne 7b
+3:
+    mov w10, #40
+    mul x13, x13, x10
+    add x12, x8, x13
+    ldr x0, [x12]
+    ldr x1, [x12, #32]
+    cmn x1, #1
+    b.eq 5f
+    bl _native_helper_reload_tos_from_x1
+    b 6f
+5:
+    mov x25, xzr
+    mov x26, xzr
+    mov x27, xzr
+    mov x28, xzr
+6:
+    br x0
+9:
+    ldr x10, [x20, #40]
+    str \src, [x21, x10, lsl #3]
+    call_helper
+    .endm
+
+    .p2align 2
+    .global _native_helper_entry_br_table_t0
+_native_helper_entry_br_table_t0:
+    br_table_fast_entry x25
+
+    .p2align 2
+    .global _native_helper_entry_br_table_t1
+_native_helper_entry_br_table_t1:
+    br_table_fast_entry x26
+
+    .p2align 2
+    .global _native_helper_entry_br_table_t2
+_native_helper_entry_br_table_t2:
+    br_table_fast_entry x27
+
+    .p2align 2
+    .global _native_helper_entry_br_table_t3
+_native_helper_entry_br_table_t3:
+    br_table_fast_entry x28
 
     .p2align 2
     .global _native_helper_entry_write_t0
@@ -578,7 +779,7 @@ fn trap_with(ctx: *mut Context, fp: *mut u64, error: WasmError) -> HelperResult 
             (*ctx).error = Some(error);
         }
     }
-    resume_at(ctx, fp, term_entry(), 0)
+    resume_at(ctx, fp, term_entry(), EMPTY_TOS_SLOTS)
 }
 
 #[inline]
@@ -943,7 +1144,17 @@ fn enter_unified_callee(
 
     if locals_count > 0 {
         unsafe {
-            core::ptr::write_bytes(callee_fp.add(params_count), 0, locals_count);
+            let mut local_dst = callee_fp.add(params_count);
+            let mut remaining = locals_count;
+            while remaining >= 2 {
+                *local_dst = 0;
+                *local_dst.add(1) = 0;
+                local_dst = local_dst.add(2);
+                remaining -= 2;
+            }
+            if remaining != 0 {
+                *local_dst = 0;
+            }
         }
     }
 
@@ -953,7 +1164,7 @@ fn enter_unified_callee(
         *callee_fp.add(frame_size + 2) = return_tos_slots;
     }
 
-    Ok(resume_at(ctx, callee_fp, entry, 0))
+    Ok(resume_at(ctx, callee_fp, entry, EMPTY_TOS_SLOTS))
 }
 
 #[inline]

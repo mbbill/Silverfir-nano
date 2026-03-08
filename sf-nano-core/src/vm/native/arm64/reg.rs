@@ -12,6 +12,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Reg {
+    A0   = 0,  // x0   - helper call arg / result register
+    A1   = 1,  // x1   - helper call arg / result register
     TMP0 = 9,  // x9   - scratch
     TMP1 = 10, // x10  - scratch
     TMP2 = 11, // x11  - native-private scratch / frame-alias register 0

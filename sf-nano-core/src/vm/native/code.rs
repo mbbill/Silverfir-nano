@@ -1,12 +1,20 @@
 //! Native compiled code storage and cached helper metadata.
 
+use crate::vm::entities::FunctionInst;
 use super::bridge::HelperMetadata;
 use super::instruction::{NativeEntry, NativeInst};
 use alloc::boxed::Box;
 
+#[derive(Debug, Clone, Copy)]
+pub struct DirectCallEntryPatch {
+    pub callee: *const FunctionInst,
+    pub literal_off: usize,
+}
+
 pub struct NativeCode {
     code: Box<[NativeInst]>,
     helper_metadata: Box<[HelperMetadata]>,
+    direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
 }
 
 impl core::fmt::Debug for NativeCode {
@@ -14,13 +22,26 @@ impl core::fmt::Debug for NativeCode {
         f.debug_struct("NativeCode")
             .field("code_len", &self.code.len())
             .field("helper_metadata_len", &self.helper_metadata.len())
+            .field("direct_call_entry_patches_len", &self.direct_call_entry_patches.len())
             .finish()
     }
 }
 
 impl NativeCode {
     pub fn new(code: Box<[NativeInst]>, helper_metadata: Box<[HelperMetadata]>) -> Self {
-        Self { code, helper_metadata }
+        Self::new_with_patches(code, helper_metadata, Box::new([]))
+    }
+
+    pub fn new_with_patches(
+        code: Box<[NativeInst]>,
+        helper_metadata: Box<[HelperMetadata]>,
+        direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
+    ) -> Self {
+        Self {
+            code,
+            helper_metadata,
+            direct_call_entry_patches,
+        }
     }
 
     #[inline]
@@ -41,8 +62,19 @@ impl NativeCode {
     pub fn helper_metadata(&self) -> &[HelperMetadata] {
         &self.helper_metadata
     }
+
+    #[inline]
+    pub fn helper_metadata_mut(&mut self) -> &mut [HelperMetadata] {
+        &mut self.helper_metadata
+    }
+
+    #[inline]
+    pub fn direct_call_entry_patches(&self) -> &[DirectCallEntryPatch] {
+        &self.direct_call_entry_patches
+    }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NativeCodeCache {
     entry: Option<NativeEntry>,
@@ -111,6 +143,19 @@ pub fn create_native_code(
     results_len: usize,
 ) -> (NativeCode, NativeCodeCache) {
     let native_code = NativeCode::new(code, helper_metadata);
+    let cache = native_code.build_cache(params_len, locals_len, results_len);
+    (native_code, cache)
+}
+
+pub fn create_native_code_with_patches(
+    code: Box<[NativeInst]>,
+    helper_metadata: Box<[HelperMetadata]>,
+    direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
+    params_len: usize,
+    locals_len: usize,
+    results_len: usize,
+) -> (NativeCode, NativeCodeCache) {
+    let native_code = NativeCode::new_with_patches(code, helper_metadata, direct_call_entry_patches);
     let cache = native_code.build_cache(params_len, locals_len, results_len);
     (native_code, cache)
 }

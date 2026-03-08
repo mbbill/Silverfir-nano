@@ -77,10 +77,10 @@ fn cold_helper_entry(helper: bridge::ColdHelperKind) -> NativeEntry {
         bridge::ColdHelperKind::Br
         | bridge::ColdHelperKind::Else
         | bridge::ColdHelperKind::CallExternal
-        | bridge::ColdHelperKind::CallInternal
         | bridge::ColdHelperKind::CallIndirect
         | bridge::ColdHelperKind::DataDrop
         | bridge::ColdHelperKind::ElemDrop => bridge::helper_entry(),
+        bridge::ColdHelperKind::CallInternal => bridge::helper_entry_call_internal(),
         bridge::ColdHelperKind::BrIf
         | bridge::ColdHelperKind::If
         | bridge::ColdHelperKind::BrTable
@@ -185,10 +185,10 @@ fn cold_helper_entry_for_op(op: &IrOp, helper: bridge::ColdHelperKind) -> Native
         }
         bridge::ColdHelperKind::BrTable => {
             match tos_reg(depth_variant(op.pre_height as usize), 1) {
-                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
-                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
-                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
-                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
+                Reg::T0 => bridge::helper_entry_br_table_t0(),
+                Reg::T1 => bridge::helper_entry_br_table_t1(),
+                Reg::T2 => bridge::helper_entry_br_table_t2(),
+                Reg::T3 => bridge::helper_entry_br_table_t3(),
                 _ => unreachable!("top-of-stack register must be a TOS register"),
             }
         }
@@ -282,7 +282,9 @@ fn is_redirect_marker(kind: &IrOpKind) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GroupTerminator {
+    Br,
     BrIfSimple,
+    If,
     ReturnVoid,
     ReturnOne,
     Return,
@@ -292,12 +294,18 @@ enum GroupTerminator {
 /// Check if an IrOp is a group terminator.
 fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
     match &op.kind {
+        IrOpKind::Br { stack_drop, arity, .. }
+            if (*stack_drop == 0 || *arity == 0) && op.alt_target.is_some() =>
+        {
+            Some(GroupTerminator::Br)
+        }
         IrOpKind::BrIfSimple if op.pre_height >= 1 => Some(GroupTerminator::BrIfSimple),
         IrOpKind::BrIf { stack_drop, .. }
             if *stack_drop == 0 && op.pre_height >= 1 && op.alt_target.is_some() =>
         {
             Some(GroupTerminator::BrIfSimple)
         }
+        IrOpKind::If if op.pre_height >= 1 && op.alt_target.is_some() => Some(GroupTerminator::If),
         IrOpKind::ReturnVoid { .. } => Some(GroupTerminator::ReturnVoid),
         IrOpKind::ReturnOne { .. } => Some(GroupTerminator::ReturnOne),
         IrOpKind::Return { .. } => Some(GroupTerminator::Return),
@@ -526,10 +534,36 @@ pub fn resolve_native_with_context(
                         branch_target,
                     );
                     match terminator {
+                        Some(GroupTerminator::Br) => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: ir[group_start + group_len - 1].kind.clone(),
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: branch_target,
+                                has_target: true,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
                         Some(GroupTerminator::BrIfSimple) => {
                             out.push(ResolvedNativeInst {
                                 entry,
                                 kind: IrOpKind::BrIfSimple,
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: branch_target,
+                                has_target: true,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
+                        Some(GroupTerminator::If) => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: ir[group_start + group_len - 1].kind.clone(),
                                 pre_height: ir[group_start].pre_height,
                                 alt_target: branch_target,
                                 has_target: true,
@@ -677,7 +711,9 @@ pub fn resolve_native_with_context(
 
 fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> {
     match terminator {
+        Some(GroupTerminator::Br) => Some("br"),
         Some(GroupTerminator::BrIfSimple) => Some("br_if_simple"),
+        Some(GroupTerminator::If) => Some("if"),
         Some(GroupTerminator::ReturnVoid) => Some("return_void"),
         Some(GroupTerminator::ReturnOne) => Some("return_one"),
         Some(GroupTerminator::Return) => Some("return"),
@@ -792,6 +828,59 @@ fn pick_tail_fusion(group: &[IrOp], terminator: Option<GroupTerminator>, body_en
                 return Some((TailFusion::EqzBr, body_end - 1));
             }
         }
+        Some(GroupTerminator::If) => {
+            if body_end >= 5
+                && start_height == 0
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+            {
+                if let Some(cmp) =
+                    zero_float_compare_kind(&group[body_end - 5].kind, &group[body_end - 4].kind)
+                {
+                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 5));
+                }
+            }
+            if start_height == 0 && body_end >= 2 {
+                if let Some(cmp) =
+                    zero_float_compare_kind(&group[body_end - 2].kind, &group[body_end - 1].kind)
+                {
+                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 2));
+                }
+            }
+            if body_end >= 4
+                && start_height == 0
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+            {
+                if let Some(cmp) = compare_fusion_kind(&group[body_end - 4].kind) {
+                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 4));
+                }
+            }
+            if body_end >= 4
+                && matches_const_one_xor(&[
+                    group[body_end - 3].kind.clone(),
+                    group[body_end - 2].kind.clone(),
+                ])
+                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
+                && produces_bool(&group[body_end - 4].kind)
+            {
+                return Some((TailFusion::XorOneIfIdentity, body_end - 3));
+            }
+            if body_end >= 1 && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz) {
+                return Some((TailFusion::EqzIf, body_end - 1));
+            }
+            if start_height == 0 && body_end >= 1 {
+                if let Some(cmp) = compare_fusion_kind(&group[body_end - 1].kind) {
+                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 1));
+                }
+            }
+        }
         _ => {}
     }
 
@@ -878,7 +967,11 @@ fn try_compile_group(
         }
     }
     match terminator {
+        Some(GroupTerminator::Br) => {}
         Some(GroupTerminator::BrIfSimple) if sim_height < 1 => {
+            return None;
+        }
+        Some(GroupTerminator::If) if sim_height < 1 => {
             return None;
         }
         _ => {}
@@ -916,7 +1009,16 @@ fn try_compile_group(
             emit_compare_flags(&mut e, cmp);
             e.finish_br_if_simple_from_flags(cond, 2)
         }
-        Some((TailFusion::DirectCompareIf(_), _)) => return None,
+        Some((TailFusion::DirectCompareIf(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::I32(cond)
+                | CompareFusionKind::I64(cond)
+                | CompareFusionKind::F32(cond)
+                | CompareFusionKind::F64(cond) => cond,
+            };
+            emit_compare_flags(&mut e, cmp);
+            e.finish_if_from_flags(cond, 2)
+        }
         Some((TailFusion::DirectZeroCompareBr(cmp), _)) => {
             let cond = match cmp {
                 CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
@@ -925,19 +1027,34 @@ fn try_compile_group(
             emit_compare_zero_flags(&mut e, cmp);
             e.finish_br_if_simple_from_flags(cond, 0)
         }
-        Some((TailFusion::DirectZeroCompareIf(_), _)) => return None,
+        Some((TailFusion::DirectZeroCompareIf(cmp), _)) => {
+            let cond = match cmp {
+                CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
+                CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!(),
+            };
+            emit_compare_zero_flags(&mut e, cmp);
+            e.finish_if_from_flags(cond, 1)
+        }
         Some((TailFusion::EqzBr, _)) => {
             let cond = top_i32_reg(&e);
             e.finish_br_if_simple_from_reg(cond, true)
         }
-        Some((TailFusion::EqzIf, _)) => return None,
+        Some((TailFusion::EqzIf, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_if_from_reg(cond, true)
+        }
         Some((TailFusion::XorOneBr, _)) => {
             let cond = top_i32_reg(&e);
             e.finish_br_if_simple_from_reg(cond, true)
         }
-        Some((TailFusion::XorOneIfIdentity, _)) => return None,
+        Some((TailFusion::XorOneIfIdentity, _)) => {
+            let cond = top_i32_reg(&e);
+            e.finish_if_from_reg(cond, false)
+        }
         None => match terminator {
+            Some(GroupTerminator::Br) => e.finish_br(),
             Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
+            Some(GroupTerminator::If) => e.finish_if(),
             Some(GroupTerminator::ReturnVoid) => match &group.last().unwrap().kind {
                 IrOpKind::ReturnVoid { frame_size } => e.finish_return_void(*frame_size),
                 _ => unreachable!("terminator kind mismatch"),
@@ -1915,6 +2032,27 @@ mod tests {
         assert_eq!(resolved[0].alt_target, Some(OpIndex::from(3)));
         assert!(resolved[1].is_internal_only());
         assert!(resolved[2].is_internal_only());
+    }
+
+    #[test]
+    fn test_pick_tail_fusion_eqz_if() {
+        let mut if_op = make_op(IrOpKind::If, 1);
+        if_op.alt_target = Some(OpIndex::from(2));
+        let group = vec![make_op(IrOpKind::I32Eqz, 1), if_op];
+        let tail = pick_tail_fusion(&group, Some(GroupTerminator::If), 1);
+        assert!(matches!(tail, Some((TailFusion::EqzIf, 0))));
+    }
+
+    #[test]
+    fn test_pick_tail_fusion_compare_if() {
+        let mut if_op = make_op(IrOpKind::If, 1);
+        if_op.alt_target = Some(OpIndex::from(2));
+        let group = vec![make_op(IrOpKind::I32Eq, 2), if_op];
+        let tail = pick_tail_fusion(&group, Some(GroupTerminator::If), 1);
+        assert!(matches!(
+            tail,
+            Some((TailFusion::DirectCompareIf(CompareFusionKind::I32(Cond::EQ)), 0))
+        ));
     }
 
     #[test]

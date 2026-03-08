@@ -7,16 +7,19 @@ use core::mem;
 
 use crate::vm::compile::StackTracker;
 use crate::vm::compaction::CompactionDisposition;
+use crate::vm::entities::FunctionInst;
 use crate::vm::lowered::{IrOpKind, OpIndex, SlotRef};
 use crate::vm::operand_encoding::encode_operands;
 
 use super::CodeBuffer;
+use super::code::DirectCallEntryPatch;
 use super::debug_map;
 use super::bridge::{self, HelperMetadata};
 use super::instruction::{EMPTY_TOS_SLOTS, INVALID_TOS_SLOT, NativeEntry, NativeInst};
 use super::resolved::{NativeResolvedVec, ResolvedNativeInst};
 use super::runtime::term_entry;
-use super::arm64::{EntryPatchSites, emit};
+use super::arm64::{EntryPatchSites, depth_variant, emit, tos_reg};
+use super::arm64::reg::Reg;
 
 pub fn finalize(
     mut ops: NativeResolvedVec,
@@ -24,7 +27,7 @@ pub fn finalize(
     buf: &mut CodeBuffer,
     module_name: &str,
     func_idx: u32,
-) -> (Box<[NativeInst]>, Box<[HelperMetadata]>) {
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
     append_terminals(&mut ops);
     route_terminals(&mut ops);
     default_alt_to_term(&mut ops);
@@ -291,9 +294,9 @@ fn build_instructions(
     buf: &mut CodeBuffer,
     module_name: &str,
     func_idx: u32,
-) -> (Box<[NativeInst]>, Box<[HelperMetadata]>) {
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
     if ops.is_empty() {
-        return (Box::new([]), Box::new([]));
+        return (Box::new([]), Box::new([]), Box::new([]));
     }
 
     let fix_slot = |slot: SlotRef| -> u16 { slot.resolve(operand_base) };
@@ -368,6 +371,9 @@ fn build_instructions(
         0,
     );
     let mut metadata_box = vec![placeholder; helper_sites.len()].into_boxed_slice();
+    let mut br_table_entry_literals: Vec<(usize, usize)> = Vec::new();
+    let mut direct_call_entry_patches: Vec<DirectCallEntryPatch> = Vec::new();
+    let mut direct_call_next_entry_literals: Vec<(usize, usize)> = Vec::new();
 
     let needs_code_patch = !helper_sites.is_empty()
         || ops.iter().any(|op| {
@@ -379,22 +385,106 @@ fn build_instructions(
         buf.begin_write();
 
         for (meta_idx, (code_idx, helper_entry)) in helper_sites.iter().copied().enumerate() {
+            let op = &ops[code_idx];
+            let cold_helper = op.cold_helper.expect("helper site must have cold helper");
             let meta_ptr = unsafe { metadata_box.as_ptr().add(meta_idx) };
-            let (wrapper_off, wrapper_len) = emit::emit_helper_wrapper(buf, helper_entry, meta_ptr);
+            let (wrapper_off, wrapper_len) = match (&op.kind, cold_helper) {
+                (
+                    IrOpKind::CallInternal {
+                        callee,
+                        delta,
+                        ..
+                    },
+                    bridge::ColdHelperKind::CallInternal,
+                ) => {
+                    let callee_ptr = *callee as *const FunctionInst;
+                    let callee = unsafe { &*callee_ptr };
+                    let params_count = callee.func_type().params().len() as u16;
+                    let callee_spec = callee.spec();
+                    let locals_count = callee_spec
+                        .map(|spec| spec.locals().len() as u16)
+                        .unwrap_or(0);
+                    let emit_site = emit::emit_direct_call_internal_entry(
+                        buf,
+                        params_count,
+                        locals_count,
+                        fix_slot(*delta),
+                    );
+                    if let Some(spec) = callee_spec {
+                        if spec.has_native_code() {
+                            buf.patch_u64(
+                                emit_site.callee_entry_literal,
+                                spec.native_cache().entry() as usize as u64,
+                            );
+                        } else {
+                            direct_call_entry_patches.push(DirectCallEntryPatch {
+                                callee: callee_ptr,
+                                literal_off: emit_site.callee_entry_literal,
+                            });
+                        }
+                    }
+                    direct_call_next_entry_literals.push((code_idx + 1, emit_site.next_entry_literal));
+                    (emit_site.start, emit_site.len)
+                }
+                (
+                    IrOpKind::BrTable {
+                        entry_count,
+                        operand_base_offset,
+                        height,
+                        ..
+                    },
+                    bridge::ColdHelperKind::BrTable,
+                ) => {
+                    let mut records =
+                        Vec::with_capacity(*entry_count as usize);
+                    let mut target_indices = Vec::with_capacity(*entry_count as usize);
+                    for entry_idx in 0..(*entry_count as usize) {
+                        let data_idx = code_idx + 1 + (entry_idx / 2);
+                        let data_inst = &code_box[data_idx];
+                        let (rel, packed_branch) = if entry_idx % 2 == 0 {
+                            (data_inst.imm0 as i32, data_inst.imm1)
+                        } else {
+                            (((data_inst.imm2 >> 32) as u32) as i32, data_inst.imm2 & 0xffff_ffff)
+                        };
+                        let target_idx = ((code_idx as isize) + (rel as isize)) as usize;
+                        target_indices.push(target_idx);
+                        records.push(emit::DirectBrTableRecord {
+                            packed_branch,
+                        });
+                    }
+                    let src_reg = match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                        reg @ (Reg::T0 | Reg::T1 | Reg::T2 | Reg::T3) => reg,
+                        _ => unreachable!("br_table source must be a TOS register"),
+                    };
+                    let emit_site = emit::emit_direct_br_table_entry(
+                        buf,
+                        src_reg,
+                        &records,
+                        *operand_base_offset,
+                        *height,
+                    );
+                    for (target_idx, literal_off) in target_indices
+                        .into_iter()
+                        .zip(emit_site.target_entry_literals.into_iter())
+                    {
+                        br_table_entry_literals.push((target_idx, literal_off));
+                    }
+                    (emit_site.start, emit_site.len)
+                }
+                _ => emit::emit_helper_wrapper(buf, helper_entry, meta_ptr),
+            };
             let wrapper_entry: NativeEntry = unsafe { buf.fn_ptr(wrapper_off) };
             code_box[code_idx].entry = wrapper_entry;
-            if let Some(cold_helper) = ops[code_idx].cold_helper {
-                debug_map::record_wrapper(
-                    buf.base_ptr(),
-                    wrapper_off,
-                    wrapper_len,
-                    module_name,
-                    func_idx,
-                    code_idx,
-                    cold_helper_name(cold_helper),
-                    &ops[code_idx].kind,
-                );
-            }
+            debug_map::record_wrapper(
+                buf.base_ptr(),
+                wrapper_off,
+                wrapper_len,
+                module_name,
+                func_idx,
+                code_idx,
+                cold_helper_name(cold_helper),
+                &op.kind,
+            );
         }
 
         for (meta_idx, (code_idx, _)) in helper_sites.iter().copied().enumerate() {
@@ -434,11 +524,33 @@ fn build_instructions(
             }
         }
 
+        for (target_idx, literal_off) in br_table_entry_literals {
+            patch_start = patch_start.min(literal_off);
+            let target_entry = code_box
+                .get(target_idx)
+                .map(|inst| inst.entry)
+                .unwrap_or_else(term_entry);
+            buf.patch_u64(literal_off, target_entry as usize as u64);
+        }
+
+        for (target_idx, literal_off) in direct_call_next_entry_literals {
+            patch_start = patch_start.min(literal_off);
+            let target_entry = code_box
+                .get(target_idx)
+                .map(|inst| inst.entry)
+                .unwrap_or_else(term_entry);
+            buf.patch_u64(literal_off, target_entry as usize as u64);
+        }
+
         let written_len = buf.len() - patch_start;
         buf.finish_write(patch_start, written_len);
     }
 
-    (code_box, metadata_box)
+    (
+        code_box,
+        metadata_box,
+        direct_call_entry_patches.into_boxed_slice(),
+    )
 }
 
 fn cold_helper_name(helper: bridge::ColdHelperKind) -> &'static str {

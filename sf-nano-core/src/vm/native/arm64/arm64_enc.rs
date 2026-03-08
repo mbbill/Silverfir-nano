@@ -931,6 +931,15 @@ pub fn br(rn: Reg) -> u32 {
         | 0b00000
 }
 
+/// BLR Xn — branch with link to register
+pub fn blr(rn: Reg) -> u32 {
+    (0b1101011_0001 << 21)
+        | (0b11111 << 16)
+        | (0b000000 << 10)
+        | (rn.idx() << 5)
+        | 0b00000
+}
+
 /// RET (= RET X30)
 pub fn ret() -> u32 {
     (0b1101011_0010 << 21)

@@ -203,6 +203,11 @@ impl FunctionSpec {
     }
 
     #[cfg(feature = "micro-jit")]
+    pub fn with_native_code_mut<R>(&self, f: impl FnOnce(&mut NativeCode) -> R) -> Option<R> {
+        unsafe { (*self.native_code.get()).as_mut().map(f) }
+    }
+
+    #[cfg(feature = "micro-jit")]
     pub fn set_native_code(&self, code: NativeCode, cache: NativeCodeCache) {
         unsafe {
             *self.native_code.get() = Some(code);
