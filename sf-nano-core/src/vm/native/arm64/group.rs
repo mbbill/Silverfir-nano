@@ -4,17 +4,255 @@
 //! single ARM64 code blocks via `NativeEmitter`, and produces a native-owned
 //! resolved stream for finalization into `NativeInst`.
 
+use alloc::format;
 use alloc::vec::Vec;
 use super::arm64_enc::{self, Cond};
-use super::codegen::{NativeEmitter, depth_variant, tos_reg};
+use super::codegen::{EntryPatchSites, NativeEmitter, depth_variant, tos_reg};
 use super::op_meta;
 use super::reg::Reg;
-use super::super::{CodeBuffer, debug_map, samply_jitdump};
+use super::super::{CodeBuffer, bridge, debug_map, samply_jitdump};
 use crate::vm::compaction::CompactionDisposition;
 use crate::vm::lowered::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
 use crate::vm::native::instruction::NativeEntry;
 use crate::vm::native::resolved::{NativeResolvedVec, ResolvedNativeInst};
 use crate::vm::native::runtime::term_entry;
+
+fn cold_helper_stack_slot(op: &IrOp, helper: bridge::ColdHelperKind) -> Option<SlotRef> {
+    match helper {
+        bridge::ColdHelperKind::BrIf => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::If => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::GlobalGet => Some(SlotRef::operand_relative(op.pre_height)),
+        bridge::ColdHelperKind::GlobalSet => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::MemoryGrow => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::I32Popcnt
+        | bridge::ColdHelperKind::I64Popcnt
+        | bridge::ColdHelperKind::I32TruncF32S
+        | bridge::ColdHelperKind::I32TruncF32U
+        | bridge::ColdHelperKind::I32TruncF64S
+        | bridge::ColdHelperKind::I32TruncF64U
+        | bridge::ColdHelperKind::I64TruncF32S
+        | bridge::ColdHelperKind::I64TruncF32U
+        | bridge::ColdHelperKind::I64TruncF64S
+        | bridge::ColdHelperKind::I64TruncF64U => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::BrTable => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::MemoryCopy
+        | bridge::ColdHelperKind::MemoryFill
+        | bridge::ColdHelperKind::MemoryInit => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::F32Copysign | bridge::ColdHelperKind::F64Copysign => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::TableGet | bridge::ColdHelperKind::RefIsNull => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::TableSet
+        | bridge::ColdHelperKind::TableGrow
+        | bridge::ColdHelperKind::TableFill
+        | bridge::ColdHelperKind::TableCopy
+        | bridge::ColdHelperKind::TableInit => {
+            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
+        }
+        bridge::ColdHelperKind::TableSize
+        | bridge::ColdHelperKind::RefNull
+        | bridge::ColdHelperKind::RefFunc => Some(SlotRef::operand_relative(op.pre_height)),
+        _ => None,
+    }
+}
+
+fn cold_helper_entry(helper: bridge::ColdHelperKind) -> NativeEntry {
+    match helper {
+        bridge::ColdHelperKind::Br
+        | bridge::ColdHelperKind::Else
+        | bridge::ColdHelperKind::CallExternal
+        | bridge::ColdHelperKind::CallInternal
+        | bridge::ColdHelperKind::CallIndirect
+        | bridge::ColdHelperKind::DataDrop
+        | bridge::ColdHelperKind::ElemDrop => bridge::helper_entry(),
+        bridge::ColdHelperKind::BrIf
+        | bridge::ColdHelperKind::If
+        | bridge::ColdHelperKind::BrTable
+        | bridge::ColdHelperKind::GlobalGet
+        | bridge::ColdHelperKind::GlobalSet
+        | bridge::ColdHelperKind::MemoryGrow
+        | bridge::ColdHelperKind::I32Popcnt
+        | bridge::ColdHelperKind::I64Popcnt
+        | bridge::ColdHelperKind::I32TruncF32S
+        | bridge::ColdHelperKind::I32TruncF32U
+        | bridge::ColdHelperKind::I32TruncF64S
+        | bridge::ColdHelperKind::I32TruncF64U
+        | bridge::ColdHelperKind::I64TruncF32S
+        | bridge::ColdHelperKind::I64TruncF32U
+        | bridge::ColdHelperKind::I64TruncF64S
+        | bridge::ColdHelperKind::I64TruncF64U
+        | bridge::ColdHelperKind::MemoryCopy
+        | bridge::ColdHelperKind::MemoryFill
+        | bridge::ColdHelperKind::MemoryInit
+        | bridge::ColdHelperKind::F32Copysign
+        | bridge::ColdHelperKind::F64Copysign
+        | bridge::ColdHelperKind::TableGet
+        | bridge::ColdHelperKind::TableSet
+        | bridge::ColdHelperKind::TableSize
+        | bridge::ColdHelperKind::TableGrow
+        | bridge::ColdHelperKind::TableFill
+        | bridge::ColdHelperKind::TableCopy
+        | bridge::ColdHelperKind::TableInit
+        | bridge::ColdHelperKind::ElemDrop
+        | bridge::ColdHelperKind::RefNull
+        | bridge::ColdHelperKind::RefIsNull
+        | bridge::ColdHelperKind::RefFunc => {
+            panic!("top-of-stack helper entry requires per-op stack variant")
+        }
+    }
+}
+
+fn cold_helper_entry_for_op(op: &IrOp, helper: bridge::ColdHelperKind) -> NativeEntry {
+    match helper {
+        bridge::ColdHelperKind::BrIf => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
+                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
+                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
+                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::If => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
+                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
+                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
+                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::GlobalGet => {
+            match tos_reg(depth_variant(op.pre_height as usize + 1), 1) {
+                Reg::T0 => bridge::helper_entry_write_t0(),
+                Reg::T1 => bridge::helper_entry_write_t1(),
+                Reg::T2 => bridge::helper_entry_write_t2(),
+                Reg::T3 => bridge::helper_entry_write_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::GlobalSet => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_read_t0(),
+                Reg::T1 => bridge::helper_entry_read_t1(),
+                Reg::T2 => bridge::helper_entry_read_t2(),
+                Reg::T3 => bridge::helper_entry_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::MemoryGrow => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_read_t0(),
+                Reg::T1 => bridge::helper_entry_read_t1(),
+                Reg::T2 => bridge::helper_entry_read_t2(),
+                Reg::T3 => bridge::helper_entry_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::I32Popcnt
+        | bridge::ColdHelperKind::I64Popcnt
+        | bridge::ColdHelperKind::I32TruncF32S
+        | bridge::ColdHelperKind::I32TruncF32U
+        | bridge::ColdHelperKind::I32TruncF64S
+        | bridge::ColdHelperKind::I32TruncF64U
+        | bridge::ColdHelperKind::I64TruncF32S
+        | bridge::ColdHelperKind::I64TruncF32U
+        | bridge::ColdHelperKind::I64TruncF64S
+        | bridge::ColdHelperKind::I64TruncF64U => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_read_t0(),
+                Reg::T1 => bridge::helper_entry_read_t1(),
+                Reg::T2 => bridge::helper_entry_read_t2(),
+                Reg::T3 => bridge::helper_entry_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::BrTable => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_ctrl_read_t0(),
+                Reg::T1 => bridge::helper_entry_ctrl_read_t1(),
+                Reg::T2 => bridge::helper_entry_ctrl_read_t2(),
+                Reg::T3 => bridge::helper_entry_ctrl_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::MemoryCopy
+        | bridge::ColdHelperKind::MemoryFill
+        | bridge::ColdHelperKind::MemoryInit
+        | bridge::ColdHelperKind::TableFill
+        | bridge::ColdHelperKind::TableCopy
+        | bridge::ColdHelperKind::TableInit => {
+            match depth_variant(op.pre_height as usize) {
+                1 => bridge::helper_entry_read_top3_d1(),
+                2 => bridge::helper_entry_read_top3_d2(),
+                3 => bridge::helper_entry_read_top3_d3(),
+                4 => bridge::helper_entry_read_top3_d4(),
+                _ => unreachable!("depth variant must be 1..=4"),
+            }
+        }
+        bridge::ColdHelperKind::TableGet | bridge::ColdHelperKind::RefIsNull => {
+            match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                Reg::T0 => bridge::helper_entry_read_t0(),
+                Reg::T1 => bridge::helper_entry_read_t1(),
+                Reg::T2 => bridge::helper_entry_read_t2(),
+                Reg::T3 => bridge::helper_entry_read_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::F32Copysign | bridge::ColdHelperKind::F64Copysign => {
+            match depth_variant(op.pre_height as usize) {
+                1 => bridge::helper_entry_read_top2_d1(),
+                2 => bridge::helper_entry_read_top2_d2(),
+                3 => bridge::helper_entry_read_top2_d3(),
+                4 => bridge::helper_entry_read_top2_d4(),
+                _ => unreachable!("depth variant must be 1..=4"),
+            }
+        }
+        bridge::ColdHelperKind::TableSize
+        | bridge::ColdHelperKind::RefNull
+        | bridge::ColdHelperKind::RefFunc => {
+            match tos_reg(depth_variant(op.pre_height as usize + 1), 1) {
+                Reg::T0 => bridge::helper_entry_write_t0(),
+                Reg::T1 => bridge::helper_entry_write_t1(),
+                Reg::T2 => bridge::helper_entry_write_t2(),
+                Reg::T3 => bridge::helper_entry_write_t3(),
+                _ => unreachable!("top-of-stack register must be a TOS register"),
+            }
+        }
+        bridge::ColdHelperKind::TableSet | bridge::ColdHelperKind::TableGrow => {
+            match depth_variant(op.pre_height as usize) {
+                1 => bridge::helper_entry_read_top2_d1(),
+                2 => bridge::helper_entry_read_top2_d2(),
+                3 => bridge::helper_entry_read_top2_d3(),
+                4 => bridge::helper_entry_read_top2_d4(),
+                _ => unreachable!("depth variant must be 1..=4"),
+            }
+        }
+        bridge::ColdHelperKind::Br
+        | bridge::ColdHelperKind::Else
+        | bridge::ColdHelperKind::CallExternal
+        | bridge::ColdHelperKind::CallInternal
+        | bridge::ColdHelperKind::CallIndirect
+        | bridge::ColdHelperKind::DataDrop
+        | bridge::ColdHelperKind::ElemDrop => cold_helper_entry(helper),
+    }
+}
 
 /// Check if an IrOp is native-able, considering kind, height, and hot local mask.
 fn is_jit_able_op(op: &IrOp, hot_local_mask: [bool; 3]) -> bool {
@@ -44,25 +282,26 @@ fn is_redirect_marker(kind: &IrOpKind) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GroupTerminator {
-    Br,
     BrIfSimple,
-    If,
     ReturnVoid,
     ReturnOne,
+    Return,
+    Unreachable,
 }
 
 /// Check if an IrOp is a group terminator.
 fn group_terminator(op: &IrOp) -> Option<GroupTerminator> {
     match &op.kind {
-        IrOpKind::Br { stack_drop, arity, .. }
-            if (*stack_drop == 0 || *arity == 0) && op.alt_target.is_some() =>
-        {
-            Some(GroupTerminator::Br)
-        }
         IrOpKind::BrIfSimple if op.pre_height >= 1 => Some(GroupTerminator::BrIfSimple),
-        IrOpKind::If if op.pre_height >= 1 => Some(GroupTerminator::If),
+        IrOpKind::BrIf { stack_drop, .. }
+            if *stack_drop == 0 && op.pre_height >= 1 && op.alt_target.is_some() =>
+        {
+            Some(GroupTerminator::BrIfSimple)
+        }
         IrOpKind::ReturnVoid { .. } => Some(GroupTerminator::ReturnVoid),
         IrOpKind::ReturnOne { .. } => Some(GroupTerminator::ReturnOne),
+        IrOpKind::Return { .. } => Some(GroupTerminator::Return),
+        IrOpKind::Unreachable => Some(GroupTerminator::Unreachable),
         _ => None,
     }
 }
@@ -173,7 +412,7 @@ pub fn resolve_native(
     ir: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
-) -> Result<NativeResolvedVec, &'static str> {
+) -> Result<NativeResolvedVec, alloc::string::String> {
     resolve_native_with_context(ir, buf, hot_local_mask, "", 0)
 }
 
@@ -184,7 +423,7 @@ pub fn resolve_native_with_context(
     hot_local_mask: [bool; 3],
     module_name: &str,
     func_idx: u32,
-) -> Result<NativeResolvedVec, &'static str> {
+) -> Result<NativeResolvedVec, alloc::string::String> {
     buf.begin_write();
     let bytes_before = buf.len();
     let branch_targets = incoming_targets(ir);
@@ -201,8 +440,12 @@ pub fn resolve_native_with_context(
             out.push(ResolvedNativeInst {
                 entry: term_entry(),
                 kind: ir[i].kind.clone(),
+                pre_height: ir[i].pre_height,
                 alt_target: ir[i].alt_target,
                 has_target: ir[i].has_target,
+                cold_helper: None,
+                cold_stack_slot: None,
+                entry_patches: EntryPatchSites::default(),
                 compaction: CompactionDisposition::RedirectBranchTarget,
             });
             i += 1;
@@ -232,108 +475,188 @@ pub fn resolve_native_with_context(
                 i += 1;
             }
 
-            let group_len = i - group_start;
-            let estimated_bytes = op_meta::estimate_group_bytes(
-                &ir[group_start..i],
-                group_terminator(&ir[i - 1]).map(|_| &ir[i - 1].kind),
-            );
-            if buf.remaining() < estimated_bytes {
-                groups_skipped += 1;
-                ops_skipped += group_len;
-                return Err("native code buffer capacity exceeded");
+            let candidate_end = i;
+            let mut group_end = candidate_end;
+            let mut compiled_end = None;
+            while group_end > group_start {
+                let group_len = group_end - group_start;
+                let estimated_bytes = op_meta::estimate_group_bytes(
+                    &ir[group_start..group_end],
+                    group_terminator(&ir[group_end - 1]).map(|_| &ir[group_end - 1].kind),
+                );
+                if buf.remaining() < estimated_bytes {
+                    if group_len == 1 {
+                        groups_skipped += 1;
+                        ops_skipped += 1;
+                        return Err("native code buffer capacity exceeded".into());
+                    }
+                    group_end -= 1;
+                    continue;
+                }
+
+                let code_start = buf.len();
+                if let Some((entry, terminator, branch_target, entry_patches)) = try_compile_group(
+                    &ir[group_start..group_end],
+                    buf,
+                    hot_local_mask,
+                    func_idx,
+                    group_start,
+                ) {
+                    let code_len = buf.len() - code_start;
+                    debug_map::record_group(
+                        buf.base_ptr(),
+                        code_start,
+                        code_len,
+                        module_name,
+                        func_idx,
+                        group_start,
+                        &ir[group_start..group_end],
+                        terminator_name(terminator),
+                        branch_target,
+                    );
+                    samply_jitdump::record_group(
+                        buf.base_ptr(),
+                        code_start,
+                        code_len,
+                        module_name,
+                        func_idx,
+                        group_start,
+                        &ir[group_start..group_end],
+                        terminator_name(terminator),
+                        branch_target,
+                    );
+                    match terminator {
+                        Some(GroupTerminator::BrIfSimple) => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: IrOpKind::BrIfSimple,
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: branch_target,
+                                has_target: true,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
+                        Some(GroupTerminator::ReturnVoid)
+                        | Some(GroupTerminator::ReturnOne)
+                        | Some(GroupTerminator::Return) => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: ir[group_start + group_len - 1].kind.clone(),
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: None,
+                                has_target: false,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
+                        Some(GroupTerminator::Unreachable) => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: IrOpKind::Unreachable,
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: None,
+                                has_target: false,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
+                        None => {
+                            out.push(ResolvedNativeInst {
+                                entry,
+                                kind: ir[group_start].kind.clone(),
+                                pre_height: ir[group_start].pre_height,
+                                alt_target: None,
+                                has_target: false,
+                                cold_helper: None,
+                                cold_stack_slot: None,
+                                entry_patches,
+                                compaction: CompactionDisposition::Keep,
+                            });
+                        }
+                    }
+                    for _ in 1..group_len {
+                        out.push(ResolvedNativeInst {
+                            entry: term_entry(),
+                            kind: IrOpKind::Nop,
+                            pre_height: 0,
+                            alt_target: None,
+                            has_target: false,
+                            cold_helper: None,
+                            cold_stack_slot: None,
+                            entry_patches: EntryPatchSites::default(),
+                            compaction: CompactionDisposition::InternalOnly,
+                        });
+                    }
+                    groups_compiled += 1;
+                    ops_compiled += group_len;
+                    compiled_end = Some(group_end);
+                    break;
+                }
+
+                buf.truncate(code_start);
+                group_end -= 1;
             }
-            let code_start = buf.len();
-            if let Some((entry, terminator, branch_target)) =
-                try_compile_group(&ir[group_start..i], buf, hot_local_mask)
-            {
-                let code_len = buf.len() - code_start;
-                debug_map::record_group(
-                    buf.base_ptr(),
-                    code_start,
-                    code_len,
-                    module_name,
-                    func_idx,
-                    group_start,
-                    &ir[group_start..i],
-                    terminator_name(terminator),
-                    branch_target,
-                );
-                samply_jitdump::record_group(
-                    buf.base_ptr(),
-                    code_start,
-                    code_len,
-                    module_name,
-                    func_idx,
-                    group_start,
-                    &ir[group_start..i],
-                    terminator_name(terminator),
-                    branch_target,
-                );
-                match terminator {
-                    Some(GroupTerminator::Br) => {
-                        out.push(ResolvedNativeInst {
-                            entry,
-                            kind: ir[group_start + group_len - 1].kind.clone(),
-                            alt_target: branch_target,
-                            has_target: true,
-                            compaction: CompactionDisposition::Keep,
-                        });
-                    }
-                    Some(GroupTerminator::BrIfSimple) => {
-                        out.push(ResolvedNativeInst {
-                            entry,
-                            kind: IrOpKind::BrIfSimple,
-                            alt_target: branch_target,
-                            has_target: true,
-                            compaction: CompactionDisposition::Keep,
-                        });
-                    }
-                    Some(GroupTerminator::If) => {
-                        out.push(ResolvedNativeInst {
-                            entry,
-                            kind: IrOpKind::If,
-                            alt_target: branch_target,
-                            has_target: true,
-                            compaction: CompactionDisposition::Keep,
-                        });
-                    }
-                    Some(GroupTerminator::ReturnVoid) | Some(GroupTerminator::ReturnOne) => {
-                        out.push(ResolvedNativeInst {
-                            entry,
-                            kind: ir[group_start + group_len - 1].kind.clone(),
-                            alt_target: None,
-                            has_target: false,
-                            compaction: CompactionDisposition::Keep,
-                        });
-                    }
-                    None => {
-                        out.push(ResolvedNativeInst {
-                            entry,
-                            kind: ir[group_start].kind.clone(),
-                            alt_target: None,
-                            has_target: false,
-                            compaction: CompactionDisposition::Keep,
-                        });
-                    }
-                }
-                for _ in 1..group_len {
-                    out.push(ResolvedNativeInst {
-                        entry: term_entry(),
-                        kind: IrOpKind::Nop,
-                        alt_target: None,
-                        has_target: false,
-                        compaction: CompactionDisposition::InternalOnly,
-                    });
-                }
-                groups_compiled += 1;
-                ops_compiled += group_len;
+
+            if let Some(end) = compiled_end {
+                i = end;
                 continue;
             }
 
-            return Err("failed to compile native group");
+            #[cfg(feature = "std")]
+            if std::env::var_os("SF_NATIVE_TRACE").is_some() {
+                std::eprintln!(
+                    "[native] func {} failed to compile group starting at ir {}: {:?}",
+                    func_idx,
+                    group_start,
+                    ir[group_start].kind,
+                );
+            }
+            return Err(format!(
+                "failed to compile native group in func {} at ir {} starting with {:?}",
+                func_idx,
+                group_start,
+                ir[group_start].kind,
+            ));
         }
 
-        return Err("function contains op unsupported by native backend");
+        if let Some(cold_helper) = bridge::cold_helper_kind(&ir[i].kind) {
+            out.push(ResolvedNativeInst {
+                entry: cold_helper_entry_for_op(&ir[i], cold_helper),
+                kind: ir[i].kind.clone(),
+                pre_height: ir[i].pre_height,
+                alt_target: ir[i].alt_target,
+                has_target: ir[i].has_target,
+                cold_helper: Some(cold_helper),
+                cold_stack_slot: cold_helper_stack_slot(&ir[i], cold_helper),
+                entry_patches: EntryPatchSites::default(),
+                compaction: CompactionDisposition::Keep,
+            });
+            i += 1;
+            continue;
+        }
+
+        #[cfg(feature = "std")]
+        if std::env::var_os("SF_NATIVE_TRACE").is_some() {
+            std::eprintln!(
+                "[native] func {} unsupported op at ir {}: {:?}",
+                func_idx,
+                i,
+                ir[i].kind,
+            );
+        }
+        return Err(format!(
+            "function contains op unsupported by native backend in func {} at ir {}: {:?}",
+            func_idx,
+            i,
+            ir[i].kind,
+        ));
     }
 
     let total_len = buf.len();
@@ -354,11 +677,11 @@ pub fn resolve_native_with_context(
 
 fn terminator_name(terminator: Option<GroupTerminator>) -> Option<&'static str> {
     match terminator {
-        Some(GroupTerminator::Br) => Some("br"),
         Some(GroupTerminator::BrIfSimple) => Some("br_if_simple"),
-        Some(GroupTerminator::If) => Some("if"),
         Some(GroupTerminator::ReturnVoid) => Some("return_void"),
         Some(GroupTerminator::ReturnOne) => Some("return_one"),
+        Some(GroupTerminator::Return) => Some("return"),
+        Some(GroupTerminator::Unreachable) => Some("unreachable"),
         None => None,
     }
 }
@@ -469,59 +792,6 @@ fn pick_tail_fusion(group: &[IrOp], terminator: Option<GroupTerminator>, body_en
                 return Some((TailFusion::EqzBr, body_end - 1));
             }
         }
-        Some(GroupTerminator::If) => {
-            if body_end >= 5
-                && start_height == 0
-                && matches_const_one_xor(&[
-                    group[body_end - 3].kind.clone(),
-                    group[body_end - 2].kind.clone(),
-                ])
-                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
-            {
-                if let Some(cmp) =
-                    zero_float_compare_kind(&group[body_end - 5].kind, &group[body_end - 4].kind)
-                {
-                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 5));
-                }
-            }
-            if start_height == 0 && body_end >= 2 {
-                if let Some(cmp) =
-                    zero_float_compare_kind(&group[body_end - 2].kind, &group[body_end - 1].kind)
-                {
-                    return Some((TailFusion::DirectZeroCompareIf(cmp), body_end - 2));
-                }
-            }
-            if body_end >= 4
-                && start_height == 0
-                && matches_const_one_xor(&[
-                    group[body_end - 3].kind.clone(),
-                    group[body_end - 2].kind.clone(),
-                ])
-                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
-            {
-                if let Some(cmp) = compare_fusion_kind(&group[body_end - 4].kind) {
-                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 4));
-                }
-            }
-            if body_end >= 4
-                && matches_const_one_xor(&[
-                    group[body_end - 3].kind.clone(),
-                    group[body_end - 2].kind.clone(),
-                ])
-                && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz)
-                && produces_bool(&group[body_end - 4].kind)
-            {
-                return Some((TailFusion::XorOneIfIdentity, body_end - 3));
-            }
-            if body_end >= 1 && matches!(group[body_end - 1].kind, IrOpKind::I32Eqz) {
-                return Some((TailFusion::EqzIf, body_end - 1));
-            }
-            if start_height == 0 && body_end >= 1 {
-                if let Some(cmp) = compare_fusion_kind(&group[body_end - 1].kind) {
-                    return Some((TailFusion::DirectCompareIf(cmp), body_end - 1));
-                }
-            }
-        }
         _ => {}
     }
 
@@ -573,12 +843,14 @@ fn top_i32_reg(e: &NativeEmitter) -> Reg {
 
 /// Try to compile a group of IrOps into a single JIT handler.
 ///
-/// Returns `(handler, ends_with_brif, branch_alt_target)` on success.
+/// Returns `(entry, terminator, branch_alt_target, entry_patches)` on success.
 fn try_compile_group(
     group: &[IrOp],
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
-) -> Option<(NativeEntry, Option<GroupTerminator>, Option<OpIndex>)> {
+    func_idx: u32,
+    group_start: usize,
+) -> Option<(NativeEntry, Option<GroupTerminator>, Option<OpIndex>, EntryPatchSites)> {
     let terminator = group_terminator(group.last().unwrap());
     let branch_alt = terminator.and_then(|_| group.last().unwrap().alt_target);
 
@@ -590,14 +862,23 @@ fn try_compile_group(
         group.len()
     };
     for op in &group[..body_end] {
+        if sim_height != op.pre_height as usize {
+            return None;
+        }
         let (pops, pushes) = stack_effect(&op.kind);
         if sim_height < pops as usize {
             return None;
         }
         sim_height = sim_height - pops as usize + pushes as usize;
     }
+    if terminator.is_some() {
+        let term_op = group.last().expect("group has a terminator op");
+        if sim_height != term_op.pre_height as usize {
+            return None;
+        }
+    }
     match terminator {
-        Some(GroupTerminator::BrIfSimple | GroupTerminator::If) if sim_height < 1 => {
+        Some(GroupTerminator::BrIfSimple) if sim_height < 1 => {
             return None;
         }
         _ => {}
@@ -608,11 +889,23 @@ fn try_compile_group(
     let tail_fusion = pick_tail_fusion(group, terminator, body_end);
     let compile_body_end = tail_fusion.map(|(_, end)| end).unwrap_or(body_end);
 
-    for op in group[..compile_body_end].iter() {
+    for (offset, op) in group[..compile_body_end].iter().enumerate() {
+        assert_eq!(
+            e.height() as u16,
+            op.pre_height,
+            "height mismatch in native func {} group starting at ir {} (offset {} op {:?}): emitter={}, ir={}, group={:?}",
+            func_idx,
+            group_start,
+            offset,
+            op.kind,
+            e.height(),
+            op.pre_height,
+            group,
+        );
         emit_op(&mut e, op, hot_local_mask);
     }
 
-    let start = match tail_fusion {
+    let finish = match tail_fusion {
         Some((TailFusion::DirectCompareBr(cmp), _)) => {
             let cond = match cmp {
                 CompareFusionKind::I32(cond)
@@ -621,54 +914,30 @@ fn try_compile_group(
                 | CompareFusionKind::F64(cond) => cond,
             };
             emit_compare_flags(&mut e, cmp);
-            e.finish_br_if_simple_from_flags(cond)
+            e.finish_br_if_simple_from_flags(cond, 2)
         }
-        Some((TailFusion::DirectCompareIf(cmp), _)) => {
-            let cond = match cmp {
-                CompareFusionKind::I32(cond)
-                | CompareFusionKind::I64(cond)
-                | CompareFusionKind::F32(cond)
-                | CompareFusionKind::F64(cond) => cond,
-            };
-            emit_compare_flags(&mut e, cmp);
-            e.finish_if_from_flags(cond)
-        }
+        Some((TailFusion::DirectCompareIf(_), _)) => return None,
         Some((TailFusion::DirectZeroCompareBr(cmp), _)) => {
             let cond = match cmp {
                 CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
                 CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!(),
             };
             emit_compare_zero_flags(&mut e, cmp);
-            e.finish_br_if_simple_from_flags(cond)
+            e.finish_br_if_simple_from_flags(cond, 0)
         }
-        Some((TailFusion::DirectZeroCompareIf(cmp), _)) => {
-            let cond = match cmp {
-                CompareFusionKind::F32(cond) | CompareFusionKind::F64(cond) => cond,
-                CompareFusionKind::I32(_) | CompareFusionKind::I64(_) => unreachable!(),
-            };
-            emit_compare_zero_flags(&mut e, cmp);
-            e.finish_if_from_flags(cond)
-        }
+        Some((TailFusion::DirectZeroCompareIf(_), _)) => return None,
         Some((TailFusion::EqzBr, _)) => {
             let cond = top_i32_reg(&e);
             e.finish_br_if_simple_from_reg(cond, true)
         }
-        Some((TailFusion::EqzIf, _)) => {
-            let cond = top_i32_reg(&e);
-            e.finish_if_from_reg(cond, true)
-        }
+        Some((TailFusion::EqzIf, _)) => return None,
         Some((TailFusion::XorOneBr, _)) => {
             let cond = top_i32_reg(&e);
             e.finish_br_if_simple_from_reg(cond, true)
         }
-        Some((TailFusion::XorOneIfIdentity, _)) => {
-            let cond = top_i32_reg(&e);
-            e.finish_if_from_reg(cond, false)
-        }
+        Some((TailFusion::XorOneIfIdentity, _)) => return None,
         None => match terminator {
-            Some(GroupTerminator::Br) => e.finish_br(),
             Some(GroupTerminator::BrIfSimple) => e.finish_br_if_simple(),
-            Some(GroupTerminator::If) => e.finish_if(),
             Some(GroupTerminator::ReturnVoid) => match &group.last().unwrap().kind {
                 IrOpKind::ReturnVoid { frame_size } => e.finish_return_void(*frame_size),
                 _ => unreachable!("terminator kind mismatch"),
@@ -681,16 +950,35 @@ fn try_compile_group(
                 } => e.finish_return_one(*frame_size, *operand_base_offset, *height),
                 _ => unreachable!("terminator kind mismatch"),
             },
+            Some(GroupTerminator::Return) => match &group.last().unwrap().kind {
+                IrOpKind::Return {
+                    arity,
+                    frame_size,
+                    operand_base_offset,
+                    height,
+                } => e.finish_return_many(*arity, *frame_size, *operand_base_offset, *height),
+                _ => unreachable!("terminator kind mismatch"),
+            },
+            Some(GroupTerminator::Unreachable) => e.finish_unreachable(),
             None => e.finish(),
         },
     };
 
-    let entry: NativeEntry = unsafe { buf.fn_ptr(start) };
-    Some((entry, terminator, branch_alt))
+    let entry: NativeEntry = unsafe { buf.fn_ptr(finish.start_offset) };
+    Some((entry, terminator, branch_alt, finish.patches))
 }
 
 /// Emit a single op via NativeEmitter based on its IrOpKind.
 fn emit_op(e: &mut NativeEmitter, op: &IrOp, hot_local_mask: [bool; 3]) {
+    #[cfg(feature = "std")]
+    if std::env::var_os("SF_NATIVE_TRACE_OPS").is_some() {
+        std::eprintln!(
+            "[native-op] emit {:?} height={} ir_pre_height={}",
+            op.kind,
+            e.height(),
+            op.pre_height,
+        );
+    }
     // Debug: verify emitter height matches IR pre_height
     debug_assert_eq!(
         e.height() as u16, op.pre_height,

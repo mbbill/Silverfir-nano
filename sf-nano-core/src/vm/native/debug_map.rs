@@ -86,6 +86,41 @@ pub fn record_group(
     );
 }
 
+pub fn record_wrapper(
+    code_base: *const u8,
+    code_start: usize,
+    code_len: usize,
+    module_name: &str,
+    func_idx: u32,
+    ir_index: usize,
+    helper_name: &str,
+    op_kind: &IrOpKind,
+) {
+    #[cfg(any(feature = "wasi", feature = "std", test))]
+    {
+        let Some(writer) = writer() else {
+            return;
+        };
+        let start = code_base as usize + code_start;
+        let end = start + code_len;
+        let line = format!(
+            "0x{start:016x}\t0x{end:016x}\tmodule={}\tfunc={}\tir={}..{}\tterm=wrapper:{}\ttarget=-\tops={}\n",
+            sanitize_token(module_name),
+            func_idx,
+            ir_index,
+            ir_index + 1,
+            sanitize_token(helper_name),
+            sanitize_token(&alloc::format!("{:?}", op_kind)),
+        );
+        if let Ok(mut file) = writer.lock() {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+
+    #[cfg(not(any(feature = "wasi", feature = "std", test)))]
+    let _ = (code_base, code_start, code_len, module_name, func_idx, ir_index, helper_name, op_kind);
+}
+
 fn render_line(
     code_base: *const u8,
     code_start: usize,

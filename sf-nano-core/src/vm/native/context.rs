@@ -4,7 +4,7 @@ use core::ffi::c_char;
 
 use crate::error::WasmError;
 use crate::vm::entities::ModuleInst;
-use crate::vm::native::instruction::NativeInst;
+use crate::vm::native::instruction::NativeEntry;
 use crate::vm::store::Store;
 
 #[repr(C)]
@@ -14,7 +14,8 @@ pub struct ContextHot {
     pub mem0_base: *mut u8,
     pub mem0_size: u64,
     pub trap_message: *const c_char,
-    pub term_pc: *mut NativeInst,
+    pub term_entry: NativeEntry,
+    pub resume_fp: *mut u64,
 }
 
 impl ContextHot {
@@ -26,7 +27,8 @@ impl ContextHot {
             mem0_base,
             mem0_size,
             trap_message: core::ptr::null(),
-            term_pc: core::ptr::null_mut(),
+            term_entry: crate::vm::native::runtime::term_entry(),
+            resume_fp: core::ptr::null_mut(),
         }
     }
 }
@@ -39,7 +41,9 @@ pub mod ctx_offset {
     pub const MEM0_BASE: u32 = core::mem::offset_of!(ContextHot, mem0_base) as u32;
     pub const MEM0_SIZE: u32 = core::mem::offset_of!(ContextHot, mem0_size) as u32;
     pub const TRAP_MESSAGE: u32 = core::mem::offset_of!(ContextHot, trap_message) as u32;
-    pub const TERM_PC: u32 = core::mem::offset_of!(ContextHot, term_pc) as u32;
+    pub const TERM_ENTRY: u32 = core::mem::offset_of!(ContextHot, term_entry) as u32;
+    pub const RESUME_FP: u32 = core::mem::offset_of!(ContextHot, resume_fp) as u32;
+    pub const TERM_PC: u32 = TERM_ENTRY;
 }
 
 const _: [(); 0] = [(); core::mem::offset_of!(Context, hot)];
@@ -48,8 +52,9 @@ const _: [(); 8] = [(); ctx_offset::CALL_DEPTH as usize];
 const _: [(); 16] = [(); ctx_offset::MEM0_BASE as usize];
 const _: [(); 24] = [(); ctx_offset::MEM0_SIZE as usize];
 const _: [(); 32] = [(); ctx_offset::TRAP_MESSAGE as usize];
-const _: [(); 40] = [(); ctx_offset::TERM_PC as usize];
-const _: [(); 48] = [(); core::mem::size_of::<ContextHot>()];
+const _: [(); 40] = [(); ctx_offset::TERM_ENTRY as usize];
+const _: [(); 48] = [(); ctx_offset::RESUME_FP as usize];
+const _: [(); 56] = [(); core::mem::size_of::<ContextHot>()];
 
 #[repr(C)]
 pub struct Context {

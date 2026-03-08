@@ -12,14 +12,41 @@ pub struct NativeInst {
     pub imm0: u64,
     pub imm1: u64,
     pub imm2: u64,
+    pub tos_slots: u64,
 }
 
-const _: [(); 32] = [(); core::mem::size_of::<NativeInst>()];
+pub const INVALID_TOS_SLOT: u16 = u16::MAX;
+pub const EMPTY_TOS_SLOTS: u64 = u64::MAX;
+
+const _: [(); 40] = [(); core::mem::size_of::<NativeInst>()];
 
 impl NativeInst {
     #[inline]
     pub fn new(entry: NativeEntry, imm0: u64, imm1: u64, imm2: u64) -> Self {
-        Self { entry, imm0, imm1, imm2 }
+        Self {
+            entry,
+            imm0,
+            imm1,
+            imm2,
+            tos_slots: EMPTY_TOS_SLOTS,
+        }
+    }
+
+    #[inline]
+    pub fn new_with_tos_slots(
+        entry: NativeEntry,
+        imm0: u64,
+        imm1: u64,
+        imm2: u64,
+        tos_slots: u64,
+    ) -> Self {
+        Self {
+            entry,
+            imm0,
+            imm1,
+            imm2,
+            tos_slots,
+        }
     }
 
     #[inline]

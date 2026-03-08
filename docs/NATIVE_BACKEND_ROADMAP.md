@@ -288,6 +288,25 @@ Where:
 - `meta` is an immutable wrapper-specific metadata record
 - `HelperResult` tells the wrapper where to continue in native code
 
+The important detail is that `HelperResult` should carry native continuation
+state directly:
+
+```rust
+#[repr(C)]
+struct HelperResult {
+    next: NativeEntry,
+    fp: *mut u64,
+}
+```
+
+That keeps the cold boundary out of the interpreter mindset:
+
+- helpers do not return `Instruction*`
+- wrappers do not need a live interpreter-style `pc`
+- `resume_fp` does not need to live in the runtime context
+- wrapper -> helper -> wrapper becomes "call helper, restore VM state, branch to
+  returned native entry"
+
 This is cleaner than giving every helper a unique Rust signature and cleaner
 than passing anonymous `imm0` / `imm1` / `imm2` values directly as ABI
 arguments.
@@ -308,8 +327,10 @@ That means:
 
 Practically, `NativeCode` should own:
 
-- executable native entries
+- the function's native entry pointer
 - immutable metadata records used by cold wrappers
+- any auxiliary native-owned data tables needed by helpers, such as br-table
+  payloads
 
 Wrappers should hold either:
 
@@ -348,9 +369,11 @@ The next native migration steps should follow directly from the model above:
 1. Stop treating native execution as `Instruction` dispatch with different code
    pointers.
 2. Replace ad hoc bridge entrypoints with native-owned cold wrappers built
-   around the unified helper ABI.
+   around the unified helper ABI and `HelperResult { next, fp }`.
 3. Move wrapper metadata ownership into `NativeCode`.
-4. Gradually replace remaining interpreter-shaped assumptions (`pc`, handler
+4. Replace native frame return slots that currently store interpreter-shaped
+   continuation records with direct native entry pointers.
+5. Gradually replace remaining interpreter-shaped assumptions (`pc`, handler
    lookup, C handler entry compatibility) with native-owned control flow and
    metadata.
 

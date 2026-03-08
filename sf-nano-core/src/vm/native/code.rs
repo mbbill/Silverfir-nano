@@ -1,23 +1,26 @@
-//! Native compiled code storage and cached metadata.
+//! Native compiled code storage and cached helper metadata.
 
-use super::instruction::NativeInst;
+use super::bridge::HelperMetadata;
+use super::instruction::{NativeEntry, NativeInst};
 use alloc::boxed::Box;
 
 pub struct NativeCode {
     code: Box<[NativeInst]>,
+    helper_metadata: Box<[HelperMetadata]>,
 }
 
 impl core::fmt::Debug for NativeCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("NativeCode")
             .field("code_len", &self.code.len())
+            .field("helper_metadata_len", &self.helper_metadata.len())
             .finish()
     }
 }
 
 impl NativeCode {
-    pub fn new(code: Box<[NativeInst]>) -> Self {
-        Self { code }
+    pub fn new(code: Box<[NativeInst]>, helper_metadata: Box<[HelperMetadata]>) -> Self {
+        Self { code, helper_metadata }
     }
 
     #[inline]
@@ -33,11 +36,16 @@ impl NativeCode {
     pub fn code(&self) -> &[NativeInst] {
         &self.code
     }
+
+    #[inline]
+    pub fn helper_metadata(&self) -> &[HelperMetadata] {
+        &self.helper_metadata
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct NativeCodeCache {
-    entry: *mut NativeInst,
+    entry: Option<NativeEntry>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
@@ -46,7 +54,7 @@ pub struct NativeCodeCache {
 impl Default for NativeCodeCache {
     fn default() -> Self {
         Self {
-            entry: core::ptr::null_mut(),
+            entry: None,
             params_len: 0,
             locals_len: 0,
             results_len: 0,
@@ -60,12 +68,12 @@ unsafe impl Sync for NativeCodeCache {}
 impl NativeCodeCache {
     #[inline(always)]
     pub fn is_compiled(&self) -> bool {
-        !self.entry.is_null()
+        self.entry.is_some()
     }
 
     #[inline(always)]
-    pub fn entry(&self) -> *mut NativeInst {
-        self.entry
+    pub fn entry(&self) -> NativeEntry {
+        self.entry.expect("native code cache missing entry")
     }
 
     #[inline(always)]
@@ -87,7 +95,7 @@ impl NativeCodeCache {
 impl NativeCode {
     pub fn build_cache(&self, params_len: usize, locals_len: usize, results_len: usize) -> NativeCodeCache {
         NativeCodeCache {
-            entry: self.entry_ptr(),
+            entry: self.code.first().map(|inst| inst.entry),
             params_len,
             locals_len,
             results_len,
@@ -97,11 +105,12 @@ impl NativeCode {
 
 pub fn create_native_code(
     code: Box<[NativeInst]>,
+    helper_metadata: Box<[HelperMetadata]>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
 ) -> (NativeCode, NativeCodeCache) {
-    let native_code = NativeCode::new(code);
+    let native_code = NativeCode::new(code, helper_metadata);
     let cache = native_code.build_cache(params_len, locals_len, results_len);
     (native_code, cache)
 }

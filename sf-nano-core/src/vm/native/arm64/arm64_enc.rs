@@ -184,6 +184,11 @@ pub fn msub_32(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
     msub_enc(0, rd, rn, rm, ra)
 }
 
+/// MSUB Xd, Xn, Xm, Xa
+pub fn msub_64(rd: Reg, rn: Reg, rm: Reg, ra: Reg) -> u32 {
+    msub_enc(1, rd, rn, rm, ra)
+}
+
 // Div: sf 00 11010 110 Rm 00001 o1 Rn Rd
 // SDIV: o1=1, UDIV: o1=0
 
@@ -633,16 +638,16 @@ pub fn ldrsb_32(rt: Reg, rn: Reg, imm12: u32) -> u32 {
 // ---------------------------------------------------------------------------
 
 // size(2) 111 V(1) 00 opc(2) 1 Rm(5) option(3) S(1) 10 Rn(5) Rt(5)
-// V=0, option=011 (LSL), S=0 (no shift) → [Xn, Xm]
+// V=0, option=011 (LSL), S=0 → [Xn, Xm], S=1 → [Xn, Xm, LSL #sizeshift]
 
-fn ldst_reg_offset(size: u32, opc: u32, rt: Reg, rn: Reg, rm: Reg) -> u32 {
+fn ldst_reg_offset(size: u32, opc: u32, rt: Reg, rn: Reg, rm: Reg, scaled: bool) -> u32 {
     (size << 30)
         | (0b111_0_00 << 24)
         | (opc << 22)
         | (1 << 21)
         | (rm.idx() << 16)
         | (0b011 << 13) // option=LSL
-        | (0 << 12)     // S=0
+        | ((scaled as u32) << 12)
         | (0b10 << 10)
         | (rn.idx() << 5)
         | rt.idx()
@@ -650,42 +655,47 @@ fn ldst_reg_offset(size: u32, opc: u32, rt: Reg, rn: Reg, rm: Reg) -> u32 {
 
 /// LDR Xt, [Xn, Xm] (64-bit load, register offset)
 pub fn ldr_64_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b11, 0b01, rt, rn, rm)
+    ldst_reg_offset(0b11, 0b01, rt, rn, rm, false)
+}
+
+/// LDR Xt, [Xn, Xm, LSL #3] (64-bit load, register offset scaled by 8)
+pub fn ldr_64_reg_scaled(rt: Reg, rn: Reg, rm: Reg) -> u32 {
+    ldst_reg_offset(0b11, 0b01, rt, rn, rm, true)
 }
 
 /// STR Xt, [Xn, Xm] (64-bit store, register offset)
 pub fn str_64_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b11, 0b00, rt, rn, rm)
+    ldst_reg_offset(0b11, 0b00, rt, rn, rm, false)
 }
 
 /// LDR Wt, [Xn, Xm] (32-bit load, register offset)
 pub fn ldr_32_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b10, 0b01, rt, rn, rm)
+    ldst_reg_offset(0b10, 0b01, rt, rn, rm, false)
 }
 
 /// STR Wt, [Xn, Xm] (32-bit store, register offset)
 pub fn str_32_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b10, 0b00, rt, rn, rm)
+    ldst_reg_offset(0b10, 0b00, rt, rn, rm, false)
 }
 
 /// LDRH Wt, [Xn, Xm] (16-bit load, register offset)
 pub fn ldrh_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b01, 0b01, rt, rn, rm)
+    ldst_reg_offset(0b01, 0b01, rt, rn, rm, false)
 }
 
 /// STRH Wt, [Xn, Xm] (16-bit store, register offset)
 pub fn strh_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b01, 0b00, rt, rn, rm)
+    ldst_reg_offset(0b01, 0b00, rt, rn, rm, false)
 }
 
 /// LDRB Wt, [Xn, Xm] (8-bit load, register offset)
 pub fn ldrb_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b00, 0b01, rt, rn, rm)
+    ldst_reg_offset(0b00, 0b01, rt, rn, rm, false)
 }
 
 /// STRB Wt, [Xn, Xm] (8-bit store, register offset)
 pub fn strb_reg(rt: Reg, rn: Reg, rm: Reg) -> u32 {
-    ldst_reg_offset(0b00, 0b00, rt, rn, rm)
+    ldst_reg_offset(0b00, 0b00, rt, rn, rm, false)
 }
 
 fn fp_ldst_reg_offset(size: u32, opc: u32, vt: u32, rn: Reg, rm: Reg) -> u32 {
@@ -700,6 +710,22 @@ fn fp_ldst_reg_offset(size: u32, opc: u32, vt: u32, rn: Reg, rm: Reg) -> u32 {
         | (0b10 << 10)
         | (rn.idx() << 5)
         | vt
+}
+
+// ---------------------------------------------------------------------------
+// PC-relative literal loads
+// ---------------------------------------------------------------------------
+
+/// LDR Xt, label (64-bit literal load).
+///
+/// `imm19` is the signed word offset from the current instruction.
+pub fn ldr_lit_64(rt: Reg, imm19: i32) -> u32 {
+    debug_assert!(
+        imm19 >= -(1 << 18) && imm19 < (1 << 18),
+        "imm19 out of range: {imm19}"
+    );
+    let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
+    (0b01011000 << 24) | (imm19_bits << 5) | rt.idx()
 }
 
 /// LDR St, [Xn, Xm] (32-bit floating-point load, register offset)
@@ -1463,6 +1489,16 @@ mod tests {
         // = 1111_1000_0110_0011_0110_1000_0101_1010
         // = 0xF863685A
         assert_eq!(ldr_64_reg(Reg::T0, Reg::TMP0, Reg::TMP1), 0xF863685A);
+    }
+
+    #[test]
+    fn test_ldr_64_reg_scaled() {
+        // ldr x26, [x2, x3, lsl #3]
+        // size=11, 111_0_00, opc=01, 1, Rm=00011, option=011, S=1, 10, Rn=00010, Rt=11010
+        // 11_111_0_00_01_1_00011_011_1_10_00010_11010
+        // = 1111_1000_0110_0011_0111_1000_0101_1010
+        // = 0xF863785A
+        assert_eq!(ldr_64_reg_scaled(Reg::T0, Reg::TMP0, Reg::TMP1), 0xF863785A);
     }
 
     #[test]

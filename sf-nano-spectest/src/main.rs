@@ -5,6 +5,7 @@ mod wast_test_runner;
 
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
+use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
 use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
 use structopt::StructOpt;
 use summary::print_summary;
@@ -23,10 +24,33 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[structopt(long = "log-level")]
     log_level: Option<String>,
+
+    /// Backend to use for execution (auto, native, fusion, base)
+    #[structopt(long = "backend")]
+    backend: Option<String>,
 }
 
 fn main() {
     let args = Cli::from_args();
+
+    if let Some(backend) = &args.backend {
+        let mode = BackendMode::parse_str(backend).unwrap_or_else(|| {
+            eprintln!(
+                "invalid backend '{}'; expected one of: auto, native, fusion, base (compat: jit)",
+                backend
+            );
+            std::process::exit(1);
+        });
+        set_backend_mode(mode);
+        if let Err(err) = active_backend() {
+            eprintln!(
+                "backend '{}' is unavailable in this build: {}",
+                mode.as_str(),
+                err
+            );
+            std::process::exit(1);
+        }
+    }
 
     // Initialize logging
     if let Some(level_str) = &args.log_level {

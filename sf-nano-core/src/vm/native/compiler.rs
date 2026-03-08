@@ -20,7 +20,7 @@ pub fn build_for_function(
     store: &Store,
     module: &ModuleInst,
     func_idx: u32,
-) -> Result<*mut super::instruction::NativeInst, WasmError> {
+) -> Result<super::instruction::NativeEntry, WasmError> {
     let code = function.code();
     let func_type = function.func_type();
     let params_count = func_type.params().len();
@@ -41,11 +41,24 @@ pub fn build_for_function(
     let ir_ops = lowered::lower_to_ir(code, &ctx, &mut stack, hot_local_plan)?;
     let hot_mask = hot_local_plan.hot_mask();
 
-    let resolved = super::resolve_backend(&ir_ops, module, hot_mask, func_idx)
+    let resolved = super::resolve_backend(
+        &ir_ops,
+        stack.operand_base(),
+        compile_plan.config().tos_register_count,
+        module,
+        hot_mask,
+        func_idx,
+    )
         .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {}", err)))?;
 
-    let code_box = finalizer::finalize(resolved, &mut stack);
-    let (native_code, native_cache) = create_native_code(code_box, params_count, locals_count, results_count);
+    let mut buf = module
+        .native_code_buffer()
+        .map_err(|err| WasmError::invalid(err.into()))?;
+    let (code_box, helper_metadata) =
+        finalizer::finalize(resolved, &mut stack, &mut buf, &module.name, func_idx);
+    drop(buf);
+    let (native_code, native_cache) =
+        create_native_code(code_box, helper_metadata, params_count, locals_count, results_count);
     let entry = native_cache.entry();
     function.set_native_code(native_code, native_cache);
     Ok(entry)

@@ -391,13 +391,30 @@ impl WastTestRunner {
         match directive {
             WastDirective::Module(quote_wat) => self.execute_wast_module(quote_wat, index),
             WastDirective::Invoke(invoke) => {
+                debug!(
+                    "Directive {} action: invoke '{}' in module '{}'",
+                    index,
+                    invoke.name,
+                    invoke
+                        .module
+                        .as_ref()
+                        .map(|id| id.name())
+                        .unwrap_or("$last")
+                );
                 let _result = self.execute_wast_invoke(invoke)?;
                 Ok(())
             }
             WastDirective::AssertReturn { exec, results, .. } => {
+                debug!("Directive {} action: {}", index, self.describe_wast_action(exec));
                 self.execute_wast_assert_return(exec, results)
             }
             WastDirective::AssertTrap { exec, message, .. } => {
+                debug!(
+                    "Directive {} action: {} (expect trap: {})",
+                    index,
+                    self.describe_wast_action(exec),
+                    message
+                );
                 self.execute_wast_assert_trap(exec, message)
             }
             WastDirective::AssertInvalid {

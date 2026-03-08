@@ -426,8 +426,11 @@ impl Instance {
             }
         }
 
-        // --- Precompile handler-based fast IR when the active runtime family needs it ---
-        if !matches!(crate::vm::backend::backend_mode(), crate::vm::backend::BackendMode::Native) {
+        // --- Precompile handler-based fast IR when the selected runtime family needs it ---
+        if !matches!(
+            crate::vm::backend::active_backend(),
+            Ok(crate::vm::backend::BackendKind::Native)
+        ) {
             precompile::precompile_module_two_pass(&store)?;
         }
 

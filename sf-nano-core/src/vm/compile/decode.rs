@@ -878,7 +878,8 @@ impl<'a> IrLower<'a> {
                 if let Immediate::FunctionIndex(func_idx) = imm {
                     self.emit_cache_spill_all();
                     let (params, results) = self.ctx.resolve_func_type(*func_idx as usize);
-                    let delta = SlotRef::operand_relative((self.stack.height() - params) as u16);
+                    let delta =
+                        SlotRef::operand_relative(self.stack.height().saturating_sub(params) as u16);
                     if self.ctx.is_func_internal(*func_idx as usize) {
                         if let Some(callee_inst) = self.ctx.get_func_inst(*func_idx as usize) {
                             self.emit(
@@ -920,7 +921,11 @@ impl<'a> IrLower<'a> {
                 if let Immediate::CallIndirectArgs { typeidx, tableidx } = imm {
                     self.emit_cache_spill_all();
                     let (params, results) = self.ctx.resolve_type_index(*typeidx as usize);
-                    let delta = SlotRef::operand_relative((self.stack.height() - params - 1) as u16);
+                    let delta = SlotRef::operand_relative(
+                        self.stack
+                            .height()
+                            .saturating_sub(params.saturating_add(1)) as u16,
+                    );
                     self.stack.pop(); // Pop materialized index
                     self.emit(
                         SemanticOpKind::CallIndirect {

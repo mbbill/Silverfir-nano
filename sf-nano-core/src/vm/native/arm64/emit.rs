@@ -4,82 +4,72 @@
 //! and hot-context field offset constants.
 
 use super::super::CodeBuffer;
-use super::reg::Reg;
 use super::arm64_enc;
+use super::reg::Reg;
+use crate::vm::native::bridge::HelperMetadata;
+use crate::vm::native::instruction::NativeEntry;
 pub use crate::vm::native::context::ctx_offset;
 
-// ---------------------------------------------------------------------------
-// NativeInst layout constants
-// ---------------------------------------------------------------------------
-
-/// Size of one NativeInst struct in bytes (entry + 3 immediates = 32 bytes).
-pub const INST_SIZE: u32 = 32;
-
-/// Byte offset of entry field within NativeInst (always 0).
-pub const INST_ENTRY_OFFSET: u32 = 0;
-
-/// Byte offset of imm0 within Instruction (after 8-byte handler).
-pub const INST_IMM0_OFFSET: u32 = 8;
-
-// ---------------------------------------------------------------------------
-// Dispatch stubs
-// ---------------------------------------------------------------------------
-
-/// Emit the universal dispatch stub (JIT group exit sequence).
+/// Emit a direct branch to an entry pointer loaded from an inline literal.
 ///
-/// This advances PC by one NativeInst slot (32 bytes), loads the entry
-/// at the new PC, and tail-jumps.
-///
-/// Emitted instructions:
+/// Layout:
 /// ```text
-/// add  pc, pc, #0x20       ; pc += 1 instruction (32 bytes)
-/// ldr  tmp0, [pc]          ; entry = pc->entry
-/// br   tmp0                ; tail-jump to entry
+/// ldr  target_reg, .+8
+/// br   target_reg
+/// .quad 0      ; patched later with NativeEntry
 /// ```
 ///
-/// Returns the byte offset where the stub starts in the buffer.
-pub fn emit_dispatch_linear(buf: &mut CodeBuffer) -> usize {
-    let start = buf.len();
-    buf.emit(arm64_enc::add_imm_64(Reg::PC, Reg::PC, INST_SIZE));
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, INST_ENTRY_OFFSET / 8));
-    buf.emit(arm64_enc::br(Reg::TMP0));
-    start
+/// Returns the byte offset of the 8-byte literal payload that should be
+/// patched with the entry pointer.
+pub fn emit_direct_branch_literal(buf: &mut CodeBuffer, target_reg: Reg) -> usize {
+    buf.emit(arm64_enc::ldr_lit_64(target_reg, 2));
+    buf.emit(arm64_enc::br(target_reg));
+    buf.emit_u64(0)
 }
 
-/// Emit nonlinear dispatch: load branch target from pc->imm0, dispatch to it.
-///
-/// Used for branch-taken paths (br, br_if when condition is true).
-/// Loads target pointer from imm0, then loads target entry and jumps to it.
-///
-/// Emitted instructions (5):
-/// ```text
-/// ldr  tmp1, [pc, #8]      ; TMP1 = pc->imm0 (target instruction ptr)
-/// ldr  tmp0, [tmp1]        ; entry = target->entry
-/// mov  pc, tmp1            ; pc = target
-/// br   tmp0                ; jump to entry
-/// ```
-///
-/// Returns the byte offset where the stub starts in the buffer.
-pub fn emit_dispatch_nonlinear(buf: &mut CodeBuffer) -> usize {
-    let start = buf.len();
-    buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::PC, INST_IMM0_OFFSET / 8));
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::TMP1, INST_ENTRY_OFFSET / 8));
-    buf.emit(arm64_enc::mov_reg_64(Reg::PC, Reg::TMP1));
-    buf.emit(arm64_enc::br(Reg::TMP0));
-    start
+fn materialize_u64(buf: &mut CodeBuffer, dst: Reg, value: u64) {
+    if value == 0 {
+        buf.emit(arm64_enc::movz_64(dst, 0, 0));
+        return;
+    }
+    let chunks: [(u16, u32); 4] = [
+        ((value & 0xFFFF) as u16, 0),
+        (((value >> 16) & 0xFFFF) as u16, 16),
+        (((value >> 32) & 0xFFFF) as u16, 32),
+        (((value >> 48) & 0xFFFF) as u16, 48),
+    ];
+    let mut first = true;
+    for &(chunk, shift) in &chunks {
+        if chunk != 0 || first {
+            if first {
+                buf.emit(arm64_enc::movz_64(dst, chunk, shift));
+                first = false;
+            } else {
+                buf.emit(arm64_enc::movk_64(dst, chunk, shift));
+            }
+        }
+    }
 }
 
-/// Emit dispatch to an already-loaded target instruction pointer in `target_reg`.
-///
-/// The caller is responsible for ensuring `target_reg` remains live until the
-/// final `mov pc, target_reg`.
-pub fn emit_dispatch_register(buf: &mut CodeBuffer, target_reg: Reg) -> usize {
+/// Emit a cold wrapper thunk that installs its metadata pointer in `x20`
+/// and tail-branches to a shared helper entry.
+pub fn emit_helper_wrapper(
+    buf: &mut CodeBuffer,
+    helper_entry: NativeEntry,
+    meta: *const HelperMetadata,
+) -> (usize, usize) {
     let start = buf.len();
-    buf.emit(arm64_enc::ldr_64(Reg::TMP0, target_reg, INST_ENTRY_OFFSET / 8));
-    buf.emit(arm64_enc::mov_reg_64(Reg::PC, target_reg));
-    buf.emit(arm64_enc::br(Reg::TMP0));
-    start
+    materialize_u64(buf, Reg::PC, meta as usize as u64);
+    materialize_u64(buf, Reg::TMP1, helper_entry as usize as u64);
+    buf.emit(arm64_enc::br(Reg::TMP1));
+    (start, buf.len() - start)
 }
+
+/// Packed TOS slot state offset within legacy native instruction records.
+///
+/// This remains temporarily while the cold bridge and return paths are being
+/// migrated off `NativeInst` descriptors.
+pub const INST_TOS_SLOTS_OFFSET: u32 = 32;
 
 // ---------------------------------------------------------------------------
 // Tests

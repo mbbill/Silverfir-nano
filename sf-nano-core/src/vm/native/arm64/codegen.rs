@@ -22,6 +22,9 @@ const FP_ALIAS_REGS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 /// Static OOB trap message (null-terminated C string).
 const OOB_MSG: &[u8; 28] = b"out of bounds memory access\0";
+const INT_DIV_ZERO_MSG: &[u8; 23] = b"integer divide by zero\0";
+const INT_OVERFLOW_MSG: &[u8; 17] = b"integer overflow\0";
+const UNREACHABLE_MSG: &[u8; 12] = b"unreachable\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GprLoc {
@@ -39,6 +42,25 @@ enum FpWidth {
 struct FpLoc {
     reg: u8,
     width: FpWidth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReturnResults {
+    arity: u16,
+    operand_base_offset: u32,
+    height: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryPatchSites {
+    pub fallthrough_literal: Option<usize>,
+    pub alt_literal: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FinishInfo {
+    pub start_offset: usize,
+    pub patches: EntryPatchSites,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +197,14 @@ impl<'a> NativeEmitter<'a> {
         self.height -= 2;
     }
 
+    fn pop3_push_materialized(&mut self) {
+        self.slots[0] = SlotLoc::canonical();
+        self.slots[1] = self.slots[3];
+        self.slots[2] = SlotLoc::canonical();
+        self.slots[3] = SlotLoc::canonical();
+        self.height -= 2;
+    }
+
     fn push_materialized_slot(&mut self) {
         self.height += 1;
         self.shift_slots_for_push();
@@ -205,8 +235,46 @@ impl<'a> NativeEmitter<'a> {
         }
     }
 
+    fn logical_pos_for_canonical_reg(&self, reg: Reg) -> Option<u8> {
+        let live = self.height.min(self.slots.len());
+        (1..=live as u8).find(|&pos| tos_reg(self.dv(), pos) == reg)
+    }
+
     pub fn materialize_aliases(&mut self) {
         self.materialize_aliases_from(1);
+    }
+
+    fn emit_reload_tos_from_packed(&mut self, packed_reg: Reg) {
+        if packed_reg != Reg::TMP2 {
+            self.buf.emit(arm64_enc::mov_reg_64(Reg::TMP2, packed_reg));
+        }
+        self.buf.emit(arm64_enc::mov_reg_64(Reg::T0, Reg::XZR));
+        self.buf.emit(arm64_enc::mov_reg_64(Reg::T1, Reg::XZR));
+        self.buf.emit(arm64_enc::mov_reg_64(Reg::T2, Reg::XZR));
+        self.buf.emit(arm64_enc::mov_reg_64(Reg::T3, Reg::XZR));
+        self.buf.emit(arm64_enc::movz_64(Reg::TMP3, 0xffff, 0));
+        self.buf.emit(arm64_enc::movz_64(Reg::TMP5, 16, 0));
+
+        for (i, dst) in [Reg::T0, Reg::T1, Reg::T2, Reg::T3].into_iter().enumerate() {
+            self.buf.emit(arm64_enc::and_reg_64(Reg::TMP4, Reg::TMP2, Reg::TMP3));
+            self.buf.emit(arm64_enc::cmp_reg_64(Reg::TMP4, Reg::TMP3));
+            let skip = self.buf.emit(arm64_enc::b_cond(Cond::EQ, 0));
+            self.buf.emit(arm64_enc::ldr_64_reg_scaled(dst, Reg::FP, Reg::TMP4));
+            let delta = (self.buf.len() - skip) as i32 / 4;
+            self.buf.patch_u32(skip, arm64_enc::b_cond(Cond::EQ, delta));
+            if i != 3 {
+                self.buf.emit(arm64_enc::lsrv_64(Reg::TMP2, Reg::TMP2, Reg::TMP5));
+            }
+        }
+    }
+
+    fn emit_reload_tos_from_target(&mut self, target_reg: Reg) {
+        self.buf.emit(arm64_enc::ldr_64(
+            Reg::TMP2,
+            target_reg,
+            emit::INST_TOS_SLOTS_OFFSET / 8,
+        ));
+        self.emit_reload_tos_from_packed(Reg::TMP2);
     }
 
     fn materialize_aliases_from(&mut self, start_pos: usize) {
@@ -239,11 +307,8 @@ impl<'a> NativeEmitter<'a> {
     }
 
     fn slot_int_loc(&mut self, pos: u8) -> SlotLoc {
-        let _ = self.slot_gpr_source(pos);
-        match self.slots[(pos - 1) as usize].gpr.expect("slot_gpr_source must materialize a GPR") {
-            GprLoc::Canonical => SlotLoc::canonical(),
-            GprLoc::Alias(reg) => SlotLoc::gpr_alias(reg),
-        }
+        self.materialize_slot_to_canonical(pos);
+        SlotLoc::canonical()
     }
 
     fn pop2_push_loc(&mut self, loc: SlotLoc) {
@@ -409,143 +474,179 @@ impl<'a> NativeEmitter<'a> {
         Some(alias.loc)
     }
 
-    /// Finish the group: emit dispatch stub (+ trap stub if needed). Returns start offset.
-    pub fn finish(mut self) -> usize {
+    /// Finish the group with a direct fallthrough target patch.
+    pub fn finish(mut self) -> FinishInfo {
         self.materialize_aliases();
-        emit::emit_dispatch_linear(self.buf);
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal: None,
+            },
+        }
     }
 
     /// Finish with an unconditional branch dispatch.
     ///
-    /// Branches to the target in `pc->imm0` via nonlinear dispatch.
-    pub fn finish_br(mut self) -> usize {
+    /// Branches to the patched alternate target directly.
+    pub fn finish_br(mut self) -> FinishInfo {
         self.materialize_aliases();
-        emit::emit_dispatch_nonlinear(self.buf);
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal: None,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish with a br_if_simple conditional dispatch.
     ///
-    /// Pops the condition from TOS top (i32). If nonzero, branches to target
-    /// (loaded from pc->imm0 via nonlinear dispatch). If zero, falls through
-    /// (linear dispatch to pc+1).
-    ///
-    /// The group's Instruction must have imm0 set to the branch target pointer.
-    ///
-    /// Emitted sequence (10 instructions = 40 bytes):
-    /// ```text
-    /// cbz  w_cond, +6           ; if cond == 0, skip to fallthrough
-    /// <nonlinear dispatch: 5>   ; branch taken path
-    /// <linear dispatch: 4>      ; fallthrough path
-    /// ```
-    pub fn finish_br_if_simple(mut self) -> usize {
+    /// Pops the condition from TOS top (i32). If nonzero, branches to the
+    /// patched alternate target. If zero, branches to the patched fallthrough.
+    pub fn finish_br_if_simple(mut self) -> FinishInfo {
         let cond = self.resolve_tos_reg(1);
         self.materialize_aliases_from(2);
+        self.drop_val();
 
-        // CBZ w_cond, +6: if cond == 0, skip 5 taken-path instructions
-        self.buf.emit(arm64_enc::cbz_32(cond, 6));
-
-        // Branch taken: nonlinear dispatch (5 instructions)
-        emit::emit_dispatch_nonlinear(self.buf);
-
-        // Fallthrough: linear dispatch (4 instructions)
-        emit::emit_dispatch_linear(self.buf);
+        // CBZ w_cond, +5: if cond == 0, skip the taken-path branch literal.
+        self.buf.emit(arm64_enc::cbz_32(cond, 5));
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
 
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish with an `if` conditional dispatch.
     ///
-    /// Pops the condition from TOS top (i32). If zero, branches to the target
-    /// in `pc->imm0` via nonlinear dispatch. If nonzero, falls through linearly
-    /// to `pc + 1` (the then-path).
-    pub fn finish_if(mut self) -> usize {
+    /// Pops the condition from TOS top (i32). If zero, branches to the patched
+    /// alternate target. If nonzero, branches to the patched then-path entry.
+    pub fn finish_if(mut self) -> FinishInfo {
         let cond = self.resolve_tos_reg(1);
         self.materialize_aliases_from(2);
 
-        // CBNZ w_cond, +6: cond != 0 skips the 5 taken-path instructions
-        // and lands at the linear fallthrough dispatch.
-        self.buf.emit(arm64_enc::cbnz_32(cond, 6));
-
-        // Condition == 0: jump to else/end target.
-        emit::emit_dispatch_nonlinear(self.buf);
-
-        // Condition != 0: enter the then-path at pc+1.
-        emit::emit_dispatch_linear(self.buf);
+        // CBNZ w_cond, +5: cond != 0 skips the else-target branch literal.
+        self.buf.emit(arm64_enc::cbnz_32(cond, 5));
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
 
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish with a conditional dispatch using an existing integer condition register.
     ///
-    /// If `branch_on_zero` is true, zero branches to the nonlinear target in `pc->imm0`.
-    /// Otherwise, nonzero branches to the nonlinear target.
-    pub fn finish_br_if_simple_from_reg(mut self, cond: Reg, branch_on_zero: bool) -> usize {
+    /// If `branch_on_zero` is true, zero branches to the patched alternate
+    /// target. Otherwise, nonzero branches to the patched alternate target.
+    pub fn finish_br_if_simple_from_reg(mut self, cond: Reg, branch_on_zero: bool) -> FinishInfo {
         self.materialize_aliases_from(2);
+        self.drop_val();
         let branch = if branch_on_zero {
             arm64_enc::cbz_32(cond, 5)
         } else {
             arm64_enc::cbnz_32(cond, 5)
         };
         self.buf.emit(branch);
-        emit::emit_dispatch_linear(self.buf);
-        emit::emit_dispatch_nonlinear(self.buf);
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish an `if` using an existing integer condition register.
     ///
-    /// If `linear_on_zero` is true, zero enters the linear then-path. Otherwise
-    /// nonzero enters the linear then-path.
-    pub fn finish_if_from_reg(mut self, cond: Reg, linear_on_zero: bool) -> usize {
+    /// If `linear_on_zero` is true, zero enters the patched then-path.
+    /// Otherwise nonzero enters the patched then-path.
+    pub fn finish_if_from_reg(mut self, cond: Reg, linear_on_zero: bool) -> FinishInfo {
         self.materialize_aliases_from(2);
         let branch = if linear_on_zero {
-            arm64_enc::cbz_32(cond, 6)
+            arm64_enc::cbz_32(cond, 5)
         } else {
-            arm64_enc::cbnz_32(cond, 6)
+            arm64_enc::cbnz_32(cond, 5)
         };
         self.buf.emit(branch);
-        emit::emit_dispatch_nonlinear(self.buf);
-        emit::emit_dispatch_linear(self.buf);
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish `br_if_simple` when flags are already set.
     ///
-    /// `taken_cond` is the condition under which control jumps to the nonlinear
-    /// branch target in `pc->imm0`.
-    pub fn finish_br_if_simple_from_flags(mut self, taken_cond: Cond) -> usize {
+    /// `taken_cond` is the condition under which control jumps to the patched
+    /// alternate target.
+    pub fn finish_br_if_simple_from_flags(mut self, taken_cond: Cond, stack_pops: u8) -> FinishInfo {
         self.materialize_aliases_from(3);
+        match stack_pops {
+            0 => {}
+            1 => self.drop_val(),
+            2 => self.pop2(),
+            _ => panic!("unsupported br_if flag pop count {}", stack_pops),
+        }
         self.buf.emit(arm64_enc::b_cond(taken_cond, 5));
-        emit::emit_dispatch_linear(self.buf);
-        emit::emit_dispatch_nonlinear(self.buf);
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish `if` when flags are already set.
     ///
-    /// `linear_cond` is the condition under which control enters the linear
-    /// then-path at `pc + 1`.
-    pub fn finish_if_from_flags(mut self, linear_cond: Cond) -> usize {
+    /// `linear_cond` is the condition under which control enters the patched
+    /// then-path.
+    pub fn finish_if_from_flags(mut self, linear_cond: Cond) -> FinishInfo {
         self.materialize_aliases_from(3);
-        self.buf.emit(arm64_enc::b_cond(linear_cond, 6));
-        emit::emit_dispatch_nonlinear(self.buf);
-        emit::emit_dispatch_linear(self.buf);
+        self.buf.emit(arm64_enc::b_cond(linear_cond, 5));
+        let alt_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
+        let fallthrough_literal = Some(emit::emit_direct_branch_literal(self.buf, Reg::TMP0));
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites {
+                fallthrough_literal,
+                alt_literal,
+            },
+        }
     }
 
     /// Finish with a specialized `return_void` epilogue.
-    pub fn finish_return_void(mut self, frame_size: u16) -> usize {
-        self.finish_return(None, frame_size, 0, 0)
+    pub fn finish_return_void(mut self, frame_size: u16) -> FinishInfo {
+        self.finish_return(None, frame_size)
     }
 
     /// Finish with a specialized `return_one` epilogue.
@@ -554,24 +655,57 @@ impl<'a> NativeEmitter<'a> {
         frame_size: u16,
         operand_base_offset: u32,
         height: u16,
-    ) -> usize {
-        self.finish_return(Some((operand_base_offset, height)), frame_size, operand_base_offset, height)
+    ) -> FinishInfo {
+        self.finish_return(Some(ReturnResults {
+            arity: 1,
+            operand_base_offset,
+            height,
+        }), frame_size)
+    }
+
+    /// Finish with a general `return` epilogue for arity >= 2.
+    pub fn finish_return_many(
+        mut self,
+        arity: u16,
+        frame_size: u16,
+        operand_base_offset: u32,
+        height: u16,
+    ) -> FinishInfo {
+        self.finish_return(Some(ReturnResults {
+            arity,
+            operand_base_offset,
+            height,
+        }), frame_size)
+    }
+
+    fn emit_return_result_copy(&mut self, dst_slot: u32, stack_pos_from_top: u16, results: ReturnResults) {
+        let pos = stack_pos_from_top as usize;
+        let live_slots = self.height.min(self.slots.len());
+        if pos <= live_slots {
+            self.copy_slot_to_gpr(stack_pos_from_top as u8, Reg::TMP2);
+            self.buf.emit(arm64_enc::str_64(Reg::TMP2, Reg::FP, dst_slot));
+            return;
+        }
+
+        let operand_slot = results.operand_base_offset / 8
+            + results.height.saturating_sub(stack_pos_from_top) as u32;
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::FP, operand_slot));
+        self.buf.emit(arm64_enc::str_64(Reg::TMP2, Reg::FP, dst_slot));
     }
 
     fn finish_return(
         &mut self,
-        result_src: Option<(u32, u16)>,
+        results: Option<ReturnResults>,
         frame_size: u16,
-        _operand_base_offset: u32,
-        _height: u16,
-    ) -> usize {
+    ) -> FinishInfo {
         self.buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::FP, frame_size as u32));
         self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::FP, frame_size as u32 + 1));
 
-        if let Some((operand_base_offset, height)) = result_src {
-            let result_slot = operand_base_offset / 8 + height as u32 - 1;
-            self.buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::FP, result_slot));
-            self.buf.emit(arm64_enc::str_64(Reg::TMP2, Reg::FP, 0));
+        if let Some(results) = results {
+            for i in 0..results.arity {
+                let stack_pos_from_top = results.arity - i;
+                self.emit_return_result_copy(i as u32, stack_pos_from_top, results);
+            }
         }
 
         let term_patch = self.buf.emit(arm64_enc::cbz_64(Reg::TMP0, 0));
@@ -588,26 +722,41 @@ impl<'a> NativeEmitter<'a> {
             emit::ctx_offset::CALL_DEPTH / 8,
         ));
 
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::FP, frame_size as u32 + 2));
         self.buf.emit(arm64_enc::mov_reg_64(Reg::FP, Reg::TMP0));
         self.buf.emit(arm64_enc::ldr_64(Reg::L0, Reg::FP, 0));
         self.buf.emit(arm64_enc::ldr_64(Reg::L1, Reg::FP, 1));
         self.buf.emit(arm64_enc::ldr_64(Reg::L2, Reg::FP, 2));
-        emit::emit_dispatch_register(self.buf, Reg::TMP1);
+        self.emit_reload_tos_from_packed(Reg::TMP2);
+        self.buf.emit(arm64_enc::br(Reg::TMP1));
 
         let term_offset = self.buf.len();
         self.buf.emit(arm64_enc::ldr_64(
             Reg::TMP1,
             Reg::CTX,
-            emit::ctx_offset::TERM_PC / 8,
+            emit::ctx_offset::TERM_ENTRY / 8,
         ));
-        emit::emit_dispatch_register(self.buf, Reg::TMP1);
+        self.buf.emit(arm64_enc::br(Reg::TMP1));
 
         let delta = (term_offset - term_patch) as i32 / 4;
         self.buf
             .patch_u32(term_patch, arm64_enc::cbz_64(Reg::TMP0, delta));
 
         self.emit_trap_stub_if_needed();
-        self.start_offset
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites::default(),
+        }
+    }
+
+    pub fn finish_unreachable(mut self) -> FinishInfo {
+        self.materialize_aliases();
+        self.emit_inline_trap(UNREACHABLE_MSG);
+        self.emit_trap_stub_if_needed();
+        FinishInfo {
+            start_offset: self.start_offset,
+            patches: EntryPatchSites::default(),
+        }
     }
 
     /// Emit the OOB trap stub and patch all B.HI branches to it.
@@ -625,10 +774,9 @@ impl<'a> NativeEmitter<'a> {
         self.buf.emit(arm64_enc::str_64(Reg::TMP1, Reg::CTX,
             emit::ctx_offset::TRAP_MESSAGE / 8));
 
-        // Dispatch to term_pc
-        self.buf.emit(arm64_enc::ldr_64(Reg::PC, Reg::CTX,
-            emit::ctx_offset::TERM_PC / 8));
-        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::PC, emit::INST_ENTRY_OFFSET / 8));
+        // Branch to the runtime terminal entry.
+        self.buf.emit(arm64_enc::ldr_64(Reg::TMP0, Reg::CTX,
+            emit::ctx_offset::TERM_ENTRY / 8));
         self.buf.emit(arm64_enc::br(Reg::TMP0));
 
         // Patch all B.HI branches to point to the trap stub
@@ -636,6 +784,37 @@ impl<'a> NativeEmitter<'a> {
             let delta = (trap_offset - patch_off) as i32 / 4;
             self.buf.patch_u32(patch_off, arm64_enc::b_cond(Cond::HI, delta));
         }
+    }
+
+    fn emit_inline_trap(&mut self, msg: &'static [u8]) {
+        let msg_addr = msg.as_ptr() as u64;
+        materialize_u64(self.buf, Reg::TMP1, msg_addr);
+        self.buf.emit(arm64_enc::str_64(
+            Reg::TMP1,
+            Reg::CTX,
+            emit::ctx_offset::TRAP_MESSAGE / 8,
+        ));
+        self.buf.emit(arm64_enc::ldr_64(
+            Reg::TMP0,
+            Reg::CTX,
+            emit::ctx_offset::TERM_ENTRY / 8,
+        ));
+        self.buf.emit(arm64_enc::br(Reg::TMP0));
+    }
+
+    fn patch_cbnz_32_to_here(&mut self, patch_off: usize, reg: Reg) {
+        let delta = (self.buf.len() - patch_off) as i32 / 4;
+        self.buf.patch_u32(patch_off, arm64_enc::cbnz_32(reg, delta));
+    }
+
+    fn patch_cbnz_64_to_here(&mut self, patch_off: usize, reg: Reg) {
+        let delta = (self.buf.len() - patch_off) as i32 / 4;
+        self.buf.patch_u32(patch_off, arm64_enc::cbnz_64(reg, delta));
+    }
+
+    fn patch_b_cond_to_here(&mut self, patch_off: usize, cond: Cond) {
+        let delta = (self.buf.len() - patch_off) as i32 / 4;
+        self.buf.patch_u32(patch_off, arm64_enc::b_cond(cond, delta));
     }
 
     /// Emit a raw u32 instruction (for test helpers).
@@ -656,6 +835,63 @@ impl<'a> NativeEmitter<'a> {
     pub fn i32_add(&mut self)   { self.emit_binop_32(arm64_enc::add_reg_32); }
     pub fn i32_sub(&mut self)   { self.emit_binop_32(arm64_enc::sub_reg_32); }
     pub fn i32_mul(&mut self)   { self.emit_binop_32(arm64_enc::mul_32); }
+    pub fn i32_div_u(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_32(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_32_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::udiv_32(lhs, lhs, rhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i32_div_s(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+
+        let nonzero = self.buf.emit(arm64_enc::cbnz_32(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_32_to_here(nonzero, rhs);
+
+        self.buf.emit(arm64_enc::movn_32(Reg::TMP0, 0, 0));
+        self.buf.emit(arm64_enc::cmp_reg_32(rhs, Reg::TMP0));
+        let rhs_not_minus_one = self.buf.emit(arm64_enc::b_cond(Cond::NE, 0));
+        materialize_u32(self.buf, Reg::TMP0, 0x8000_0000);
+        self.buf.emit(arm64_enc::cmp_reg_32(lhs, Reg::TMP0));
+        let lhs_not_min = self.buf.emit(arm64_enc::b_cond(Cond::NE, 0));
+        self.emit_inline_trap(INT_OVERFLOW_MSG);
+        self.patch_b_cond_to_here(rhs_not_minus_one, Cond::NE);
+        self.patch_b_cond_to_here(lhs_not_min, Cond::NE);
+
+        self.buf.emit(arm64_enc::sdiv_32(lhs, lhs, rhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i32_rem_u(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_32(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_32_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::udiv_32(Reg::TMP0, lhs, rhs));
+        self.buf.emit(arm64_enc::msub_32(lhs, Reg::TMP0, rhs, lhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i32_rem_s(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_32(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_32_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::sdiv_32(Reg::TMP0, lhs, rhs));
+        self.buf.emit(arm64_enc::msub_32(lhs, Reg::TMP0, rhs, lhs));
+        self.pop2_push_loc(lhs_loc);
+    }
     pub fn i32_and(&mut self)   { self.emit_binop_32(arm64_enc::and_reg_32); }
     pub fn i32_or(&mut self)    { self.emit_binop_32(arm64_enc::orr_reg_32); }
     pub fn i32_xor(&mut self)   { self.emit_binop_32(arm64_enc::eor_reg_32); }
@@ -687,6 +923,63 @@ impl<'a> NativeEmitter<'a> {
     pub fn i64_add(&mut self)   { self.emit_binop_64(arm64_enc::add_reg_64); }
     pub fn i64_sub(&mut self)   { self.emit_binop_64(arm64_enc::sub_reg_64); }
     pub fn i64_mul(&mut self)   { self.emit_binop_64(arm64_enc::mul_64); }
+    pub fn i64_div_u(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_64(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_64_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::udiv_64(lhs, lhs, rhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i64_div_s(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+
+        let nonzero = self.buf.emit(arm64_enc::cbnz_64(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_64_to_here(nonzero, rhs);
+
+        materialize_u64(self.buf, Reg::TMP0, u64::MAX);
+        self.buf.emit(arm64_enc::cmp_reg_64(rhs, Reg::TMP0));
+        let rhs_not_minus_one = self.buf.emit(arm64_enc::b_cond(Cond::NE, 0));
+        materialize_u64(self.buf, Reg::TMP0, 0x8000_0000_0000_0000);
+        self.buf.emit(arm64_enc::cmp_reg_64(lhs, Reg::TMP0));
+        let lhs_not_min = self.buf.emit(arm64_enc::b_cond(Cond::NE, 0));
+        self.emit_inline_trap(INT_OVERFLOW_MSG);
+        self.patch_b_cond_to_here(rhs_not_minus_one, Cond::NE);
+        self.patch_b_cond_to_here(lhs_not_min, Cond::NE);
+
+        self.buf.emit(arm64_enc::sdiv_64(lhs, lhs, rhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i64_rem_u(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_64(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_64_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::udiv_64(Reg::TMP0, lhs, rhs));
+        self.buf.emit(arm64_enc::msub_64(lhs, Reg::TMP0, rhs, lhs));
+        self.pop2_push_loc(lhs_loc);
+    }
+
+    pub fn i64_rem_s(&mut self) {
+        let lhs_loc = self.slot_int_loc(2);
+        let lhs = self.resolve_tos_reg(2);
+        let rhs = self.slot_gpr_source(1);
+        let fast = self.buf.emit(arm64_enc::cbnz_64(rhs, 0));
+        self.emit_inline_trap(INT_DIV_ZERO_MSG);
+        self.patch_cbnz_64_to_here(fast, rhs);
+        self.buf.emit(arm64_enc::sdiv_64(Reg::TMP0, lhs, rhs));
+        self.buf.emit(arm64_enc::msub_64(lhs, Reg::TMP0, rhs, lhs));
+        self.pop2_push_loc(lhs_loc);
+    }
     pub fn i64_and(&mut self)   { self.emit_binop_64(arm64_enc::and_reg_64); }
     pub fn i64_or(&mut self)    { self.emit_binop_64(arm64_enc::orr_reg_64); }
     pub fn i64_xor(&mut self)   { self.emit_binop_64(arm64_enc::eor_reg_64); }
@@ -948,7 +1241,11 @@ impl<'a> NativeEmitter<'a> {
     pub fn spill(&mut self, slot: u16, count: u8, variant: u8) {
         for i in 0..count as u32 {
             let reg = tos_reg(variant, (i + 1) as u8);
-            self.buf.emit(arm64_enc::str_64(reg, Reg::FP, slot as u32 - i));
+            let pos = self
+                .logical_pos_for_canonical_reg(reg)
+                .expect("spill source reg must correspond to a live TOS position");
+            self.copy_slot_to_gpr(pos, Reg::TMP0);
+            self.buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::FP, slot as u32 - i));
         }
     }
 
@@ -960,6 +1257,10 @@ impl<'a> NativeEmitter<'a> {
         for i in 0..count as u32 {
             let reg = tos_reg(variant, (i + 1) as u8);
             self.buf.emit(arm64_enc::ldr_64(reg, Reg::FP, slot as u32 - i));
+            let pos = self
+                .logical_pos_for_canonical_reg(reg)
+                .expect("fill destination reg must correspond to a live TOS position");
+            self.slots[(pos - 1) as usize] = SlotLoc::canonical();
         }
     }
 
@@ -1210,6 +1511,18 @@ impl<'a> NativeEmitter<'a> {
         self.pop2();
     }
 
+    pub fn memory_size(&mut self, mem_idx: u32) {
+        debug_assert_eq!(mem_idx, 0, "only memidx 0 is currently supported natively");
+        self.push_materialized_slot();
+        let dst = tos_reg(self.dv(), 1);
+        self.buf.emit(arm64_enc::ldr_64(
+            dst,
+            Reg::CTX,
+            emit::ctx_offset::MEM0_SIZE / 8,
+        ));
+        self.buf.emit(arm64_enc::lsr_imm_64(dst, dst, 16));
+    }
+
     // ==================== Float constants (push1) ====================
 
     pub fn f32_const(&mut self, bits: u32) {
@@ -1272,12 +1585,13 @@ impl<'a> NativeEmitter<'a> {
 
     pub fn select(&mut self) {
         let d = self.dv();
-        let cond = tos_reg(d, 1);
-        let val2 = tos_reg(d, 2);
-        let val1 = tos_reg(d, 3);
+        let cond = self.slot_gpr_source(1);
+        let val2 = self.slot_gpr_source(2);
+        let val1 = self.slot_gpr_source(3);
+        let dst = tos_reg(d, 3);
         self.buf.emit(arm64_enc::cmp_imm_32(cond, 0));
-        self.buf.emit(arm64_enc::csel_64(val1, val1, val2, Cond::NE));
-        self.height -= 2;
+        self.buf.emit(arm64_enc::csel_64(dst, val1, val2, Cond::NE));
+        self.pop3_push_materialized();
     }
 
     // ==================== f64 binary ops (pop2_push1) ====================
@@ -2145,6 +2459,40 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0,
         );
         assert_eq!(result, 77); // TOS still 77
+    }
+
+    #[test]
+    fn test_select_with_hot_local_alias_preserves_lower_stack_value() {
+        let result = run_jit_test(
+            |e| {
+                e.local_get_ln(0);
+                e.i32_const(20);
+                e.i32_const(1);
+                e.select();
+                e.i32_add();
+            },
+            1,
+            5, 0, 0, 0,
+            11, 0, 0,
+        );
+        assert_eq!(result, 16);
+    }
+
+    #[test]
+    fn test_select_with_false_cond_preserves_lower_stack_value() {
+        let result = run_jit_test(
+            |e| {
+                e.i32_const(10);
+                e.i32_const(20);
+                e.i32_const(0);
+                e.select();
+                e.i32_add();
+            },
+            1,
+            5, 0, 0, 0,
+            0, 0, 0,
+        );
+        assert_eq!(result, 25);
     }
 
     #[test]

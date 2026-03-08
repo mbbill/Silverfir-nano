@@ -18,6 +18,10 @@ define_semantics_emitter! {
     fn i32_add();
     fn i32_sub();
     fn i32_mul();
+    fn i32_div_s();
+    fn i32_div_u();
+    fn i32_rem_s();
+    fn i32_rem_u();
     fn i32_and();
     fn i32_or();
     fn i32_xor();
@@ -29,6 +33,10 @@ define_semantics_emitter! {
     fn i64_add();
     fn i64_sub();
     fn i64_mul();
+    fn i64_div_s();
+    fn i64_div_u();
+    fn i64_rem_s();
+    fn i64_rem_u();
     fn i64_and();
     fn i64_or();
     fn i64_xor();
@@ -162,6 +170,7 @@ define_semantics_emitter! {
     fn i64_store8(offset: u32);
     fn i64_store16(offset: u32);
     fn i64_store32(offset: u32);
+    fn memory_size(mem_idx: u32);
     fn init_locals(k0: u16, k1: u16, k2: u16);
     fn spill(slot: u16, count: u8, variant: u8);
     fn fill(slot: u16, count: u8, variant: u8);

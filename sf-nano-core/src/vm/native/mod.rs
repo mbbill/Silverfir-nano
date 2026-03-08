@@ -6,8 +6,11 @@
 
 use crate::vm::entities::ModuleInst;
 use crate::vm::lowered::IrOp;
+use alloc::string::{String, ToString};
 
 mod code_buf;
+mod bridge;
+mod canonicalize;
 pub mod code;
 pub mod compiler;
 pub mod context;
@@ -36,13 +39,18 @@ pub use arm64::{
 
 pub fn resolve_backend(
     ir_ops: &[IrOp],
+    operand_base: usize,
+    tos_register_count: usize,
     module: &ModuleInst,
     hot_local_mask: [bool; 3],
     func_idx: u32,
-) -> Result<alloc::vec::Vec<resolved::ResolvedNativeInst>, &'static str> {
-    let mut buf = module.native_code_buffer()?;
+) -> Result<alloc::vec::Vec<resolved::ResolvedNativeInst>, String> {
+    let ir_ops = canonicalize::canonicalize_cold_helpers(ir_ops, operand_base, tos_register_count);
+    let mut buf = module
+        .native_code_buffer()
+        .map_err(|err| err.to_string())?;
     arm64::resolve_native_with_context(
-        ir_ops,
+        &ir_ops,
         &mut buf,
         hot_local_mask,
         &module.name,

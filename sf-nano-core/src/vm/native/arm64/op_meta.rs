@@ -13,10 +13,10 @@ pub fn supports_kind(kind: &IrOpKind) -> bool {
 
     matches!(
         kind,
-        I32Add | I32Sub | I32Mul |
+        I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU |
         I32And | I32Or | I32Xor |
         I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr |
-        I64Add | I64Sub | I64Mul |
+        I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU |
         I64And | I64Or | I64Xor |
         I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr |
         I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU |
@@ -51,8 +51,8 @@ pub fn supports_kind(kind: &IrOpKind) -> bool {
         I32Store { .. } | I64Store { .. } | F32Store { .. } | F64Store { .. } |
         I32Store8 { .. } | I32Store16 { .. } |
         I64Store8 { .. } | I64Store16 { .. } | I64Store32 { .. } |
+        MemorySize { mem_idx: 0 } |
         InitLocals { .. } |
-        If |
         Spill { .. } | Fill { .. }
     )
 }
@@ -114,6 +114,9 @@ pub fn max_emitted_bytes(op: &IrOp) -> usize {
         I32Store { .. } | I64Store { .. } | F32Store { .. } | F64Store { .. } |
         I32Store8 { .. } | I32Store16 { .. } |
         I64Store8 { .. } | I64Store16 { .. } | I64Store32 { .. } => 80,
+        I32DivS | I32DivU | I32RemS | I32RemU |
+        I64DivS | I64DivU | I64RemS | I64RemU => 96,
+        MemorySize { .. } => 8,
         _ => 32,
     }
 }
@@ -131,7 +134,7 @@ pub fn estimate_group_bytes(group: &[IrOp], terminator: Option<&IrOpKind>) -> us
     let finish = match terminator {
         Some(IrOpKind::BrIfSimple | IrOpKind::If) => COND_TERMINATOR_FINISH_BYTES,
         Some(IrOpKind::Br { .. }) => BR_TERMINATOR_FINISH_BYTES,
-        Some(IrOpKind::ReturnVoid { .. } | IrOpKind::ReturnOne { .. }) => {
+        Some(IrOpKind::ReturnVoid { .. } | IrOpKind::ReturnOne { .. } | IrOpKind::Return { .. }) => {
             RETURN_TERMINATOR_FINISH_BYTES
         }
         _ => LINEAR_FINISH_BYTES,
@@ -151,6 +154,10 @@ pub fn emit<E: SemanticsEmitter>(e: &mut E, op: &IrOp, hot_local_mask: [bool; 3]
         IrOpKind::I32Add => e.i32_add(),
         IrOpKind::I32Sub => e.i32_sub(),
         IrOpKind::I32Mul => e.i32_mul(),
+        IrOpKind::I32DivS => e.i32_div_s(),
+        IrOpKind::I32DivU => e.i32_div_u(),
+        IrOpKind::I32RemS => e.i32_rem_s(),
+        IrOpKind::I32RemU => e.i32_rem_u(),
         IrOpKind::I32And => e.i32_and(),
         IrOpKind::I32Or => e.i32_or(),
         IrOpKind::I32Xor => e.i32_xor(),
@@ -162,6 +169,10 @@ pub fn emit<E: SemanticsEmitter>(e: &mut E, op: &IrOp, hot_local_mask: [bool; 3]
         IrOpKind::I64Add => e.i64_add(),
         IrOpKind::I64Sub => e.i64_sub(),
         IrOpKind::I64Mul => e.i64_mul(),
+        IrOpKind::I64DivS => e.i64_div_s(),
+        IrOpKind::I64DivU => e.i64_div_u(),
+        IrOpKind::I64RemS => e.i64_rem_s(),
+        IrOpKind::I64RemU => e.i64_rem_u(),
         IrOpKind::I64And => e.i64_and(),
         IrOpKind::I64Or => e.i64_or(),
         IrOpKind::I64Xor => e.i64_xor(),
@@ -315,6 +326,7 @@ pub fn emit<E: SemanticsEmitter>(e: &mut E, op: &IrOp, hot_local_mask: [bool; 3]
         IrOpKind::I64Store32 { offset, .. } => e.i64_store32(*offset),
         IrOpKind::F32Store { offset, .. } => e.i32_store(*offset),
         IrOpKind::F64Store { offset, .. } => e.i64_store(*offset),
+        IrOpKind::MemorySize { mem_idx } => e.memory_size(*mem_idx),
         IrOpKind::InitLocals { k0, k1, k2 } => e.init_locals(*k0, *k1, *k2),
         IrOpKind::Spill { slot, count } => e.spill(*slot, *count, op.variant),
         IrOpKind::Fill { slot, count } => e.fill(*slot, *count, op.variant),

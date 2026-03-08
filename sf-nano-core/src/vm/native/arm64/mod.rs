@@ -1,12 +1,13 @@
 pub(crate) mod reg;
 pub(crate) mod arm64_enc;
-mod emit;
+pub(crate) mod emit;
 mod codegen;
 mod op_meta;
 mod semantics;
 mod group;
 
 pub(crate) use group::{resolve_native, resolve_native_with_context};
+pub(crate) use codegen::EntryPatchSites;
 pub use group::{
     JitStatsSnapshot,
     NativeStatsSnapshot,

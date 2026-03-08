@@ -154,6 +154,18 @@ impl CodeBuffer {
         offset
     }
 
+    /// Emit a raw u64 payload. Returns the start offset.
+    pub fn emit_u64(&mut self, value: u64) -> usize {
+        let offset = self.offset;
+        assert!(offset + 8 <= self.capacity, "native code buffer overflow");
+        unsafe {
+            let ptr = self.base.add(offset) as *mut u64;
+            ptr.write(value);
+        }
+        self.offset += 8;
+        offset
+    }
+
     /// Emit a slice of u32 instructions. Returns the start offset.
     pub fn emit_slice(&mut self, insts: &[u32]) -> usize {
         let start = self.offset;
@@ -170,6 +182,16 @@ impl CodeBuffer {
         unsafe {
             let ptr = self.base.add(offset) as *mut u32;
             ptr.write(inst);
+        }
+    }
+
+    /// Overwrite a previously emitted u64 payload at the given byte offset.
+    /// Must be called between `begin_write()` and `finish_write()`.
+    pub fn patch_u64(&mut self, offset: usize, value: u64) {
+        assert!(offset + 8 <= self.offset, "patch beyond written region");
+        unsafe {
+            let ptr = self.base.add(offset) as *mut u64;
+            ptr.write(value);
         }
     }
 
@@ -199,6 +221,12 @@ impl CodeBuffer {
     /// Remaining capacity in bytes.
     pub fn remaining(&self) -> usize {
         self.capacity - self.offset
+    }
+
+    /// Rewind the bump pointer to a previously returned `len()`.
+    pub fn truncate(&mut self, new_len: usize) {
+        assert!(new_len <= self.offset, "truncate beyond written region");
+        self.offset = new_len;
     }
 
     /// Reset the buffer (reuse all memory).

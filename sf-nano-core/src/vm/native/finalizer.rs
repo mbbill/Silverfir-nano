@@ -10,14 +10,21 @@ use crate::vm::compaction::CompactionDisposition;
 use crate::vm::lowered::{IrOpKind, OpIndex, SlotRef};
 use crate::vm::operand_encoding::encode_operands;
 
-use super::instruction::{NativeEntry, NativeInst};
+use super::CodeBuffer;
+use super::debug_map;
+use super::bridge::{self, HelperMetadata};
+use super::instruction::{EMPTY_TOS_SLOTS, INVALID_TOS_SLOT, NativeEntry, NativeInst};
 use super::resolved::{NativeResolvedVec, ResolvedNativeInst};
 use super::runtime::term_entry;
+use super::arm64::{EntryPatchSites, emit};
 
 pub fn finalize(
     mut ops: NativeResolvedVec,
     stack: &mut StackTracker,
-) -> Box<[NativeInst]> {
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>) {
     append_terminals(&mut ops);
     route_terminals(&mut ops);
     default_alt_to_term(&mut ops);
@@ -26,15 +33,19 @@ pub fn finalize(
     validate_removed_targets(&ops, &keep);
     let index_map = build_index_map(&keep);
     let compacted = compact_and_patch(ops, &keep, &index_map);
-    build_instructions(compacted, stack.operand_base())
+    build_instructions(compacted, stack.operand_base(), buf, module_name, func_idx)
 }
 
 fn append_terminals(ops: &mut NativeResolvedVec) {
     let term = ResolvedNativeInst {
         entry: term_entry(),
         kind: IrOpKind::Term,
+        pre_height: 0,
         alt_target: None,
         has_target: false,
+        cold_helper: None,
+        cold_stack_slot: None,
+        entry_patches: EntryPatchSites::default(),
         compaction: CompactionDisposition::Keep,
     };
     ops.push(term.clone());
@@ -118,8 +129,12 @@ fn expand_br_tables(ops: NativeResolvedVec) -> NativeResolvedVec {
                     imm1: 0,
                     imm2: 0,
                 },
+                pre_height: 0,
                 alt_target: None,
                 has_target: false,
+                cold_helper: None,
+                cold_stack_slot: None,
+                entry_patches: EntryPatchSites::default(),
                 compaction: CompactionDisposition::Keep,
             });
         }
@@ -270,26 +285,60 @@ fn compact_and_patch(
     compacted
 }
 
-fn build_instructions(ops: NativeResolvedVec, operand_base: usize) -> Box<[NativeInst]> {
+fn build_instructions(
+    ops: NativeResolvedVec,
+    operand_base: usize,
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>) {
     if ops.is_empty() {
-        return Box::new([]);
+        return (Box::new([]), Box::new([]));
     }
 
     let fix_slot = |slot: SlotRef| -> u16 { slot.resolve(operand_base) };
 
+    fn pack_tos_slots(pre_height: u16, operand_base: usize) -> u64 {
+        let h = pre_height as usize;
+        if h == 0 {
+            return EMPTY_TOS_SLOTS;
+        }
+
+        let variant = ((h - 1) % 4) + 1;
+        let mut slots = [INVALID_TOS_SLOT; 4];
+        let live = h.min(4);
+        for pos in 1..=live {
+            let reg_idx = (variant + 4 - pos) % 4;
+            let slot_idx = operand_base + h - pos;
+            assert!(slot_idx <= u16::MAX as usize, "native TOS slot index overflow");
+            slots[reg_idx] = slot_idx as u16;
+        }
+
+        (slots[0] as u64)
+            | ((slots[1] as u64) << 16)
+            | ((slots[2] as u64) << 32)
+            | ((slots[3] as u64) << 48)
+    }
+
     let instructions: Vec<NativeInst> = ops
         .iter()
         .map(|op| {
-            let (imm0, imm1, imm2) = encode_operands(&op.kind, 0, &fix_slot);
-            NativeInst::new(op.entry, imm0, imm1, imm2)
+            let tos_slots = pack_tos_slots(op.pre_height, operand_base);
+            if op.cold_helper.is_some() {
+                NativeInst::new_with_tos_slots(op.entry, 0, 0, 0, tos_slots)
+            } else {
+                let (imm0, imm1, imm2) = encode_operands(&op.kind, 0, &fix_slot);
+                NativeInst::new_with_tos_slots(op.entry, imm0, imm1, imm2, tos_slots)
+            }
         })
         .collect();
 
     let mut code_box: Box<[NativeInst]> = instructions.into_boxed_slice();
     let base = code_box.as_mut_ptr();
+
     for (i, op) in ops.iter().enumerate() {
         if let Some(alt_idx) = op.alt_target {
-            if op.has_target {
+            if op.has_target && op.cold_helper.is_none() {
                 unsafe {
                     let target_ptr = base.add(alt_idx.as_usize()) as u64;
                     let (imm0, imm1, imm2) = encode_operands(&op.kind, target_ptr, &fix_slot);
@@ -300,5 +349,137 @@ fn build_instructions(ops: NativeResolvedVec, operand_base: usize) -> Box<[Nativ
             }
         }
     }
-    code_box
+
+    let helper_sites: Vec<(usize, NativeEntry)> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| op.cold_helper.map(|_| (i, code_box[i].entry)))
+        .collect();
+
+    let placeholder = HelperMetadata::new(
+        bridge::call_external_helper,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
+    let mut metadata_box = vec![placeholder; helper_sites.len()].into_boxed_slice();
+
+    let needs_code_patch = !helper_sites.is_empty()
+        || ops.iter().any(|op| {
+            op.entry_patches.fallthrough_literal.is_some() || op.entry_patches.alt_literal.is_some()
+        });
+
+    if needs_code_patch {
+        let mut patch_start = buf.len();
+        buf.begin_write();
+
+        for (meta_idx, (code_idx, helper_entry)) in helper_sites.iter().copied().enumerate() {
+            let meta_ptr = unsafe { metadata_box.as_ptr().add(meta_idx) };
+            let (wrapper_off, wrapper_len) = emit::emit_helper_wrapper(buf, helper_entry, meta_ptr);
+            let wrapper_entry: NativeEntry = unsafe { buf.fn_ptr(wrapper_off) };
+            code_box[code_idx].entry = wrapper_entry;
+            if let Some(cold_helper) = ops[code_idx].cold_helper {
+                debug_map::record_wrapper(
+                    buf.base_ptr(),
+                    wrapper_off,
+                    wrapper_len,
+                    module_name,
+                    func_idx,
+                    code_idx,
+                    cold_helper_name(cold_helper),
+                    &ops[code_idx].kind,
+                );
+            }
+        }
+
+        for (meta_idx, (code_idx, _)) in helper_sites.iter().copied().enumerate() {
+            let op = &ops[code_idx];
+            let cold_helper = op.cold_helper.expect("helper site must have cold helper");
+            let next = unsafe { base.add(code_idx + 1) };
+            let branch_target = op
+                .alt_target
+                .map(|alt_idx| unsafe { base.add(alt_idx.as_usize()) });
+            metadata_box[meta_idx] = bridge::build_metadata(
+                cold_helper,
+                &op.kind,
+                unsafe { base.add(code_idx) },
+                next,
+                branch_target,
+                op.cold_stack_slot,
+                &fix_slot,
+            );
+        }
+
+        for (i, op) in ops.iter().enumerate() {
+            if let Some(literal_off) = op.entry_patches.fallthrough_literal {
+                patch_start = patch_start.min(literal_off);
+                let target_entry = code_box
+                    .get(i + 1)
+                    .map(|inst| inst.entry)
+                    .unwrap_or_else(term_entry);
+                buf.patch_u64(literal_off, target_entry as usize as u64);
+            }
+            if let Some(literal_off) = op.entry_patches.alt_literal {
+                patch_start = patch_start.min(literal_off);
+                let target_entry = op
+                    .alt_target
+                    .and_then(|alt_idx| code_box.get(alt_idx.as_usize()).map(|inst| inst.entry))
+                    .unwrap_or_else(term_entry);
+                buf.patch_u64(literal_off, target_entry as usize as u64);
+            }
+        }
+
+        let written_len = buf.len() - patch_start;
+        buf.finish_write(patch_start, written_len);
+    }
+
+    (code_box, metadata_box)
+}
+
+fn cold_helper_name(helper: bridge::ColdHelperKind) -> &'static str {
+    match helper {
+        bridge::ColdHelperKind::Br => "br",
+        bridge::ColdHelperKind::BrIf => "br_if",
+        bridge::ColdHelperKind::If => "if",
+        bridge::ColdHelperKind::Else => "else",
+        bridge::ColdHelperKind::CallExternal => "call_external",
+        bridge::ColdHelperKind::CallInternal => "call_internal",
+        bridge::ColdHelperKind::CallIndirect => "call_indirect",
+        bridge::ColdHelperKind::BrTable => "br_table",
+        bridge::ColdHelperKind::GlobalGet => "global_get",
+        bridge::ColdHelperKind::GlobalSet => "global_set",
+        bridge::ColdHelperKind::MemoryGrow => "memory_grow",
+        bridge::ColdHelperKind::MemoryCopy => "memory_copy",
+        bridge::ColdHelperKind::MemoryFill => "memory_fill",
+        bridge::ColdHelperKind::MemoryInit => "memory_init",
+        bridge::ColdHelperKind::DataDrop => "data_drop",
+        bridge::ColdHelperKind::I32Popcnt => "i32_popcnt",
+        bridge::ColdHelperKind::I64Popcnt => "i64_popcnt",
+        bridge::ColdHelperKind::F32Copysign => "f32_copysign",
+        bridge::ColdHelperKind::F64Copysign => "f64_copysign",
+        bridge::ColdHelperKind::I32TruncF32S => "i32_trunc_f32_s",
+        bridge::ColdHelperKind::I32TruncF32U => "i32_trunc_f32_u",
+        bridge::ColdHelperKind::I32TruncF64S => "i32_trunc_f64_s",
+        bridge::ColdHelperKind::I32TruncF64U => "i32_trunc_f64_u",
+        bridge::ColdHelperKind::I64TruncF32S => "i64_trunc_f32_s",
+        bridge::ColdHelperKind::I64TruncF32U => "i64_trunc_f32_u",
+        bridge::ColdHelperKind::I64TruncF64S => "i64_trunc_f64_s",
+        bridge::ColdHelperKind::I64TruncF64U => "i64_trunc_f64_u",
+        bridge::ColdHelperKind::TableGet => "table_get",
+        bridge::ColdHelperKind::TableSet => "table_set",
+        bridge::ColdHelperKind::TableSize => "table_size",
+        bridge::ColdHelperKind::TableGrow => "table_grow",
+        bridge::ColdHelperKind::TableFill => "table_fill",
+        bridge::ColdHelperKind::TableCopy => "table_copy",
+        bridge::ColdHelperKind::TableInit => "table_init",
+        bridge::ColdHelperKind::ElemDrop => "elem_drop",
+        bridge::ColdHelperKind::RefNull => "ref_null",
+        bridge::ColdHelperKind::RefIsNull => "ref_is_null",
+        bridge::ColdHelperKind::RefFunc => "ref_func",
+    }
 }
