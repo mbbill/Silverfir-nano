@@ -50,7 +50,6 @@ pub enum ColdHelperKind {
     CallExternal,
     CallInternal,
     CallIndirect,
-    BrTable,
     GlobalGet,
     GlobalSet,
     MemoryGrow,
@@ -159,7 +158,6 @@ pub fn cold_helper_kind(kind: &IrOpKind) -> Option<ColdHelperKind> {
         IrOpKind::CallExternal { .. } => Some(ColdHelperKind::CallExternal),
         IrOpKind::CallInternal { .. } => Some(ColdHelperKind::CallInternal),
         IrOpKind::CallIndirect { .. } => Some(ColdHelperKind::CallIndirect),
-        IrOpKind::BrTable { .. } => Some(ColdHelperKind::BrTable),
         IrOpKind::GlobalGet { .. } => Some(ColdHelperKind::GlobalGet),
         IrOpKind::GlobalSet { .. } => Some(ColdHelperKind::GlobalSet),
         IrOpKind::MemoryGrow { .. } => Some(ColdHelperKind::MemoryGrow),
@@ -198,10 +196,6 @@ pub fn cold_helper_kind(kind: &IrOpKind) -> Option<ColdHelperKind> {
 unsafe extern "C" {
     fn native_helper_entry();
     fn native_helper_entry_call_internal();
-    fn native_helper_entry_br_table_t0();
-    fn native_helper_entry_br_table_t1();
-    fn native_helper_entry_br_table_t2();
-    fn native_helper_entry_br_table_t3();
     fn native_helper_entry_write_t0();
     fn native_helper_entry_write_t1();
     fn native_helper_entry_write_t2();
@@ -232,26 +226,6 @@ pub fn helper_entry() -> NativeEntry {
 #[inline]
 pub fn helper_entry_call_internal() -> NativeEntry {
     native_helper_entry_call_internal
-}
-
-#[inline]
-pub fn helper_entry_br_table_t0() -> NativeEntry {
-    native_helper_entry_br_table_t0
-}
-
-#[inline]
-pub fn helper_entry_br_table_t1() -> NativeEntry {
-    native_helper_entry_br_table_t1
-}
-
-#[inline]
-pub fn helper_entry_br_table_t2() -> NativeEntry {
-    native_helper_entry_br_table_t2
-}
-
-#[inline]
-pub fn helper_entry_br_table_t3() -> NativeEntry {
-    native_helper_entry_br_table_t3
 }
 
 #[inline]
@@ -472,114 +446,6 @@ _native_helper_entry_call_internal:
     br x16
 9:
     call_helper
-
-    .macro br_table_fast_entry src
-    save_hot
-    ldr x10, [x20, #56]
-    cbz x10, 9f
-    sub x10, x10, #1
-    mov x9, \src
-    cmp x9, x10
-    b.ls 0f
-    mov x9, x10
-0:
-    ldr x8, [x20, #48]
-    lsr x11, x9, #1
-    mov w13, #40
-    madd x12, x11, x13, x8
-    add x12, x12, #40
-    tbz x9, #0, 1f
-    ldr x14, [x12, #24]
-    lsr x13, x14, #32
-    sxtw x13, w13
-    b 2f
-1:
-    ldr w13, [x12, #8]
-    sxtw x13, w13
-    ldr x14, [x12, #16]
-2:
-    ubfx x15, x14, #16, #16
-    ubfx x16, x14, #0, #16
-    ldr x17, [x20, #64]
-    lsr x18, x17, #32
-    mov w17, w17
-    sub x17, x17, #1
-    cbz x15, 3f
-    cbz x16, 3f
-    add x18, x21, x18
-    sub x10, x17, x16
-    sub x11, x10, x15
-    cmp x16, #8
-    b.lo 4f
-    and x12, x16, #7
-    sub x15, x16, x12
-    add x10, x18, x10, lsl #3
-    add x11, x18, x11, lsl #3
-5:
-    ldp q0, q1, [x10], #32
-    ldp q2, q3, [x10], #32
-    stp q0, q1, [x11], #32
-    stp q2, q3, [x11], #32
-    subs x15, x15, #8
-    b.ne 5b
-    cbz x12, 3f
-6:
-    ldr x14, [x10], #8
-    str x14, [x11], #8
-    subs x12, x12, #1
-    b.ne 6b
-    b 3f
-4:
-    add x10, x18, x10, lsl #3
-    add x11, x18, x11, lsl #3
-    mov x12, x16
-7:
-    ldr x14, [x10], #8
-    str x14, [x11], #8
-    subs x12, x12, #1
-    b.ne 7b
-3:
-    mov w10, #40
-    mul x13, x13, x10
-    add x12, x8, x13
-    ldr x0, [x12]
-    ldr x1, [x12, #32]
-    cmn x1, #1
-    b.eq 5f
-    bl _native_helper_reload_tos_from_x1
-    b 6f
-5:
-    mov x25, xzr
-    mov x26, xzr
-    mov x27, xzr
-    mov x28, xzr
-6:
-    br x0
-9:
-    ldr x10, [x20, #40]
-    str \src, [x21, x10, lsl #3]
-    call_helper
-    .endm
-
-    .p2align 2
-    .global _native_helper_entry_br_table_t0
-_native_helper_entry_br_table_t0:
-    br_table_fast_entry x25
-
-    .p2align 2
-    .global _native_helper_entry_br_table_t1
-_native_helper_entry_br_table_t1:
-    br_table_fast_entry x26
-
-    .p2align 2
-    .global _native_helper_entry_br_table_t2
-_native_helper_entry_br_table_t2:
-    br_table_fast_entry x27
-
-    .p2align 2
-    .global _native_helper_entry_br_table_t3
-_native_helper_entry_br_table_t3:
-    br_table_fast_entry x28
 
     .p2align 2
     .global _native_helper_entry_write_t0
@@ -1207,30 +1073,6 @@ fn decode_branch_data(meta: *const HelperMetadata) -> (usize, usize, usize, usiz
 }
 
 #[inline]
-fn read_br_table_entry(
-    pc: *mut NativeInst,
-    entry_idx: usize,
-) -> (i32, usize, usize) {
-    let slot_idx = entry_idx / 2;
-    let entry_in_slot = entry_idx % 2;
-    let data_slot = unsafe { pc.add(1 + slot_idx) };
-    let data = unsafe { &*data_slot };
-
-    if entry_in_slot == 0 {
-        let rel = data.imm0 as i32;
-        let packed = data.imm1;
-        let stack_drop = ((packed >> 16) & 0xffff) as usize;
-        let arity = (packed & 0xffff) as usize;
-        (rel, stack_drop, arity)
-    } else {
-        let packed = data.imm2;
-        let rel = (packed >> 32) as u32 as i32;
-        let stack_drop = ((packed >> 16) & 0xffff) as usize;
-        let arity = (packed & 0xffff) as usize;
-        (rel, stack_drop, arity)
-    }
-}
-
 pub fn build_metadata<F: Fn(SlotRef) -> u16>(
     helper_kind: ColdHelperKind,
     kind: &IrOpKind,
@@ -1352,25 +1194,6 @@ pub fn build_metadata<F: Fn(SlotRef) -> u16>(
             stack_slot,
             ((*type_idx as u64) << 32) | (*table_idx as u64),
             fix_slot(*delta) as u64,
-            ((*operand_base_offset as u64) << 32) | (*height as u64),
-        ),
-        (
-            ColdHelperKind::BrTable,
-            IrOpKind::BrTable {
-                entry_count,
-                operand_base_offset,
-                height,
-                ..
-            },
-        ) => HelperMetadata::new(
-            br_table_helper,
-            next_entry,
-            next_tos_slots,
-            branch_entry,
-            branch_tos_slots,
-            stack_slot,
-            current as u64,
-            *entry_count as u64,
             ((*operand_base_offset as u64) << 32) | (*height as u64),
         ),
         (ColdHelperKind::GlobalGet, IrOpKind::GlobalGet { idx }) => HelperMetadata::new(
@@ -1939,32 +1762,6 @@ pub unsafe extern "C" fn else_helper(
     meta: *const HelperMetadata,
 ) -> HelperResult {
     meta_branch_target(_ctx, fp, meta)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn br_table_helper(
-    ctx: *mut Context,
-    fp: *mut u64,
-    meta: *const HelperMetadata,
-) -> HelperResult {
-    let slot = (*meta).stack_slot as usize;
-    let pc = (*meta).data0 as *mut NativeInst;
-    let entry_count = (*meta).data1 as usize;
-    let operand_base_offset = ((*meta).data2 >> 32) as usize;
-    let height = ((*meta).data2 & 0xffff_ffff) as usize;
-
-    if entry_count == 0 {
-        return trap_with(ctx, fp, WasmError::internal("br_table missing default target".into()));
-    }
-
-    let idx = frame_read(fp, slot) as u32 as usize;
-    let selected = idx.min(entry_count - 1);
-    let (rel, stack_drop, arity) = read_br_table_entry(pc, selected);
-    let operand_base = operand_base(fp, operand_base_offset);
-    branch_fixup_frame(operand_base, height.saturating_sub(1), stack_drop, arity);
-
-    let target = pc.wrapping_offset(rel as isize);
-    resume_at(ctx, fp, (*target).entry, (*target).tos_slots)
 }
 
 #[no_mangle]
@@ -2655,64 +2452,6 @@ mod tests {
 
     fn make_inst() -> NativeInst {
         NativeInst::new_entry_only(term_entry())
-    }
-
-    #[test]
-    fn test_br_table_helper_selects_first_entry() {
-        let mut stack = [0u64; 8];
-        stack[0] = 0;
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack.as_mut_ptr().wrapping_add(stack.len()),
-            core::ptr::null_mut(),
-            0,
-        );
-        let mut insts = [make_inst(), make_inst(), make_inst(), make_inst()];
-        insts[1].imm0 = 2;
-        insts[1].imm1 = 0;
-        insts[1].imm2 = ((3u64) << 32) | 0;
-
-        let meta = HelperMetadata::new(
-            br_table_helper,
-            core::ptr::null_mut(),
-            0,
-            insts.as_mut_ptr() as u64,
-            2,
-            1,
-        );
-
-        let result = unsafe { br_table_helper(&mut ctx, stack.as_mut_ptr(), &meta) };
-        assert_eq!(result, unsafe { insts.as_mut_ptr().add(2) });
-    }
-
-    #[test]
-    fn test_br_table_helper_clamps_to_default_entry() {
-        let mut stack = [0u64; 8];
-        stack[0] = 99;
-        let mut ctx = Context::new(
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            stack.as_mut_ptr().wrapping_add(stack.len()),
-            core::ptr::null_mut(),
-            0,
-        );
-        let mut insts = [make_inst(), make_inst(), make_inst(), make_inst()];
-        insts[1].imm0 = 2;
-        insts[1].imm1 = 0;
-        insts[1].imm2 = ((3u64) << 32) | 0;
-
-        let meta = HelperMetadata::new(
-            br_table_helper,
-            core::ptr::null_mut(),
-            0,
-            insts.as_mut_ptr() as u64,
-            2,
-            1,
-        );
-
-        let result = unsafe { br_table_helper(&mut ctx, stack.as_mut_ptr(), &meta) };
-        assert_eq!(result, unsafe { insts.as_mut_ptr().add(3) });
     }
 
     #[test]

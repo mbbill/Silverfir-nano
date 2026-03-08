@@ -358,6 +358,11 @@ fn build_instructions(
         .enumerate()
         .filter_map(|(i, op)| op.cold_helper.map(|_| (i, code_box[i].entry)))
         .collect();
+    let br_table_sites: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| matches!(op.kind, IrOpKind::BrTable { .. }).then_some(i))
+        .collect();
 
     let placeholder = HelperMetadata::new(
         bridge::call_external_helper,
@@ -376,6 +381,7 @@ fn build_instructions(
     let mut direct_call_next_entry_literals: Vec<(usize, usize)> = Vec::new();
 
     let needs_code_patch = !helper_sites.is_empty()
+        || !br_table_sites.is_empty()
         || ops.iter().any(|op| {
             op.entry_patches.fallthrough_literal.is_some() || op.entry_patches.alt_literal.is_some()
         });
@@ -383,6 +389,64 @@ fn build_instructions(
     if needs_code_patch {
         let mut patch_start = buf.len();
         buf.begin_write();
+
+        for &code_idx in &br_table_sites {
+            let op = &ops[code_idx];
+            let (
+                IrOpKind::BrTable {
+                    entry_count,
+                    operand_base_offset,
+                    height,
+                    ..
+                }
+            ) = &op.kind else {
+                unreachable!("br_table site must be br_table");
+            };
+
+            let mut records = Vec::with_capacity(*entry_count as usize);
+            let mut target_indices = Vec::with_capacity(*entry_count as usize);
+            for entry_idx in 0..(*entry_count as usize) {
+                let data_idx = code_idx + 1 + (entry_idx / 2);
+                let data_inst = &code_box[data_idx];
+                let (rel, packed_branch) = if entry_idx % 2 == 0 {
+                    (data_inst.imm0 as i32, data_inst.imm1)
+                } else {
+                    (((data_inst.imm2 >> 32) as u32) as i32, data_inst.imm2 & 0xffff_ffff)
+                };
+                let target_idx = ((code_idx as isize) + (rel as isize)) as usize;
+                target_indices.push(target_idx);
+                records.push(emit::DirectBrTableRecord { packed_branch });
+            }
+            let src_reg = match tos_reg(depth_variant(op.pre_height as usize), 1) {
+                reg @ (Reg::T0 | Reg::T1 | Reg::T2 | Reg::T3) => reg,
+                _ => unreachable!("br_table source must be a TOS register"),
+            };
+            let emit_site = emit::emit_direct_br_table_entry(
+                buf,
+                src_reg,
+                &records,
+                *operand_base_offset,
+                *height,
+            );
+            for (target_idx, literal_off) in target_indices
+                .into_iter()
+                .zip(emit_site.target_entry_literals.into_iter())
+            {
+                br_table_entry_literals.push((target_idx, literal_off));
+            }
+            let wrapper_entry: NativeEntry = unsafe { buf.fn_ptr(emit_site.start) };
+            code_box[code_idx].entry = wrapper_entry;
+            debug_map::record_wrapper(
+                buf.base_ptr(),
+                emit_site.start,
+                emit_site.len,
+                module_name,
+                func_idx,
+                code_idx,
+                "br_table",
+                &op.kind,
+            );
+        }
 
         for (meta_idx, (code_idx, helper_entry)) in helper_sites.iter().copied().enumerate() {
             let op = &ops[code_idx];
@@ -424,51 +488,6 @@ fn build_instructions(
                         }
                     }
                     direct_call_next_entry_literals.push((code_idx + 1, emit_site.next_entry_literal));
-                    (emit_site.start, emit_site.len)
-                }
-                (
-                    IrOpKind::BrTable {
-                        entry_count,
-                        operand_base_offset,
-                        height,
-                        ..
-                    },
-                    bridge::ColdHelperKind::BrTable,
-                ) => {
-                    let mut records =
-                        Vec::with_capacity(*entry_count as usize);
-                    let mut target_indices = Vec::with_capacity(*entry_count as usize);
-                    for entry_idx in 0..(*entry_count as usize) {
-                        let data_idx = code_idx + 1 + (entry_idx / 2);
-                        let data_inst = &code_box[data_idx];
-                        let (rel, packed_branch) = if entry_idx % 2 == 0 {
-                            (data_inst.imm0 as i32, data_inst.imm1)
-                        } else {
-                            (((data_inst.imm2 >> 32) as u32) as i32, data_inst.imm2 & 0xffff_ffff)
-                        };
-                        let target_idx = ((code_idx as isize) + (rel as isize)) as usize;
-                        target_indices.push(target_idx);
-                        records.push(emit::DirectBrTableRecord {
-                            packed_branch,
-                        });
-                    }
-                    let src_reg = match tos_reg(depth_variant(op.pre_height as usize), 1) {
-                        reg @ (Reg::T0 | Reg::T1 | Reg::T2 | Reg::T3) => reg,
-                        _ => unreachable!("br_table source must be a TOS register"),
-                    };
-                    let emit_site = emit::emit_direct_br_table_entry(
-                        buf,
-                        src_reg,
-                        &records,
-                        *operand_base_offset,
-                        *height,
-                    );
-                    for (target_idx, literal_off) in target_indices
-                        .into_iter()
-                        .zip(emit_site.target_entry_literals.into_iter())
-                    {
-                        br_table_entry_literals.push((target_idx, literal_off));
-                    }
                     (emit_site.start, emit_site.len)
                 }
                 _ => emit::emit_helper_wrapper(buf, helper_entry, meta_ptr),
@@ -562,7 +581,6 @@ fn cold_helper_name(helper: bridge::ColdHelperKind) -> &'static str {
         bridge::ColdHelperKind::CallExternal => "call_external",
         bridge::ColdHelperKind::CallInternal => "call_internal",
         bridge::ColdHelperKind::CallIndirect => "call_indirect",
-        bridge::ColdHelperKind::BrTable => "br_table",
         bridge::ColdHelperKind::GlobalGet => "global_get",
         bridge::ColdHelperKind::GlobalSet => "global_set",
         bridge::ColdHelperKind::MemoryGrow => "memory_grow",

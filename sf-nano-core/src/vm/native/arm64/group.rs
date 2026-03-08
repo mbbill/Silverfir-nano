@@ -44,9 +44,6 @@ fn cold_helper_stack_slot(op: &IrOp, helper: bridge::ColdHelperKind) -> Option<S
         | bridge::ColdHelperKind::I64TruncF64U => {
             op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
         }
-        bridge::ColdHelperKind::BrTable => {
-            op.pre_height.checked_sub(1).map(SlotRef::operand_relative)
-        }
         bridge::ColdHelperKind::MemoryCopy
         | bridge::ColdHelperKind::MemoryFill
         | bridge::ColdHelperKind::MemoryInit => {
@@ -83,7 +80,6 @@ fn cold_helper_entry(helper: bridge::ColdHelperKind) -> NativeEntry {
         bridge::ColdHelperKind::CallInternal => bridge::helper_entry_call_internal(),
         bridge::ColdHelperKind::BrIf
         | bridge::ColdHelperKind::If
-        | bridge::ColdHelperKind::BrTable
         | bridge::ColdHelperKind::GlobalGet
         | bridge::ColdHelperKind::GlobalSet
         | bridge::ColdHelperKind::MemoryGrow
@@ -180,15 +176,6 @@ fn cold_helper_entry_for_op(op: &IrOp, helper: bridge::ColdHelperKind) -> Native
                 Reg::T1 => bridge::helper_entry_read_t1(),
                 Reg::T2 => bridge::helper_entry_read_t2(),
                 Reg::T3 => bridge::helper_entry_read_t3(),
-                _ => unreachable!("top-of-stack register must be a TOS register"),
-            }
-        }
-        bridge::ColdHelperKind::BrTable => {
-            match tos_reg(depth_variant(op.pre_height as usize), 1) {
-                Reg::T0 => bridge::helper_entry_br_table_t0(),
-                Reg::T1 => bridge::helper_entry_br_table_t1(),
-                Reg::T2 => bridge::helper_entry_br_table_t2(),
-                Reg::T3 => bridge::helper_entry_br_table_t3(),
                 _ => unreachable!("top-of-stack register must be a TOS register"),
             }
         }
@@ -669,6 +656,22 @@ pub fn resolve_native_with_context(
                 has_target: ir[i].has_target,
                 cold_helper: Some(cold_helper),
                 cold_stack_slot: cold_helper_stack_slot(&ir[i], cold_helper),
+                entry_patches: EntryPatchSites::default(),
+                compaction: CompactionDisposition::Keep,
+            });
+            i += 1;
+            continue;
+        }
+
+        if matches!(ir[i].kind, IrOpKind::BrTable { .. }) {
+            out.push(ResolvedNativeInst {
+                entry: term_entry(),
+                kind: ir[i].kind.clone(),
+                pre_height: ir[i].pre_height,
+                alt_target: ir[i].alt_target,
+                has_target: ir[i].has_target,
+                cold_helper: None,
+                cold_stack_slot: None,
                 entry_patches: EntryPatchSites::default(),
                 compaction: CompactionDisposition::Keep,
             });
