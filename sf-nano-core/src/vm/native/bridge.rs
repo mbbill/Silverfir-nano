@@ -9,7 +9,7 @@ use core::arch::global_asm;
 use crate::error::WasmError;
 use crate::vm::entities::{Caller, FunctionInst, MemInst};
 use crate::vm::interp::raw_value::{raw_to_value, value_to_raw};
-use crate::vm::lowered::{IrOpKind, SlotRef};
+use crate::vm::lowered::{IrOpKind, SlotRef, stack_effect};
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 use crate::vm::value::RefHandle as VmRefHandle;
@@ -188,6 +188,7 @@ pub fn cold_helper_kind(kind: &IrOpKind) -> Option<ColdHelperKind> {
 unsafe extern "C" {
     fn native_helper_entry();
     fn native_helper_entry_call_internal();
+    fn native_helper_merge_tos_from_x1();
     fn native_helper_entry_write_t0();
     fn native_helper_entry_write_t1();
     fn native_helper_entry_write_t2();
@@ -331,6 +332,33 @@ _native_helper_reload_tos_from_x1:
 3:
     ret
 
+    .p2align 2
+    .global _native_helper_merge_tos_from_x1
+_native_helper_merge_tos_from_x1:
+    mov x11, x1
+    movz x12, #0xffff
+    and x9, x11, #0xffff
+    cmp x9, x12
+    b.eq 0f
+    ldr x25, [x21, x9, lsl #3]
+0:
+    ubfx x9, x11, #16, #16
+    cmp x9, x12
+    b.eq 1f
+    ldr x26, [x21, x9, lsl #3]
+1:
+    ubfx x9, x11, #32, #16
+    cmp x9, x12
+    b.eq 2f
+    ldr x27, [x21, x9, lsl #3]
+2:
+    ubfx x9, x11, #48, #16
+    cmp x9, x12
+    b.eq 3f
+    ldr x28, [x21, x9, lsl #3]
+3:
+    ret
+
     .macro save_hot
     stp x22, x23, [x21, #0]
     str x24, [x21, #16]
@@ -347,14 +375,8 @@ _native_helper_reload_tos_from_x1:
     ldr x24, [x21, #16]
     cmn x1, #1
     b.eq 0f
-    bl _native_helper_reload_tos_from_x1
-    b 1f
+    bl _native_helper_merge_tos_from_x1
 0:
-    mov x25, xzr
-    mov x26, xzr
-    mov x27, xzr
-    mov x28, xzr
-1:
     br x0
     .endm
 
@@ -966,10 +988,75 @@ fn meta_next(_ctx: *mut Context, fp: *mut u64, meta: *const HelperMetadata) -> H
     )
 }
 
+fn pack_helper_result_tos(pre_height: u16, kind: &IrOpKind, result_slot: Option<u64>) -> u64 {
+    let Some(result_slot) = result_slot else {
+        return EMPTY_TOS_SLOTS;
+    };
+    let (pop, push) = stack_effect(kind);
+    debug_assert!(push <= 1, "cold helper result pack only supports arity <= 1");
+    if push == 0 {
+        return EMPTY_TOS_SLOTS;
+    }
+    let post_height = (pre_height as usize).saturating_sub(pop as usize) + push as usize;
+    let variant = crate::vm::native::arm64::depth_variant(post_height);
+    let top_reg = crate::vm::native::arm64::tos_reg(variant, 1);
+    let reg_idx = match top_reg {
+        crate::vm::native::arm64::reg::Reg::T0 => 0,
+        crate::vm::native::arm64::reg::Reg::T1 => 1,
+        crate::vm::native::arm64::reg::Reg::T2 => 2,
+        crate::vm::native::arm64::reg::Reg::T3 => 3,
+        _ => unreachable!("top result must map to a TOS register"),
+    };
+    let mut packed = EMPTY_TOS_SLOTS;
+    let shift = reg_idx * 16;
+    packed &= !(0xffffu64 << shift);
+    packed |= result_slot << shift;
+    packed
+}
+
+fn helper_result_slot(helper_kind: ColdHelperKind, stack_slot: u64) -> Option<u64> {
+    match helper_kind {
+        ColdHelperKind::GlobalGet
+        | ColdHelperKind::MemoryGrow
+        | ColdHelperKind::I32Popcnt
+        | ColdHelperKind::I64Popcnt
+        | ColdHelperKind::I32TruncF32S
+        | ColdHelperKind::I32TruncF32U
+        | ColdHelperKind::I32TruncF64S
+        | ColdHelperKind::I32TruncF64U
+        | ColdHelperKind::I64TruncF32S
+        | ColdHelperKind::I64TruncF32U
+        | ColdHelperKind::I64TruncF64S
+        | ColdHelperKind::I64TruncF64U
+        | ColdHelperKind::TableGet
+        | ColdHelperKind::TableSize
+        | ColdHelperKind::RefNull
+        | ColdHelperKind::RefIsNull
+        | ColdHelperKind::RefFunc => Some(stack_slot),
+        ColdHelperKind::F32Copysign
+        | ColdHelperKind::F64Copysign
+        | ColdHelperKind::TableGrow => Some(stack_slot.saturating_sub(1)),
+        ColdHelperKind::CallExternal
+        | ColdHelperKind::CallInternal
+        | ColdHelperKind::CallIndirect
+        | ColdHelperKind::GlobalSet
+        | ColdHelperKind::MemoryCopy
+        | ColdHelperKind::MemoryFill
+        | ColdHelperKind::MemoryInit
+        | ColdHelperKind::DataDrop
+        | ColdHelperKind::TableSet
+        | ColdHelperKind::TableFill
+        | ColdHelperKind::TableCopy
+        | ColdHelperKind::TableInit
+        | ColdHelperKind::ElemDrop => None,
+    }
+}
+
 #[inline]
 pub fn build_metadata<F: Fn(SlotRef) -> u16>(
     helper_kind: ColdHelperKind,
     kind: &IrOpKind,
+    pre_height: u16,
     current: *mut NativeInst,
     next: *mut NativeInst,
     branch_target: Option<*mut NativeInst>,
@@ -978,7 +1065,12 @@ pub fn build_metadata<F: Fn(SlotRef) -> u16>(
 ) -> HelperMetadata {
     let stack_slot = stack_slot.map_or(0, |slot| fix_slot(slot) as u64);
     let next_entry = unsafe { (*next).entry as usize as u64 };
-    let next_tos_slots = unsafe { (*next).tos_slots };
+    let next_tos_slots = match helper_kind {
+        ColdHelperKind::CallExternal | ColdHelperKind::CallInternal | ColdHelperKind::CallIndirect => {
+            unsafe { (*next).tos_slots }
+        }
+        _ => pack_helper_result_tos(pre_height, kind, helper_result_slot(helper_kind, stack_slot)),
+    };
     let (branch_entry, branch_tos_slots) = match branch_target {
         Some(target) => unsafe { ((*target).entry as usize as u64, (*target).tos_slots) },
         None => (0, EMPTY_TOS_SLOTS),
@@ -1420,11 +1512,7 @@ pub unsafe extern "C" fn call_indirect_helper(
     let height = ((*meta).data2 & 0xffff_ffff) as usize;
 
     let store = store_mut(ctx);
-    let origin = debug_helper_origin(store, meta);
     let elem_index = operand_read(fp, operand_base_offset, height - 1) as usize;
-    let arg0 = frame_read(fp, delta);
-    let arg1 = frame_read(fp, delta + 1);
-    let arg2 = frame_read(fp, delta + 2);
     let expected_ty = match store.module().get_type(type_idx as u32) {
         Some(t) => t.clone(),
         None => return trap_with(ctx, fp, WasmError::trap("indirect call type error".into())),
@@ -1445,7 +1533,7 @@ pub unsafe extern "C" fn call_indirect_helper(
     }
     let func_ref = table.elements[elem_index];
     if func_ref.is_null() {
-        let origin = origin
+        let origin = debug_helper_origin(store, meta)
             .map(|(func_idx, meta_idx)| alloc::format!(" func={} helper_meta={}", func_idx, meta_idx))
             .unwrap_or_default();
         let site = if let Some((func_idx, meta_idx)) = debug_helper_origin(store, meta) {
@@ -1455,6 +1543,9 @@ pub unsafe extern "C" fn call_indirect_helper(
         } else {
             alloc::string::String::new()
         };
+        let arg0 = frame_read(fp, delta);
+        let arg1 = frame_read(fp, delta + 1);
+        let arg2 = frame_read(fp, delta + 2);
         let table_dump = table
             .elements
             .iter()
@@ -1504,7 +1595,6 @@ pub unsafe extern "C" fn call_indirect_helper(
         );
     }
     let callee = store.function(func_index) as *const FunctionInst;
-    let callee_idx = debug_function_index(store, callee);
 
     let actual_type = (&*callee).func_type();
     if *actual_type != *expected_ty {

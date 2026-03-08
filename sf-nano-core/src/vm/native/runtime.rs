@@ -188,6 +188,71 @@ mod tests {
     }
 
     #[test]
+    fn test_native_br_if_value_taken_preserves_branch_value() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let operand_base_offset = 24u32;
+        let frame_size = 0u16;
+
+        let mut ops = vec![
+            make_op(IrOpKind::I32Const { value: 1 }, 0),
+            make_op(IrOpKind::I32Const { value: 1 }, 1),
+            make_op(
+                IrOpKind::BrIf {
+                    stack_drop: 0,
+                    arity: 1,
+                    height: 2,
+                    operand_base_offset,
+                },
+                2,
+            ),
+            make_op(IrOpKind::Unreachable, 1),
+            make_op(
+                IrOpKind::ReturnOne {
+                    frame_size,
+                    operand_base_offset,
+                    height: 1,
+                },
+                1,
+            ),
+        ];
+        ops[2].has_target = true;
+        ops[2].alt_target = Some(OpIndex::from(4));
+
+        let resolved = resolve_native(&ops, &mut buf, [false; 3]).expect("native resolve");
+        let mut stack = StackTracker::new(BackendKind::Native.compile_config(), 0, 0, 1);
+        let (mut code, _meta, _patches) = finalizer::finalize(resolved, &mut stack, &mut buf, "test", 0);
+
+        let mut frame = [0u64; 8];
+        let stack_end = unsafe { frame.as_mut_ptr().add(frame.len()) };
+        let mut ctx = Context::new(
+            core::ptr::null_mut(),
+            core::ptr::null(),
+            stack_end,
+            core::ptr::null_mut(),
+            0,
+        );
+        ctx.hot.term_entry = term_entry();
+
+        unsafe {
+            native_run_entry(
+                &mut ctx,
+                code[0].entry,
+                frame.as_mut_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+
+        assert!(ctx.error.is_none(), "unexpected native error: {:?}", ctx.error);
+        assert_eq!(frame[0], 1);
+    }
+
+    #[test]
     fn test_native_return_many_preserves_result_order() {
         let mut buf = CodeBuffer::new().expect("mmap failed");
         let operand_base_offset = 24u32;

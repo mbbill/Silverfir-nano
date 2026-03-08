@@ -516,6 +516,7 @@ fn build_instructions(
             metadata_box[meta_idx] = bridge::build_metadata(
                 cold_helper,
                 &op.kind,
+                op.pre_height,
                 unsafe { base.add(code_idx) },
                 next,
                 branch_target,
@@ -533,7 +534,21 @@ fn build_instructions(
                     .get(i + 1)
                     .map(|inst| inst.entry)
                     .unwrap_or_else(term_entry);
-                buf.patch_u64(literal_off, target_entry as usize as u64);
+                let patched_entry = if needs_fallthrough_resume(&op.kind) {
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        i + 1,
+                        target_entry,
+                    )
+                } else {
+                    target_entry
+                };
+                buf.patch_u64(literal_off, patched_entry as usize as u64);
             }
             if let Some(literal_off) = op.entry_patches.alt_literal {
                 patch_start = patch_start.min(literal_off);
@@ -615,12 +630,23 @@ fn build_instructions(
 fn needs_branch_resume(kind: &IrOpKind) -> bool {
     matches!(
         kind,
+        IrOpKind::BrIf {
+            stack_drop,
+            arity,
+            ..
+        } if *stack_drop > 0 && *arity > 0
+    ) || matches!(
+        kind,
         IrOpKind::Br {
             stack_drop,
             arity,
             ..
         } if *stack_drop > 0 && *arity > 0
-    ) || matches!(kind, IrOpKind::BrIf { .. })
+    )
+}
+
+fn needs_fallthrough_resume(_kind: &IrOpKind) -> bool {
+    false
 }
 
 fn ensure_resume_entry(
