@@ -216,6 +216,16 @@ impl FunctionSpec {
     }
 }
 
+impl Clone for FunctionSpec {
+    fn clone(&self) -> Self {
+        let mut spec = FunctionSpec::new(self.func_type.clone(), self.type_index);
+        spec.set_locals(self.locals.clone());
+        spec.set_code(self.code.clone());
+        spec.set_code_offset(self.code_offset);
+        spec
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Function (import vs local enum)
 // ---------------------------------------------------------------------------

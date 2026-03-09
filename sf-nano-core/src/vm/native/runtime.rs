@@ -11,7 +11,7 @@ use crate::vm::store::Store;
 use crate::vm::value::Value;
 
 use super::context::Context;
-use super::instruction::NativeEntry;
+use super::instruction::{INVALID_TOS_SLOT, NativeEntry, NativeInst};
 
 const MAX_SLOTS: usize = crate::constants::MAX_STACK_SIZE / core::mem::size_of::<u64>();
 
@@ -1301,6 +1301,43 @@ _native_term:
 
 pub fn term_entry() -> NativeEntry {
     native_term
+}
+
+#[cfg(feature = "lockstep-debug")]
+#[inline]
+fn unpack_tos_slots(packed: u64) -> [u16; 4] {
+    [
+        (packed & 0xffff) as u16,
+        ((packed >> 16) & 0xffff) as u16,
+        ((packed >> 32) & 0xffff) as u16,
+        ((packed >> 48) & 0xffff) as u16,
+    ]
+}
+
+#[cfg(feature = "lockstep-debug")]
+unsafe fn load_slot(fp: *mut u64, slot: u16) -> u64 {
+    if slot == INVALID_TOS_SLOT {
+        0
+    } else {
+        *fp.add(slot as usize)
+    }
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub(crate) unsafe fn run_from_state(
+    ctx: &mut Context,
+    inst: *mut NativeInst,
+    fp: *mut u64,
+    l0: u64,
+    l1: u64,
+    l2: u64,
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    t3: u64,
+) {
+    let inst_ref = &*inst;
+    native_run_entry(ctx, inst_ref.entry, fp, l0, l1, l2, t0, t1, t2, t3);
 }
 
 pub fn eval(

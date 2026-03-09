@@ -23,6 +23,7 @@ legacy-fast-native-tests = []
 trace = []
 ir-dump = ["std"]
 tos-stats = ["std"]
+lockstep-debug = ["std"]
 std = []
 
 [build-dependencies]

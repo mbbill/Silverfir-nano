@@ -173,6 +173,10 @@ pub fn compile_fast_trampoline(out_dir: &str) {
         build.define("FAST_PROFILE_ENABLED", None);
     }
 
+    if env::var("CARGO_FEATURE_LOCKSTEP_DEBUG").is_ok() {
+        build.define("LOCKSTEP_DEBUG_ENABLED", None);
+    }
+
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         build
             .compiler("clang-cl")

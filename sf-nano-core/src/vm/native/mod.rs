@@ -20,11 +20,15 @@ pub mod instruction;
 pub mod precompile;
 pub mod resolved;
 pub mod runtime;
+#[cfg(feature = "lockstep-debug")]
+pub mod lockstep;
 mod samply_jitdump;
 mod arm64;
 
 pub(crate) use code_buf::CodeBuffer;
 pub(crate) use arm64::{resolve_native, resolve_native_with_context};
+#[cfg(feature = "lockstep-debug")]
+pub(crate) use arm64::resolve_native_with_context_and_checkpoints;
 pub use arm64::{
     JitStatsSnapshot,
     NativeStatsSnapshot,

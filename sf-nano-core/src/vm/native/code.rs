@@ -78,6 +78,8 @@ impl NativeCode {
 #[derive(Debug, Clone, Copy)]
 pub struct NativeCodeCache {
     entry: Option<NativeEntry>,
+    #[cfg(feature = "lockstep-debug")]
+    entry_override: Option<NativeEntry>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
@@ -87,6 +89,8 @@ impl Default for NativeCodeCache {
     fn default() -> Self {
         Self {
             entry: None,
+            #[cfg(feature = "lockstep-debug")]
+            entry_override: None,
             params_len: 0,
             locals_len: 0,
             results_len: 0,
@@ -105,6 +109,10 @@ impl NativeCodeCache {
 
     #[inline(always)]
     pub fn entry(&self) -> NativeEntry {
+        #[cfg(feature = "lockstep-debug")]
+        if let Some(entry) = self.entry_override {
+            return entry;
+        }
         self.entry.expect("native code cache missing entry")
     }
 
@@ -128,10 +136,20 @@ impl NativeCode {
     pub fn build_cache(&self, params_len: usize, locals_len: usize, results_len: usize) -> NativeCodeCache {
         NativeCodeCache {
             entry: self.code.first().map(|inst| inst.entry),
+            #[cfg(feature = "lockstep-debug")]
+            entry_override: None,
             params_len,
             locals_len,
             results_len,
         }
+    }
+}
+
+#[cfg(feature = "lockstep-debug")]
+impl NativeCodeCache {
+    #[inline(always)]
+    pub fn set_entry_override(&mut self, entry: NativeEntry) {
+        self.entry_override = Some(entry);
     }
 }
 

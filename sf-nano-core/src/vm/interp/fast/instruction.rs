@@ -12,7 +12,7 @@ use alloc::boxed::Box;
 use crate::vm::interp::fast::handlers::OpHandler;
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Instruction {
     pub handler: OpHandler,
     pub imm0: u64,

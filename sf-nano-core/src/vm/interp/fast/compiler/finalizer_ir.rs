@@ -10,14 +10,36 @@ use core::mem;
 use crate::vm::compaction::CompactionDisposition;
 use crate::vm::{compile::StackTracker, lowered::{IrOpKind, OpIndex, SlotRef}, operand_encoding::encode_operands};
 use super::ir_resolve::resolve_handler;
+#[cfg(feature = "lockstep-debug")]
+use super::super::handlers::op_checkpoint;
 use super::super::handlers::OpHandler as Handler;
 use super::super::resolved::ResolvedInst;
 use crate::vm::interp::fast::instruction::Instruction;
+#[cfg(feature = "lockstep-debug")]
+use crate::vm::lockstep::{CheckpointKind, CheckpointPlan};
 
 /// Finalize resolved instructions into final code.
 pub fn finalize(
     mut ops: Vec<ResolvedInst>,
     stack: &mut StackTracker,
+) -> Box<[Instruction]> {
+    finalize_impl(ops, stack, None)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn finalize_with_checkpoints(
+    ops: Vec<ResolvedInst>,
+    stack: &mut StackTracker,
+    checkpoint_plan: &CheckpointPlan,
+) -> Box<[Instruction]> {
+    finalize_impl(ops, stack, Some(checkpoint_plan))
+}
+
+fn finalize_impl(
+    mut ops: Vec<ResolvedInst>,
+    stack: &mut StackTracker,
+    #[cfg(feature = "lockstep-debug")] checkpoint_plan: Option<&CheckpointPlan>,
+    #[cfg(not(feature = "lockstep-debug"))] _checkpoint_plan: Option<()>,
 ) -> Box<[Instruction]> {
     // Append terminal instructions
     append_terminals(&mut ops);
@@ -45,7 +67,14 @@ pub fn finalize(
 
     // Build final Instruction array
     let operand_base = stack.operand_base();
-    build_instructions(compacted, operand_base)
+    build_instructions(
+        compacted,
+        operand_base,
+        #[cfg(feature = "lockstep-debug")]
+        checkpoint_plan,
+        #[cfg(not(feature = "lockstep-debug"))]
+        None,
+    )
 }
 
 /// Append terminal (Term) instruction and arena sentinel.
@@ -370,6 +399,8 @@ mod tests {
 fn build_instructions(
     ops: Vec<ResolvedInst>,
     operand_base: usize,
+    #[cfg(feature = "lockstep-debug")] checkpoint_plan: Option<&CheckpointPlan>,
+    #[cfg(not(feature = "lockstep-debug"))] _checkpoint_plan: Option<()>,
 ) -> Box<[Instruction]> {
     if ops.is_empty() {
         return Box::new([]);
@@ -379,17 +410,48 @@ fn build_instructions(
         slot.resolve(operand_base)
     };
 
-    // First pass: encode all instructions (target_ptr = 0 for now)
-    let instructions: Vec<Instruction> = ops
-        .iter()
-        .map(|op| {
-            let (imm0, imm1, imm2) = encode_operands(&op.kind, 0, &fix_slot);
-            Instruction::new(op.handler, imm0, imm1, imm2)
-        })
-        .collect();
+    let checkpoint_ordinals: Vec<Option<u32>> = {
+        #[cfg(feature = "lockstep-debug")]
+        {
+            checkpoint_before_ordinals(checkpoint_plan, ops.len())
+        }
+        #[cfg(not(feature = "lockstep-debug"))]
+        {
+            vec![None; ops.len()]
+        }
+    };
+
+    let mut target_indices = vec![0usize; ops.len()];
+    let mut instructions = Vec::with_capacity(
+        ops.len() + checkpoint_ordinals.iter().filter(|ord| ord.is_some()).count(),
+    );
+    for (idx, op) in ops.iter().enumerate() {
+        #[cfg(feature = "lockstep-debug")]
+        if let Some(ordinal) = checkpoint_ordinals[idx] {
+            instructions.push(Instruction::new(
+                op_checkpoint as Handler,
+                0,
+                ordinal as u64,
+                0,
+            ));
+        }
+        target_indices[idx] = instructions.len();
+        let (imm0, imm1, imm2) = encode_operands(&op.kind, 0, &fix_slot);
+        instructions.push(Instruction::new(op.handler, imm0, imm1, imm2));
+    }
 
     // Convert to Box (stable heap allocation)
     let mut code_box: Box<[Instruction]> = instructions.into_boxed_slice();
+
+    // Patch checkpoint instructions to point at the real lowered entry.
+    for (old_idx, maybe_ordinal) in checkpoint_ordinals.iter().enumerate() {
+        let Some(_ordinal) = maybe_ordinal else {
+            continue;
+        };
+        let checkpoint_idx = target_indices[old_idx] - 1;
+        let target_ptr = unsafe { code_box.as_mut_ptr().add(target_indices[old_idx]) as u64 };
+        code_box[checkpoint_idx].imm0 = target_ptr;
+    }
 
     // Second pass: patch branch target pointers
     let base = code_box.as_mut_ptr();
@@ -397,15 +459,37 @@ fn build_instructions(
         if let Some(alt_idx) = op.alt_target {
             if op.has_target {
                 unsafe {
-                    let target_ptr = base.add(alt_idx.as_usize()) as u64;
+                    let target_ptr = base.add(target_indices[alt_idx.as_usize()]) as u64;
+                    let code_idx = target_indices[i];
                     let (imm0, imm1, imm2) = encode_operands(&op.kind, target_ptr, &fix_slot);
-                    (*base.add(i)).imm0 = imm0;
-                    (*base.add(i)).imm1 = imm1;
-                    (*base.add(i)).imm2 = imm2;
+                    (*base.add(code_idx)).imm0 = imm0;
+                    (*base.add(code_idx)).imm1 = imm1;
+                    (*base.add(code_idx)).imm2 = imm2;
                 }
             }
         }
     }
 
     code_box
+}
+
+#[cfg(feature = "lockstep-debug")]
+fn checkpoint_before_ordinals(plan: Option<&CheckpointPlan>, op_count: usize) -> Vec<Option<u32>> {
+    let mut ordinals = vec![None; op_count];
+    let Some(plan) = plan else {
+        return ordinals;
+    };
+    for site in plan.sites() {
+        let Some(op_idx) = site.id.lowered_op else {
+            continue;
+        };
+        if site.id.kind != CheckpointKind::BeforeOp {
+            continue;
+        }
+        let idx = op_idx.as_usize();
+        if idx < ordinals.len() {
+            ordinals[idx] = Some(site.id.ordinal);
+        }
+    }
+    ordinals
 }

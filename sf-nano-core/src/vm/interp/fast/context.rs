@@ -65,6 +65,26 @@ pub struct Context {
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_pc: *mut Instruction,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_fp: *mut u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_ordinal: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l0: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l1: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l2: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t0: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t1: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t2: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t3: u64,
 }
 
 impl Context {
@@ -81,6 +101,26 @@ impl Context {
             store,
             current_module,
             error: None,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_pc: core::ptr::null_mut(),
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_fp: core::ptr::null_mut(),
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_ordinal: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l0: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l1: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l2: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t0: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t1: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t2: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t3: 0,
         }
     }
 

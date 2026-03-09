@@ -192,6 +192,15 @@ void op_term(PARAMS)
     return;
 }
 
+#ifdef LOCKSTEP_DEBUG_ENABLED
+PRESERVE_NONE
+void op_checkpoint(PARAMS)
+{
+    fast_lockstep_checkpoint_record(ARGS);
+    return;
+}
+#endif
+
 // =============================================================================
 // Trampoline Entry Point
 // =============================================================================

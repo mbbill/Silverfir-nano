@@ -54,6 +54,21 @@ extern "C" {
         t3: u64,
         nh: NextHandler,
     );
+
+    #[cfg(feature = "lockstep-debug")]
+    pub fn op_checkpoint(
+        ctx: *mut Context,
+        pc: *mut Instruction,
+        fp: *mut u64,
+        l0: u64,
+        l1: u64,
+        l2: u64,
+        t0: u64,
+        t1: u64,
+        t2: u64,
+        t3: u64,
+        nh: NextHandler,
+    );
 }
 
 /// Handler function pointer type used by the fast interpreter.
@@ -158,6 +173,37 @@ pub unsafe extern "C" fn fast_c_trap(ctx: *mut Context, message: *const c_char) 
 
     // Return TERM_INST to cleanly exit tail-call chain
     term()
+}
+
+#[cfg(feature = "lockstep-debug")]
+#[no_mangle]
+pub unsafe extern "C" fn fast_lockstep_checkpoint_record(
+    ctx: *mut Context,
+    pc: *mut Instruction,
+    fp: *mut u64,
+    l0: u64,
+    l1: u64,
+    l2: u64,
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    t3: u64,
+    _nh: NextHandler,
+) {
+    assert!(!ctx.is_null(), "checkpoint ctx must not be null");
+    assert!(!pc.is_null(), "checkpoint pc must not be null");
+    let ctx = &mut *ctx;
+    let pc = &*pc;
+    ctx.checkpoint_pc = pc.imm0 as *mut Instruction;
+    ctx.checkpoint_fp = fp;
+    ctx.checkpoint_ordinal = pc.imm1;
+    ctx.checkpoint_l0 = l0;
+    ctx.checkpoint_l1 = l1;
+    ctx.checkpoint_l2 = l2;
+    ctx.checkpoint_t0 = t0;
+    ctx.checkpoint_t1 = t1;
+    ctx.checkpoint_t2 = t2;
+    ctx.checkpoint_t3 = t3;
 }
 
 // Common helpers and re-exported types used by all handler modules

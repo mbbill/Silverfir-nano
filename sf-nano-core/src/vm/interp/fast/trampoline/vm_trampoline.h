@@ -116,6 +116,11 @@ struct Instruction {
 // ctx is opaque to C and passed through unchanged.
 void run_trampoline(PARAMS);
 
+#ifdef LOCKSTEP_DEBUG_ENABLED
+// Rust-side checkpoint recorder used by the debug-only checkpoint handler.
+void fast_lockstep_checkpoint_record(PARAMS);
+#endif
+
 // Trap delegation function for C handlers
 // Pass a null-terminated error message string
 // Returns TERM_INST pointer (never NULL)

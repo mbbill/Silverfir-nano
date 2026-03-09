@@ -26,7 +26,7 @@ use crate::{
     vm::{
         backend::{BackendMode, backend_mode},
         compile::{self, CompileContext, StackTracker},
-        entities::ModuleInst,
+        entities::{FunctionInst, ModuleInst},
         interp::fast::instruction::Instruction,
         interp::fast::resolved,
         lowered,
@@ -122,6 +122,78 @@ pub fn build_for_function(
     let entry = fast_cache.entry();
     function.set_fast_code(fast_code, fast_cache);
     Ok(entry)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn build_for_function_with_checkpoints(
+    function: &FunctionSpec,
+    types: Option<&[Rc<FunctionType>]>,
+    store: &Store,
+    module: &ModuleInst,
+    func_idx: u32,
+    checkpoint_plan: &crate::vm::lockstep::CheckpointPlan,
+) -> Result<*mut Instruction, WasmError> {
+    let code = function.code();
+    let func_type = function.func_type();
+    let params_count = func_type.params().len();
+    let results_count = func_type.results().len();
+    let locals_count = function.locals().len();
+
+    let compile_config = crate::vm::backend::BackendKind::Base.compile_config();
+    let frame_size = params_count + locals_count;
+    let compile_plan = CompilePlan::for_config(code, frame_size, compile_config);
+    let hot_local_plan = compile_plan.hot_locals();
+    let ctx = CompileContext::new(types, store, module, results_count);
+    let mut stack = StackTracker::new(
+        compile_plan.config(),
+        params_count,
+        locals_count,
+        results_count,
+    );
+    let ir_ops = lowered::lower_to_ir(code, &ctx, &mut stack, hot_local_plan)?;
+    let resolved = resolved::resolve_base(&ir_ops);
+    let code_box = finalizer_ir::finalize_with_checkpoints(resolved, &mut stack, checkpoint_plan);
+    use crate::vm::interp::fast::fast_code::create_fast_code;
+    let (mut fast_code, mut fast_cache) =
+        create_fast_code(code_box, params_count, locals_count, results_count);
+    if let Some(entry_site) = checkpoint_plan.entry_site() {
+        let stub = alloc::vec![Instruction::new(
+            crate::vm::interp::fast::handlers::op_checkpoint,
+            fast_cache.entry() as u64,
+            entry_site.id.ordinal as u64,
+            0,
+        )]
+        .into_boxed_slice();
+        fast_code.install_entry_stub(stub, &mut fast_cache);
+    }
+    let entry = fast_cache.entry();
+    function.set_fast_code(fast_code, fast_cache);
+    Ok(entry)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn build_module_with_checkpoints(
+    store: &mut Store,
+    checkpoint_plan: &crate::vm::lockstep::ProgramCheckpointPlan,
+) -> Result<(), WasmError> {
+    let module = store.module();
+    for (func_idx, func_inst) in module.functions.iter().enumerate() {
+        let Some(func_plan) = checkpoint_plan.function_plan(func_idx as u32) else {
+            continue;
+        };
+        let FunctionInst::Local { spec, .. } = func_inst else {
+            continue;
+        };
+        build_for_function_with_checkpoints(
+            spec,
+            Some(&module.types),
+            store,
+            module,
+            func_idx as u32,
+            func_plan,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "micro-jit", feature = "legacy-fast-native-tests"))]

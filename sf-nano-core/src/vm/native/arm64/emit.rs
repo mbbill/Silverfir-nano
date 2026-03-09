@@ -11,6 +11,8 @@ use super::reg::Reg;
 use crate::vm::native::bridge::{self, HelperMetadata};
 use crate::vm::native::instruction::{NativeEntry, NativeInst};
 pub use crate::vm::native::context::ctx_offset;
+#[cfg(feature = "lockstep-debug")]
+use crate::vm::native::context::ctx_debug_offset;
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
@@ -369,6 +371,77 @@ pub fn emit_meta_branch_wrapper(
         buf.emit(arm64_enc::mov_reg_64(Reg::T3, Reg::XZR));
     }
     buf.emit(arm64_enc::br(Reg::A0));
+    (start, buf.len() - start)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn emit_checkpoint_stop_wrapper(
+    buf: &mut CodeBuffer,
+    next_inst: *const NativeInst,
+    checkpoint_ordinal: u64,
+) -> (usize, usize) {
+    let start = buf.len();
+    buf.emit(arm64_enc::str_64(Reg::L0, Reg::FP, 0));
+    buf.emit(arm64_enc::str_64(Reg::L1, Reg::FP, 1));
+    buf.emit(arm64_enc::str_64(Reg::L2, Reg::FP, 2));
+    materialize_u64(buf, Reg::TMP0, next_inst as usize as u64);
+    buf.emit(arm64_enc::str_64(
+        Reg::L0,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_L0 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::L1,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_L1 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::L2,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_L2 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::T0,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_T0 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::T1,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_T1 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::T2,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_T2 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::T3,
+        Reg::CTX,
+        ctx_debug_offset::CHECKPOINT_T3 / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::TMP0,
+        Reg::CTX,
+        ctx_offset::CHECKPOINT_NEXT_INST / 8,
+    ));
+    buf.emit(arm64_enc::str_64(
+        Reg::FP,
+        Reg::CTX,
+        ctx_offset::RESUME_FP / 8,
+    ));
+    materialize_u64(buf, Reg::TMP0, checkpoint_ordinal);
+    buf.emit(arm64_enc::str_64(
+        Reg::TMP0,
+        Reg::CTX,
+        ctx_offset::CHECKPOINT_ORDINAL / 8,
+    ));
+    buf.emit(arm64_enc::ldr_64(
+        Reg::TMP0,
+        Reg::CTX,
+        ctx_offset::TERM_ENTRY / 8,
+    ));
+    buf.emit(arm64_enc::br(Reg::TMP0));
     (start, buf.len() - start)
 }
 

@@ -76,6 +76,21 @@ pub enum FunctionInst {
     },
 }
 
+impl Clone for FunctionInst {
+    fn clone(&self) -> Self {
+        match self {
+            FunctionInst::Local { spec, type_index } => FunctionInst::Local {
+                spec: spec.clone(),
+                type_index: *type_index,
+            },
+            FunctionInst::External { func_type, callback } => FunctionInst::External {
+                func_type: func_type.clone(),
+                callback: *callback,
+            },
+        }
+    }
+}
+
 impl FunctionInst {
     /// Returns the function type for this instance.
     #[inline(always)]
@@ -275,6 +290,23 @@ pub struct ModuleInst {
     pub data: Vec<DataInst>,
     #[cfg(feature = "micro-jit")]
     native_buf: RefCell<Option<CodeBuffer>>,
+}
+
+impl Clone for ModuleInst {
+    fn clone(&self) -> Self {
+        ModuleInst {
+            name: self.name.clone(),
+            types: self.types.clone(),
+            functions: self.functions.clone(),
+            tables: self.tables.clone(),
+            memories: self.memories.clone(),
+            globals: self.globals.clone(),
+            elements: self.elements.clone(),
+            data: self.data.clone(),
+            #[cfg(feature = "micro-jit")]
+            native_buf: RefCell::new(None),
+        }
+    }
 }
 
 impl ModuleInst {

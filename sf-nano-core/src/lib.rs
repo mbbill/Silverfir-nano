@@ -32,6 +32,18 @@ pub use utils::limits::Limitable;
 pub use vm::instance::{Import, ImportValue, Instance};
 pub use vm::entities::ExternalFn;
 pub use vm::backend::{BackendKind, BackendMode, active_backend, backend_mode, set_backend_mode};
+#[cfg(feature = "lockstep-debug")]
+pub use vm::lockstep::{
+    CheckpointId,
+    CheckpointKind,
+    CheckpointMode,
+    CheckpointPlan,
+    ProgramCheckpointPlan,
+    CheckpointSite,
+    CheckpointSnapshot,
+    StepOutcome,
+    Stepper,
+};
 #[cfg(feature = "micro-jit")]
 pub use vm::native::{
     NativeStatsSnapshot,

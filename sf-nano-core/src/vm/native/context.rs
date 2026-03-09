@@ -16,6 +16,10 @@ pub struct ContextHot {
     pub trap_message: *const c_char,
     pub term_entry: NativeEntry,
     pub resume_fp: *mut u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_next_inst: *mut crate::vm::native::instruction::NativeInst,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_ordinal: u64,
 }
 
 impl ContextHot {
@@ -29,6 +33,10 @@ impl ContextHot {
             trap_message: core::ptr::null(),
             term_entry: crate::vm::native::runtime::term_entry(),
             resume_fp: core::ptr::null_mut(),
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_next_inst: core::ptr::null_mut(),
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_ordinal: 0,
         }
     }
 }
@@ -43,6 +51,12 @@ pub mod ctx_offset {
     pub const TRAP_MESSAGE: u32 = core::mem::offset_of!(ContextHot, trap_message) as u32;
     pub const TERM_ENTRY: u32 = core::mem::offset_of!(ContextHot, term_entry) as u32;
     pub const RESUME_FP: u32 = core::mem::offset_of!(ContextHot, resume_fp) as u32;
+    #[cfg(feature = "lockstep-debug")]
+    pub const CHECKPOINT_NEXT_INST: u32 =
+        core::mem::offset_of!(ContextHot, checkpoint_next_inst) as u32;
+    #[cfg(feature = "lockstep-debug")]
+    pub const CHECKPOINT_ORDINAL: u32 =
+        core::mem::offset_of!(ContextHot, checkpoint_ordinal) as u32;
     pub const TERM_PC: u32 = TERM_ENTRY;
 }
 
@@ -54,7 +68,14 @@ const _: [(); 24] = [(); ctx_offset::MEM0_SIZE as usize];
 const _: [(); 32] = [(); ctx_offset::TRAP_MESSAGE as usize];
 const _: [(); 40] = [(); ctx_offset::TERM_ENTRY as usize];
 const _: [(); 48] = [(); ctx_offset::RESUME_FP as usize];
+#[cfg(not(feature = "lockstep-debug"))]
 const _: [(); 56] = [(); core::mem::size_of::<ContextHot>()];
+#[cfg(feature = "lockstep-debug")]
+const _: [(); 56] = [(); ctx_offset::CHECKPOINT_NEXT_INST as usize];
+#[cfg(feature = "lockstep-debug")]
+const _: [(); 64] = [(); ctx_offset::CHECKPOINT_ORDINAL as usize];
+#[cfg(feature = "lockstep-debug")]
+const _: [(); 72] = [(); core::mem::size_of::<ContextHot>()];
 
 #[repr(C)]
 pub struct Context {
@@ -62,6 +83,33 @@ pub struct Context {
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l0: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l1: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_l2: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t0: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t1: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t2: u64,
+    #[cfg(feature = "lockstep-debug")]
+    pub checkpoint_t3: u64,
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub mod ctx_debug_offset {
+    use super::Context;
+
+    pub const CHECKPOINT_L0: u32 = core::mem::offset_of!(Context, checkpoint_l0) as u32;
+    pub const CHECKPOINT_L1: u32 = core::mem::offset_of!(Context, checkpoint_l1) as u32;
+    pub const CHECKPOINT_L2: u32 = core::mem::offset_of!(Context, checkpoint_l2) as u32;
+    pub const CHECKPOINT_T0: u32 = core::mem::offset_of!(Context, checkpoint_t0) as u32;
+    pub const CHECKPOINT_T1: u32 = core::mem::offset_of!(Context, checkpoint_t1) as u32;
+    pub const CHECKPOINT_T2: u32 = core::mem::offset_of!(Context, checkpoint_t2) as u32;
+    pub const CHECKPOINT_T3: u32 = core::mem::offset_of!(Context, checkpoint_t3) as u32;
 }
 
 impl Context {
@@ -78,6 +126,20 @@ impl Context {
             store,
             current_module,
             error: None,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l0: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l1: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_l2: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t0: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t1: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t2: 0,
+            #[cfg(feature = "lockstep-debug")]
+            checkpoint_t3: 0,
         }
     }
 }

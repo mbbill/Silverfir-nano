@@ -378,7 +378,7 @@ pub fn resolve_native(
     buf: &mut CodeBuffer,
     hot_local_mask: [bool; 3],
 ) -> Result<NativeResolvedVec, alloc::string::String> {
-    resolve_native_with_context(ir, buf, hot_local_mask, "", 0)
+    resolve_native_with_context_impl(ir, buf, hot_local_mask, "", 0, None)
 }
 
 /// Resolve IR ops via native compilation with optional source metadata for debug maps.
@@ -388,6 +388,38 @@ pub fn resolve_native_with_context(
     hot_local_mask: [bool; 3],
     module_name: &str,
     func_idx: u32,
+) -> Result<NativeResolvedVec, alloc::string::String> {
+    resolve_native_with_context_impl(ir, buf, hot_local_mask, module_name, func_idx, None)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn resolve_native_with_context_and_checkpoints(
+    ir: &[IrOp],
+    buf: &mut CodeBuffer,
+    hot_local_mask: [bool; 3],
+    module_name: &str,
+    func_idx: u32,
+    checkpoint_plan: &crate::vm::lockstep::CheckpointPlan,
+) -> Result<NativeResolvedVec, alloc::string::String> {
+    let barriers = checkpoint_plan.native_barriers(ir.len());
+    resolve_native_with_context_impl(
+        ir,
+        buf,
+        hot_local_mask,
+        module_name,
+        func_idx,
+        Some(&barriers),
+    )
+}
+
+fn resolve_native_with_context_impl(
+    ir: &[IrOp],
+    buf: &mut CodeBuffer,
+    hot_local_mask: [bool; 3],
+    module_name: &str,
+    func_idx: u32,
+    #[cfg(feature = "lockstep-debug")] checkpoint_barriers: Option<&crate::vm::lockstep::CheckpointBarriers>,
+    #[cfg(not(feature = "lockstep-debug"))] _checkpoint_barriers: Option<()>,
 ) -> Result<NativeResolvedVec, alloc::string::String> {
     buf.begin_write();
     let bytes_before = buf.len();
@@ -424,6 +456,12 @@ pub fn resolve_native_with_context(
 
             // Extend the group
             while start_terminator.is_none() && i < ir.len() {
+                #[cfg(feature = "lockstep-debug")]
+                if let Some(barriers) = checkpoint_barriers {
+                    if barriers.break_after[i - 1] || barriers.break_before[i] {
+                        break;
+                    }
+                }
                 if branch_targets[i] {
                     break;
                 }
@@ -1466,6 +1504,36 @@ mod tests {
         assert!(matches!(resolved[0].kind, IrOpKind::I32Const { .. }));
         assert!(matches!(resolved[1].kind, IrOpKind::BrIf { .. }));
         assert!(resolved[1].cold_helper.is_none());
+    }
+
+    #[cfg(feature = "lockstep-debug")]
+    #[test]
+    fn test_checkpoint_barriers_prevent_group_fusion() {
+        let mut buf = CodeBuffer::new().expect("mmap failed");
+        let mask = [true, true, true];
+
+        let ops = vec![
+            make_op(IrOpKind::I32Const { value: 1 }, 0),
+            make_op(IrOpKind::I32Const { value: 2 }, 1),
+            make_op(IrOpKind::I32Add, 2),
+        ];
+        let plan = crate::vm::lockstep::CheckpointPlan::for_function(
+            0,
+            &ops,
+            crate::vm::lockstep::CheckpointMode::Scoped,
+        );
+
+        let resolved = resolve_native_with_context_and_checkpoints(
+            &ops,
+            &mut buf,
+            mask,
+            "test",
+            0,
+            &plan,
+        )
+        .expect("native resolve with checkpoints");
+
+        assert!(resolved.iter().all(|op| !op.is_internal_only()));
     }
 
     #[test]

@@ -6,6 +6,8 @@ use alloc::boxed::Box;
 /// Compiled fast interpreter code for a function.
 pub struct FastCode {
     code: Box<[Instruction]>,
+    #[cfg(feature = "lockstep-debug")]
+    entry_stub: Option<Box<[Instruction]>>,
 }
 
 impl core::fmt::Debug for FastCode {
@@ -18,7 +20,11 @@ impl core::fmt::Debug for FastCode {
 
 impl FastCode {
     pub fn new(code: Box<[Instruction]>) -> Self {
-        FastCode { code }
+        FastCode {
+            code,
+            #[cfg(feature = "lockstep-debug")]
+            entry_stub: None,
+        }
     }
 
     #[inline]
@@ -43,10 +49,23 @@ impl FastCode {
     pub fn build_cache(&self, params_len: usize, locals_len: usize, results_len: usize) -> FastCodeCache {
         FastCodeCache {
             entry: self.entry_ptr(),
+            #[cfg(feature = "lockstep-debug")]
+            entry_override: core::ptr::null_mut(),
             params_len,
             locals_len,
             results_len,
         }
+    }
+
+    #[cfg(feature = "lockstep-debug")]
+    pub fn install_entry_stub(
+        &mut self,
+        stub: Box<[Instruction]>,
+        cache: &mut FastCodeCache,
+    ) {
+        let ptr = stub.as_ptr() as *mut Instruction;
+        self.entry_stub = Some(stub);
+        cache.entry_override = ptr;
     }
 }
 
@@ -54,6 +73,8 @@ impl FastCode {
 #[derive(Debug, Clone, Copy)]
 pub struct FastCodeCache {
     entry: *mut Instruction,
+    #[cfg(feature = "lockstep-debug")]
+    entry_override: *mut Instruction,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
@@ -63,6 +84,8 @@ impl Default for FastCodeCache {
     fn default() -> Self {
         FastCodeCache {
             entry: core::ptr::null_mut(),
+            #[cfg(feature = "lockstep-debug")]
+            entry_override: core::ptr::null_mut(),
             params_len: 0,
             locals_len: 0,
             results_len: 0,
@@ -81,6 +104,10 @@ impl FastCodeCache {
 
     #[inline(always)]
     pub fn entry(&self) -> *mut Instruction {
+        #[cfg(feature = "lockstep-debug")]
+        if !self.entry_override.is_null() {
+            return self.entry_override;
+        }
         self.entry
     }
 

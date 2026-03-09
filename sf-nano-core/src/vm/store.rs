@@ -11,6 +11,14 @@ pub struct Store {
     module: ModuleInst,
 }
 
+impl Clone for Store {
+    fn clone(&self) -> Self {
+        Store {
+            module: self.module.clone(),
+        }
+    }
+}
+
 impl Store {
     pub fn new(module: ModuleInst) -> Self {
         Store { module }

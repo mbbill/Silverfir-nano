@@ -31,4 +31,6 @@ pub mod precompile;
 pub mod runtime;
 
 pub mod fusion;
+#[cfg(feature = "lockstep-debug")]
+pub mod lockstep;
 pub mod resolved;

@@ -6,6 +6,8 @@ pub(crate) mod expr_eval;
 pub mod instance;
 pub mod interp;
 pub mod lowered;
+#[cfg(feature = "lockstep-debug")]
+pub mod lockstep;
 pub mod operand_encoding;
 #[cfg(feature = "micro-jit")]
 pub mod native;

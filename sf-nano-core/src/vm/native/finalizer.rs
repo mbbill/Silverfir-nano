@@ -21,12 +21,39 @@ use super::runtime::term_entry;
 use super::arm64::{EntryPatchSites, depth_variant, emit, tos_reg};
 use super::arm64::reg::Reg;
 
+#[cfg(feature = "lockstep-debug")]
+use crate::vm::lockstep::{CheckpointKind, CheckpointPlan};
+
 pub fn finalize(
     mut ops: NativeResolvedVec,
     stack: &mut StackTracker,
     buf: &mut CodeBuffer,
     module_name: &str,
     func_idx: u32,
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
+    finalize_impl(ops, stack, buf, module_name, func_idx, None)
+}
+
+#[cfg(feature = "lockstep-debug")]
+pub fn finalize_with_checkpoints(
+    ops: NativeResolvedVec,
+    stack: &mut StackTracker,
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+    checkpoint_plan: &CheckpointPlan,
+) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
+    finalize_impl(ops, stack, buf, module_name, func_idx, Some(checkpoint_plan))
+}
+
+fn finalize_impl(
+    mut ops: NativeResolvedVec,
+    stack: &mut StackTracker,
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+    #[cfg(feature = "lockstep-debug")] checkpoint_plan: Option<&CheckpointPlan>,
+    #[cfg(not(feature = "lockstep-debug"))] _checkpoint_plan: Option<()>,
 ) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
     append_terminals(&mut ops);
     route_terminals(&mut ops);
@@ -36,7 +63,50 @@ pub fn finalize(
     validate_removed_targets(&ops, &keep);
     let index_map = build_index_map(&keep);
     let compacted = compact_and_patch(ops, &keep, &index_map);
-    build_instructions(compacted, stack.operand_base(), buf, module_name, func_idx)
+    build_instructions(
+        compacted,
+        stack.operand_base(),
+        buf,
+        module_name,
+        func_idx,
+        #[cfg(feature = "lockstep-debug")]
+        checkpoint_plan,
+        #[cfg(not(feature = "lockstep-debug"))]
+        None,
+    )
+}
+
+#[cfg(feature = "lockstep-debug")]
+#[derive(Clone, Debug)]
+struct CheckpointPatchPlan {
+    before_ordinals: Vec<Option<u32>>,
+}
+
+#[cfg(feature = "lockstep-debug")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CheckpointStopKey {
+    next_idx: usize,
+    ordinal: u32,
+}
+
+#[cfg(feature = "lockstep-debug")]
+fn checkpoint_patch_plan(plan: Option<&CheckpointPlan>, op_count: usize) -> Option<CheckpointPatchPlan> {
+    let plan = plan?;
+    let mut before_ordinals = vec![None; op_count];
+    for site in plan.sites() {
+        let Some(op_idx) = site.id.lowered_op else {
+            continue;
+        };
+        let idx = op_idx.as_usize();
+        if idx >= op_count {
+            continue;
+        }
+        match site.id.kind {
+            CheckpointKind::BeforeOp => before_ordinals[idx] = Some(site.id.ordinal),
+            CheckpointKind::FunctionEntry | CheckpointKind::FunctionExit => {}
+        }
+    }
+    Some(CheckpointPatchPlan { before_ordinals })
 }
 
 fn append_terminals(ops: &mut NativeResolvedVec) {
@@ -294,10 +364,15 @@ fn build_instructions(
     buf: &mut CodeBuffer,
     module_name: &str,
     func_idx: u32,
+    #[cfg(feature = "lockstep-debug")] checkpoint_plan: Option<&CheckpointPlan>,
+    #[cfg(not(feature = "lockstep-debug"))] _checkpoint_plan: Option<()>,
 ) -> (Box<[NativeInst]>, Box<[HelperMetadata]>, Box<[DirectCallEntryPatch]>) {
     if ops.is_empty() {
         return (Box::new([]), Box::new([]), Box::new([]));
     }
+
+    #[cfg(feature = "lockstep-debug")]
+    let checkpoint_plan = checkpoint_patch_plan(checkpoint_plan, ops.len());
 
     let fix_slot = |slot: SlotRef| -> u16 { slot.resolve(operand_base) };
 
@@ -384,7 +459,17 @@ fn build_instructions(
         || !br_table_sites.is_empty()
         || ops.iter().any(|op| {
             op.entry_patches.fallthrough_literal.is_some() || op.entry_patches.alt_literal.is_some()
-        });
+        })
+        || {
+            #[cfg(feature = "lockstep-debug")]
+            {
+                checkpoint_plan.is_some()
+            }
+            #[cfg(not(feature = "lockstep-debug"))]
+            {
+                false
+            }
+        };
 
     if needs_code_patch {
         let mut patch_start = buf.len();
@@ -526,6 +611,8 @@ fn build_instructions(
         }
 
         let mut resume_entry_cache: Vec<(usize, NativeEntry)> = Vec::new();
+        #[cfg(feature = "lockstep-debug")]
+        let mut checkpoint_stop_cache: Vec<(CheckpointStopKey, NativeEntry)> = Vec::new();
 
         for (i, op) in ops.iter().enumerate() {
             if let Some(literal_off) = op.entry_patches.fallthrough_literal {
@@ -534,45 +621,109 @@ fn build_instructions(
                     .get(i + 1)
                     .map(|inst| inst.entry)
                     .unwrap_or_else(term_entry);
-                let patched_entry = if needs_fallthrough_resume(&op.kind) {
-                    ensure_resume_entry(
-                        &mut resume_entry_cache,
-                        &code_box,
-                        &ops,
-                        buf,
-                        module_name,
-                        func_idx,
-                        i + 1,
-                        target_entry,
-                    )
-                } else {
-                    target_entry
+                #[cfg(feature = "lockstep-debug")]
+                let stop_before_ordinal = checkpoint_plan
+                    .as_ref()
+                    .and_then(|plan| plan.before_ordinals.get(i + 1).copied().flatten());
+                let patched_entry = {
+                    #[cfg(feature = "lockstep-debug")]
+                    if let Some(ordinal) = stop_before_ordinal {
+                        ensure_checkpoint_stop_entry(
+                            &mut checkpoint_stop_cache,
+                            &code_box,
+                            buf,
+                            module_name,
+                            func_idx,
+                            i + 1,
+                            ordinal,
+                        )
+                    } else if needs_fallthrough_resume(&op.kind) {
+                        ensure_resume_entry(
+                            &mut resume_entry_cache,
+                            &code_box,
+                            &ops,
+                            buf,
+                            module_name,
+                            func_idx,
+                            i + 1,
+                            target_entry,
+                        )
+                    } else {
+                        target_entry
+                    }
+                    #[cfg(not(feature = "lockstep-debug"))]
+                    if needs_fallthrough_resume(&op.kind) {
+                        ensure_resume_entry(
+                            &mut resume_entry_cache,
+                            &code_box,
+                            &ops,
+                            buf,
+                            module_name,
+                            func_idx,
+                            i + 1,
+                            target_entry,
+                        )
+                    } else {
+                        target_entry
+                    }
                 };
                 buf.patch_u64(literal_off, patched_entry as usize as u64);
             }
             if let Some(literal_off) = op.entry_patches.alt_literal {
                 patch_start = patch_start.min(literal_off);
+                let target_idx = op
+                    .alt_target
+                    .map(|idx| idx.as_usize())
+                    .unwrap_or(ops.len().saturating_sub(1));
                 let target_entry = op
                     .alt_target
                     .and_then(|alt_idx| code_box.get(alt_idx.as_usize()).map(|inst| inst.entry))
                     .unwrap_or_else(term_entry);
-                let patched_entry = if needs_branch_resume(&op.kind) {
-                    let target_idx = op
-                        .alt_target
-                        .map(|idx| idx.as_usize())
-                        .unwrap_or(ops.len().saturating_sub(1));
-                    ensure_resume_entry(
-                        &mut resume_entry_cache,
-                        &code_box,
-                        &ops,
-                        buf,
-                        module_name,
-                        func_idx,
-                        target_idx,
-                        target_entry,
-                    )
-                } else {
-                    target_entry
+                #[cfg(feature = "lockstep-debug")]
+                let stop_before_ordinal = checkpoint_plan
+                    .as_ref()
+                    .and_then(|plan| plan.before_ordinals.get(target_idx).copied().flatten());
+                let patched_entry = {
+                    #[cfg(feature = "lockstep-debug")]
+                    if let Some(ordinal) = stop_before_ordinal {
+                        ensure_checkpoint_stop_entry(
+                            &mut checkpoint_stop_cache,
+                            &code_box,
+                            buf,
+                            module_name,
+                            func_idx,
+                            target_idx,
+                            ordinal,
+                        )
+                    } else if needs_branch_resume(&op.kind) {
+                        ensure_resume_entry(
+                            &mut resume_entry_cache,
+                            &code_box,
+                            &ops,
+                            buf,
+                            module_name,
+                            func_idx,
+                            target_idx,
+                            target_entry,
+                        )
+                    } else {
+                        target_entry
+                    }
+                    #[cfg(not(feature = "lockstep-debug"))]
+                    if needs_branch_resume(&op.kind) {
+                        ensure_resume_entry(
+                            &mut resume_entry_cache,
+                            &code_box,
+                            &ops,
+                            buf,
+                            module_name,
+                            func_idx,
+                            target_idx,
+                            target_entry,
+                        )
+                    } else {
+                        target_entry
+                    }
                 };
                 buf.patch_u64(literal_off, patched_entry as usize as u64);
             }
@@ -584,35 +735,98 @@ fn build_instructions(
                 .get(target_idx)
                 .map(|inst| inst.entry)
                 .unwrap_or_else(term_entry);
-            let patched_entry = ensure_resume_entry(
-                &mut resume_entry_cache,
-                &code_box,
-                &ops,
-                buf,
-                module_name,
-                func_idx,
-                target_idx,
-                target_entry,
-            );
+            let patched_entry = {
+                #[cfg(feature = "lockstep-debug")]
+                if let Some(ordinal) = checkpoint_plan
+                    .as_ref()
+                    .and_then(|plan| plan.before_ordinals.get(target_idx).copied().flatten())
+                {
+                    ensure_checkpoint_stop_entry(
+                        &mut checkpoint_stop_cache,
+                        &code_box,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        ordinal,
+                    )
+                } else {
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        target_entry,
+                    )
+                }
+                #[cfg(not(feature = "lockstep-debug"))]
+                {
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        target_entry,
+                    )
+                }
+            };
             buf.patch_u64(literal_off, patched_entry as usize as u64);
         }
 
-        for (target_idx, literal_off) in direct_call_next_entry_literals {
+        for (current_idx, literal_off) in direct_call_next_entry_literals {
             patch_start = patch_start.min(literal_off);
+            let target_idx = current_idx;
             let target_entry = code_box
                 .get(target_idx)
                 .map(|inst| inst.entry)
                 .unwrap_or_else(term_entry);
-            let patched_entry = ensure_resume_entry(
-                &mut resume_entry_cache,
-                &code_box,
-                &ops,
-                buf,
-                module_name,
-                func_idx,
-                target_idx,
-                target_entry,
-            );
+            let patched_entry = {
+                #[cfg(feature = "lockstep-debug")]
+                if let Some(ordinal) = checkpoint_plan
+                    .as_ref()
+                    .and_then(|plan| plan.before_ordinals.get(target_idx).copied().flatten())
+                {
+                    ensure_checkpoint_stop_entry(
+                        &mut checkpoint_stop_cache,
+                        &code_box,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        ordinal,
+                    )
+                } else {
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        target_entry,
+                    )
+                }
+                #[cfg(not(feature = "lockstep-debug"))]
+                {
+                    ensure_resume_entry(
+                        &mut resume_entry_cache,
+                        &code_box,
+                        &ops,
+                        buf,
+                        module_name,
+                        func_idx,
+                        target_idx,
+                        target_entry,
+                    )
+                }
+            };
             buf.patch_u64(literal_off, patched_entry as usize as u64);
         }
 
@@ -682,6 +896,45 @@ fn ensure_resume_entry(
         target_idx,
         "resume",
         &ops[target_idx].kind,
+    );
+    entry
+}
+
+#[cfg(feature = "lockstep-debug")]
+fn ensure_checkpoint_stop_entry(
+    cache: &mut Vec<(CheckpointStopKey, NativeEntry)>,
+    code_box: &[NativeInst],
+    buf: &mut CodeBuffer,
+    module_name: &str,
+    func_idx: u32,
+    next_idx: usize,
+    ordinal: u32,
+) -> NativeEntry {
+    let key = CheckpointStopKey { next_idx, ordinal };
+    if let Some((_, entry)) = cache.iter().find(|(candidate, _)| *candidate == key) {
+        return *entry;
+    }
+
+    let next_inst = code_box
+        .get(next_idx)
+        .map(|inst| inst as *const NativeInst)
+        .unwrap_or(core::ptr::null());
+    let (start, len) = emit::emit_checkpoint_stop_wrapper(buf, next_inst, ordinal as u64);
+    let entry: NativeEntry = unsafe { buf.fn_ptr(start) };
+    cache.push((key, entry));
+    debug_map::record_wrapper(
+        buf.base_ptr(),
+        start,
+        len,
+        module_name,
+        func_idx,
+        next_idx,
+        "checkpoint_stop",
+        &IrOpKind::Data {
+            imm0: ordinal as u64,
+            imm1: next_idx as u64,
+            imm2: 0,
+        },
     );
     entry
 }
