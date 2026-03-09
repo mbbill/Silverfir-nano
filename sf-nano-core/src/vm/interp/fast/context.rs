@@ -65,6 +65,8 @@ pub struct Context {
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
+    #[cfg(feature = "function-trace")]
+    pub trace_stack: std::vec::Vec<u32>,
 }
 
 impl Context {
@@ -81,6 +83,8 @@ impl Context {
             store,
             current_module,
             error: None,
+            #[cfg(feature = "function-trace")]
+            trace_stack: std::vec::Vec::new(),
         }
     }
 

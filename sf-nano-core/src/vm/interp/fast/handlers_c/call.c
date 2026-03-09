@@ -26,6 +26,10 @@
 
 // External Rust helpers for slow paths
 extern void fast_return_cross_module(struct Ctx* ctx, uint64_t saved_module_ptr);
+#ifdef FUNCTION_TRACE_ENABLED
+extern void fast_function_trace_enter_entry(struct Ctx* ctx, struct Instruction* entry);
+extern void fast_function_trace_exit(struct Ctx* ctx, uint64_t* fp, uint16_t arity);
+#endif
 
 // Dereference the double pointer for direct access
 #define fp (*pfp)
@@ -97,6 +101,10 @@ FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
     // Update fp
     fp = callee_fp;
 
+#ifdef FUNCTION_TRACE_ENABLED
+    fast_function_trace_enter_entry(ctx, entry);
+#endif
+
     // Tail-call to callee entry (no run_trampoline!)
     return entry;
 }
@@ -107,7 +115,7 @@ FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
 
 FORCE_INLINE struct Instruction* return_epilogue(
     struct Ctx* ctx, uint64_t** pfp, uint64_t* p_l0, uint64_t* p_l1, uint64_t* p_l2,
-    struct Instruction* return_pc, uint64_t* saved_fp, uint64_t saved_module
+    struct Instruction* return_pc, uint64_t* saved_fp, uint64_t saved_module, uint16_t arity
 ) {
     // Decrement call depth
     ctx_call_depth(ctx)--;
@@ -116,6 +124,10 @@ FORCE_INLINE struct Instruction* return_epilogue(
     if (unlikely(saved_fp == NULL)) {
         return ctx_term_inst(ctx);
     }
+
+#ifdef FUNCTION_TRACE_ENABLED
+    fast_function_trace_exit(ctx, *pfp, arity);
+#endif
 
     // Restore fp
     *pfp = saved_fp;
@@ -153,7 +165,7 @@ FORCE_INLINE struct Instruction* impl_return(IMPL_PARAMS_NONE) {
         fp[i] = operand_base[height - arity + i];
     }
 
-    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module);
+    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module, arity);
 }
 
 // =============================================================================
@@ -167,7 +179,7 @@ FORCE_INLINE struct Instruction* impl_return_void(IMPL_PARAMS_NONE) {
     uint64_t* saved_fp = (uint64_t*)fp[frame_size + 1];
     uint64_t saved_module = fp[frame_size + 2];
 
-    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module);
+    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module, 0);
 }
 
 // =============================================================================
@@ -188,7 +200,7 @@ FORCE_INLINE struct Instruction* impl_return_one(IMPL_PARAMS_NONE) {
     // Single result: fp[0] = operand_base[height - 1]
     fp[0] = operand_base[height - 1];
 
-    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module);
+    return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module, 1);
 }
 
 #undef fp

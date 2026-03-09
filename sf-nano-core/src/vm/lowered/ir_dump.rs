@@ -1,38 +1,14 @@
-//! Compile-time IR dump for debugging.
+//! Compile-time lowered-IR dump for debugging.
 //!
-//! Gated by `#[cfg(feature = "ir-dump")]`. Dumps IR ops after lowering
-//! and resolved instructions after backend resolution.
-//!
-//! Filter with `SF_TRACE_FUNC=42` or `SF_TRACE_FUNC=5,12,47` env var.
-//! Unset = dump all functions.
+//! Gated by `#[cfg(feature = "ir-dump")]`.
+//! Filter with `SF_TRACE_FUNC=42` or `SF_TRACE_FUNC=5,12,47`.
 
-use super::super::resolved::ResolvedInst;
-use crate::vm::{lowered::{IrOp, IrOpKind}, planner::{HOT_LOCAL_COUNT, hot_local}};
-use std::sync::OnceLock;
-use std::collections::HashSet;
-use alloc::{vec, vec::Vec};
-
-macro_rules! dump {
-    ($($arg:tt)*) => { std::eprintln!($($arg)*) }
-}
-
-fn func_filter() -> &'static Option<HashSet<u32>> {
-    static FILTER: OnceLock<Option<HashSet<u32>>> = OnceLock::new();
-    FILTER.get_or_init(|| {
-        std::env::var("SF_TRACE_FUNC").ok().map(|val| {
-            val.split(',')
-                .filter_map(|s| s.trim().parse::<u32>().ok())
-                .collect()
-        })
-    })
-}
-
-fn should_dump(func_idx: u32) -> bool {
-    match func_filter() {
-        None => true,
-        Some(set) => set.contains(&func_idx),
-    }
-}
+use crate::vm::{
+    debug_dump,
+    lowered::{IrOp, IrOpKind},
+    planner::{hot_local, HOT_LOCAL_COUNT},
+};
+use alloc::{string::String, vec, vec::Vec};
 
 fn fmt_ir(i: usize, op: &IrOp) -> alloc::string::String {
     let target_str = match op.alt_target {
@@ -97,17 +73,16 @@ fn inverse_remap(hot_locals: [Option<u32>; HOT_LOCAL_COUNT], frame_size: usize) 
     inverse
 }
 
-fn dump_local_pressure(
+fn local_pressure_lines(
     func_idx: u32,
     code: &[u8],
     ir_ops: &[IrOp],
     frame_size: usize,
     raw_hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
     hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
-) {
+) -> Vec<String> {
     if frame_size == 0 {
-        dump!("--- LOCAL PRESSURE func[{}] frame_size=0", func_idx);
-        return;
+        return vec![alloc::format!("--- LOCAL PRESSURE func[{}] frame_size=0", func_idx)];
     }
 
     let weights = hot_local::local_weights(code, frame_size);
@@ -295,29 +270,30 @@ fn dump_local_pressure(
         .collect::<Vec<_>>()
         .join(" | ");
 
-    dump!(
+    let mut lines = vec![alloc::format!(
         "--- LOCAL PRESSURE func[{}] frame_size={} cached=[{}]",
         func_idx,
         frame_size,
         cached,
-    );
-    dump!("    top-static: {}", top_static);
-    dump!(
+    )];
+    lines.push(alloc::format!("    top-static: {}", top_static));
+    lines.push(alloc::format!(
         "    ir-local-ops: hot={} frame={} distinct-frame-locals={}",
         hot_ops,
         frame_ops,
         frame_locals,
-    );
+    ));
     if !ir_summary.is_empty() {
-        dump!("    top-ir: {}", ir_summary);
+        lines.push(alloc::format!("    top-ir: {}", ir_summary));
     }
     if !frame_summary.is_empty() {
-        dump!("    top-frame: {}", frame_summary);
+        lines.push(alloc::format!("    top-frame: {}", frame_summary));
     }
+    lines
 }
 
-/// Dump IR ops after lowering.
 pub fn dump_ir(
+    module_name: &str,
     func_idx: u32,
     code: &[u8],
     frame_size: usize,
@@ -325,70 +301,38 @@ pub fn dump_ir(
     raw_hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
     hot_locals: [Option<u32>; HOT_LOCAL_COUNT],
 ) {
-    if !should_dump(func_idx) {
+    if !debug_dump::should_dump_func(func_idx) {
         return;
     }
 
-    dump!(
+    let mut lines = vec![alloc::format!(
         "=== IR func[{}] hot=[{},{},{}] {} ops ===",
         func_idx,
         fmt_opt(hot_locals[0]),
         fmt_opt(hot_locals[1]),
         fmt_opt(hot_locals[2]),
         ir_ops.len(),
-    );
+    )];
 
-    dump_local_pressure(func_idx, code, ir_ops, frame_size, raw_hot_locals, hot_locals);
+    lines.extend(local_pressure_lines(
+        func_idx,
+        code,
+        ir_ops,
+        frame_size,
+        raw_hot_locals,
+        hot_locals,
+    ));
 
     for (i, op) in ir_ops.iter().enumerate() {
-        dump!("{}", fmt_ir(i, op));
-    }
-}
-
-/// Dump resolved instructions after backend resolution.
-///
-/// Cross-references with original IR ops to annotate JIT groups.
-pub fn dump_resolved(func_idx: u32, resolved: &[ResolvedInst], ir_ops: &[IrOp]) {
-    if !should_dump(func_idx) {
-        return;
+        lines.push(fmt_ir(i, op));
     }
 
-    dump!("=== RESOLVED func[{}] {} insts ===", func_idx, resolved.len());
-
-    let mut i = 0;
-    while i < resolved.len() {
-        let inst = &resolved[i];
-
-        if !inst.is_removed() && matches!(inst.kind, IrOpKind::Data { imm0: 0, imm1: 0, imm2: 0 }) {
-            // JIT group: find extent
-            let start = i;
-            let mut end = i + 1;
-            while end < resolved.len() && resolved[end].is_internal_only()
-                && matches!(resolved[end].kind, IrOpKind::Nop) {
-                end += 1;
-            }
-            dump!("  [JIT group start]");
-            for idx in start..end.min(ir_ops.len()) {
-                dump!("{}", fmt_ir(idx, &ir_ops[idx]));
-            }
-            dump!("  [JIT group end]");
-            i = end;
-        } else if inst.is_removed() {
-            match &inst.kind {
-                IrOpKind::Block | IrOpKind::Loop | IrOpKind::End => {
-                    dump!("  res[{:4}] ({:?})", i, inst.kind);
-                }
-                _ => {} // skip structural Nops outside JIT groups
-            }
-            i += 1;
-        } else {
-            let target_str = match inst.alt_target {
-                Some(t) => alloc::format!(" -> ir[{}]", t.as_usize()),
-                None => alloc::string::String::new(),
-            };
-            dump!("  res[{:4}] {:?}{}", i, inst.kind, target_str);
-            i += 1;
-        }
+    let text = lines.join("\n") + "\n";
+    if let Some(dir) = debug_dump::function_dir(module_name, func_idx) {
+        let path = dir.join("lowered_ir.txt");
+        let _ = debug_dump::write_text(&path, &text);
+    } else {
+        std::eprint!("{}", text);
     }
 }
 

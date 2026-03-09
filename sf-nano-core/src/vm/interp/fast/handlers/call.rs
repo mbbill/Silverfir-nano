@@ -11,6 +11,8 @@ use super::trap_with;
 use crate::vm::interp::fast::encoding::{call_external, call_indirect, call_ref};
 use crate::vm::entities::{Caller, MemInst};
 use crate::error::WasmError;
+#[cfg(feature = "function-trace")]
+use crate::vm::function_trace;
 
 /// Read a value from the operand stack using fp-relative addressing.
 /// operand_base = fp + operand_base_offset/8, slot at operand_base[index]
@@ -132,6 +134,13 @@ fn enter_unified_callee(
     // 10. Update fp to callee
     unsafe {
         *fp_pp = callee_fp;
+    }
+
+    #[cfg(feature = "function-trace")]
+    unsafe {
+        if function_trace::enabled() {
+            function_trace::fast_function_trace_enter_entry(ctx, entry);
+        }
     }
 
     // 11. Return callee entry for tail-call dispatch

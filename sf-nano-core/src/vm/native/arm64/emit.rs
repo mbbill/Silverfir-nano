@@ -4,6 +4,8 @@
 //! and hot-context field offset constants.
 
 use alloc::vec::Vec;
+#[cfg(feature = "function-trace")]
+use core::ptr::addr_of;
 
 use super::super::CodeBuffer;
 use super::arm64_enc;
@@ -15,6 +17,78 @@ pub use crate::vm::native::context::ctx_offset;
 #[allow(improper_ctypes)]
 unsafe extern "C" {
     fn native_helper_reload_tos_from_x1();
+    #[cfg(feature = "function-trace")]
+    fn native_function_trace_enter_entry(
+        ctx: *mut crate::vm::native::context::Context,
+        entry: NativeEntry,
+    );
+    #[cfg(feature = "function-trace")]
+    fn native_function_trace_exit(
+        ctx: *mut crate::vm::native::context::Context,
+        fp: *mut u64,
+        arity: u16,
+    );
+    #[cfg(feature = "function-trace")]
+    static FUNCTION_TRACE_ACTIVE: core::sync::atomic::AtomicU64;
+}
+
+#[cfg(feature = "function-trace")]
+const TRACE_SAVE_SLOTS: u32 = 14;
+
+#[cfg(feature = "function-trace")]
+const TRACE_SAVE_BYTES: u32 = TRACE_SAVE_SLOTS * 8;
+
+#[cfg(feature = "function-trace")]
+fn emit_trace_save_vm_regs(buf: &mut CodeBuffer) {
+    buf.emit(arm64_enc::sub_imm_64(Reg::XZR, Reg::XZR, TRACE_SAVE_BYTES));
+    buf.emit(arm64_enc::str_64(Reg::CTX, Reg::XZR, 0));
+    buf.emit(arm64_enc::str_64(Reg::PC, Reg::XZR, 1));
+    buf.emit(arm64_enc::str_64(Reg::FP, Reg::XZR, 2));
+    buf.emit(arm64_enc::str_64(Reg::L0, Reg::XZR, 3));
+    buf.emit(arm64_enc::str_64(Reg::L1, Reg::XZR, 4));
+    buf.emit(arm64_enc::str_64(Reg::L2, Reg::XZR, 5));
+    buf.emit(arm64_enc::str_64(Reg::T0, Reg::XZR, 6));
+    buf.emit(arm64_enc::str_64(Reg::T1, Reg::XZR, 7));
+    buf.emit(arm64_enc::str_64(Reg::T2, Reg::XZR, 8));
+    buf.emit(arm64_enc::str_64(Reg::T3, Reg::XZR, 9));
+    buf.emit(arm64_enc::str_64(Reg::TMP2, Reg::XZR, 10));
+    buf.emit(arm64_enc::str_64(Reg::TMP3, Reg::XZR, 11));
+    buf.emit(arm64_enc::str_64(Reg::TMP4, Reg::XZR, 12));
+    buf.emit(arm64_enc::str_64(Reg::TMP5, Reg::XZR, 13));
+}
+
+#[cfg(feature = "function-trace")]
+fn emit_trace_restore_vm_regs(buf: &mut CodeBuffer) {
+    buf.emit(arm64_enc::ldr_64(Reg::CTX, Reg::XZR, 0));
+    buf.emit(arm64_enc::ldr_64(Reg::PC, Reg::XZR, 1));
+    buf.emit(arm64_enc::ldr_64(Reg::FP, Reg::XZR, 2));
+    buf.emit(arm64_enc::ldr_64(Reg::L0, Reg::XZR, 3));
+    buf.emit(arm64_enc::ldr_64(Reg::L1, Reg::XZR, 4));
+    buf.emit(arm64_enc::ldr_64(Reg::L2, Reg::XZR, 5));
+    buf.emit(arm64_enc::ldr_64(Reg::T0, Reg::XZR, 6));
+    buf.emit(arm64_enc::ldr_64(Reg::T1, Reg::XZR, 7));
+    buf.emit(arm64_enc::ldr_64(Reg::T2, Reg::XZR, 8));
+    buf.emit(arm64_enc::ldr_64(Reg::T3, Reg::XZR, 9));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP2, Reg::XZR, 10));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP3, Reg::XZR, 11));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP4, Reg::XZR, 12));
+    buf.emit(arm64_enc::ldr_64(Reg::TMP5, Reg::XZR, 13));
+    buf.emit(arm64_enc::add_imm_64(Reg::XZR, Reg::XZR, TRACE_SAVE_BYTES));
+}
+
+#[cfg(feature = "function-trace")]
+fn emit_trace_guard_begin(buf: &mut CodeBuffer) -> usize {
+    let active_addr = addr_of!(FUNCTION_TRACE_ACTIVE) as usize as u64;
+    materialize_u64(buf, Reg::TMP0, active_addr);
+    buf.emit(arm64_enc::ldr_64(Reg::TMP1, Reg::TMP0, 0));
+    buf.emit(arm64_enc::cbz_64(Reg::TMP1, 0))
+}
+
+#[cfg(feature = "function-trace")]
+fn emit_trace_guard_end(buf: &mut CodeBuffer, skip_patch: usize) {
+    let after = buf.len();
+    let delta = ((after - skip_patch) as i32) / 4;
+    buf.patch_u32(skip_patch, arm64_enc::cbz_64(Reg::TMP1, delta));
 }
 
 /// Emit a direct branch to an entry pointer loaded from an inline literal.
@@ -95,6 +169,7 @@ pub struct DirectCallInternalEmit {
     pub len: usize,
     pub callee_entry_literal: usize,
     pub next_entry_literal: usize,
+    pub next_tos_slots_literal: usize,
 }
 
 /// Emit a direct br_table entry specialized for one site.
@@ -253,14 +328,27 @@ pub fn emit_direct_call_internal_entry(
     buf.emit(arm64_enc::lsl_imm_64(Reg::TMP4, Reg::TMP4, 3));
     buf.emit(arm64_enc::add_reg_64(Reg::TMP5, Reg::TMP3, Reg::TMP4));
     let next_entry_load = buf.emit(arm64_enc::ldr_lit_64(Reg::TMP1, 0));
+    let next_tos_slots_load = buf.emit(arm64_enc::ldr_lit_64(Reg::TMP0, 0));
     buf.emit(arm64_enc::str_64(Reg::TMP1, Reg::TMP5, 0));
     buf.emit(arm64_enc::str_64(Reg::FP, Reg::TMP5, 1));
-    buf.emit(arm64_enc::str_64(Reg::XZR, Reg::TMP5, 2));
+    buf.emit(arm64_enc::str_64(Reg::TMP0, Reg::TMP5, 2));
     buf.emit(arm64_enc::mov_reg_64(Reg::FP, Reg::TMP3));
     buf.emit(arm64_enc::mov_reg_64(Reg::T0, Reg::XZR));
     buf.emit(arm64_enc::mov_reg_64(Reg::T1, Reg::XZR));
     buf.emit(arm64_enc::mov_reg_64(Reg::T2, Reg::XZR));
     buf.emit(arm64_enc::mov_reg_64(Reg::T3, Reg::XZR));
+    #[cfg(feature = "function-trace")]
+    let trace_entry_load = {
+        let skip_patch = emit_trace_guard_begin(buf);
+        let load = buf.emit(arm64_enc::ldr_lit_64(Reg::A1, 0));
+        emit_trace_save_vm_regs(buf);
+        buf.emit(arm64_enc::mov_reg_64(Reg::A0, Reg::CTX));
+        materialize_u64(buf, Reg::TMP0, native_function_trace_enter_entry as usize as u64);
+        buf.emit(arm64_enc::blr(Reg::TMP0));
+        emit_trace_restore_vm_regs(buf);
+        emit_trace_guard_end(buf, skip_patch);
+        load
+    };
     let callee_entry_load = buf.emit(arm64_enc::ldr_lit_64(Reg::TMP1, 0));
     buf.emit(arm64_enc::br(Reg::TMP1));
 
@@ -278,6 +366,8 @@ pub fn emit_direct_call_internal_entry(
 
     let next_entry_literal = buf.len();
     buf.emit_u64(0);
+    let next_tos_slots_literal = buf.len();
+    buf.emit_u64(0);
     let callee_entry_literal = buf.len();
     buf.emit_u64(0);
 
@@ -294,18 +384,45 @@ pub fn emit_direct_call_internal_entry(
 
     let next_entry_delta = ((next_entry_literal - next_entry_load) as i32) / 4;
     buf.patch_u32(next_entry_load, arm64_enc::ldr_lit_64(Reg::TMP1, next_entry_delta));
+    let next_tos_slots_delta = ((next_tos_slots_literal - next_tos_slots_load) as i32) / 4;
+    buf.patch_u32(
+        next_tos_slots_load,
+        arm64_enc::ldr_lit_64(Reg::TMP0, next_tos_slots_delta),
+    );
     let callee_entry_delta = ((callee_entry_literal - callee_entry_load) as i32) / 4;
     buf.patch_u32(
         callee_entry_load,
         arm64_enc::ldr_lit_64(Reg::TMP1, callee_entry_delta),
     );
+    #[cfg(feature = "function-trace")]
+    {
+        let trace_entry_delta = ((callee_entry_literal - trace_entry_load) as i32) / 4;
+        buf.patch_u32(
+            trace_entry_load,
+            arm64_enc::ldr_lit_64(Reg::A1, trace_entry_delta),
+        );
+    }
 
     DirectCallInternalEmit {
         start,
         len: buf.len() - start,
         callee_entry_literal,
         next_entry_literal,
+        next_tos_slots_literal,
     }
+}
+
+#[cfg(feature = "function-trace")]
+pub fn emit_function_trace_exit(buf: &mut CodeBuffer, arity: u16) {
+    let skip_patch = emit_trace_guard_begin(buf);
+    emit_trace_save_vm_regs(buf);
+    buf.emit(arm64_enc::mov_reg_64(Reg::A0, Reg::CTX));
+    buf.emit(arm64_enc::mov_reg_64(Reg::A1, Reg::FP));
+    materialize_u64(buf, Reg::A2, arity as u64);
+    materialize_u64(buf, Reg::TMP0, native_function_trace_exit as usize as u64);
+    buf.emit(arm64_enc::blr(Reg::TMP0));
+    emit_trace_restore_vm_regs(buf);
+    emit_trace_guard_end(buf, skip_patch);
 }
 
 pub fn emit_resume_entry(

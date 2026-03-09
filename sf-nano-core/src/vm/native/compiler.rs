@@ -41,6 +41,17 @@ pub fn build_for_function(
     let ir_ops = lowered::lower_to_ir(code, &ctx, &mut stack, hot_local_plan)?;
     let hot_mask = hot_local_plan.hot_mask();
 
+    #[cfg(feature = "ir-dump")]
+    crate::vm::lowered::ir_dump::dump_ir(
+        &module.name,
+        func_idx,
+        code,
+        frame_size,
+        &ir_ops,
+        compile_plan.hot_locals().raw(),
+        hot_local_plan.effective(),
+    );
+
     let resolved = super::resolve_backend(
         &ir_ops,
         stack.operand_base(),

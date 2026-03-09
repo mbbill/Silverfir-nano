@@ -16,6 +16,7 @@ profile = ["sf-nano-core/profile"]
 micro-jit = ["sf-nano-core/micro-jit"]
 fusion = ["sf-nano-core/fusion"]
 trace = ["sf-nano-core/trace"]
+function-trace = ["sf-nano-core/function-trace"]
 ir-dump = ["sf-nano-core/ir-dump"]
 
 [dependencies]

@@ -17,7 +17,7 @@
 
 mod finalizer_ir;
 #[cfg(feature = "ir-dump")]
-mod ir_dump;
+mod resolved_dump;
 pub mod ir_resolve;
 
 use crate::{
@@ -86,7 +86,15 @@ pub fn build_for_function(
     let ir_ops = lowered::lower_to_ir(code, &ctx, &mut stack, hot_local_plan)?;
 
     #[cfg(feature = "ir-dump")]
-    ir_dump::dump_ir(func_idx, code, frame_size, &ir_ops, raw_hot_locals, hot_locals);
+    crate::vm::lowered::ir_dump::dump_ir(
+        &module.name,
+        func_idx,
+        code,
+        frame_size,
+        &ir_ops,
+        raw_hot_locals,
+        hot_locals,
+    );
 
     let hot_mask = hot_local_plan.hot_mask();
 
@@ -111,7 +119,7 @@ pub fn build_for_function(
     };
 
     #[cfg(feature = "ir-dump")]
-    ir_dump::dump_resolved(func_idx, &resolved, &ir_ops);
+    resolved_dump::dump_resolved(&module.name, func_idx, &resolved, &ir_ops);
 
     // Finalize: Vec<ResolvedInst> → Box<[Instruction]>
     let code_box = finalizer_ir::finalize(resolved, &mut stack);

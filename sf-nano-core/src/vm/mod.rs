@@ -1,6 +1,8 @@
 pub mod backend;
 pub mod compile;
 pub mod compaction;
+#[cfg(any(feature = "ir-dump", feature = "native-dump"))]
+pub(crate) mod debug_dump;
 pub mod entities;
 pub(crate) mod expr_eval;
 pub mod instance;
@@ -13,3 +15,5 @@ pub mod planner;
 pub mod runtime;
 pub mod store;
 pub mod value;
+#[cfg(feature = "function-trace")]
+pub mod function_trace;

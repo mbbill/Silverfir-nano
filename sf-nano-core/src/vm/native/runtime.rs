@@ -9,6 +9,8 @@ use crate::vm::entities::{FunctionInst, MemInst, ModuleInst};
 use crate::vm::interp::stack::InterpreterStack;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
+#[cfg(feature = "function-trace")]
+use crate::vm::function_trace;
 
 use super::context::Context;
 use super::instruction::NativeEntry;
@@ -1343,6 +1345,13 @@ pub fn eval(
             out.push(core::ptr::read(stack_base.add(i)));
         }
     }
+    #[cfg(feature = "function-trace")]
+    if let FunctionInst::Local { spec, .. } = func_inst {
+        let raw_results = (0..results_len)
+            .map(|i| out.peek_at_index(i))
+            .collect::<alloc::vec::Vec<_>>();
+        function_trace::record_root_exit(store, function_trace::BackendTag::Native, spec, &raw_results);
+    }
     Ok(out)
 }
 
@@ -1401,6 +1410,9 @@ pub fn internal_eval(
     let entry = spec.native_cache().entry();
     ctx.hot.term_entry = term_entry();
 
+    #[cfg(feature = "function-trace")]
+    function_trace::native_root_entry(&mut ctx, spec);
+
     unsafe {
         native_run_entry(&mut ctx, entry, fp, 0, 0, 0, 0, 0, 0, 0);
     }
@@ -1414,7 +1426,9 @@ pub fn internal_eval(
         ctx.error = Some(WasmError::trap(msg.to_string()));
     }
 
-    if let Some(error) = ctx.error {
+    if let Some(error) = ctx.error.clone() {
+        #[cfg(feature = "function-trace")]
+        function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
     }
 

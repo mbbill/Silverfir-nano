@@ -14,6 +14,8 @@ use crate::vm::operand_encoding::encode_operands;
 use super::CodeBuffer;
 use super::code::DirectCallEntryPatch;
 use super::debug_map;
+#[cfg(feature = "native-dump")]
+use super::debug_dump;
 use super::bridge::{self, HelperMetadata};
 use super::instruction::{EMPTY_TOS_SLOTS, INVALID_TOS_SLOT, NativeEntry, NativeInst};
 use super::resolved::{NativeResolvedVec, ResolvedNativeInst};
@@ -35,8 +37,15 @@ pub fn finalize(
     let keep: Vec<bool> = ops.iter().map(|op| op.compaction.is_kept()).collect();
     validate_removed_targets(&ops, &keep);
     let index_map = build_index_map(&keep);
-    let compacted = compact_and_patch(ops, &keep, &index_map);
-    build_instructions(compacted, stack.operand_base(), buf, module_name, func_idx)
+    let (compacted, original_indices) = compact_and_patch(ops, &keep, &index_map);
+    build_instructions(
+        compacted,
+        original_indices,
+        stack.operand_base(),
+        buf,
+        module_name,
+        func_idx,
+    )
 }
 
 fn append_terminals(ops: &mut NativeResolvedVec) {
@@ -44,6 +53,8 @@ fn append_terminals(ops: &mut NativeResolvedVec) {
         entry: term_entry(),
         kind: IrOpKind::Term,
         pre_height: 0,
+        #[cfg(feature = "native-dump")]
+        original_ir_idx: usize::MAX,
         alt_target: None,
         has_target: false,
         cold_helper: None,
@@ -118,6 +129,8 @@ fn expand_br_tables(ops: NativeResolvedVec) -> NativeResolvedVec {
 
     let mut result = Vec::with_capacity(ops.len() + total_expansion);
     for op in ops {
+        #[cfg(feature = "native-dump")]
+        let original_ir_idx = op.original_ir_idx;
         let data_slot_count = if let IrOpKind::BrTable { ref entries, .. } = op.kind {
             (entries.len() + 1) / 2
         } else {
@@ -133,6 +146,8 @@ fn expand_br_tables(ops: NativeResolvedVec) -> NativeResolvedVec {
                     imm2: 0,
                 },
                 pre_height: 0,
+                #[cfg(feature = "native-dump")]
+                original_ir_idx,
                 alt_target: None,
                 has_target: false,
                 cold_helper: None,
@@ -156,6 +171,18 @@ fn build_index_map(keep: &[bool]) -> Vec<Option<usize>> {
         }
     }
     map
+}
+
+#[inline]
+fn debug_ir_idx(op: &ResolvedNativeInst, fallback: usize) -> usize {
+    #[cfg(feature = "native-dump")]
+    {
+        op.original_ir_idx
+    }
+    #[cfg(not(feature = "native-dump"))]
+    {
+        fallback
+    }
 }
 
 fn incoming_targets(ops: &[ResolvedNativeInst]) -> Vec<bool> {
@@ -219,9 +246,10 @@ fn compact_and_patch(
     ops: NativeResolvedVec,
     keep: &[bool],
     index_map: &[Option<usize>],
-) -> NativeResolvedVec {
+) -> (NativeResolvedVec, Vec<usize>) {
     let original_ops = ops.clone();
     let mut compacted = Vec::with_capacity(ops.len());
+    let mut original_indices = Vec::with_capacity(ops.len());
     let mut ops_iter = ops.into_iter().enumerate().peekable();
 
     while let Some((old_idx, op)) = ops_iter.next() {
@@ -249,6 +277,7 @@ fn compact_and_patch(
             *entry_count = ec as u32;
             *data_slot_count = dsc as u32;
             compacted.push(op);
+            original_indices.push(old_idx);
 
             let mut data_slots: Vec<(u64, u64, u64)> = vec![(0, 0, 0); dsc];
 
@@ -274,22 +303,25 @@ fn compact_and_patch(
             }
 
             for (imm0, imm1, imm2) in data_slots {
-                if let Some((_, mut data_op)) = ops_iter.next() {
+                if let Some((data_old_idx, mut data_op)) = ops_iter.next() {
                     data_op.kind = IrOpKind::Data { imm0, imm1, imm2 };
                     compacted.push(data_op);
+                    original_indices.push(data_old_idx);
                 }
             }
             continue;
         }
 
         compacted.push(op);
+        original_indices.push(old_idx);
     }
 
-    compacted
+    (compacted, original_indices)
 }
 
 fn build_instructions(
     ops: NativeResolvedVec,
+    original_indices: Vec<usize>,
     operand_base: usize,
     buf: &mut CodeBuffer,
     module_name: &str,
@@ -378,7 +410,7 @@ fn build_instructions(
     let mut metadata_box = vec![placeholder; helper_sites.len()].into_boxed_slice();
     let mut br_table_entry_literals: Vec<(usize, usize)> = Vec::new();
     let mut direct_call_entry_patches: Vec<DirectCallEntryPatch> = Vec::new();
-    let mut direct_call_next_entry_literals: Vec<(usize, usize)> = Vec::new();
+    let mut direct_call_next_entry_literals: Vec<(usize, usize, usize)> = Vec::new();
 
     let needs_code_patch = !helper_sites.is_empty()
         || !br_table_sites.is_empty()
@@ -442,7 +474,17 @@ fn build_instructions(
                 emit_site.len,
                 module_name,
                 func_idx,
-                code_idx,
+                debug_ir_idx(op, original_indices[code_idx]),
+                "br_table",
+                &op.kind,
+            );
+            #[cfg(feature = "native-dump")]
+            debug_dump::record_wrapper(
+                emit_site.start,
+                emit_site.len,
+                module_name,
+                func_idx,
+                debug_ir_idx(op, original_indices[code_idx]),
                 "br_table",
                 &op.kind,
             );
@@ -487,7 +529,11 @@ fn build_instructions(
                             });
                         }
                     }
-                    direct_call_next_entry_literals.push((code_idx + 1, emit_site.next_entry_literal));
+                    direct_call_next_entry_literals.push((
+                        code_idx + 1,
+                        emit_site.next_entry_literal,
+                        emit_site.next_tos_slots_literal,
+                    ));
                     (emit_site.start, emit_site.len)
                 }
                 _ => emit::emit_helper_wrapper(buf, helper_entry, meta_ptr),
@@ -500,7 +546,17 @@ fn build_instructions(
                 wrapper_len,
                 module_name,
                 func_idx,
-                code_idx,
+                debug_ir_idx(op, original_indices[code_idx]),
+                cold_helper_name(cold_helper),
+                &op.kind,
+            );
+            #[cfg(feature = "native-dump")]
+            debug_dump::record_wrapper(
+                wrapper_off,
+                wrapper_len,
+                module_name,
+                func_idx,
+                debug_ir_idx(op, original_indices[code_idx]),
                 cold_helper_name(cold_helper),
                 &op.kind,
             );
@@ -544,6 +600,7 @@ fn build_instructions(
                         func_idx,
                         i + 1,
                         target_entry,
+                        debug_ir_idx(&ops[i + 1], original_indices[i + 1]),
                     )
                 } else {
                     target_entry
@@ -570,6 +627,7 @@ fn build_instructions(
                         func_idx,
                         target_idx,
                         target_entry,
+                        debug_ir_idx(&ops[target_idx], original_indices[target_idx]),
                     )
                 } else {
                     target_entry
@@ -593,31 +651,29 @@ fn build_instructions(
                 func_idx,
                 target_idx,
                 target_entry,
+                debug_ir_idx(&ops[target_idx], original_indices[target_idx]),
             );
             buf.patch_u64(literal_off, patched_entry as usize as u64);
         }
 
-        for (target_idx, literal_off) in direct_call_next_entry_literals {
-            patch_start = patch_start.min(literal_off);
+        for (target_idx, entry_literal_off, tos_slots_literal_off) in direct_call_next_entry_literals {
+            patch_start = patch_start.min(entry_literal_off.min(tos_slots_literal_off));
             let target_entry = code_box
                 .get(target_idx)
                 .map(|inst| inst.entry)
                 .unwrap_or_else(term_entry);
-            let patched_entry = ensure_resume_entry(
-                &mut resume_entry_cache,
-                &code_box,
-                &ops,
-                buf,
-                module_name,
-                func_idx,
-                target_idx,
-                target_entry,
-            );
-            buf.patch_u64(literal_off, patched_entry as usize as u64);
+            let target_tos_slots = code_box
+                .get(target_idx)
+                .map(|inst| inst.tos_slots)
+                .unwrap_or(EMPTY_TOS_SLOTS);
+            buf.patch_u64(entry_literal_off, target_entry as usize as u64);
+            buf.patch_u64(tos_slots_literal_off, target_tos_slots);
         }
 
         let written_len = buf.len() - patch_start;
         buf.finish_write(patch_start, written_len);
+        #[cfg(feature = "native-dump")]
+        debug_dump::flush_function(buf.base_ptr(), module_name, func_idx);
     }
 
     (
@@ -658,6 +714,7 @@ fn ensure_resume_entry(
     func_idx: u32,
     target_idx: usize,
     fallback_entry: NativeEntry,
+    original_ir_idx: usize,
 ) -> NativeEntry {
     let target_tos = code_box
         .get(target_idx)
@@ -679,7 +736,17 @@ fn ensure_resume_entry(
         len,
         module_name,
         func_idx,
-        target_idx,
+        original_ir_idx,
+        "resume",
+        &ops[target_idx].kind,
+    );
+    #[cfg(feature = "native-dump")]
+    debug_dump::record_wrapper(
+        start,
+        len,
+        module_name,
+        func_idx,
+        original_ir_idx,
         "resume",
         &ops[target_idx].kind,
     );

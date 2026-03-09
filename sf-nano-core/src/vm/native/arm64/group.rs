@@ -11,6 +11,8 @@ use super::codegen::{EntryPatchSites, NativeEmitter, depth_variant, tos_reg};
 use super::op_meta;
 use super::reg::Reg;
 use super::super::{CodeBuffer, bridge, debug_map, samply_jitdump};
+#[cfg(feature = "native-dump")]
+use super::super::debug_dump;
 use crate::vm::compaction::CompactionDisposition;
 use crate::vm::lowered::{IrOp, IrOpKind, OpIndex, SlotRef, stack_effect};
 use crate::vm::native::instruction::NativeEntry;
@@ -406,6 +408,8 @@ pub fn resolve_native_with_context(
                 entry: term_entry(),
                 kind: ir[i].kind.clone(),
                 pre_height: ir[i].pre_height,
+                #[cfg(feature = "native-dump")]
+                original_ir_idx: i,
                 alt_target: ir[i].alt_target,
                 has_target: ir[i].has_target,
                 cold_helper: None,
@@ -479,6 +483,17 @@ pub fn resolve_native_with_context(
                         terminator_name(terminator),
                         branch_target,
                     );
+                    #[cfg(feature = "native-dump")]
+                    debug_dump::record_group(
+                        code_start,
+                        code_len,
+                        module_name,
+                        func_idx,
+                        group_start,
+                        &ir[group_start..group_end],
+                        terminator_name(terminator),
+                        branch_target,
+                    );
                     samply_jitdump::record_group(
                         buf.base_ptr(),
                         code_start,
@@ -496,6 +511,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: ir[group_start + group_len - 1].kind.clone(),
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start + group_len - 1,
                                 alt_target: branch_target,
                                 has_target: true,
                                 cold_helper: None,
@@ -509,6 +526,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: IrOpKind::BrIfSimple,
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start + group_len - 1,
                                 alt_target: branch_target,
                                 has_target: true,
                                 cold_helper: None,
@@ -522,6 +541,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: ir[group_start + group_len - 1].kind.clone(),
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start + group_len - 1,
                                 alt_target: branch_target,
                                 has_target: true,
                                 cold_helper: None,
@@ -537,6 +558,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: ir[group_start + group_len - 1].kind.clone(),
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start + group_len - 1,
                                 alt_target: None,
                                 has_target: false,
                                 cold_helper: None,
@@ -550,6 +573,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: IrOpKind::Unreachable,
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start + group_len - 1,
                                 alt_target: None,
                                 has_target: false,
                                 cold_helper: None,
@@ -563,6 +588,8 @@ pub fn resolve_native_with_context(
                                 entry,
                                 kind: ir[group_start].kind.clone(),
                                 pre_height: ir[group_start].pre_height,
+                                #[cfg(feature = "native-dump")]
+                                original_ir_idx: group_start,
                                 alt_target: None,
                                 has_target: false,
                                 cold_helper: None,
@@ -572,11 +599,13 @@ pub fn resolve_native_with_context(
                             });
                         }
                     }
-                    for _ in 1..group_len {
+                    for offset in 1..group_len {
                         out.push(ResolvedNativeInst {
                             entry: term_entry(),
                             kind: IrOpKind::Nop,
                             pre_height: 0,
+                            #[cfg(feature = "native-dump")]
+                            original_ir_idx: group_start + offset,
                             alt_target: None,
                             has_target: false,
                             cold_helper: None,
@@ -631,6 +660,17 @@ pub fn resolve_native_with_context(
                 Some(name),
                 ir[i].alt_target,
             );
+            #[cfg(feature = "native-dump")]
+            debug_dump::record_group(
+                code_start,
+                code_len,
+                module_name,
+                func_idx,
+                i,
+                &ir[i..i + 1],
+                Some(name),
+                ir[i].alt_target,
+            );
             samply_jitdump::record_group(
                 buf.base_ptr(),
                 code_start,
@@ -646,6 +686,8 @@ pub fn resolve_native_with_context(
                 entry,
                 kind: ir[i].kind.clone(),
                 pre_height: ir[i].pre_height,
+                #[cfg(feature = "native-dump")]
+                original_ir_idx: i,
                 alt_target: ir[i].alt_target,
                 has_target: ir[i].has_target,
                 cold_helper: None,
@@ -662,6 +704,8 @@ pub fn resolve_native_with_context(
                 entry: cold_helper_entry_for_op(&ir[i], cold_helper),
                 kind: ir[i].kind.clone(),
                 pre_height: ir[i].pre_height,
+                #[cfg(feature = "native-dump")]
+                original_ir_idx: i,
                 alt_target: ir[i].alt_target,
                 has_target: ir[i].has_target,
                 cold_helper: Some(cold_helper),
@@ -678,6 +722,8 @@ pub fn resolve_native_with_context(
                 entry: term_entry(),
                 kind: ir[i].kind.clone(),
                 pre_height: ir[i].pre_height,
+                #[cfg(feature = "native-dump")]
+                original_ir_idx: i,
                 alt_target: ir[i].alt_target,
                 has_target: ir[i].has_target,
                 cold_helper: None,

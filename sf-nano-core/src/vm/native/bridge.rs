@@ -12,6 +12,8 @@ use crate::vm::interp::raw_value::{raw_to_value, value_to_raw};
 use crate::vm::lowered::{IrOpKind, SlotRef, stack_effect};
 use crate::vm::store::Store;
 use crate::vm::value::Value;
+#[cfg(feature = "function-trace")]
+use crate::vm::function_trace;
 use crate::vm::value::RefHandle as VmRefHandle;
 
 use super::context::Context;
@@ -968,6 +970,13 @@ fn enter_unified_callee(
         *callee_fp.add(frame_size) = return_entry as usize as u64;
         *callee_fp.add(frame_size + 1) = fp as u64;
         *callee_fp.add(frame_size + 2) = return_tos_slots;
+    }
+
+    #[cfg(feature = "function-trace")]
+    unsafe {
+        if function_trace::enabled() {
+            function_trace::native_function_trace_enter_entry(ctx, entry);
+        }
     }
 
     Ok(resume_at(ctx, callee_fp, entry, EMPTY_TOS_SLOTS))

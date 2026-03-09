@@ -1,5 +1,6 @@
 #[cfg(feature = "profile")]
 mod discover_fusion;
+mod trace_compare;
 
 use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
@@ -18,6 +19,7 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--dir <path>] <wasm-file> [args...]");
+        eprintln!("  sf-nano-cli trace-compare <left.trace> <right.trace>");
         #[cfg(feature = "profile")]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -35,6 +37,9 @@ fn main() {
     if args[1] == "discover-fusion" {
         discover_fusion::run_from_args(&args[2..]);
         return;
+    }
+    if args[1] == "trace-compare" {
+        trace_compare::run_from_args(&args[2..]);
     }
 
     // Parse global runtime options.

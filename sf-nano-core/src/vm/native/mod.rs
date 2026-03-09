@@ -15,6 +15,8 @@ pub mod compiler;
 pub mod context;
 mod group_meta;
 mod debug_map;
+#[cfg(feature = "native-dump")]
+mod debug_dump;
 mod finalizer;
 pub mod instruction;
 pub mod precompile;

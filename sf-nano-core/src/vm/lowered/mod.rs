@@ -7,6 +7,8 @@
 
 pub mod backend_lower;
 pub mod ir;
+#[cfg(feature = "ir-dump")]
+pub mod ir_dump;
 
 use alloc::vec::Vec;
 

@@ -12,6 +12,8 @@ use crate::vm::interp::fast::handlers::run_trampoline;
 use crate::vm::interp::stack::InterpreterStack;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
+#[cfg(feature = "function-trace")]
+use crate::vm::function_trace;
 
 /// Maximum number of u64 slots in the fast interpreter stack.
 const MAX_SLOTS: usize = crate::constants::MAX_STACK_SIZE / core::mem::size_of::<u64>();
@@ -87,6 +89,13 @@ pub fn eval(
             out.push(core::ptr::read(stack_base.add(i)));
         }
     }
+    #[cfg(feature = "function-trace")]
+    if let FunctionInst::Local { spec, .. } = func_inst {
+        let raw_results = (0..results_len)
+            .map(|i| out.peek_at_index(i))
+            .collect::<alloc::vec::Vec<_>>();
+        function_trace::record_root_exit(store, function_trace::BackendTag::Fast, spec, &raw_results);
+    }
     Ok(out)
 }
 
@@ -155,6 +164,9 @@ pub fn internal_eval(
     // Cache TERM_INST pointer in context
     ctx.hot.term_inst = super::handlers::term();
 
+    #[cfg(feature = "function-trace")]
+    function_trace::fast_root_entry(&mut ctx, spec);
+
     unsafe {
         let nh: super::handlers::NextHandler = core::mem::transmute((*entry.add(1)).handler);
         run_trampoline(&mut ctx, entry, fp, 0, 0, 0, 0, 0, 0, 0, nh);
@@ -170,7 +182,9 @@ pub fn internal_eval(
         ctx.error = Some(WasmError::trap(msg.to_string()));
     }
 
-    if let Some(error) = ctx.error {
+    if let Some(error) = ctx.error.clone() {
+        #[cfg(feature = "function-trace")]
+        function_trace::fast_trap_current(&mut ctx, &error);
         return Err(error);
     }
 

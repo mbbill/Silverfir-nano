@@ -12,6 +12,8 @@ pub struct ResolvedNativeInst {
     pub entry: NativeEntry,
     pub kind: IrOpKind,
     pub pre_height: u16,
+    #[cfg(feature = "native-dump")]
+    pub original_ir_idx: usize,
     pub alt_target: Option<OpIndex>,
     pub has_target: bool,
     pub cold_helper: Option<ColdHelperKind>,

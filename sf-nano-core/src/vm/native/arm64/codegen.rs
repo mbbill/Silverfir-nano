@@ -815,6 +815,9 @@ impl<'a> NativeEmitter<'a> {
 
         let term_patch = self.buf.emit(arm64_enc::cbz_64(Reg::TMP0, 0));
 
+        #[cfg(feature = "function-trace")]
+        emit::emit_function_trace_exit(self.buf, results.map(|r| r.arity).unwrap_or(0));
+
         self.buf.emit(arm64_enc::ldr_64(
             Reg::TMP2,
             Reg::CTX,
@@ -842,11 +845,11 @@ impl<'a> NativeEmitter<'a> {
 
         let term_offset = self.buf.len();
         self.buf.emit(arm64_enc::ldr_64(
-            Reg::TMP1,
+            Reg::TMP0,
             Reg::CTX,
             emit::ctx_offset::TERM_ENTRY / 8,
         ));
-        self.buf.emit(arm64_enc::br(Reg::TMP1));
+        self.buf.emit(arm64_enc::br(Reg::TMP0));
 
         let delta = (term_offset - term_patch) as i32 / 4;
         self.buf

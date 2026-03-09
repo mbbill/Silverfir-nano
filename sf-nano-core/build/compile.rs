@@ -169,6 +169,10 @@ pub fn compile_fast_trampoline(out_dir: &str) {
         build.define("FAST_TRACE_ENABLED", None);
     }
 
+    if env::var("CARGO_FEATURE_FUNCTION_TRACE").is_ok() {
+        build.define("FUNCTION_TRACE_ENABLED", None);
+    }
+
     if env::var("CARGO_FEATURE_PROFILE").is_ok() {
         build.define("FAST_PROFILE_ENABLED", None);
     }
