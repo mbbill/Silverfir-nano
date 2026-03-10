@@ -667,7 +667,9 @@ fn print_usage() {
     eprintln!("  -w, --window <N>          N-gram window size [default: 8]");
     eprintln!("  -n, --top <N>             Max fusion candidates [default: 500]");
     eprintln!("      --min-savings <PCT>   Minimum savings %% [default: 0.005]");
-    eprintln!("  -o, --output <PATH>       Output TOML path [default: handlers_fused_discovered.toml]");
+    eprintln!(
+        "  -o, --output <PATH>       Output TOML path [default: handlers_fused_discovered.toml]"
+    );
     eprintln!("      --show-trie           Print pattern trie");
     eprintln!("  -h, --help                Print this help message");
 }
@@ -855,10 +857,7 @@ fn main() {
 
     // Expand hot-local variants, capped at the requested --top limit
     let candidates = expand_hot_locals(candidates, args.top);
-    eprintln!(
-        "After hot-local expansion: {} patterns",
-        candidates.len()
-    );
+    eprintln!("After hot-local expansion: {} patterns", candidates.len());
     eprintln!();
 
     // Generate TOML

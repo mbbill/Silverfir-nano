@@ -37,15 +37,13 @@ impl GroupPolicy for PlanPolicy {
     fn can_start(&self, op: &SemanticOp) -> bool {
         match self.grouping {
             GroupingMode::Ignore => false,
-            GroupingMode::PatternDriven | GroupingMode::Maximal => {
-                !matches!(
-                    op.kind,
-                    SemanticOpKind::Block { .. }
-                        | SemanticOpKind::Loop { .. }
-                        | SemanticOpKind::Else
-                        | SemanticOpKind::End
-                )
-            }
+            GroupingMode::PatternDriven | GroupingMode::Maximal => !matches!(
+                op.kind,
+                SemanticOpKind::Block { .. }
+                    | SemanticOpKind::Loop { .. }
+                    | SemanticOpKind::Else
+                    | SemanticOpKind::End
+            ),
         }
     }
 

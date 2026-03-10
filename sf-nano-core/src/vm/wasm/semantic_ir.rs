@@ -31,17 +31,40 @@ pub struct SemanticOp {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SemanticOpKind {
     Core(CoreOpKind),
-    LocalGet { idx: u16 },
-    LocalSet { idx: u16 },
-    LocalTee { idx: u16 },
-    Block { params: u16, results: u16 },
-    Loop { params: u16, results: u16 },
-    If { params: u16, results: u16 },
+    LocalGet {
+        idx: u16,
+    },
+    LocalSet {
+        idx: u16,
+    },
+    LocalTee {
+        idx: u16,
+    },
+    Block {
+        params: u16,
+        results: u16,
+    },
+    Loop {
+        params: u16,
+        results: u16,
+    },
+    If {
+        params: u16,
+        results: u16,
+    },
     Else,
     End,
-    Br { stack_drop: u32, arity: u16 },
-    BrIf { stack_drop: u32, arity: u16 },
-    BrTable { entries: Vec<BrTableEntry> },
+    Br {
+        stack_drop: u32,
+        arity: u16,
+    },
+    BrIf {
+        stack_drop: u32,
+        arity: u16,
+    },
+    BrTable {
+        entries: Vec<BrTableEntry>,
+    },
     CallExternal {
         func_idx: u32,
         params: u16,
@@ -60,7 +83,9 @@ pub enum SemanticOpKind {
     },
     ReturnVoid,
     ReturnOne,
-    Return { arity: u16 },
+    Return {
+        arity: u16,
+    },
 }
 
 /// Semantic program for one function body.
@@ -97,6 +122,8 @@ pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
         SemanticOpKind::BrIf { .. } | SemanticOpKind::BrTable { .. } => (1, 0),
         SemanticOpKind::CallExternal { .. } | SemanticOpKind::CallInternal { .. } => (0, 0),
         SemanticOpKind::CallIndirect { .. } => (1, 0),
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => (0, 0),
+        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
+            (0, 0)
+        }
     }
 }

@@ -2,9 +2,9 @@
 
 use core::ffi::c_char;
 
+use crate::error::WasmError;
 use crate::vm::store::Store;
 use crate::vm::{entities::ModuleInst, interp::fast::instruction::Instruction};
-use crate::error::WasmError;
 
 /// C-visible hot prefix of the fast interpreter context.
 ///

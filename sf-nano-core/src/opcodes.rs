@@ -1,5 +1,5 @@
-use alloc::format;
 use crate::error::WasmError;
+use alloc::format;
 use core::fmt;
 
 macro_rules! define_opcodes {

@@ -160,7 +160,11 @@ pub fn check_function_types_equivalent(
         }
     }
 
-    for (exp_result, imp_result) in export_type.results().iter().zip(import_type.results().iter()) {
+    for (exp_result, imp_result) in export_type
+        .results()
+        .iter()
+        .zip(import_type.results().iter())
+    {
         if !value_types_equivalent_cross_module(exp_result, imp_result, export_type_ctx) {
             return false;
         }

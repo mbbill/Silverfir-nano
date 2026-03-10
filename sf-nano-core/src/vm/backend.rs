@@ -20,10 +20,17 @@ pub enum BackendKind {
 
 /// Planning-time backend configuration.
 ///
-/// This is the place where backend-specific resource budgets are declared.
+/// This is the place where backend-specific register budgets are declared.
+/// Different layers consume different subsets of this budget:
+/// - planning/LIR shape around TOS lanes and hot locals
+/// - native lowering later consumes temps plus reserved VM roles like ctx/fp
+///
 /// It is *not* the place to leak runtime stack-state into codegen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackendConfig {
+    pub ctx_register_count: u8,
+    pub fp_register_count: u8,
+    pub tmp_register_count: u8,
     pub hot_local_count: u8,
     pub tos_register_count: u8,
 }
@@ -47,6 +54,9 @@ impl BackendKind {
     pub const fn default_config(self) -> BackendConfig {
         match self {
             Self::Base | Self::Fusion | Self::Native => BackendConfig {
+                ctx_register_count: 1,
+                fp_register_count: 1,
+                tmp_register_count: 4,
                 hot_local_count: 3,
                 tos_register_count: 4,
             },

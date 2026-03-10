@@ -122,5 +122,7 @@ pub fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, W
             }
         }
     }
-    Err(WasmError::invalid("unexpected end of const expression".into()))
+    Err(WasmError::invalid(
+        "unexpected end of const expression".into(),
+    ))
 }

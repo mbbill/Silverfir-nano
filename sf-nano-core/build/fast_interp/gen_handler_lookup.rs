@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use super::code_writer::CodeWriter;
 use super::tos_config::{tos_variant_names, TOS_REGISTER_COUNT};
-use super::types::{HandlersFile, HandlerVariantSource};
+use super::types::{HandlerVariantSource, HandlersFile};
 
 pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
     let mut w = CodeWriter::new();
@@ -20,7 +20,11 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
 
     // Generate const for documentation
     wln!(w, "/// Number of TOS register variants per handler");
-    wln!(w, "pub const TOS_VARIANT_COUNT: usize = {};", TOS_REGISTER_COUNT);
+    wln!(
+        w,
+        "pub const TOS_VARIANT_COUNT: usize = {};",
+        TOS_REGISTER_COUNT
+    );
     w.blank();
 
     // Generate type alias for handler arrays
@@ -68,5 +72,10 @@ fn generate_handler_array(w: &mut CodeWriter, name: &str, variants: &[String]) {
         .map(|v| format!("op_{}_{}", name, v))
         .collect();
 
-    wln!(w, "pub static {}: HandlerVariants = [{}];", static_name, variant_list.join(", "));
+    wln!(
+        w,
+        "pub static {}: HandlerVariants = [{}];",
+        static_name,
+        variant_list.join(", ")
+    );
 }

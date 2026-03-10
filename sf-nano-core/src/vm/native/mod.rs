@@ -32,9 +32,4 @@ pub mod runtime;
 pub mod stats;
 
 pub use entry::NativeEntry;
-pub use stats::{
-    NativeStatsSnapshot,
-    native_capacity_skips,
-    native_stats,
-    native_stats_snapshot,
-};
+pub use stats::{native_capacity_skips, native_stats, native_stats_snapshot, NativeStatsSnapshot};

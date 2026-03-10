@@ -62,14 +62,17 @@ impl ConstExpr {
             if ctx.is_passive
                 && !matches!(
                     op,
-                    REF_NULL | REF_FUNC | END |
-                    I32_CONST | I64_CONST | F32_CONST | F64_CONST |
-                    GLOBAL_GET
+                    REF_NULL
+                        | REF_FUNC
+                        | END
+                        | I32_CONST
+                        | I64_CONST
+                        | F32_CONST
+                        | F64_CONST
+                        | GLOBAL_GET
                 )
             {
-                return Err(WasmError::invalid(
-                    "Invalid opcode in passive code".into(),
-                ));
+                return Err(WasmError::invalid("Invalid opcode in passive code".into()));
             }
             match op {
                 I32_CONST => {
@@ -115,9 +118,7 @@ impl ConstExpr {
                         ));
                     }
                     if ctx.only_imported_globals && !global.is_import() {
-                        return Err(WasmError::invalid(
-                            "unknown global".into(),
-                        ));
+                        return Err(WasmError::invalid("unknown global".into()));
                     }
                     if let Some(current_global_idx) = ctx.validating_global_index {
                         if global_index >= current_global_idx {

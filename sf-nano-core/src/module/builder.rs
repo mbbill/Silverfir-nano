@@ -48,9 +48,7 @@ impl ModuleBuilder {
     /// Registers an export name, ensuring uniqueness across all entity types.
     pub fn register_export_name(&mut self, name: &str) -> Result<(), WasmError> {
         if self.export_names.iter().any(|n| n == name) {
-            return Err(WasmError::invalid(
-                "duplicate export name".into(),
-            ));
+            return Err(WasmError::invalid("duplicate export name".into()));
         }
         self.export_names.push(name.to_string());
         Ok(())

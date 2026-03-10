@@ -12,7 +12,9 @@ pub fn tos_register_names() -> Vec<String> {
 
 /// Generate variant names: ["D1", "D2", ..., "DN"]
 pub fn tos_variant_names() -> Vec<String> {
-    (1..=TOS_REGISTER_COUNT).map(|i| format!("D{}", i)).collect()
+    (1..=TOS_REGISTER_COUNT)
+        .map(|i| format!("D{}", i))
+        .collect()
 }
 
 /// Generate C-style pointer parameters for all TOS registers: "uint64_t*, uint64_t*, ..."

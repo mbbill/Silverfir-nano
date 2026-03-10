@@ -1,8 +1,8 @@
 //! WAST test runner adapted for sf-nano (single-module WebAssembly 2.0 interpreter)
 
 use log::debug;
-use sf_nano_core::module::Module;
 use sf_nano_core::module::entities::FunctionDef;
+use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, RefType};
 use sf_nano_core::vm::entities::Caller;
 use sf_nano_core::vm::value::RefHandle;
@@ -119,8 +119,7 @@ impl From<WastValue> for Value {
             }
             WastValue::FuncRef(None) => Value::Ref(RefHandle::null(), RefType::funcref()),
             WastValue::ExternRef(Some(idx)) => {
-                let externref_type =
-                    RefType::new(false, AbstractHeapType::Extern.into());
+                let externref_type = RefType::new(false, AbstractHeapType::Extern.into());
                 Value::Ref(RefHandle::externref(idx as usize), externref_type)
             }
             WastValue::ExternRef(None) => Value::Ref(RefHandle::null(), RefType::externref()),
@@ -167,8 +166,16 @@ fn spectest_imports() -> Vec<Import> {
         Import::func("spectest", "print_i64", noop_print_i64 as ExternalFn),
         Import::func("spectest", "print_f32", noop_print_f32 as ExternalFn),
         Import::func("spectest", "print_f64", noop_print_f64 as ExternalFn),
-        Import::func("spectest", "print_i32_f32", noop_print_i32_f32 as ExternalFn),
-        Import::func("spectest", "print_f64_f64", noop_print_f64_f64 as ExternalFn),
+        Import::func(
+            "spectest",
+            "print_i32_f32",
+            noop_print_i32_f32 as ExternalFn,
+        ),
+        Import::func(
+            "spectest",
+            "print_f64_f64",
+            noop_print_f64_f64 as ExternalFn,
+        ),
         Import::global("spectest", "global_i32", Value::I32(666), false),
         Import::global("spectest", "global_i64", Value::I64(666), false),
         Import::global("spectest", "global_f32", Value::F32(666.6_f32), false),
@@ -261,9 +268,10 @@ fn forward_call(
                 }
                 Ok(())
             }
-            None => Err(WasmError::internal(
-                format!("forwarding instance '{}' not found", inst_name),
-            )),
+            None => Err(WasmError::internal(format!(
+                "forwarding instance '{}' not found",
+                inst_name
+            ))),
         }
     })
 }
@@ -280,27 +288,42 @@ macro_rules! make_forwarder {
     };
 }
 
-make_forwarder!(fwd_00, 0);  make_forwarder!(fwd_01, 1);
-make_forwarder!(fwd_02, 2);  make_forwarder!(fwd_03, 3);
-make_forwarder!(fwd_04, 4);  make_forwarder!(fwd_05, 5);
-make_forwarder!(fwd_06, 6);  make_forwarder!(fwd_07, 7);
-make_forwarder!(fwd_08, 8);  make_forwarder!(fwd_09, 9);
-make_forwarder!(fwd_10, 10); make_forwarder!(fwd_11, 11);
-make_forwarder!(fwd_12, 12); make_forwarder!(fwd_13, 13);
-make_forwarder!(fwd_14, 14); make_forwarder!(fwd_15, 15);
-make_forwarder!(fwd_16, 16); make_forwarder!(fwd_17, 17);
-make_forwarder!(fwd_18, 18); make_forwarder!(fwd_19, 19);
-make_forwarder!(fwd_20, 20); make_forwarder!(fwd_21, 21);
-make_forwarder!(fwd_22, 22); make_forwarder!(fwd_23, 23);
-make_forwarder!(fwd_24, 24); make_forwarder!(fwd_25, 25);
-make_forwarder!(fwd_26, 26); make_forwarder!(fwd_27, 27);
-make_forwarder!(fwd_28, 28); make_forwarder!(fwd_29, 29);
-make_forwarder!(fwd_30, 30); make_forwarder!(fwd_31, 31);
+make_forwarder!(fwd_00, 0);
+make_forwarder!(fwd_01, 1);
+make_forwarder!(fwd_02, 2);
+make_forwarder!(fwd_03, 3);
+make_forwarder!(fwd_04, 4);
+make_forwarder!(fwd_05, 5);
+make_forwarder!(fwd_06, 6);
+make_forwarder!(fwd_07, 7);
+make_forwarder!(fwd_08, 8);
+make_forwarder!(fwd_09, 9);
+make_forwarder!(fwd_10, 10);
+make_forwarder!(fwd_11, 11);
+make_forwarder!(fwd_12, 12);
+make_forwarder!(fwd_13, 13);
+make_forwarder!(fwd_14, 14);
+make_forwarder!(fwd_15, 15);
+make_forwarder!(fwd_16, 16);
+make_forwarder!(fwd_17, 17);
+make_forwarder!(fwd_18, 18);
+make_forwarder!(fwd_19, 19);
+make_forwarder!(fwd_20, 20);
+make_forwarder!(fwd_21, 21);
+make_forwarder!(fwd_22, 22);
+make_forwarder!(fwd_23, 23);
+make_forwarder!(fwd_24, 24);
+make_forwarder!(fwd_25, 25);
+make_forwarder!(fwd_26, 26);
+make_forwarder!(fwd_27, 27);
+make_forwarder!(fwd_28, 28);
+make_forwarder!(fwd_29, 29);
+make_forwarder!(fwd_30, 30);
+make_forwarder!(fwd_31, 31);
 
 const FORWARDER_TABLE: [ExternalFn; 32] = [
-    fwd_00, fwd_01, fwd_02, fwd_03, fwd_04, fwd_05, fwd_06, fwd_07,
-    fwd_08, fwd_09, fwd_10, fwd_11, fwd_12, fwd_13, fwd_14, fwd_15,
-    fwd_16, fwd_17, fwd_18, fwd_19, fwd_20, fwd_21, fwd_22, fwd_23,
+    fwd_00, fwd_01, fwd_02, fwd_03, fwd_04, fwd_05, fwd_06, fwd_07, fwd_08, fwd_09, fwd_10, fwd_11,
+    fwd_12, fwd_13, fwd_14, fwd_15, fwd_16, fwd_17, fwd_18, fwd_19, fwd_20, fwd_21, fwd_22, fwd_23,
     fwd_24, fwd_25, fwd_26, fwd_27, fwd_28, fwd_29, fwd_30, fwd_31,
 ];
 
@@ -405,7 +428,11 @@ impl WastTestRunner {
                 Ok(())
             }
             WastDirective::AssertReturn { exec, results, .. } => {
-                debug!("Directive {} action: {}", index, self.describe_wast_action(exec));
+                debug!(
+                    "Directive {} action: {}",
+                    index,
+                    self.describe_wast_action(exec)
+                );
                 self.execute_wast_assert_return(exec, results)
             }
             WastDirective::AssertTrap { exec, message, .. } => {
@@ -489,14 +516,12 @@ impl WastTestRunner {
             TestError::infrastructure(format!("Instance '{}' not found", internal_name))
         })?;
 
-        instance
-            .invoke(invoke.name, &args)
-            .map_err(|e| {
-                TestError::runtime(
-                    format!("successful invocation of function '{}'", invoke.name),
-                    e,
-                )
-            })
+        instance.invoke(invoke.name, &args).map_err(|e| {
+            TestError::runtime(
+                format!("successful invocation of function '{}'", invoke.name),
+                e,
+            )
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -684,8 +709,7 @@ impl WastTestRunner {
             None => self.last_module_name(),
         };
 
-        self.registered_as
-            .insert(name.to_string(), internal_name);
+        self.registered_as.insert(name.to_string(), internal_name);
 
         Ok(())
     }
@@ -769,13 +793,9 @@ impl WastTestRunner {
                 let internal_name = self
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
-                let instance =
-                    self.instances.get(&internal_name).ok_or_else(|| {
-                        TestError::infrastructure(format!(
-                            "Instance '{}' not found",
-                            internal_name
-                        ))
-                    })?;
+                let instance = self.instances.get(&internal_name).ok_or_else(|| {
+                    TestError::infrastructure(format!("Instance '{}' not found", internal_name))
+                })?;
                 let value = instance.get_global(global).ok_or_else(|| {
                     TestError::infrastructure(format!(
                         "Global '{}' not found in instance '{}'",
@@ -784,32 +804,28 @@ impl WastTestRunner {
                 })?;
                 Ok(vec![value])
             }
-            WastExecute::Wat(wat) => {
-                match wat {
-                    wast::Wat::Module(module) => {
-                        match module.encode() {
-                            Ok(wasm_bytes) => {
-                                register_forwarding_instances(&mut self.instances, &self.registered_as);
-                                let imports = self.build_imports(&wasm_bytes);
-                                match Instance::new(&wasm_bytes, &imports) {
-                                    Ok(_instance) => Ok(vec![]),
-                                    Err(e) => Err(TestError::runtime(
-                                        "successful module instantiation".to_string(),
-                                        e,
-                                    )),
-                                }
-                            }
-                            Err(e) => Err(TestError::infrastructure(format!(
-                                "Module encoding failed: {}",
-                                e
-                            ))),
+            WastExecute::Wat(wat) => match wat {
+                wast::Wat::Module(module) => match module.encode() {
+                    Ok(wasm_bytes) => {
+                        register_forwarding_instances(&mut self.instances, &self.registered_as);
+                        let imports = self.build_imports(&wasm_bytes);
+                        match Instance::new(&wasm_bytes, &imports) {
+                            Ok(_instance) => Ok(vec![]),
+                            Err(e) => Err(TestError::runtime(
+                                "successful module instantiation".to_string(),
+                                e,
+                            )),
                         }
                     }
-                    _ => Err(TestError::infrastructure(
-                        "Component execution not supported yet".to_string(),
-                    )),
-                }
-            }
+                    Err(e) => Err(TestError::infrastructure(format!(
+                        "Module encoding failed: {}",
+                        e
+                    ))),
+                },
+                _ => Err(TestError::infrastructure(
+                    "Component execution not supported yet".to_string(),
+                )),
+            },
         }
     }
 
@@ -980,7 +996,12 @@ impl WastTestRunner {
         // Provide stubs/forwarders for imports from non-registered named modules
         if let Ok(module) = Module::new("_import_scan", wasm_bytes) {
             for func in module.functions() {
-                if let FunctionDef::Import { module: ref mod_name, ref name, .. } = *func.def() {
+                if let FunctionDef::Import {
+                    module: ref mod_name,
+                    ref name,
+                    ..
+                } = *func.def()
+                {
                     let import_name = name.as_str();
                     let mod_name = mod_name.as_str();
                     if mod_name == "spectest" || self.registered_as.contains_key(mod_name) {
@@ -1108,30 +1129,26 @@ impl WastTestRunner {
                 wast::core::NanPattern::CanonicalNan => Some(WastValue::F64(f64::NAN)),
                 wast::core::NanPattern::ArithmeticNan => Some(WastValue::F64(f64::NAN)),
             },
-            WastRetCore::RefNull(opt_ref_type) => {
-                match opt_ref_type {
-                    Some(wast::core::HeapType::Abstract { ty, .. }) => {
-                        use wast::core::AbstractHeapType as AHT;
-                        match ty {
-                            AHT::Func => Some(WastValue::FuncRef(None)),
-                            AHT::Extern => Some(WastValue::ExternRef(None)),
-                            _ => Some(WastValue::FuncRef(None)),
-                        }
+            WastRetCore::RefNull(opt_ref_type) => match opt_ref_type {
+                Some(wast::core::HeapType::Abstract { ty, .. }) => {
+                    use wast::core::AbstractHeapType as AHT;
+                    match ty {
+                        AHT::Func => Some(WastValue::FuncRef(None)),
+                        AHT::Extern => Some(WastValue::ExternRef(None)),
+                        _ => Some(WastValue::FuncRef(None)),
                     }
-                    _ => Some(WastValue::FuncRef(None)),
                 }
-            }
+                _ => Some(WastValue::FuncRef(None)),
+            },
             WastRetCore::RefExtern(opt_idx) => match opt_idx {
                 Some(idx) => Some(WastValue::ExternRef(Some(*idx))),
                 None => Some(WastValue::AnyExternRef),
             },
             WastRetCore::RefFunc(opt_idx) => match opt_idx {
-                Some(idx) => {
-                    match idx {
-                        wast::token::Index::Num(n, _) => Some(WastValue::FuncRef(Some(*n))),
-                        _ => None,
-                    }
-                }
+                Some(idx) => match idx {
+                    wast::token::Index::Num(n, _) => Some(WastValue::FuncRef(Some(*n))),
+                    _ => None,
+                },
                 None => Some(WastValue::AnyFuncRef),
             },
             _ => None,
@@ -1194,9 +1211,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
             }
         }
         (Value::Ref(actual_ref, _), WastValue::AnyFuncRef) => !actual_ref.is_null(),
-        (Value::Ref(actual_ref, ref_type), WastValue::AnyExternRef)
-            if ref_type.is_externref() =>
-        {
+        (Value::Ref(actual_ref, ref_type), WastValue::AnyExternRef) if ref_type.is_externref() => {
             !actual_ref.is_null()
         }
         (Value::Ref(actual_ref, ref_type), WastValue::ExternRef(expected_ref))
@@ -1216,9 +1231,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sf_nano_core::vm::{
-        backend::{set_backend_mode, BackendMode},
-    };
+    use sf_nano_core::vm::backend::{set_backend_mode, BackendMode};
     use std::path::PathBuf;
 
     fn instantiate_first_module(path: &str) -> WastTestRunner {
@@ -1239,7 +1252,9 @@ mod tests {
         let directive = wast.directives.first_mut().expect("module directive");
         match directive {
             WastDirective::Module(quote_wat) => {
-                runner.execute_wast_module(quote_wat, 0).expect("instantiate module");
+                runner
+                    .execute_wast_module(quote_wat, 0)
+                    .expect("instantiate module");
             }
             _ => panic!("expected first directive to be a module"),
         }
@@ -1311,5 +1326,4 @@ mod tests {
             other => panic!("expected memory_redundancy.wast to pass, got {:?}", other),
         }
     }
-
 }

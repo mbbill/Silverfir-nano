@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::types::{ExpandedHandler, HandlersFile, HandlerDef, TosPattern};
+use super::types::{ExpandedHandler, HandlerDef, HandlersFile, TosPattern};
 
 /// Generate handler mapping function body
 /// This is included directly inside the map_handler() function in ir_builder.rs
@@ -18,7 +18,9 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
     output.push_str("// Fast interpreter handler mapping (function body)\n");
     output.push_str("// Phase 1: Uses D1 variant for handlers with tos_pattern\n");
     output.push_str("{\n");
-    output.push_str("    use crate::opcodes::{Opcode::*, OpcodeFC::*, OpcodeFB::*, WasmOpcode::*};\n");
+    output.push_str(
+        "    use crate::opcodes::{Opcode::*, OpcodeFC::*, OpcodeFB::*, WasmOpcode::*};\n",
+    );
     output.push_str("    use crate::vm::interp::fast::handlers::full_set::*;\n");
     output.push_str("    let handler = match op {\n");
 
@@ -27,11 +29,7 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
         for expanded in handler_def.expand() {
             if let Some(opcode_arm) = get_opcode_arm(&expanded) {
                 let handler_name = get_handler_name(&expanded.name, handler_def);
-                output.push_str(&format!(
-                    "        {} => {},\n",
-                    opcode_arm,
-                    handler_name
-                ));
+                output.push_str(&format!("        {} => {},\n", opcode_arm, handler_name));
             }
         }
     }

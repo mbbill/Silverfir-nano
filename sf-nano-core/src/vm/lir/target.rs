@@ -4,7 +4,7 @@
 //! instruction descriptors.
 
 /// Lowered target id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LirTarget(pub u32);
 
 impl LirTarget {

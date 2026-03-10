@@ -9,8 +9,8 @@
 
 use super::common::*;
 use super::trap_with;
-use crate::vm::interp::fast::encoding::ref_func;
 use crate::error::WasmError;
+use crate::vm::interp::fast::encoding::ref_func;
 
 // =============================================================================
 // Basic Reference Operations (Phase 3 TOS-only)

@@ -8,12 +8,12 @@ use alloc::vec::Vec;
 
 use super::common::*;
 use super::trap_with;
-use crate::vm::interp::fast::encoding::{call_external, call_indirect, call_ref};
-use crate::vm::interp::fast::frame_layout;
-use crate::vm::entities::{Caller, MemInst};
 use crate::error::WasmError;
 #[cfg(feature = "function-trace")]
 use crate::vm::debug::function_trace;
+use crate::vm::entities::{Caller, MemInst};
+use crate::vm::interp::fast::encoding::{call_external, call_indirect, call_ref};
+use crate::vm::interp::fast::frame_layout;
 
 /// Read a value from an explicit fp-relative slot.
 #[inline(always)]
@@ -40,10 +40,7 @@ const MAX_CALL_DEPTH: u64 = 300;
 /// - `saved_module_ptr` must be a valid pointer to a live ModuleInst
 /// - mem0 fields in ctx will be refreshed for the restored module
 #[no_mangle]
-pub unsafe extern "C" fn fast_return_cross_module(
-    ctx: *mut Context,
-    saved_module_ptr: u64,
-) {
+pub unsafe extern "C" fn fast_return_cross_module(ctx: *mut Context, saved_module_ptr: u64) {
     let module = saved_module_ptr as *const ModuleInst;
     ctx_mut(ctx).current_module = module;
     let store = ctx_store(ctx);
@@ -80,9 +77,7 @@ fn enter_unified_callee(
 
     // 2. Ensure callee has fast code (lazy compilation)
     if !spec.has_fast_code() {
-        crate::vm::interp::fast::precompile::precompile_module_two_pass(
-            store_ref,
-        )?;
+        crate::vm::interp::fast::precompile::precompile_module_two_pass(store_ref)?;
     }
 
     let cache = spec.fast_cache();
@@ -162,7 +157,10 @@ fn invoke_external_callee(
     delta: usize,
 ) -> Result<(), WasmError> {
     let (func_type, callback) = match callee {
-        FunctionInst::External { func_type, callback } => (func_type, callback),
+        FunctionInst::External {
+            func_type,
+            callback,
+        } => (func_type, callback),
         _ => return Err(WasmError::internal("expected external function".into())),
     };
 
@@ -281,8 +279,7 @@ pub extern "C" fn impl_call_internal(
     let callee: &FunctionInst = ptr_ref(callee_func_ptr);
     let store_ref = ctx_store(ctx);
 
-    match enter_unified_callee(ctx, pc, fp_pp, store_ref, callee, delta)
-    {
+    match enter_unified_callee(ctx, pc, fp_pp, store_ref, callee, delta) {
         Ok(entry) => entry,
         Err(e) => trap_with(ctx, e),
     }

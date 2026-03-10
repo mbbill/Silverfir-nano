@@ -5,11 +5,10 @@ use alloc::vec::Vec;
 use crate::vm::{
     entities::{FunctionInst, ModuleInst},
     interp::fast::{
-        build::FastBuildBundle,
-        encoding, fast_code::FastCode, frame_layout, handlers::full_set, instruction::Instruction,
-        resolve,
+        build::FastBuildBundle, encoding, fast_code::FastCode, frame_layout, handlers::full_set,
+        instruction::Instruction, resolve,
     },
-    lir::ir::{LirBrTableEntry, LirFrameCopy, LirMarkerKind, LirOp, LirOpKind},
+    lir::legacy::ir::{LirBrTableEntry, LirFrameCopy, LirMarkerKind, LirOp, LirOpKind},
     plan::{
         frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
         spill::{CacheTransferDirection, SpillArtifact},
@@ -41,7 +40,13 @@ pub fn finalize_fast(bundle: &FastBuildBundle, module: &ModuleInst) -> FastFinal
     instructions.push(Instruction::new_handler_only(full_set::op_term));
     instructions.push(Instruction::new_handler_only(full_set::op_term));
 
-    patch_br_tables(&mut instructions, &bundle.lir.ops, &start_indices, term_index, frame);
+    patch_br_tables(
+        &mut instructions,
+        &bundle.lir.ops,
+        &start_indices,
+        term_index,
+        frame,
+    );
 
     // Direct targets are absolute instruction pointers, so patch them only
     // after the instruction buffer is in its final stable allocation.
@@ -55,9 +60,7 @@ pub fn finalize_fast(bundle: &FastBuildBundle, module: &ModuleInst) -> FastFinal
         module,
     );
 
-    FastFinalized {
-        code,
-    }
+    FastFinalized { code }
 }
 
 fn encode_op(op: &LirOp, module: &ModuleInst, frame: FrameLayoutPlan) -> Instruction {
@@ -126,10 +129,9 @@ fn encode_immediates(
         LirOpKind::BrTable { entries, .. } => {
             encoding::br_table::encode(entries.len() as u64, data_slot_count(entries.len()) as u64)
         }
-        LirOpKind::CallExternal { func_idx, args, .. } => encoding::call_external::encode(
-            *func_idx as u64,
-            physical_slot(frame, args.start),
-        ),
+        LirOpKind::CallExternal { func_idx, args, .. } => {
+            encoding::call_external::encode(*func_idx as u64, physical_slot(frame, args.start))
+        }
         LirOpKind::CallInternal { callee, args, .. } => encoding::call_internal::encode(
             module_function_ptr(module, *callee),
             physical_slot(frame, args.start),
@@ -149,10 +151,9 @@ fn encode_immediates(
         LirOpKind::Return { results: None } => encoding::return_void::encode(frame.frame_size),
         LirOpKind::Return {
             results: Some(results),
-        } if results.count == 1 => encoding::return_one::encode(
-            frame.frame_size,
-            physical_slot(frame, results.start),
-        ),
+        } if results.count == 1 => {
+            encoding::return_one::encode(frame.frame_size, physical_slot(frame, results.start))
+        }
         LirOpKind::Return {
             results: Some(results),
         } => encoding::r#return::encode(
@@ -175,9 +176,8 @@ fn patch_direct_targets(
 
     for (idx, op) in ops.iter().enumerate() {
         let target = match &op.kind {
-            LirOpKind::Marker(LirMarkerKind::If { .. }) | LirOpKind::Marker(LirMarkerKind::Else) => {
-                op.alt
-            }
+            LirOpKind::Marker(LirMarkerKind::If { .. })
+            | LirOpKind::Marker(LirMarkerKind::Else) => op.alt,
             LirOpKind::Branch { target, .. } => *target,
             _ => None,
         };
@@ -343,8 +343,7 @@ fn physical_slot(frame: FrameLayoutPlan, slot: FrameSlot) -> u16 {
     if slot.0 < frame.operand_base {
         slot.0
     } else {
-        frame_layout::operand_stack_base(frame.frame_size as usize) as u16
-            + slot.0
+        frame_layout::operand_stack_base(frame.frame_size as usize) as u16 + slot.0
             - frame.operand_base
     }
 }

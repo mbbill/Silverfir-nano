@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::ir::LirOp;
+use crate::vm::lir::legacy::ir::LirOp;
 
 /// Native-internal op, only if ARM64/native needs a post-LIR normalization.
 #[derive(Clone, Debug, PartialEq, Eq)]

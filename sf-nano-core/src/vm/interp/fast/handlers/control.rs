@@ -46,5 +46,8 @@ pub extern "C" fn impl_data(
     _p_l1: *mut u64,
     _p_l2: *mut u64,
 ) -> *mut Instruction {
-    trap_with(ctx, WasmError::trap("executed data pseudo-instruction".into()))
+    trap_with(
+        ctx,
+        WasmError::trap("executed data pseudo-instruction".into()),
+    )
 }

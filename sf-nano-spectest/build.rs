@@ -95,8 +95,10 @@ fn download_file(url: &str, dest: &Path) -> Result<(), Box<dyn std::error::Error
         return Ok(());
     }
 
-    Err("Neither curl nor wget found. Please install one to download the WebAssembly testsuite."
-        .into())
+    Err(
+        "Neither curl nor wget found. Please install one to download the WebAssembly testsuite."
+            .into(),
+    )
 }
 
 fn extract_tar_gz(archive_path: &Path, dest_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {

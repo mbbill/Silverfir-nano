@@ -13,7 +13,9 @@ pub use crate::{
     utils::limits::Limitable,
     value_type::RefType,
     vm::{
-        entities::{DataInst, ElementInst, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst},
+        entities::{
+            DataInst, ElementInst, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
+        },
         interp::fast::{context::Context, instruction::Instruction},
         store::Store,
         value::{RefHandle as VmRefHandle, Value as ExtValue},
@@ -23,7 +25,6 @@ pub use core::ptr::NonNull;
 
 // Re-export raw_value helpers for converting between ExtValue and u64
 pub use crate::vm::interp::raw_value::{raw_to_value, value_to_raw};
-
 
 // =============================================================================
 // Context Access
@@ -76,37 +77,49 @@ pub fn frame_write(fp_pp: *mut *mut u64, offset: usize, value: u64) {
 /// Spill l0 register to fp[0] before frame changes (calls).
 #[inline(always)]
 pub fn l0_spill(fp_pp: *mut *mut u64, p_l0: *mut u64) {
-    unsafe { *(*fp_pp) = *p_l0; }
+    unsafe {
+        *(*fp_pp) = *p_l0;
+    }
 }
 
 /// Fill l0 register from fp[0] after frame restoration (returns, external calls).
 #[inline(always)]
 pub fn l0_fill(fp_pp: *mut *mut u64, p_l0: *mut u64) {
-    unsafe { *p_l0 = *(*fp_pp); }
+    unsafe {
+        *p_l0 = *(*fp_pp);
+    }
 }
 
 /// Spill l1 register to fp[1] before frame changes (calls).
 #[inline(always)]
 pub fn l1_spill(fp_pp: *mut *mut u64, p_l1: *mut u64) {
-    unsafe { *((*fp_pp).add(1)) = *p_l1; }
+    unsafe {
+        *((*fp_pp).add(1)) = *p_l1;
+    }
 }
 
 /// Fill l1 register from fp[1] after frame restoration (returns, external calls).
 #[inline(always)]
 pub fn l1_fill(fp_pp: *mut *mut u64, p_l1: *mut u64) {
-    unsafe { *p_l1 = *((*fp_pp).add(1)); }
+    unsafe {
+        *p_l1 = *((*fp_pp).add(1));
+    }
 }
 
 /// Spill l2 register to fp[2] before frame changes (calls).
 #[inline(always)]
 pub fn l2_spill(fp_pp: *mut *mut u64, p_l2: *mut u64) {
-    unsafe { *((*fp_pp).add(2)) = *p_l2; }
+    unsafe {
+        *((*fp_pp).add(2)) = *p_l2;
+    }
 }
 
 /// Fill l2 register from fp[2] after frame restoration (returns, external calls).
 #[inline(always)]
 pub fn l2_fill(fp_pp: *mut *mut u64, p_l2: *mut u64) {
-    unsafe { *p_l2 = *((*fp_pp).add(2)); }
+    unsafe {
+        *p_l2 = *((*fp_pp).add(2));
+    }
 }
 
 // =============================================================================
@@ -140,7 +153,6 @@ pub fn pc_imm2(pc: *mut Instruction) -> u64 {
     unsafe { (*pc).imm2 }
 }
 
-
 // =============================================================================
 // Pointer Helpers
 // =============================================================================
@@ -149,7 +161,6 @@ pub fn pc_imm2(pc: *mut Instruction) -> u64 {
 pub fn ptr_ref<'a, T>(ptr: *const T) -> &'a T {
     unsafe { &*ptr }
 }
-
 
 // =============================================================================
 // Memory Helpers
@@ -182,12 +193,7 @@ pub fn heap_info(ctx: *mut Context) -> (*mut u8, usize) {
 
 /// Copy branch payload values between explicit fp-relative spans.
 #[inline(always)]
-pub fn branch_fixup_frame(
-    fp_pp: *mut *mut u64,
-    src_slot: usize,
-    dst_slot: usize,
-    count: usize,
-) {
+pub fn branch_fixup_frame(fp_pp: *mut *mut u64, src_slot: usize, dst_slot: usize, count: usize) {
     if count == 0 {
         return;
     }
@@ -207,11 +213,7 @@ pub fn branch_fixup_frame(
 /// Refresh memory pointers for a given module (used after calls/returns).
 /// In sf-nano, Store directly owns MemInst — no Rc<RefCell<>> indirection.
 #[inline(always)]
-pub fn refresh_mem0_for_module(
-    ctx: *mut Context,
-    store: &Store,
-    _module: &ModuleInst,
-) {
+pub fn refresh_mem0_for_module(ctx: *mut Context, store: &Store, _module: &ModuleInst) {
     // sf-nano: single-module store, memory accessed directly
     if store.module().memories.is_empty() {
         write_mem0(ctx, core::ptr::null_mut(), 0);

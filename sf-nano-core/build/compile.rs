@@ -34,7 +34,9 @@ pub fn verify_preserve_none_abi() {
     let c_root = "src/vm/interp/fast/trampoline";
     let src = format!("{}/verify_abi.c", c_root);
     if fs::metadata(&src).is_err() {
-        println!("cargo:warning=preserve_none ABI probe not found in new vm tree, skipping verification");
+        println!(
+            "cargo:warning=preserve_none ABI probe not found in new vm tree, skipping verification"
+        );
         return;
     }
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
@@ -46,10 +48,14 @@ pub fn verify_preserve_none_abi() {
 
     let status = std::process::Command::new("clang")
         .args([
-            "-target", &target,
-            "-S", "-O2",
-            "-I", c_root,
-            "-o", asm_path.to_str().unwrap(),
+            "-target",
+            &target,
+            "-S",
+            "-O2",
+            "-I",
+            c_root,
+            "-o",
+            asm_path.to_str().unwrap(),
             &src,
         ])
         .status()
@@ -59,14 +65,15 @@ pub fn verify_preserve_none_abi() {
         panic!("Failed to compile ABI verification probe");
     }
 
-    let asm = fs::read_to_string(&asm_path)
-        .expect("Failed to read ABI verification assembly");
+    let asm = fs::read_to_string(&asm_path).expect("Failed to read ABI verification assembly");
 
     // Expected mapping: arg[i] → register
-    let expected = ["x20", "x21", "x22", "x23", "x24", "x25",
-                    "x26", "x27", "x28", "x0", "x1"];
-    let arg_names = ["ctx", "pc", "fp", "l0", "l1", "l2",
-                     "t0", "t1", "t2", "t3", "nh"];
+    let expected = [
+        "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x0", "x1",
+    ];
+    let arg_names = [
+        "ctx", "pc", "fp", "l0", "l1", "l2", "t0", "t1", "t2", "t3", "nh",
+    ];
 
     // Extract str instructions from the probe function
     let mut in_probe = false;
@@ -93,7 +100,9 @@ pub fn verify_preserve_none_abi() {
             "\n\npreserve_none ABI VERIFICATION FAILED\n\
              Expected {} str instructions in __jit_abi_probe, found {}.\n\
              Assembly output: {}\n",
-            expected.len(), str_regs.len(), asm_path.display()
+            expected.len(),
+            str_regs.len(),
+            asm_path.display()
         );
     }
 
@@ -106,7 +115,11 @@ pub fn verify_preserve_none_abi() {
                  Update jit/reg.rs Reg enum values to match the new mapping.\n\
                  See docs/MICRO_JIT.md §ARM64 Register Map.\n\
                  Assembly output: {}\n",
-                arg_names[i], i, want, got, asm_path.display()
+                arg_names[i],
+                i,
+                want,
+                got,
+                asm_path.display()
             );
         }
     }
@@ -159,7 +172,9 @@ pub fn compile_fast_trampoline(out_dir: &str) {
         .include(&fast_interp_out);
 
     let is_debug = env::var("PROFILE").unwrap_or_default() == "debug";
-    let has_debug_info = env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok() || env::var("DEBUG").as_deref() == Ok("true") || env::var("DEBUG").as_deref() == Ok("2");
+    let has_debug_info = env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok()
+        || env::var("DEBUG").as_deref() == Ok("true")
+        || env::var("DEBUG").as_deref() == Ok("2");
 
     if !is_debug {
         build.define("NDEBUG", None);

@@ -468,9 +468,9 @@ fn parse_import_section(
         match kind {
             ExternalKind::Function => {
                 let type_index = payload.read_leb128_u32()?;
-                let func_type = types.get(type_index as usize).ok_or_else(|| {
-                    WasmError::invalid("Invalid function type index".to_string())
-                })?;
+                let func_type = types
+                    .get(type_index as usize)
+                    .ok_or_else(|| WasmError::invalid("Invalid function type index".to_string()))?;
                 functions.push(Function::new_import(
                     module_name,
                     field_name,
@@ -480,7 +480,12 @@ fn parse_import_section(
             }
             ExternalKind::Table => {
                 let (value_type, limits) = parse_tabletype(payload)?;
-                tables.push(Table::new_import(module_name, field_name, value_type, limits)?);
+                tables.push(Table::new_import(
+                    module_name,
+                    field_name,
+                    value_type,
+                    limits,
+                )?);
             }
             ExternalKind::Memory => {
                 let limits = parse_limits(payload)?;
@@ -488,7 +493,12 @@ fn parse_import_section(
             }
             ExternalKind::Global => {
                 let (value_type, mutable) = parse_globaltype(payload)?;
-                globals.push(Global::new_import(module_name, field_name, value_type, mutable));
+                globals.push(Global::new_import(
+                    module_name,
+                    field_name,
+                    value_type,
+                    mutable,
+                ));
             }
         }
     }
@@ -510,10 +520,7 @@ fn parse_function_section(
     Ok(())
 }
 
-fn parse_table_section(
-    tables: &mut Vec<Table>,
-    payload: &mut Payload,
-) -> Result<(), WasmError> {
+fn parse_table_section(tables: &mut Vec<Table>, payload: &mut Payload) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
     for _ in 0..count {
         let (value_type, limits) = parse_tabletype(payload)?;
@@ -539,10 +546,7 @@ fn parse_global<'a>(payload: &mut Payload<'a>) -> Result<Global, WasmError> {
     Ok(Global::new_local(global_type, is_mutable, init))
 }
 
-fn parse_global_section(
-    globals: &mut Vec<Global>,
-    payload: &mut Payload,
-) -> Result<(), WasmError> {
+fn parse_global_section(globals: &mut Vec<Global>, payload: &mut Payload) -> Result<(), WasmError> {
     let parsed = parse_vec(payload, parse_global)?;
     for global in parsed {
         globals.push(global);
@@ -582,21 +586,21 @@ fn parse_export_section(
                 f.add_export_name(name);
             }
             ExternalKind::Table => {
-                let t = tables.get_mut(index).ok_or_else(|| {
-                    WasmError::invalid("Invalid export table index".to_string())
-                })?;
+                let t = tables
+                    .get_mut(index)
+                    .ok_or_else(|| WasmError::invalid("Invalid export table index".to_string()))?;
                 t.add_export_name(name);
             }
             ExternalKind::Memory => {
-                let m = memories.get_mut(index).ok_or_else(|| {
-                    WasmError::invalid("Invalid export memory index".to_string())
-                })?;
+                let m = memories
+                    .get_mut(index)
+                    .ok_or_else(|| WasmError::invalid("Invalid export memory index".to_string()))?;
                 m.add_export_name(name);
             }
             ExternalKind::Global => {
-                let g = globals.get_mut(index).ok_or_else(|| {
-                    WasmError::invalid("Invalid export global index".to_string())
-                })?;
+                let g = globals
+                    .get_mut(index)
+                    .ok_or_else(|| WasmError::invalid("Invalid export global index".to_string()))?;
                 g.add_export_name(name);
             }
         }
@@ -714,9 +718,9 @@ fn parse_code(payload: &mut Payload) -> Result<(Vec<ValueType>, Bytecode, usize)
 
     for _ in 0..num_local_groups {
         let count = payload.read_leb128_u32()?;
-        total_locals = total_locals.checked_add(count).ok_or_else(|| {
-            WasmError::malformed("Too many locals (overflow)".to_string())
-        })?;
+        total_locals = total_locals
+            .checked_add(count)
+            .ok_or_else(|| WasmError::malformed("Too many locals (overflow)".to_string()))?;
         if total_locals > constants::MAX_LOCALS {
             return Err(WasmError::malformed("Too many locals".to_string()));
         }
@@ -752,9 +756,9 @@ fn parse_code_section(
     for index in 0..count {
         let (locals, code, mut code_offset) = parse_code(payload)?;
         code_offset += payload_offset;
-        let function_index = index.checked_add(imported_count).ok_or_else(|| {
-            WasmError::malformed("Function index overflow".to_string())
-        })?;
+        let function_index = index
+            .checked_add(imported_count)
+            .ok_or_else(|| WasmError::malformed("Function index overflow".to_string()))?;
         let function = functions.get_mut(function_index).ok_or_else(|| {
             WasmError::malformed("Invalid function index in code section".to_string())
         })?;

@@ -12,9 +12,8 @@
 // directly to the trap handler. Zero overhead, no impl/wrapper needed.
 
 use super::op_classify::{
-    has_branch, has_if, is_load_op, is_pure_binop, is_pure_unary, is_store_op,
-    is_trapping_binop, needs_ctx, parse_variant_qualified, strip_variant_suffix,
-    tos_reg, CategoryMap,
+    has_branch, has_if, is_load_op, is_pure_binop, is_pure_unary, is_store_op, is_trapping_binop,
+    needs_ctx, parse_variant_qualified, strip_variant_suffix, tos_reg, CategoryMap,
 };
 use super::types::{FieldKind, FusedHandler};
 
@@ -193,10 +192,7 @@ fn generate_fused_handler(code: &mut String, fused: &FusedHandler, categories: &
         fused.op,
         fused.pattern.join(" -> ")
     ));
-    code.push_str(&format!(
-        "PRESERVE_NONE\nvoid op_{}(PARAMS) {{\n",
-        fused.op
-    ));
+    code.push_str(&format!("PRESERVE_NONE\nvoid op_{}(PARAMS) {{\n", fused.op));
     code.push_str(&format!("    FAST_TRACE_HOOK({});\n", fused.op));
     code.push_str(&format!("    FAST_PROFILE_HOOK({});\n", fused.op));
 
@@ -250,10 +246,7 @@ fn emit_op_code(
             let fname = field_name.expect("i32_const needs field name");
             let dst = tos_reg(variant, 1);
             let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
-            code.push_str(&format!(
-                "    {} = (uint64_t)(uint32_t){};\n",
-                dst, decode
-            ));
+            code.push_str(&format!("    {} = (uint64_t)(uint32_t){};\n", dst, decode));
         }
         "i64_const" => {
             let fname = field_name.expect("i64_const needs field name");
@@ -268,10 +261,7 @@ fn emit_op_code(
             let dst = tos_reg(variant, 1);
             let decode = format!("{}_decode_{}(pc)", fused_op_name, fname);
             code.push_str(&format!("    uint16_t {} = {};\n", fname, decode));
-            code.push_str(&format!(
-                "    {} = SEM_LOCAL_GET(fp, {});\n",
-                dst, fname
-            ));
+            code.push_str(&format!("    {} = SEM_LOCAL_GET(fp, {});\n", dst, fname));
         }
         "local_set" => {
             let fname = field_name.expect("local_set needs field name");
@@ -377,10 +367,7 @@ fn emit_op_code(
             let rhs = tos_reg(variant, 1);
             let lhs = tos_reg(variant, 2);
             let sem = format!("SEM_{}", base_op.to_uppercase());
-            code.push_str(&format!(
-                "    {}(ctx, {}, {}, {});\n",
-                sem, lhs, rhs, lhs
-            ));
+            code.push_str(&format!("    {}(ctx, {}, {}, {});\n", sem, lhs, rhs, lhs));
         }
 
         // --- Pure binops ---
@@ -388,10 +375,7 @@ fn emit_op_code(
             let rhs = tos_reg(variant, 1);
             let lhs = tos_reg(variant, 2);
             let sem = format!("SEM_{}", base_op.to_uppercase());
-            code.push_str(&format!(
-                "    {} = {}({}, {});\n",
-                lhs, sem, lhs, rhs
-            ));
+            code.push_str(&format!("    {} = {}({}, {});\n", lhs, sem, lhs, rhs));
             if emit_mul_barrier && is_float_mul(base_op) {
                 code.push_str(&format!("    FP_MUL_BARRIER({});\n", lhs));
             }
@@ -401,10 +385,7 @@ fn emit_op_code(
         _ if is_pure_unary(categories, base_op) => {
             let src_dst = tos_reg(variant, 1);
             let sem = format!("SEM_{}", base_op.to_uppercase());
-            code.push_str(&format!(
-                "    {} = {}({});\n",
-                src_dst, sem, src_dst
-            ));
+            code.push_str(&format!("    {} = {}({});\n", src_dst, sem, src_dst));
         }
 
         _ => panic!("Unknown op in fused pattern: {}", base_op),

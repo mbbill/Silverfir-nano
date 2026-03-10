@@ -111,9 +111,7 @@ impl HeapType {
         let type_idx = payload.read_leb128_i32().map_err(WasmError::from)?;
 
         if type_idx < 0 {
-            return Err(WasmError::invalid(
-                "Type index cannot be negative".into(),
-            ));
+            return Err(WasmError::invalid("Type index cannot be negative".into()));
         }
 
         Ok(HeapType::Concrete(type_idx as u32))
@@ -277,10 +275,7 @@ impl RefType {
 
     /// Check if this is an externref-compatible type
     pub fn is_externref(&self) -> bool {
-        matches!(
-            self.heap_type,
-            HeapType::Abstract(AbstractHeapType::Extern)
-        )
+        matches!(self.heap_type, HeapType::Abstract(AbstractHeapType::Extern))
     }
 }
 
@@ -417,10 +412,9 @@ impl ValueType {
     /// Check if this is an externref-compatible type
     pub fn is_externref(&self) -> bool {
         match self {
-            ValueType::Ref(rt) => matches!(
-                rt.heap_type,
-                HeapType::Abstract(AbstractHeapType::Extern)
-            ),
+            ValueType::Ref(rt) => {
+                matches!(rt.heap_type, HeapType::Abstract(AbstractHeapType::Extern))
+            }
             ValueType::Unknown => true,
             _ => false,
         }

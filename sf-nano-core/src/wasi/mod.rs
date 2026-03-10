@@ -5,12 +5,12 @@
 //! without closures.
 
 use std::collections::{HashMap, HashSet};
+use std::format;
 use std::path::PathBuf;
 use std::string::{String, ToString};
-use std::vec::Vec;
-use std::vec;
-use std::format;
 use std::thread_local;
+use std::vec;
+use std::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::entities::{Caller, ExternalFn};
@@ -54,9 +54,10 @@ impl std::fmt::Debug for FdEntry {
             FdEntry::Dir { host_path, .. } => {
                 f.debug_struct("Dir").field("host_path", host_path).finish()
             }
-            FdEntry::File { host_path, .. } => {
-                f.debug_struct("File").field("host_path", host_path).finish()
-            }
+            FdEntry::File { host_path, .. } => f
+                .debug_struct("File")
+                .field("host_path", host_path)
+                .finish(),
         }
     }
 }

@@ -51,7 +51,14 @@ impl Default for DiscoverFusionArgs {
 
 /// Global options that can appear anywhere before/between workloads.
 const GLOBAL_OPTIONS: &[&str] = &[
-    "--window", "-w", "--top", "-n", "--min-savings", "--output", "-o", "--show-trie",
+    "--window",
+    "-w",
+    "--top",
+    "-n",
+    "--min-savings",
+    "--output",
+    "-o",
+    "--show-trie",
 ];
 
 fn is_global_option(s: &str) -> bool {
@@ -71,12 +78,16 @@ fn print_usage() {
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  -w, --window <N>                N-gram window size for profiling [default: 4]");
-    eprintln!("  -n, --top <N>                   Maximum number of fusion candidates [default: 32]");
+    eprintln!(
+        "  -n, --top <N>                   Maximum number of fusion candidates [default: 32]"
+    );
     eprintln!("      --min-savings <PCT>           Minimum savings as %% of total instructions [default: 0.005]");
     eprintln!("  -o, --output <PATH>              Output TOML file path [default: handlers_fused_discovered.toml]");
     eprintln!("      --show-trie                  Print the pattern trie before discovery");
     eprintln!("      --workload <WASM> [ARGS...]  Add a workload to profile (repeatable)");
-    eprintln!("        --dir <PATH>               Preopen directory for this workload (per-workload)");
+    eprintln!(
+        "        --dir <PATH>               Preopen directory for this workload (per-workload)"
+    );
     eprintln!("  -h, --help                       Print this help message");
     eprintln!();
     eprintln!("EXAMPLES:");
@@ -89,7 +100,9 @@ fn print_usage() {
     eprintln!("    --workload lua.wasm fib.lua");
     eprintln!();
     eprintln!("  # Custom output path:");
-    eprintln!("  sf-nano-cli discover-fusion -o sf-nano-core/src/vm/interp/fast/handlers_fused.toml \\");
+    eprintln!(
+        "  sf-nano-cli discover-fusion -o sf-nano-core/src/vm/interp/fast/handlers_fused.toml \\"
+    );
     eprintln!("    --workload coremark.wasm");
     eprintln!();
     eprintln!("MULTI-WORKLOAD MERGING:");
@@ -101,7 +114,9 @@ fn print_usage() {
     eprintln!("  This ensures patterns common across workloads are weighted appropriately.");
     eprintln!();
     eprintln!("After generating the TOML, copy it to the handlers_fused.toml path and rebuild:");
-    eprintln!("  cp handlers_fused_discovered.toml sf-nano-core/src/vm/interp/fast/handlers_fused.toml");
+    eprintln!(
+        "  cp handlers_fused_discovered.toml sf-nano-core/src/vm/interp/fast/handlers_fused.toml"
+    );
     eprintln!("  cargo build --release");
 }
 
@@ -175,7 +190,11 @@ pub fn parse_args(args: &[String]) -> DiscoverFusionArgs {
                     }
                     i += 1;
                 }
-                result.workloads.push(Workload { path, prog_args, dir });
+                result.workloads.push(Workload {
+                    path,
+                    prog_args,
+                    dir,
+                });
                 continue; // don't increment i again
             }
             "--" => {
@@ -249,7 +268,10 @@ fn run_workload(workload: &Workload, window_size: usize) -> profiler::FastProfil
     let mut wasi_args = vec![module_name.to_string()];
     wasi_args.extend(workload.prog_args.clone());
 
-    let preopen = workload.dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+    let preopen = workload
+        .dir
+        .as_deref()
+        .unwrap_or_else(|| std::path::Path::new("."));
     let ctx = WasiContextBuilder::new()
         .args(&wasi_args)
         .preopen_dir(".", preopen)
@@ -308,12 +330,17 @@ pub fn run(cmd: DiscoverFusionArgs) {
 
     if multi {
         eprintln!();
-        eprintln!("Merged (frequency-averaged): {} virtual instructions", stats.total_instructions);
+        eprintln!(
+            "Merged (frequency-averaged): {} virtual instructions",
+            stats.total_instructions
+        );
     }
 
     // Print 1-gram (per-handler) breakdown
     {
-        let mut unigrams: Vec<_> = stats.sequences.iter()
+        let mut unigrams: Vec<_> = stats
+            .sequences
+            .iter()
             .filter(|(k, _)| k.len() == 1)
             .map(|(k, &v)| (k.ops()[0], v))
             .collect();
@@ -410,12 +437,18 @@ pub fn run(cmd: DiscoverFusionArgs) {
     let toml = discovery::format_all_toml(&candidates);
 
     // Output
-    let output_path = cmd.output.unwrap_or_else(|| PathBuf::from(DEFAULT_FUSED_TOML));
+    let output_path = cmd
+        .output
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_FUSED_TOML));
     fs::write(&output_path, &toml).unwrap_or_else(|err| {
         eprintln!("Error writing output file: {}", err);
         process::exit(1);
     });
-    eprintln!("Written {} fused patterns to: {}", candidates.len(), output_path.display());
+    eprintln!(
+        "Written {} fused patterns to: {}",
+        candidates.len(),
+        output_path.display()
+    );
     eprintln!("Rebuild with: cargo build --release");
 }
 

@@ -1,19 +1,10 @@
-//! Backend-facing lower IR.
+//! Backend-facing LIR.
 //!
-//! This is the boundary where stack-machine semantics end.
-//! LIR may carry:
-//! - rotating-window top/offset
-//! - explicit `fp[...]` slots
-//! - immediates / targets
-//!
-//! LIR must not carry:
-//! - `pre_height`
-//! - generic `variant`
-//! - spill-depth reasoning
-//! - explicit `T0..T3` operands
+//! The live `lir/` boundary is CFG + block params + SSA values.
 
 pub mod dump;
 pub mod ir;
+pub mod leaf;
 pub mod lower;
 pub mod reg;
 pub mod slot;

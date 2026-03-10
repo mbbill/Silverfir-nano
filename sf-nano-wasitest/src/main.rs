@@ -492,10 +492,7 @@ fn main() {
     let filtered: Vec<_> = all_wasm
         .iter()
         .filter(|p| {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             match_filters(&cli.patterns, name)
         })
         .collect();
@@ -536,7 +533,10 @@ fn main() {
                     .map(|f| format!("{}: {}", f.kind, f.message))
                     .collect::<Vec<_>>()
                     .join(", ");
-                println!("  {} {} ({:.2?}) - {}", symbol, result.name, result.duration, msg);
+                println!(
+                    "  {} {} ({:.2?}) - {}",
+                    symbol, result.name, result.duration, msg
+                );
             } else {
                 println!("  {} {} ({:.2?})", symbol, result.name, result.duration);
             }

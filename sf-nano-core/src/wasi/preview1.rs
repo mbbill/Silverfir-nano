@@ -401,8 +401,7 @@ pub fn fd_write(
     match fd {
         1 | 2 => {
             // stdout / stderr
-            let is_closed =
-                super::with_ctx(|ctx| ctx.closed_stdio.contains(&fd));
+            let is_closed = super::with_ctx(|ctx| ctx.closed_stdio.contains(&fd));
             if is_closed {
                 results[0] = Value::I32(ERRNO_BADF);
                 return Ok(());
@@ -436,30 +435,28 @@ pub fn fd_write(
                 buffers.push(data);
             }
 
-            let errno = super::with_ctx_mut(|ctx| {
-                match ctx.fds.get_mut(&fd) {
-                    Some(FdEntry::File {
-                        file,
-                        rights_base,
-                        fdflags,
-                        ..
-                    }) => {
-                        if (*rights_base & RIGHT_FD_WRITE) == 0 {
-                            return ERRNO_NOTCAPABLE;
-                        }
-                        if (*fdflags & FDFLAGS_APPEND) != 0 {
-                            let _ = file.seek(SeekFrom::End(0));
-                        }
-                        for buf in &buffers {
-                            if file.write_all(buf).is_err() {
-                                return ERRNO_IO;
-                            }
-                        }
-                        ERRNO_SUCCESS
+            let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+                Some(FdEntry::File {
+                    file,
+                    rights_base,
+                    fdflags,
+                    ..
+                }) => {
+                    if (*rights_base & RIGHT_FD_WRITE) == 0 {
+                        return ERRNO_NOTCAPABLE;
                     }
-                    Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
-                    None => ERRNO_BADF,
+                    if (*fdflags & FDFLAGS_APPEND) != 0 {
+                        let _ = file.seek(SeekFrom::End(0));
+                    }
+                    for buf in &buffers {
+                        if file.write_all(buf).is_err() {
+                            return ERRNO_IO;
+                        }
+                    }
+                    ERRNO_SUCCESS
                 }
+                Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+                None => ERRNO_BADF,
             });
 
             if errno != ERRNO_SUCCESS {
@@ -493,8 +490,7 @@ pub fn fd_read(
     match fd {
         0 => {
             // stdin: read from real stdin
-            let is_closed =
-                super::with_ctx(|ctx| ctx.closed_stdio.contains(&0));
+            let is_closed = super::with_ctx(|ctx| ctx.closed_stdio.contains(&0));
             if is_closed {
                 results[0] = Value::I32(ERRNO_BADF);
                 return Ok(());
@@ -553,36 +549,34 @@ pub fn fd_read(
             }
 
             let mut total_read: u32 = 0;
-            let errno = super::with_ctx_mut(|ctx| {
-                match ctx.fds.get_mut(&fd) {
-                    Some(FdEntry::File {
-                        file, rights_base, ..
-                    }) => {
-                        if (*rights_base & RIGHT_FD_READ) == 0 {
-                            return ERRNO_NOTCAPABLE;
-                        }
-                        for &(ptr, len) in &iovs {
-                            let start = ptr as usize;
-                            let end = start + len as usize;
-                            if end > mem.len() {
-                                return ERRNO_INVAL;
-                            }
-                            match file.read(&mut mem[start..end]) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    total_read += n as u32;
-                                    if (n as u32) < len {
-                                        break;
-                                    }
-                                }
-                                Err(_) => return ERRNO_IO,
-                            }
-                        }
-                        ERRNO_SUCCESS
+            let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+                Some(FdEntry::File {
+                    file, rights_base, ..
+                }) => {
+                    if (*rights_base & RIGHT_FD_READ) == 0 {
+                        return ERRNO_NOTCAPABLE;
                     }
-                    Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
-                    None => ERRNO_BADF,
+                    for &(ptr, len) in &iovs {
+                        let start = ptr as usize;
+                        let end = start + len as usize;
+                        if end > mem.len() {
+                            return ERRNO_INVAL;
+                        }
+                        match file.read(&mut mem[start..end]) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                total_read += n as u32;
+                                if (n as u32) < len {
+                                    break;
+                                }
+                            }
+                            Err(_) => return ERRNO_IO,
+                        }
+                    }
+                    ERRNO_SUCCESS
                 }
+                Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+                None => ERRNO_BADF,
             });
 
             if errno != ERRNO_SUCCESS {
@@ -671,22 +665,20 @@ pub fn fd_seek(
         }
     };
 
-    let result = super::with_ctx_mut(|ctx| {
-        match ctx.fds.get_mut(&fd) {
-            Some(FdEntry::File {
-                file, rights_base, ..
-            }) => {
-                if (*rights_base & RIGHT_FD_SEEK) == 0 {
-                    return Err(ERRNO_NOTCAPABLE);
-                }
-                match file.seek(seek_from) {
-                    Ok(pos) => Ok(pos),
-                    Err(_) => Err(ERRNO_IO),
-                }
+    let result = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_SEEK) == 0 {
+                return Err(ERRNO_NOTCAPABLE);
             }
-            Some(FdEntry::Dir { .. }) => Err(ERRNO_ISDIR),
-            None => Err(ERRNO_BADF),
+            match file.seek(seek_from) {
+                Ok(pos) => Ok(pos),
+                Err(_) => Err(ERRNO_IO),
+            }
         }
+        Some(FdEntry::Dir { .. }) => Err(ERRNO_ISDIR),
+        None => Err(ERRNO_BADF),
     });
 
     match result {
@@ -714,22 +706,20 @@ pub fn fd_tell(
     let fd = as_i32(&args[0])?;
     let offset_ptr = as_i32(&args[1])? as u32;
 
-    let result = super::with_ctx_mut(|ctx| {
-        match ctx.fds.get_mut(&fd) {
-            Some(FdEntry::File {
-                file, rights_base, ..
-            }) => {
-                if (*rights_base & RIGHT_FD_TELL) == 0 {
-                    return Err(ERRNO_NOTCAPABLE);
-                }
-                match file.seek(SeekFrom::Current(0)) {
-                    Ok(pos) => Ok(pos),
-                    Err(_) => Err(ERRNO_IO),
-                }
+    let result = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_TELL) == 0 {
+                return Err(ERRNO_NOTCAPABLE);
             }
-            Some(FdEntry::Dir { .. }) => Err(ERRNO_ISDIR),
-            None => Err(ERRNO_BADF),
+            match file.seek(SeekFrom::Current(0)) {
+                Ok(pos) => Ok(pos),
+                Err(_) => Err(ERRNO_IO),
+            }
         }
+        Some(FdEntry::Dir { .. }) => Err(ERRNO_ISDIR),
+        None => Err(ERRNO_BADF),
     });
 
     match result {
@@ -870,14 +860,30 @@ pub fn fd_fdstat_get(
                 if ctx.closed_stdio.contains(&0) {
                     return Err(ERRNO_BADF);
                 }
-                Ok((stdin_type, 0, RIGHT_FD_READ | RIGHT_FD_FDSTAT_SET_FLAGS | RIGHT_FD_FILESTAT_GET | RIGHT_POLL_FD_READWRITE, 0))
+                Ok((
+                    stdin_type,
+                    0,
+                    RIGHT_FD_READ
+                        | RIGHT_FD_FDSTAT_SET_FLAGS
+                        | RIGHT_FD_FILESTAT_GET
+                        | RIGHT_POLL_FD_READWRITE,
+                    0,
+                ))
             }
             1 => {
                 // stdout
                 if ctx.closed_stdio.contains(&1) {
                     return Err(ERRNO_BADF);
                 }
-                Ok((stdout_type, 0, RIGHT_FD_WRITE | RIGHT_FD_FDSTAT_SET_FLAGS | RIGHT_FD_FILESTAT_GET | RIGHT_POLL_FD_READWRITE, 0))
+                Ok((
+                    stdout_type,
+                    0,
+                    RIGHT_FD_WRITE
+                        | RIGHT_FD_FDSTAT_SET_FLAGS
+                        | RIGHT_FD_FILESTAT_GET
+                        | RIGHT_POLL_FD_READWRITE,
+                    0,
+                ))
             }
             2 => {
                 // stderr
@@ -998,7 +1004,11 @@ pub fn random_get(
         Ok(d) => d.as_nanos() as u64,
         Err(_) => 0xDEAD_BEEF_CAFE_BABE,
     };
-    let mut state = if seed == 0 { 0xDEAD_BEEF_CAFE_BABE } else { seed };
+    let mut state = if seed == 0 {
+        0xDEAD_BEEF_CAFE_BABE
+    } else {
+        seed
+    };
 
     let start = buf_ptr as usize;
     let end = start + buf_len as usize;
@@ -1518,10 +1528,10 @@ pub fn path_filestat_get(
     //   atim:     u64 @ +40
     //   mtim:     u64 @ +48
     //   ctim:     u64 @ +56
-    write_u64_le(mem, buf_ptr, 0)?;          // dev
-    write_u64_le(mem, buf_ptr + 8, 0)?;      // ino
+    write_u64_le(mem, buf_ptr, 0)?; // dev
+    write_u64_le(mem, buf_ptr + 8, 0)?; // ino
     write_u8_le(mem, buf_ptr + 16, filetype)?;
-    write_u64_le(mem, buf_ptr + 24, 1)?;     // nlink
+    write_u64_le(mem, buf_ptr + 24, 1)?; // nlink
     write_u64_le(mem, buf_ptr + 32, metadata.len())?;
     write_u64_le(mem, buf_ptr + 40, atim)?;
     write_u64_le(mem, buf_ptr + 48, mtim)?;

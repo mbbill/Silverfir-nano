@@ -4,8 +4,9 @@ use crate::vm::backend::{BackendConfig, BackendKind};
 
 /// Planning configuration derived from the selected backend.
 ///
-/// This is intentionally a small, explicit resource budget. Backend codegen
-/// should consume the results of planning, not keep reaching back into this.
+/// This is intentionally only the planning/LIR-facing subset of the backend
+/// register budget. Backend codegen should consume the results of planning,
+/// not keep reaching back into this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanConfig {
     pub backend: BackendKind,

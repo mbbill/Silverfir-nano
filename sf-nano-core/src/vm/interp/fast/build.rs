@@ -10,8 +10,8 @@
 use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendKind, BackendMode},
-    lir::lower::{self, LirProgram},
     entities::ModuleInst,
+    lir::legacy::lower::{self, LirProgram},
     plan::{
         config::PlanConfig,
         plan::{self, PlannedProgram, PlanningInput},

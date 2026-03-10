@@ -23,7 +23,10 @@ pub fn parse_variant_qualified(name: &str) -> (&str, u8) {
             return (&name[..name.len() - suffix.len()], variant);
         }
     }
-    panic!("Pattern element '{}' has no variant suffix (_d1.._d4)", name);
+    panic!(
+        "Pattern element '{}' has no variant suffix (_d1.._d4)",
+        name
+    );
 }
 
 /// Strip variant suffix if present, returning the base op name.
@@ -78,38 +81,67 @@ pub fn is_comparison_op(op: &str) -> bool {
     let base = strip_variant_suffix(op);
     matches!(
         base,
-        "i32_eq" | "i32_ne" | "i32_eqz"
-        | "i32_lt_s" | "i32_lt_u" | "i32_gt_s" | "i32_gt_u"
-        | "i32_le_s" | "i32_le_u" | "i32_ge_s" | "i32_ge_u"
-        | "i64_eq" | "i64_ne" | "i64_eqz"
-        | "i64_lt_s" | "i64_lt_u" | "i64_gt_s" | "i64_gt_u"
-        | "i64_le_s" | "i64_le_u" | "i64_ge_s" | "i64_ge_u"
-        | "f32_eq" | "f32_ne" | "f32_lt" | "f32_gt" | "f32_le" | "f32_ge"
-        | "f64_eq" | "f64_ne" | "f64_lt" | "f64_gt" | "f64_le" | "f64_ge"
+        "i32_eq"
+            | "i32_ne"
+            | "i32_eqz"
+            | "i32_lt_s"
+            | "i32_lt_u"
+            | "i32_gt_s"
+            | "i32_gt_u"
+            | "i32_le_s"
+            | "i32_le_u"
+            | "i32_ge_s"
+            | "i32_ge_u"
+            | "i64_eq"
+            | "i64_ne"
+            | "i64_eqz"
+            | "i64_lt_s"
+            | "i64_lt_u"
+            | "i64_gt_s"
+            | "i64_gt_u"
+            | "i64_le_s"
+            | "i64_le_u"
+            | "i64_ge_s"
+            | "i64_ge_u"
+            | "f32_eq"
+            | "f32_ne"
+            | "f32_lt"
+            | "f32_gt"
+            | "f32_le"
+            | "f32_ge"
+            | "f64_eq"
+            | "f64_ne"
+            | "f64_lt"
+            | "f64_gt"
+            | "f64_le"
+            | "f64_ge"
     )
 }
 
 /// Check if pattern has a br_if branch target (handles variant-qualified names)
 pub fn has_branch(fused: &FusedHandler) -> bool {
-    fused.pattern.iter().any(|op| strip_variant_suffix(op) == "br_if")
+    fused
+        .pattern
+        .iter()
+        .any(|op| strip_variant_suffix(op) == "br_if")
 }
 
 /// Check if pattern contains if_ (handles variant-qualified names)
 pub fn has_if(fused: &FusedHandler) -> bool {
-    fused.pattern.iter().any(|op| strip_variant_suffix(op) == "if_")
+    fused
+        .pattern
+        .iter()
+        .any(|op| strip_variant_suffix(op) == "if_")
 }
 
 /// Determine whether ctx is used by the handler (memory ops and trapping ops need it).
 /// Handles variant-qualified pattern names by stripping _dN suffix before lookup.
 pub fn needs_ctx(categories: &CategoryMap, fused: &FusedHandler) -> bool {
-    fused
-        .pattern
-        .iter()
-        .any(|op| {
-            let base = strip_variant_suffix(op);
-            matches!(
-                categories.get(base),
-                Some(OpCategory::Load) | Some(OpCategory::Store) | Some(OpCategory::TrappingBinop)
-            )
-        })
+    fused.pattern.iter().any(|op| {
+        let base = strip_variant_suffix(op);
+        matches!(
+            categories.get(base),
+            Some(OpCategory::Load) | Some(OpCategory::Store) | Some(OpCategory::TrappingBinop)
+        )
+    })
 }

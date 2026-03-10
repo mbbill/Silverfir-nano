@@ -7,10 +7,7 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::{
-    entities::FunctionInst,
-    interp::stack::InterpreterStack,
-    store::Store,
-    value::Value,
+    entities::FunctionInst, interp::stack::InterpreterStack, store::Store, value::Value,
 };
 
 use super::{code::NativeCode, context::NativeContext};

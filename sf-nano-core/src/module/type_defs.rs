@@ -37,16 +37,24 @@ impl FunctionType {
 
 impl fmt::Display for FunctionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let params: Vec<String> = self.params.iter().map(|v| {
-            let mut buf = String::new();
-            core::fmt::Write::write_fmt(&mut buf, format_args!("{}", v)).unwrap();
-            buf
-        }).collect();
-        let results: Vec<String> = self.results.iter().map(|v| {
-            let mut buf = String::new();
-            core::fmt::Write::write_fmt(&mut buf, format_args!("{}", v)).unwrap();
-            buf
-        }).collect();
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .map(|v| {
+                let mut buf = String::new();
+                core::fmt::Write::write_fmt(&mut buf, format_args!("{}", v)).unwrap();
+                buf
+            })
+            .collect();
+        let results: Vec<String> = self
+            .results
+            .iter()
+            .map(|v| {
+                let mut buf = String::new();
+                core::fmt::Write::write_fmt(&mut buf, format_args!("{}", v)).unwrap();
+                buf
+            })
+            .collect();
         write!(f, "({}) -> ({})", params.join(", "), results.join(", "))
     }
 }

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use super::code_writer::CodeWriter;
 use super::tos_config::tos_variant_names;
-use super::types::{HandlersFile, HandlerVariantSource};
+use super::types::{HandlerVariantSource, HandlersFile};
 
 /// Emit extern declarations for a handler variant source
 fn emit_decls(w: &mut CodeWriter, source: &dyn HandlerVariantSource) {

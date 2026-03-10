@@ -4,10 +4,7 @@
 //! inside the fast backend. Instead, planning asks whether a semantic prefix is
 //! still compatible with the prebuilt fusion table.
 
-use crate::vm::{
-    interp::fast::fusion::table::FusionPatternTable,
-    wasm::core_op::CoreOpKind,
-};
+use crate::vm::{interp::fast::fusion::table::FusionPatternTable, wasm::core_op::CoreOpKind};
 
 pub trait FusionPatternMatcher {
     fn can_start(&self, op: &CoreOpKind) -> bool;

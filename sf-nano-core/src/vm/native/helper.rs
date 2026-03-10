@@ -15,7 +15,11 @@ pub unsafe extern "C" fn unimplemented_helper(
     meta: *const HelperMetadataHeader,
 ) -> HelperResult {
     // TODO: Replace with typed helper implementations.
-    unsafe { HelperResult { next_entry: (*meta).next_entry } }
+    unsafe {
+        HelperResult {
+            next_entry: (*meta).next_entry,
+        }
+    }
 }
 
 pub const DEFAULT_HELPER: NativeHelper = unimplemented_helper;

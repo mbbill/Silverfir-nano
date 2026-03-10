@@ -7,19 +7,29 @@ extern crate alloc;
 extern crate std;
 
 // No-op log macros (compile to nothing)
-macro_rules! log_trace { ($($t:tt)*) => {} }
-macro_rules! log_debug { ($($t:tt)*) => {} }
-macro_rules! log_info  { ($($t:tt)*) => {} }
-macro_rules! log_warn  { ($($t:tt)*) => {} }
-macro_rules! log_error { ($($t:tt)*) => {} }
+macro_rules! log_trace {
+    ($($t:tt)*) => {};
+}
+macro_rules! log_debug {
+    ($($t:tt)*) => {};
+}
+macro_rules! log_info {
+    ($($t:tt)*) => {};
+}
+macro_rules! log_warn {
+    ($($t:tt)*) => {};
+}
+macro_rules! log_error {
+    ($($t:tt)*) => {};
+}
 
 pub mod constants;
 pub mod error;
 pub mod module;
 pub mod op_decoder;
 pub mod opcodes;
-pub mod value_type;
 pub(crate) mod utils;
+pub mod value_type;
 pub mod vm;
 
 #[cfg(feature = "wasi")]
@@ -29,18 +39,13 @@ pub mod wasi;
 pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::Limitable;
-pub use vm::instance::{Import, ImportValue, Instance};
+pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
 pub use vm::entities::ExternalFn;
-pub use vm::backend::{BackendKind, BackendMode, active_backend, backend_mode, set_backend_mode};
+pub use vm::instance::{Import, ImportValue, Instance};
 #[cfg(feature = "micro-jit")]
 pub use vm::native::{
-    NativeStatsSnapshot,
-    native_capacity_skips,
-    native_stats,
-    native_stats_snapshot,
-    native_capacity_skips as jit_capacity_skips,
-    native_stats as jit_stats,
-    native_stats_snapshot as jit_stats_snapshot,
-    NativeStatsSnapshot as JitStatsSnapshot,
+    native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
+    native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
+    NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
 pub use vm::value::Value;

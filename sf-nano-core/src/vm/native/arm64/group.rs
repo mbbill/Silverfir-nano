@@ -4,9 +4,7 @@
 //! this file should *not* rediscover groups. It should only consume planned
 //! group contents and emit code shape for them.
 
-use crate::vm::{
-    lir::{ir::LirOp, lower::LirGroup},
-};
+use crate::vm::lir::legacy::{ir::LirOp, lower::LirGroup};
 
 use super::codegen::Arm64Codegen;
 

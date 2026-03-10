@@ -11,8 +11,8 @@
 
 use super::common::*;
 use super::trap_with;
-use crate::vm::interp::fast::encoding::{drop_op, load, memory_grow, memory_size, store, ternary};
 use crate::error::WasmError;
+use crate::vm::interp::fast::encoding::{drop_op, load, memory_grow, memory_size, store, ternary};
 
 // =============================================================================
 // Memory Size / Grow (Phase 3 TOS-only)
@@ -230,9 +230,7 @@ pub extern "C" fn impl_memory_copy(
 
     if dst_idx == src_idx {
         let mem_data = &mut store_mut_ref.memory_mut(dst_idx).data;
-        if src.saturating_add(size) > mem_data.len()
-            || dst.saturating_add(size) > mem_data.len()
-        {
+        if src.saturating_add(size) > mem_data.len() || dst.saturating_add(size) > mem_data.len() {
             return trap_with(ctx, WasmError::trap("out of bounds memory access".into()));
         }
         mem_data.copy_within(src..src + size, dst);
@@ -315,8 +313,8 @@ macro_rules! impl_mm_load {
             pc: *mut Instruction,
             _fp_pp: *mut *mut u64,
             _p_l0: *mut u64,
-    _p_l1: *mut u64,
-    _p_l2: *mut u64,
+            _p_l1: *mut u64,
+            _p_l2: *mut u64,
             // Phase 3: Operand pointers for TOS computation
             p_src: *mut u64,
             p_dst: *mut u64,
@@ -363,8 +361,8 @@ macro_rules! impl_mm_store {
             pc: *mut Instruction,
             _fp_pp: *mut *mut u64,
             _p_l0: *mut u64,
-    _p_l1: *mut u64,
-    _p_l2: *mut u64,
+            _p_l1: *mut u64,
+            _p_l2: *mut u64,
             // Phase 3: Operand pointers for TOS computation
             p_addr: *mut u64,
             p_val: *mut u64,

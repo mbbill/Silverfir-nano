@@ -1,6 +1,6 @@
 use crate::{
-    extract_imm,
     error::WasmError,
+    extract_imm,
     module::{
         entities::{Element, ElementInit, FunctionSpec, FunctionType},
         Module,
@@ -77,7 +77,8 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
             if !actual.is_compatible_with(expected) {
                 return Err(WasmError::invalid(alloc::format!(
                     "function return type mismatch, expected: {:?}, actual: {:?}",
-                    expected, actual
+                    expected,
+                    actual
                 )));
             }
         }
@@ -363,9 +364,10 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_vals(function_type.results())
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT => {
-                Err(WasmError::invalid(alloc::format!("Opcode {} not implemented", op)))
-            }
+            RETURN_CALL | RETURN_CALL_INDIRECT => Err(WasmError::invalid(alloc::format!(
+                "Opcode {} not implemented",
+                op
+            ))),
             DROP => {
                 self.context.pop_val(None)?;
                 Ok(())
@@ -383,7 +385,8 @@ impl<'a> FunctionValidator<'a> {
                 if !t1.is_compatible_with(&t2) && t1 != Unknown && t2 != Unknown {
                     return Err(WasmError::invalid(alloc::format!(
                         "SELECT type mismatch: {:?} vs {:?}",
-                        t1, t2
+                        t1,
+                        t2
                     )));
                 }
                 if t1 == Unknown {
@@ -513,9 +516,7 @@ impl<'a> FunctionValidator<'a> {
             REF_FUNC => {
                 let function_index = extract_imm!(imm, Immediate::FunctionIndex);
                 if function_index as usize >= self.module.functions().len() {
-                    return Err(WasmError::invalid(
-                        "function index out of range".into(),
-                    ));
+                    return Err(WasmError::invalid("function index out of range".into()));
                 }
 
                 // Check if the function is declared in any element section
@@ -524,27 +525,23 @@ impl<'a> FunctionValidator<'a> {
                     match element {
                         Element::Active { init, .. }
                         | Element::Passive { init, .. }
-                        | Element::Declarative { init, .. } => {
-                            match init {
-                                ElementInit::FunctionIndexes(indices) => {
-                                    if indices.contains(&(function_index as usize)) {
-                                        is_declared = true;
-                                        break;
-                                    }
-                                }
-                                ElementInit::InitExprs { .. } => {
+                        | Element::Declarative { init, .. } => match init {
+                            ElementInit::FunctionIndexes(indices) => {
+                                if indices.contains(&(function_index as usize)) {
                                     is_declared = true;
                                     break;
                                 }
                             }
-                        }
+                            ElementInit::InitExprs { .. } => {
+                                is_declared = true;
+                                break;
+                            }
+                        },
                     }
                 }
 
                 if !is_declared {
-                    return Err(WasmError::invalid(
-                        "undeclared function reference".into(),
-                    ));
+                    return Err(WasmError::invalid("undeclared function reference".into()));
                 }
 
                 let type_idx = self.module.functions()[function_index as usize].type_index();
@@ -731,16 +728,10 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_INIT => {
                 let (dataidx, memidx) = match imm {
                     Immediate::MemoryInitArgs { dataidx, memidx } => (dataidx, memidx),
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "invalid memory init arguments".into(),
-                        ))
-                    }
+                    _ => return Err(WasmError::invalid("invalid memory init arguments".into())),
                 };
                 if dataidx as usize >= self.module.data().len() {
-                    return Err(WasmError::invalid(
-                        "invalid memory init data index".into(),
-                    ));
+                    return Err(WasmError::invalid("invalid memory init data index".into()));
                 }
                 if memidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -763,11 +754,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_COPY => {
                 let (dstidx, srcidx) = match imm {
                     Immediate::MemoryCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "invalid memory copy arguments".into(),
-                        ))
-                    }
+                    _ => return Err(WasmError::invalid("invalid memory copy arguments".into())),
                 };
                 if dstidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -792,11 +779,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_FILL => {
                 let memidx = match imm {
                     Immediate::MemoryIndex(memidx) => memidx,
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "invalid memory fill arguments".into(),
-                        ))
-                    }
+                    _ => return Err(WasmError::invalid("invalid memory fill arguments".into())),
                 };
                 if memidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -832,11 +815,7 @@ impl<'a> FunctionValidator<'a> {
             TABLE_INIT => {
                 let (elemidx, tableidx) = match imm {
                     Immediate::TableInitArgs { elemidx, tableidx } => (elemidx, tableidx),
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "invalid table init arguments".into(),
-                        ))
-                    }
+                    _ => return Err(WasmError::invalid("invalid table init arguments".into())),
                 };
                 if elemidx as usize >= self.module.elements().len() {
                     return Err(WasmError::invalid(
@@ -844,9 +823,7 @@ impl<'a> FunctionValidator<'a> {
                     ));
                 }
                 if tableidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid(
-                        "invalid table init table index".into(),
-                    ));
+                    return Err(WasmError::invalid("invalid table init table index".into()));
                 }
                 // Check element-table type compatibility
                 let elem = &self.module.elements()[elemidx as usize];
@@ -877,21 +854,13 @@ impl<'a> FunctionValidator<'a> {
             TABLE_COPY => {
                 let (dstidx, srcidx) = match imm {
                     Immediate::TableCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "invalid table copy arguments".into(),
-                        ))
-                    }
+                    _ => return Err(WasmError::invalid("invalid table copy arguments".into())),
                 };
                 if dstidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid(
-                        "invalid table copy dst index".into(),
-                    ));
+                    return Err(WasmError::invalid("invalid table copy dst index".into()));
                 }
                 if srcidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid(
-                        "invalid table copy src index".into(),
-                    ));
+                    return Err(WasmError::invalid("invalid table copy src index".into()));
                 }
                 let dst_table = &self.module.tables()[dstidx as usize];
                 let src_table = &self.module.tables()[srcidx as usize];
@@ -957,7 +926,8 @@ impl<'a> FunctionValidator<'a> {
                 if !ref_val.is_compatible_with(&table_type) {
                     return Err(WasmError::invalid(alloc::format!(
                         "table fill type mismatch: expected {:?}, got {:?}",
-                        table_type, ref_val
+                        table_type,
+                        ref_val
                     )));
                 }
                 self.context.pop_val(Some(idx_type))?; // dest
@@ -1056,7 +1026,11 @@ impl Context {
         for slot in locals_init.iter_mut().take(num_params) {
             *slot = true;
         }
-        for (slot, local) in locals_init.iter_mut().zip(all_locals.iter()).skip(num_params) {
+        for (slot, local) in locals_init
+            .iter_mut()
+            .zip(all_locals.iter())
+            .skip(num_params)
+        {
             *slot = local.is_defaultable();
         }
 
@@ -1094,9 +1068,7 @@ impl Context {
             return Err(WasmError::invalid("stack underflow".into()));
         }
         if self.val_stack.is_empty() {
-            return Err(WasmError::invalid(
-                "cannot pop from an empty stack".into(),
-            ));
+            return Err(WasmError::invalid("cannot pop from an empty stack".into()));
         }
         let actual = self.val_stack.pop().unwrap();
 
@@ -1104,7 +1076,8 @@ impl Context {
             if !actual.is_compatible_with(&expected_type) {
                 return Err(WasmError::invalid(alloc::format!(
                     "type mismatch: expected {:?}, got {:?}",
-                    expected_type, actual
+                    expected_type,
+                    actual
                 )));
             }
         }
@@ -1176,9 +1149,7 @@ impl Context {
 
     fn mark_unreachable(&mut self) -> Result<(), WasmError> {
         if self.control_frames.is_empty() {
-            return Err(WasmError::invalid(
-                "control frame stack is empty".into(),
-            ));
+            return Err(WasmError::invalid("control frame stack is empty".into()));
         }
         let current_frame = self.control_frames.last_mut().unwrap();
         if self.val_stack.len() < current_frame.height() {
@@ -1199,9 +1170,7 @@ impl Context {
 
     fn frame_last(&self) -> Result<&ControlFrame, WasmError> {
         if self.control_frames.is_empty() {
-            return Err(WasmError::invalid(
-                "control frame stack is empty".into(),
-            ));
+            return Err(WasmError::invalid("control frame stack is empty".into()));
         }
         Ok(&self.control_frames[0])
     }

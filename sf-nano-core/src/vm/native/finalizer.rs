@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::lower::LirProgram;
+use crate::vm::lir::legacy::lower::LirProgram;
 
 use super::{
     code::{DirectCallPatch, NativeCode},
@@ -29,10 +29,7 @@ pub struct NativeFinalized {
     pub code: NativeCode,
 }
 
-pub fn finalize_native(
-    _lir: &LirProgram,
-    resolved: &[ResolvedNativeEntry],
-) -> NativeFinalized {
+pub fn finalize_native(_lir: &LirProgram, resolved: &[ResolvedNativeEntry]) -> NativeFinalized {
     let _entries = build_final_entry_table(resolved);
     // TODO: Build direct native entry table, helper metadata, and patch lists
     // without reintroducing generic continuation slot descriptors.

@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::lower::LirProgram;
+use crate::vm::lir::legacy::lower::LirProgram;
 use crate::vm::plan::group::GroupId;
 
 use super::{entry::NativeEntry, helper_meta::ColdHelperKind};

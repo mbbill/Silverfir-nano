@@ -1,9 +1,6 @@
 //! ARM64/native op metadata.
 
-use crate::vm::{
-    lir::ir::LirOpKind,
-    native::helper_meta::ColdHelperKind,
-};
+use crate::vm::{lir::legacy::ir::LirOpKind, native::helper_meta::ColdHelperKind};
 
 /// Coarse native compilation support class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

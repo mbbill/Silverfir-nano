@@ -1,27 +1,27 @@
 // Fast interpreter build module
 // Generates code from handlers.toml (merged handler + encoding definitions)
 
-pub mod tos_config;
 pub mod gen_tos_config_h;
+pub mod tos_config;
 pub mod types;
 #[macro_use]
 pub mod code_writer;
 pub mod gen_c_wrappers;
+pub mod gen_encoding;
 pub mod gen_extern_decl;
+pub mod gen_fusion;
+pub mod gen_fusion_c;
+pub mod gen_fusion_ir_match;
+pub mod gen_handler_lookup;
 pub mod gen_handler_map;
 pub mod gen_handler_names;
-pub mod gen_encoding;
-pub mod gen_handler_lookup;
-pub mod op_classify;
-pub mod gen_fusion_c;
-pub mod gen_fusion;
 pub mod gen_ir_resolve;
-pub mod gen_fusion_ir_match;
+pub mod op_classify;
 
 use std::fs;
 use std::path::PathBuf;
 
-use types::{HandlersFile, FusedFile};
+use types::{FusedFile, HandlersFile};
 
 /// Generate all fast interpreter code from handlers.toml + handlers_fused.toml
 pub fn generate(out_dir: &PathBuf) {
@@ -47,8 +47,8 @@ pub fn generate(out_dir: &PathBuf) {
 
     // Merge auto-discovered fused instructions (if file exists)
     if let Ok(content) = fs::read_to_string(&fused_toml_path) {
-        let fused: FusedFile = toml::from_str(&content)
-            .expect("Failed to parse handlers_fused.toml");
+        let fused: FusedFile =
+            toml::from_str(&content).expect("Failed to parse handlers_fused.toml");
         handlers.fused = fused.fused;
     }
 

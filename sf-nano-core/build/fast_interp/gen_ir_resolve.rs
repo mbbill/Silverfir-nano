@@ -239,11 +239,19 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     // Memory loads/stores
     w.line("// Memory loads");
     for op in LOAD_OPS {
-        wln!(w, "IrOpKind::{} {{ offset, memidx, .. }} => encoding::load::encode(*offset, *memidx),", op);
+        wln!(
+            w,
+            "IrOpKind::{} {{ offset, memidx, .. }} => encoding::load::encode(*offset, *memidx),",
+            op
+        );
     }
     w.line("// Memory stores");
     for op in STORE_OPS {
-        wln!(w, "IrOpKind::{} {{ offset, memidx, .. }} => encoding::store::encode(*offset, *memidx),", op);
+        wln!(
+            w,
+            "IrOpKind::{} {{ offset, memidx, .. }} => encoding::store::encode(*offset, *memidx),",
+            op
+        );
     }
     w.blank();
 
@@ -349,63 +357,138 @@ fn generate_encode_operands(w: &mut CodeWriter) {
 fn emit_simple_variant_ops(w: &mut CodeWriter) {
     w.line("// i32 binary");
     for op in I32_BINARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// i64 binary");
     for op in I64_BINARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f32 binary");
     for op in F32_BINARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f64 binary");
     for op in F64_BINARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// i32 comparisons");
     for op in I32_CMP_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// i64 comparisons");
     for op in I64_CMP_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f32 comparisons");
     for op in F32_CMP_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f64 comparisons");
     for op in F64_CMP_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// i32 unary");
     for op in I32_UNARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// i64 unary");
     for op in I64_UNARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f32 unary");
     for op in F32_UNARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// f64 unary");
     for op in F64_UNARY_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// Conversions");
     for op in CONVERSION_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// Sign extension");
     for op in SIGN_EXT_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// Saturating truncation");
     for op in SAT_TRUNC_OPS {
-        wln!(w, "IrOpKind::{} => handler_lookup::{}[v],", op, to_upper_snake(op));
+        wln!(
+            w,
+            "IrOpKind::{} => handler_lookup::{}[v],",
+            op,
+            to_upper_snake(op)
+        );
     }
     w.line("// Stack ops");
     w.line("IrOpKind::Drop => handler_lookup::DROP[v],");
@@ -418,14 +501,34 @@ fn emit_memory_handlers(w: &mut CodeWriter) {
     w.line("// Memory loads — fast (mem0) vs MM (multi-memory)");
     for op in LOAD_OPS {
         let upper = to_upper_snake(op);
-        wln!(w, "IrOpKind::{} {{ memidx: 0, .. }} => handler_lookup::{}[v],", op, upper);
-        wln!(w, "IrOpKind::{} {{ .. }} => handler_lookup::{}_MM[v],", op, upper);
+        wln!(
+            w,
+            "IrOpKind::{} {{ memidx: 0, .. }} => handler_lookup::{}[v],",
+            op,
+            upper
+        );
+        wln!(
+            w,
+            "IrOpKind::{} {{ .. }} => handler_lookup::{}_MM[v],",
+            op,
+            upper
+        );
     }
     w.line("// Memory stores");
     for op in STORE_OPS {
         let upper = to_upper_snake(op);
-        wln!(w, "IrOpKind::{} {{ memidx: 0, .. }} => handler_lookup::{}[v],", op, upper);
-        wln!(w, "IrOpKind::{} {{ .. }} => handler_lookup::{}_MM[v],", op, upper);
+        wln!(
+            w,
+            "IrOpKind::{} {{ memidx: 0, .. }} => handler_lookup::{}[v],",
+            op,
+            upper
+        );
+        wln!(
+            w,
+            "IrOpKind::{} {{ .. }} => handler_lookup::{}_MM[v],",
+            op,
+            upper
+        );
     }
     w.blank();
 }
@@ -466,7 +569,6 @@ fn emit_raw_encode_arms(w: &mut CodeWriter) {
     w.line("IrOpKind::Unreachable | IrOpKind::Term => (0, 0, 0),");
     w.line("// Note: Fused and Data are handled separately above");
     w.blank();
-
 }
 
 // =============================================================================
@@ -498,31 +600,43 @@ fn to_upper_snake(pascal: &str) -> String {
 // =============================================================================
 
 const I32_BINARY_OPS: &[&str] = &[
-    "I32Add", "I32Sub", "I32Mul", "I32DivS", "I32DivU", "I32RemS", "I32RemU",
-    "I32And", "I32Or", "I32Xor", "I32Shl", "I32ShrS", "I32ShrU", "I32Rotl", "I32Rotr",
+    "I32Add", "I32Sub", "I32Mul", "I32DivS", "I32DivU", "I32RemS", "I32RemU", "I32And", "I32Or",
+    "I32Xor", "I32Shl", "I32ShrS", "I32ShrU", "I32Rotl", "I32Rotr",
 ];
 
 const I64_BINARY_OPS: &[&str] = &[
-    "I64Add", "I64Sub", "I64Mul", "I64DivS", "I64DivU", "I64RemS", "I64RemU",
-    "I64And", "I64Or", "I64Xor", "I64Shl", "I64ShrS", "I64ShrU", "I64Rotl", "I64Rotr",
+    "I64Add", "I64Sub", "I64Mul", "I64DivS", "I64DivU", "I64RemS", "I64RemU", "I64And", "I64Or",
+    "I64Xor", "I64Shl", "I64ShrS", "I64ShrU", "I64Rotl", "I64Rotr",
 ];
 
 const F32_BINARY_OPS: &[&str] = &[
-    "F32Add", "F32Sub", "F32Mul", "F32Div", "F32Min", "F32Max", "F32Copysign",
+    "F32Add",
+    "F32Sub",
+    "F32Mul",
+    "F32Div",
+    "F32Min",
+    "F32Max",
+    "F32Copysign",
 ];
 
 const F64_BINARY_OPS: &[&str] = &[
-    "F64Add", "F64Sub", "F64Mul", "F64Div", "F64Min", "F64Max", "F64Copysign",
+    "F64Add",
+    "F64Sub",
+    "F64Mul",
+    "F64Div",
+    "F64Min",
+    "F64Max",
+    "F64Copysign",
 ];
 
 const I32_CMP_OPS: &[&str] = &[
-    "I32Eq", "I32Ne", "I32LtS", "I32LtU", "I32GtS", "I32GtU",
-    "I32LeS", "I32LeU", "I32GeS", "I32GeU",
+    "I32Eq", "I32Ne", "I32LtS", "I32LtU", "I32GtS", "I32GtU", "I32LeS", "I32LeU", "I32GeS",
+    "I32GeU",
 ];
 
 const I64_CMP_OPS: &[&str] = &[
-    "I64Eq", "I64Ne", "I64LtS", "I64LtU", "I64GtS", "I64GtU",
-    "I64LeS", "I64LeU", "I64GeS", "I64GeU",
+    "I64Eq", "I64Ne", "I64LtS", "I64LtU", "I64GtS", "I64GtU", "I64LeS", "I64LeU", "I64GeS",
+    "I64GeU",
 ];
 
 const F32_CMP_OPS: &[&str] = &["F32Eq", "F32Ne", "F32Lt", "F32Gt", "F32Le", "F32Ge"];
@@ -532,41 +646,97 @@ const I32_UNARY_OPS: &[&str] = &["I32Eqz", "I32Clz", "I32Ctz", "I32Popcnt"];
 const I64_UNARY_OPS: &[&str] = &["I64Eqz", "I64Clz", "I64Ctz", "I64Popcnt"];
 
 const F32_UNARY_OPS: &[&str] = &[
-    "F32Abs", "F32Neg", "F32Ceil", "F32Floor", "F32Trunc", "F32Nearest", "F32Sqrt",
+    "F32Abs",
+    "F32Neg",
+    "F32Ceil",
+    "F32Floor",
+    "F32Trunc",
+    "F32Nearest",
+    "F32Sqrt",
 ];
 
 const F64_UNARY_OPS: &[&str] = &[
-    "F64Abs", "F64Neg", "F64Ceil", "F64Floor", "F64Trunc", "F64Nearest", "F64Sqrt",
+    "F64Abs",
+    "F64Neg",
+    "F64Ceil",
+    "F64Floor",
+    "F64Trunc",
+    "F64Nearest",
+    "F64Sqrt",
 ];
 
 const CONVERSION_OPS: &[&str] = &[
     "I32WrapI64",
-    "I32TruncF32S", "I32TruncF32U", "I32TruncF64S", "I32TruncF64U",
-    "I64ExtendI32S", "I64ExtendI32U",
-    "I64TruncF32S", "I64TruncF32U", "I64TruncF64S", "I64TruncF64U",
-    "F32ConvertI32S", "F32ConvertI32U", "F32ConvertI64S", "F32ConvertI64U", "F32DemoteF64",
-    "F64ConvertI32S", "F64ConvertI32U", "F64ConvertI64S", "F64ConvertI64U", "F64PromoteF32",
-    "I32ReinterpretF32", "I64ReinterpretF64", "F32ReinterpretI32", "F64ReinterpretI64",
+    "I32TruncF32S",
+    "I32TruncF32U",
+    "I32TruncF64S",
+    "I32TruncF64U",
+    "I64ExtendI32S",
+    "I64ExtendI32U",
+    "I64TruncF32S",
+    "I64TruncF32U",
+    "I64TruncF64S",
+    "I64TruncF64U",
+    "F32ConvertI32S",
+    "F32ConvertI32U",
+    "F32ConvertI64S",
+    "F32ConvertI64U",
+    "F32DemoteF64",
+    "F64ConvertI32S",
+    "F64ConvertI32U",
+    "F64ConvertI64S",
+    "F64ConvertI64U",
+    "F64PromoteF32",
+    "I32ReinterpretF32",
+    "I64ReinterpretF64",
+    "F32ReinterpretI32",
+    "F64ReinterpretI64",
 ];
 
 const SIGN_EXT_OPS: &[&str] = &[
-    "I32Extend8S", "I32Extend16S", "I64Extend8S", "I64Extend16S", "I64Extend32S",
+    "I32Extend8S",
+    "I32Extend16S",
+    "I64Extend8S",
+    "I64Extend16S",
+    "I64Extend32S",
 ];
 
 const SAT_TRUNC_OPS: &[&str] = &[
-    "I32TruncSatF32S", "I32TruncSatF32U", "I32TruncSatF64S", "I32TruncSatF64U",
-    "I64TruncSatF32S", "I64TruncSatF32U", "I64TruncSatF64S", "I64TruncSatF64U",
+    "I32TruncSatF32S",
+    "I32TruncSatF32U",
+    "I32TruncSatF64S",
+    "I32TruncSatF64U",
+    "I64TruncSatF32S",
+    "I64TruncSatF32U",
+    "I64TruncSatF64S",
+    "I64TruncSatF64U",
 ];
 
 const LOAD_OPS: &[&str] = &[
-    "I32Load", "I64Load", "F32Load", "F64Load",
-    "I32Load8S", "I32Load8U", "I32Load16S", "I32Load16U",
-    "I64Load8S", "I64Load8U", "I64Load16S", "I64Load16U",
-    "I64Load32S", "I64Load32U",
+    "I32Load",
+    "I64Load",
+    "F32Load",
+    "F64Load",
+    "I32Load8S",
+    "I32Load8U",
+    "I32Load16S",
+    "I32Load16U",
+    "I64Load8S",
+    "I64Load8U",
+    "I64Load16S",
+    "I64Load16U",
+    "I64Load32S",
+    "I64Load32U",
 ];
 
 const STORE_OPS: &[&str] = &[
-    "I32Store", "I64Store", "F32Store", "F64Store",
-    "I32Store8", "I32Store16",
-    "I64Store8", "I64Store16", "I64Store32",
+    "I32Store",
+    "I64Store",
+    "F32Store",
+    "F64Store",
+    "I32Store8",
+    "I32Store16",
+    "I64Store8",
+    "I64Store16",
+    "I64Store32",
 ];

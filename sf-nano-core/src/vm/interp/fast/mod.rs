@@ -26,5 +26,8 @@ pub const TOS_REGISTER_COUNT: usize = 4;
 /// Generated handler lookup tables.
 #[allow(dead_code)]
 pub mod handler_lookup {
-    include!(concat!(env!("OUT_DIR"), "/fast_interp/fast_handler_lookup.rs"));
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/fast_interp/fast_handler_lookup.rs"
+    ));
 }

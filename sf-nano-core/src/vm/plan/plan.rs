@@ -137,10 +137,7 @@ pub struct PlanningInput {
 }
 
 /// Plan semantic IR into the stack-aware planned layer.
-pub fn build_planned_program(
-    input: PlanningInput,
-    semantic: &SemanticProgram,
-) -> PlannedProgram {
+pub fn build_planned_program(input: PlanningInput, semantic: &SemanticProgram) -> PlannedProgram {
     let hot_locals = input
         .hot_locals
         .or_else(|| select_hot_locals(semantic, input.config));
@@ -153,8 +150,8 @@ pub fn build_planned_program(
         frame,
     );
     let placed_ops = place_semantic_ops(semantic, &placement);
+    let group_inputs = build_group_inputs(semantic, &placed_ops, &placement.input.policy);
     let cache_safe_ops = insert_cache_transfers(placed_ops, semantic.results, &placement);
-    let group_inputs = build_group_inputs(semantic, &cache_safe_ops, &placement.input.policy);
     let ops = assign_rotations(
         prepend_init_locals(cache_safe_ops, placement.input.hot_locals, placement.frame),
         &placement,
@@ -207,15 +204,13 @@ impl PlacementContext {
 
 fn plan_frame_layout(semantic: &SemanticProgram, config: PlanConfig) -> FrameLayoutPlan {
     let backend_reserved = (config.hot_local_count as u16).saturating_sub(semantic.local_count);
-    let planner = FramePlanner::new(semantic.local_count).reserve_backend_reserved(backend_reserved);
+    let planner =
+        FramePlanner::new(semantic.local_count).reserve_backend_reserved(backend_reserved);
     let (planner, _) = planner.reserve_operands(semantic.max_stack_height);
     planner.finish()
 }
 
-fn select_hot_locals(
-    semantic: &SemanticProgram,
-    config: PlanConfig,
-) -> Option<HotLocalPlan> {
+fn select_hot_locals(semantic: &SemanticProgram, config: PlanConfig) -> Option<HotLocalPlan> {
     if config.hot_local_count == 0 {
         None
     } else {
@@ -232,10 +227,7 @@ fn select_hot_locals(
             selected[i] = Some(i as u32);
             i += 1;
         }
-        Some(HotLocalPlan::new(
-            selected,
-            selected,
-        ))
+        Some(HotLocalPlan::new(selected, selected))
     }
 }
 
@@ -357,12 +349,10 @@ fn place_semantic_op(op: &SemanticOp, placement: &PlacementContext) -> PlacedOp 
                 results: *results,
             })
         }
-        SemanticOpKind::If { params, results } => {
-            PlannedOpKind::Marker(PlannedMarkerKind::If {
-                params: *params,
-                results: *results,
-            })
-        }
+        SemanticOpKind::If { params, results } => PlannedOpKind::Marker(PlannedMarkerKind::If {
+            params: *params,
+            results: *results,
+        }),
         SemanticOpKind::Else => PlannedOpKind::Marker(PlannedMarkerKind::Else),
         SemanticOpKind::End => PlannedOpKind::Marker(PlannedMarkerKind::End),
         SemanticOpKind::Br { stack_drop, arity } => PlannedOpKind::Branch {
@@ -448,11 +438,7 @@ fn place_local(idx: u16, placement: &PlacementContext) -> PlannedLocal {
 }
 
 fn groupable_kind(kind: &PlannedOpKind) -> bool {
-    !matches!(
-        kind,
-        PlannedOpKind::Marker(_)
-            | PlannedOpKind::Spill(_)
-    )
+    !matches!(kind, PlannedOpKind::Marker(_) | PlannedOpKind::Spill(_))
 }
 
 fn terminator_for(
@@ -486,10 +472,9 @@ fn terminator_for(
 
 fn collect_br_table_targets(op: &SemanticOp) -> Vec<SemanticTarget> {
     match &op.kind {
-        SemanticOpKind::BrTable { entries } => entries
-            .iter()
-            .filter_map(|entry| entry.target)
-            .collect(),
+        SemanticOpKind::BrTable { entries } => {
+            entries.iter().filter_map(|entry| entry.target).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -498,10 +483,7 @@ fn branch_payload(frame: FrameLayoutPlan, stack_drop: u32, arity: u16) -> Option
     if arity == 0 {
         None
     } else {
-        Some(FrameSpan::new(
-            frame.operand_slot(stack_drop as u16),
-            arity,
-        ))
+        Some(FrameSpan::new(frame.operand_slot(stack_drop as u16), arity))
     }
 }
 
@@ -819,13 +801,7 @@ fn insert_cache_safe_op(
             emit_with_state(out, state, PlannedOpKind::Spill(artifact), 0, alt);
         }
         PlannedOpKind::InitLocals { l0, l1, l2 } => {
-            emit_with_state(
-                out,
-                state,
-                PlannedOpKind::InitLocals { l0, l1, l2 },
-                0,
-                alt,
-            );
+            emit_with_state(out, state, PlannedOpKind::InitLocals { l0, l1, l2 }, 0, alt);
         }
     }
 }

@@ -45,10 +45,19 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
         w.line("fn init_handler_names() -> HashMap<usize, &'static str> {");
         w.indent();
         w.line("use super::handlers::full_set::*;");
-        wln!(w, "let mut map = HashMap::with_capacity({});", handler_entries.len());
+        wln!(
+            w,
+            "let mut map = HashMap::with_capacity({});",
+            handler_entries.len()
+        );
 
         for (func_name, display_name) in &handler_entries {
-            wln!(w, "map.insert({} as usize, \"{}\");", func_name, display_name);
+            wln!(
+                w,
+                "map.insert({} as usize, \"{}\");",
+                func_name,
+                display_name
+            );
         }
 
         w.line("map");

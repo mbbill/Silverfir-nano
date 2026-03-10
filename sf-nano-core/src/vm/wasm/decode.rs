@@ -15,7 +15,7 @@ use alloc::{vec, vec::Vec};
 
 use crate::{
     error::WasmError,
-    op_decoder::{Decoder, Immediate, OpcodeHandler, OpStream},
+    op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFC, WasmOpcode},
 };
 
@@ -238,9 +238,9 @@ impl<'a> DecodeContext<'a> {
         self.frame_at_depth(depth)
             .map(|frame| match frame.kind {
                 DecodeBlockKind::Loop => frame.param_count,
-                DecodeBlockKind::Function
-                | DecodeBlockKind::Block
-                | DecodeBlockKind::If => frame.result_count,
+                DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => {
+                    frame.result_count
+                }
             })
             .unwrap_or(0)
     }
@@ -251,14 +251,12 @@ impl<'a> DecodeContext<'a> {
         };
 
         let arity = self.branch_arity(depth) as usize;
-        let stack_drop = self
-            .height
-            .saturating_sub(frame.start_height.saturating_add(arity)) as u32;
+        let stack_drop =
+            self.height
+                .saturating_sub(frame.start_height.saturating_add(arity)) as u32;
         let target = match frame.kind {
             DecodeBlockKind::Loop => Some(frame.start_inst_idx),
-            DecodeBlockKind::Function
-            | DecodeBlockKind::Block
-            | DecodeBlockKind::If => None,
+            DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => None,
         };
         (stack_drop, target)
     }
@@ -548,51 +546,57 @@ impl<'a> DecodeContext<'a> {
             FC(OpcodeFC::I64_TRUNC_SAT_F64_S) => self.handle_core(CoreOpKind::I64TruncSatF64S),
             FC(OpcodeFC::I64_TRUNC_SAT_F64_U) => self.handle_core(CoreOpKind::I64TruncSatF64U),
 
-            OP(I32_LOAD) => self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load {
+            OP(I32_LOAD) => {
+                self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load { offset, memidx })
+            }
+            OP(I64_LOAD) => {
+                self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load { offset, memidx })
+            }
+            OP(F32_LOAD) => {
+                self.handle_load(imm, |offset, memidx| CoreOpKind::F32Load { offset, memidx })
+            }
+            OP(F64_LOAD) => {
+                self.handle_load(imm, |offset, memidx| CoreOpKind::F64Load { offset, memidx })
+            }
+            OP(I32_LOAD8_S) => self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load8S {
                 offset,
                 memidx,
             }),
-            OP(I64_LOAD) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load {
+            OP(I32_LOAD8_U) => self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load8U {
                 offset,
                 memidx,
             }),
-            OP(F32_LOAD) => self.handle_load(imm, |offset, memidx| CoreOpKind::F32Load {
+            OP(I32_LOAD16_S) => self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load16S {
                 offset,
                 memidx,
             }),
-            OP(F64_LOAD) => self.handle_load(imm, |offset, memidx| CoreOpKind::F64Load {
+            OP(I32_LOAD16_U) => self.handle_load(imm, |offset, memidx| CoreOpKind::I32Load16U {
                 offset,
                 memidx,
             }),
-            OP(I32_LOAD8_S) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I32Load8S { offset, memidx }
+            OP(I64_LOAD8_S) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load8S {
+                offset,
+                memidx,
             }),
-            OP(I32_LOAD8_U) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I32Load8U { offset, memidx }
+            OP(I64_LOAD8_U) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load8U {
+                offset,
+                memidx,
             }),
-            OP(I32_LOAD16_S) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I32Load16S { offset, memidx }
+            OP(I64_LOAD16_S) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load16S {
+                offset,
+                memidx,
             }),
-            OP(I32_LOAD16_U) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I32Load16U { offset, memidx }
+            OP(I64_LOAD16_U) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load16U {
+                offset,
+                memidx,
             }),
-            OP(I64_LOAD8_S) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load8S { offset, memidx }
+            OP(I64_LOAD32_S) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load32S {
+                offset,
+                memidx,
             }),
-            OP(I64_LOAD8_U) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load8U { offset, memidx }
-            }),
-            OP(I64_LOAD16_S) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load16S { offset, memidx }
-            }),
-            OP(I64_LOAD16_U) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load16U { offset, memidx }
-            }),
-            OP(I64_LOAD32_S) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load32S { offset, memidx }
-            }),
-            OP(I64_LOAD32_U) => self.handle_load(imm, |offset, memidx| {
-                CoreOpKind::I64Load32U { offset, memidx }
+            OP(I64_LOAD32_U) => self.handle_load(imm, |offset, memidx| CoreOpKind::I64Load32U {
+                offset,
+                memidx,
             }),
 
             OP(I32_STORE) => self.handle_store(imm, |offset, memidx| CoreOpKind::I32Store {
@@ -611,20 +615,25 @@ impl<'a> DecodeContext<'a> {
                 offset,
                 memidx,
             }),
-            OP(I32_STORE8) => self.handle_store(imm, |offset, memidx| {
-                CoreOpKind::I32Store8 { offset, memidx }
+            OP(I32_STORE8) => self.handle_store(imm, |offset, memidx| CoreOpKind::I32Store8 {
+                offset,
+                memidx,
             }),
-            OP(I32_STORE16) => self.handle_store(imm, |offset, memidx| {
-                CoreOpKind::I32Store16 { offset, memidx }
+            OP(I32_STORE16) => self.handle_store(imm, |offset, memidx| CoreOpKind::I32Store16 {
+                offset,
+                memidx,
             }),
-            OP(I64_STORE8) => self.handle_store(imm, |offset, memidx| {
-                CoreOpKind::I64Store8 { offset, memidx }
+            OP(I64_STORE8) => self.handle_store(imm, |offset, memidx| CoreOpKind::I64Store8 {
+                offset,
+                memidx,
             }),
-            OP(I64_STORE16) => self.handle_store(imm, |offset, memidx| {
-                CoreOpKind::I64Store16 { offset, memidx }
+            OP(I64_STORE16) => self.handle_store(imm, |offset, memidx| CoreOpKind::I64Store16 {
+                offset,
+                memidx,
             }),
-            OP(I64_STORE32) => self.handle_store(imm, |offset, memidx| {
-                CoreOpKind::I64Store32 { offset, memidx }
+            OP(I64_STORE32) => self.handle_store(imm, |offset, memidx| CoreOpKind::I64Store32 {
+                offset,
+                memidx,
             }),
 
             OP(MEMORY_SIZE) => {
@@ -881,21 +890,13 @@ impl<'a> DecodeContext<'a> {
         Ok(())
     }
 
-    fn handle_load(
-        &mut self,
-        imm: &Immediate,
-        make_kind: impl FnOnce(u32, u32) -> CoreOpKind,
-    ) {
+    fn handle_load(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> CoreOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.handle_core(make_kind(*offset as u32, *memidx));
         }
     }
 
-    fn handle_store(
-        &mut self,
-        imm: &Immediate,
-        make_kind: impl FnOnce(u32, u32) -> CoreOpKind,
-    ) {
+    fn handle_store(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> CoreOpKind) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.handle_core(make_kind(*offset as u32, *memidx));
         }

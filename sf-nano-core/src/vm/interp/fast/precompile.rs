@@ -4,7 +4,7 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{active_backend_mode, BackendKind, BackendMode},
     entities::ModuleInst,
-    lir::lower::LirProgram,
+    lir::legacy::lower::LirProgram,
     store::Store,
 };
 
@@ -116,7 +116,8 @@ fn optimize_internal_calls(store: &Store) {
             let callee_params = callee_spec.func_type().params().len() as u16;
             let callee_locals = callee_spec.locals().len() as u16;
 
-            let inst_ptr = inst as *const _ as *mut crate::vm::interp::fast::instruction::Instruction;
+            let inst_ptr =
+                inst as *const _ as *mut crate::vm::interp::fast::instruction::Instruction;
             unsafe {
                 (*inst_ptr).handler = super::handlers::full_set::op_call_local;
                 (*inst_ptr).imm0 = callee_entry;

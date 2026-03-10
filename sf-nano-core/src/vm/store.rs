@@ -2,9 +2,7 @@
 //!
 //! This layer should stay backend-agnostic.
 
-use crate::vm::entities::{
-    FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
-};
+use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst};
 
 pub struct Store {
     module: ModuleInst,

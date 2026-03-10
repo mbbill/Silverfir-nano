@@ -12,8 +12,8 @@ struct FieldLayout {
     name: String,
     bits: u32,
     kind: FieldKind,
-    imm_index: usize,  // 0, 1, or 2 (for imm0, imm1, imm2)
-    bit_offset: u32,   // offset within the imm field
+    imm_index: usize, // 0, 1, or 2 (for imm0, imm1, imm2)
+    bit_offset: u32,  // offset within the imm field
 }
 
 /// Compute the layout of fields across imm0, imm1, imm2
@@ -30,7 +30,10 @@ fn compute_layout(fields: &[Field], handler_name: &str) -> Vec<FieldLayout> {
             current_bit = 0;
 
             if current_imm > 2 {
-                panic!("Handler '{}': Field '{}' exceeds available imm space (3 x 64 bits)", handler_name, field.name);
+                panic!(
+                    "Handler '{}': Field '{}' exceeds available imm space (3 x 64 bits)",
+                    handler_name, field.name
+                );
             }
         }
 
@@ -50,10 +53,10 @@ fn compute_layout(fields: &[Field], handler_name: &str) -> Vec<FieldLayout> {
 
 /// Rust keywords that need escaping with r#
 const RUST_KEYWORDS: &[&str] = &[
-    "const", "return", "type", "match", "loop", "move", "ref", "self", "super",
-    "static", "unsafe", "where", "async", "await", "dyn", "abstract", "become",
-    "box", "do", "final", "macro", "override", "priv", "try", "typeof", "unsized",
-    "virtual", "yield", "fn", "let", "mut", "pub", "struct", "enum", "trait", "impl",
+    "const", "return", "type", "match", "loop", "move", "ref", "self", "super", "static", "unsafe",
+    "where", "async", "await", "dyn", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "try", "typeof", "unsized", "virtual", "yield", "fn", "let", "mut", "pub",
+    "struct", "enum", "trait", "impl",
 ];
 
 /// Escape Rust keyword with r# prefix if needed
@@ -76,12 +79,15 @@ fn generate_rust_pattern(name: &str, fields: &[Field]) -> String {
     // Document the layout
     let mut imm_contents: HashMap<usize, Vec<String>> = HashMap::new();
     for layout in &layouts {
-        imm_contents.entry(layout.imm_index)
+        imm_contents
+            .entry(layout.imm_index)
             .or_default()
-            .push(format!("{}[{}:{}]",
+            .push(format!(
+                "{}[{}:{}]",
                 layout.name,
                 layout.bit_offset,
-                layout.bit_offset + layout.bits));
+                layout.bit_offset + layout.bits
+            ));
     }
 
     for imm_idx in 0..=2 {
@@ -103,10 +109,13 @@ fn generate_rust_pattern(name: &str, fields: &[Field]) -> String {
     code.push_str("    pub fn encode(");
 
     // Function parameters
-    let params: Vec<String> = fields.iter().map(|f| {
-        let rust_type = bits_to_rust_type(f.bits);
-        format!("{}: {}", f.name, rust_type)
-    }).collect();
+    let params: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let rust_type = bits_to_rust_type(f.bits);
+            format!("{}: {}", f.name, rust_type)
+        })
+        .collect();
     code.push_str(&params.join(", "));
     code.push_str(") -> (u64, u64, u64) {\n");
 
@@ -136,7 +145,11 @@ fn generate_rust_pattern(name: &str, fields: &[Field]) -> String {
             // Single expression - no need for | operator
             code.push_str(&format!("        let imm{} = {};\n", idx, exprs[0]));
         } else {
-            code.push_str(&format!("        let imm{} = {};\n", idx, exprs.join(" | ")));
+            code.push_str(&format!(
+                "        let imm{} = {};\n",
+                idx,
+                exprs.join(" | ")
+            ));
         }
     }
 
@@ -177,9 +190,15 @@ fn generate_rust_pattern(name: &str, fields: &[Field]) -> String {
             let intermediate_type = bits_to_rust_type(layout.bits);
 
             if is_slot {
-                code.push_str(&format!("        unsafe {{ {} as {} as usize }}\n", shifted, intermediate_type));
+                code.push_str(&format!(
+                    "        unsafe {{ {} as {} as usize }}\n",
+                    shifted, intermediate_type
+                ));
             } else {
-                code.push_str(&format!("        unsafe {{ {} as {} }}\n", shifted, intermediate_type));
+                code.push_str(&format!(
+                    "        unsafe {{ {} as {} }}\n",
+                    shifted, intermediate_type
+                ));
             }
         }
 
@@ -260,7 +279,8 @@ fn generate_pattern_data_enum(patterns: &[(String, Vec<Field>)]) -> String {
         let variant = to_pascal_case(name);
 
         // Collect non-target, non-reserved fields
-        let visible_fields: Vec<_> = fields.iter()
+        let visible_fields: Vec<_> = fields
+            .iter()
             .filter(|f| f.kind != FieldKind::Target && !f.name.starts_with('_'))
             .collect();
 
@@ -303,7 +323,8 @@ fn generate_finalize_function(patterns: &[(String, Vec<Field>)]) -> String {
         let variant = to_pascal_case(name);
 
         // Collect non-target, non-reserved fields for the match pattern
-        let visible_fields: Vec<_> = fields.iter()
+        let visible_fields: Vec<_> = fields
+            .iter()
             .filter(|f| f.kind != FieldKind::Target && !f.name.starts_with('_'))
             .collect();
 
@@ -312,11 +333,12 @@ fn generate_finalize_function(patterns: &[(String, Vec<Field>)]) -> String {
             code.push_str(&format!("        PatternData::{} => {{\n", variant));
         } else {
             // Struct variant with fields
-            let field_names: Vec<_> = visible_fields.iter()
-                .map(|f| f.name.as_str())
-                .collect();
-            code.push_str(&format!("        PatternData::{} {{ {} }} => {{\n",
-                variant, field_names.join(", ")));
+            let field_names: Vec<_> = visible_fields.iter().map(|f| f.name.as_str()).collect();
+            code.push_str(&format!(
+                "        PatternData::{} {{ {} }} => {{\n",
+                variant,
+                field_names.join(", ")
+            ));
         }
 
         // Build the encode call
@@ -340,8 +362,11 @@ fn generate_finalize_function(patterns: &[(String, Vec<Field>)]) -> String {
             // No fields - return zeros
             code.push_str("            (0, 0, 0)\n");
         } else {
-            code.push_str(&format!("            {}::encode({})\n",
-                escape_keyword(name), encode_args.join(", ")));
+            code.push_str(&format!(
+                "            {}::encode({})\n",
+                escape_keyword(name),
+                encode_args.join(", ")
+            ));
         }
 
         code.push_str("        }\n");
@@ -379,7 +404,8 @@ fn generate_slot_helpers(patterns: &[(String, Vec<Field>)]) -> String {
 
     for (name, fields) in patterns {
         let layouts = compute_layout(fields, name);
-        let slot_fields: Vec<_> = layouts.iter()
+        let slot_fields: Vec<_> = layouts
+            .iter()
             .filter(|l| l.kind == FieldKind::Slot)
             .collect();
 
@@ -429,7 +455,9 @@ fn generate_slot_helpers(patterns: &[(String, Vec<Field>)]) -> String {
     // read_slot_from_imms function
     code.push_str("/// Read a slot value from imm fields\n");
     code.push_str("#[inline(always)]\n");
-    code.push_str("pub fn read_slot_from_imms(imm0: u64, imm1: u64, imm2: u64, field: &SlotField) -> u16 {\n");
+    code.push_str(
+        "pub fn read_slot_from_imms(imm0: u64, imm1: u64, imm2: u64, field: &SlotField) -> u16 {\n",
+    );
     code.push_str("    let imm = match field.imm_index {\n");
     code.push_str("        0 => imm0,\n");
     code.push_str("        1 => imm1,\n");
@@ -497,8 +525,7 @@ fn generate_rust(handlers: &HandlersFile, out_dir: &PathBuf) {
     code.push_str(&generate_finalize_function(&patterns));
 
     let out_path = out_dir.join("fast_encoding.rs");
-    fs::write(&out_path, code)
-        .unwrap_or_else(|_| panic!("Failed to write {:?}", out_path));
+    fs::write(&out_path, code).unwrap_or_else(|_| panic!("Failed to write {:?}", out_path));
 }
 
 /// Generate encoding.h
@@ -518,8 +545,7 @@ fn generate_c(handlers: &HandlersFile, out_dir: &PathBuf) {
     }
 
     let out_path = out_dir.join("fast_encoding.h");
-    fs::write(&out_path, code)
-        .unwrap_or_else(|_| panic!("Failed to write {:?}", out_path));
+    fs::write(&out_path, code).unwrap_or_else(|_| panic!("Failed to write {:?}", out_path));
 }
 
 /// Main entry point - generates fast_encoding.rs and fast_encoding.h

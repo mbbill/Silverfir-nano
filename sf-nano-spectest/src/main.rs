@@ -14,7 +14,10 @@ use wast_test_runner::{TestResult, WastTestRunner};
 
 /// WebAssembly specification test runner for sf-nano
 #[derive(StructOpt)]
-#[structopt(name = "sf-nano-spectest", about = "Run WebAssembly specification tests (sf-nano)")]
+#[structopt(
+    name = "sf-nano-spectest",
+    about = "Run WebAssembly specification tests (sf-nano)"
+)]
 struct Cli {
     /// Test name filters (exact match on filename without .wast extension)
     /// or file paths ending with .wast
@@ -178,8 +181,7 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
     // Install a panic hook that captures messages instead of printing to stderr.
     // This prevents expected panics (from assert_invalid/assert_unlinkable catch_unwind)
     // from cluttering the output, while still making messages available for unexpected panics.
-    let last_panic: std::sync::Arc<Mutex<Option<String>>> =
-        std::sync::Arc::new(Mutex::new(None));
+    let last_panic: std::sync::Arc<Mutex<Option<String>>> = std::sync::Arc::new(Mutex::new(None));
     let last_panic_hook = last_panic.clone();
     std::panic::set_hook(Box::new(move |info| {
         let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
@@ -196,7 +198,11 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
         let full_msg = format!("{}{}", msg, location);
         // Print backtrace if RUST_BACKTRACE is set (for debugging)
         if std::env::var("RUST_BACKTRACE").is_ok() {
-            eprintln!("panic: {}\n{}", full_msg, std::backtrace::Backtrace::force_capture());
+            eprintln!(
+                "panic: {}\n{}",
+                full_msg,
+                std::backtrace::Backtrace::force_capture()
+            );
         }
         *last_panic_hook.lock().unwrap() = Some(full_msg);
     }));

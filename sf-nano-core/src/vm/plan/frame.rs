@@ -115,7 +115,10 @@ impl FramePlanner {
             backend_reserved: if self.backend_reserved == 0 {
                 None
             } else {
-                Some(FrameSpan::new(FrameSlot(self.local_count), self.backend_reserved))
+                Some(FrameSpan::new(
+                    FrameSlot(self.local_count),
+                    self.backend_reserved,
+                ))
             },
             frame_size: operand_base,
         }

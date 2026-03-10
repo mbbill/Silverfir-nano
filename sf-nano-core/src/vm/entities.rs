@@ -4,19 +4,13 @@ use alloc::{rc::Rc, string::String, vec::Vec};
 #[cfg(feature = "micro-jit")]
 use core::cell::RefCell;
 
-use crate::module::{
-    entities::FunctionSpec,
-    type_context::TypeContext,
-    type_defs::FunctionType,
-};
+use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
-use crate::vm::{
-    value::{RefHandle, Value},
-};
 #[cfg(feature = "micro-jit")]
 use crate::vm::native::code_buf::CodeBuffer;
+use crate::vm::value::{RefHandle, Value};
 
 pub type ExternalFn =
     fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), crate::error::WasmError>;
@@ -236,9 +230,7 @@ impl ModuleInst {
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn native_code_buffer(
-        &self,
-    ) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
+    pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
         let mut native_buf = self
             .native_buf
             .try_borrow_mut()
@@ -246,9 +238,12 @@ impl ModuleInst {
         if native_buf.is_none() {
             *native_buf = Some(CodeBuffer::new()?);
         }
-        Ok(core::cell::RefMut::map(native_buf, |native_buf: &mut Option<CodeBuffer>| {
-            native_buf.as_mut().expect("native code buffer initialized")
-        }))
+        Ok(core::cell::RefMut::map(
+            native_buf,
+            |native_buf: &mut Option<CodeBuffer>| {
+                native_buf.as_mut().expect("native code buffer initialized")
+            },
+        ))
     }
 }
 

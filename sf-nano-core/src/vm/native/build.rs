@@ -14,7 +14,7 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendKind, BackendMode},
     entities::ModuleInst,
-    lir::lower::{self, LirProgram},
+    lir::legacy::lower::{self, LirProgram},
     plan::{
         config::PlanConfig,
         plan::{self, PlannedProgram, PlanningInput},

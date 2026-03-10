@@ -80,8 +80,7 @@ pub fn run_from_args(args: &[String]) -> ! {
 }
 
 fn load_trace(path: &str) -> Result<ParsedTrace, String> {
-    let content = fs::read_to_string(Path::new(path))
-        .map_err(|err| err.to_string())?;
+    let content = fs::read_to_string(Path::new(path)).map_err(|err| err.to_string())?;
     parse_trace(&content)
 }
 
@@ -101,7 +100,9 @@ fn parse_trace(content: &str) -> Result<ParsedTrace, String> {
 
 fn parse_header(line: &str) -> Result<TraceHeader, String> {
     let mut parts = line.split_whitespace();
-    let marker = parts.next().ok_or_else(|| "missing header marker".to_string())?;
+    let marker = parts
+        .next()
+        .ok_or_else(|| "missing header marker".to_string())?;
     if marker != "#" {
         return Err(format!("invalid header marker '{}'", marker));
     }
@@ -125,7 +126,8 @@ fn parse_header(line: &str) -> Result<TraceHeader, String> {
     Ok(TraceHeader {
         version,
         backend: backend.ok_or_else(|| "missing backend in header".to_string())?,
-        memory_enabled: memory_enabled.ok_or_else(|| "missing memory flag in header".to_string())?,
+        memory_enabled: memory_enabled
+            .ok_or_else(|| "missing memory flag in header".to_string())?,
     })
 }
 
@@ -139,7 +141,10 @@ fn parse_event(line: &str, line_no: usize) -> Result<TraceEvent, String> {
         ));
     }
     if parts[0] != "T1" {
-        return Err(format!("line {}: invalid event marker '{}'", line_no, parts[0]));
+        return Err(format!(
+            "line {}: invalid event marker '{}'",
+            line_no, parts[0]
+        ));
     }
     Ok(TraceEvent {
         seq: parts[1]
@@ -173,8 +178,7 @@ fn compare_traces(
     if left.header.memory_enabled != right.header.memory_enabled {
         return Err(format!(
             "trace memory mode mismatch: left={}, right={}",
-            left.header.memory_enabled as u8,
-            right.header.memory_enabled as u8
+            left.header.memory_enabled as u8, right.header.memory_enabled as u8
         ));
     }
 

@@ -56,7 +56,10 @@ impl PatternTrie {
     }
 
     pub fn print_tree(&self, max_depth: usize, min_count: u64) {
-        eprintln!("Pattern Trie (total instructions: {})", self.total_instructions);
+        eprintln!(
+            "Pattern Trie (total instructions: {})",
+            self.total_instructions
+        );
         eprintln!("{}", "-".repeat(70));
         self.print_node(&self.root, max_depth, min_count);
     }
@@ -93,13 +96,15 @@ impl PatternTrie {
         }
     }
 
-    pub fn collect_candidates(
-        &self,
-        min_depth: usize,
-        min_count: u64,
-    ) -> Vec<PatternCandidate> {
+    pub fn collect_candidates(&self, min_depth: usize, min_count: u64) -> Vec<PatternCandidate> {
         let mut candidates = Vec::new();
-        self.walk_candidates(&self.root, &mut Vec::new(), min_depth, min_count, &mut candidates);
+        self.walk_candidates(
+            &self.root,
+            &mut Vec::new(),
+            min_depth,
+            min_count,
+            &mut candidates,
+        );
         candidates
     }
 

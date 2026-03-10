@@ -19,7 +19,11 @@ pub fn eval(
     store: &mut Store,
     args: &[Value],
 ) -> Result<InterpreterStack, WasmError> {
-    if let FunctionInst::External { func_type, callback } = func_inst {
+    if let FunctionInst::External {
+        func_type,
+        callback,
+    } = func_inst
+    {
         let params = func_type.params();
         let results = func_type.results();
         if args.len() != params.len() {
@@ -140,7 +144,13 @@ pub fn internal_eval(
 
     let module_ptr = store.module() as *const ModuleInst;
     let store_ptr = store as *mut Store;
-    let mut ctx = Context::new(store_ptr, module_ptr, stack_end, heap_base, heap_size as u64);
+    let mut ctx = Context::new(
+        store_ptr,
+        module_ptr,
+        stack_end,
+        heap_base,
+        heap_size as u64,
+    );
 
     unsafe {
         *fp.add(frame_size) = 0;

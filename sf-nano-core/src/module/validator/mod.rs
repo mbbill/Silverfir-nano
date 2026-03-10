@@ -78,29 +78,38 @@ impl<'a> Validator<'a> {
                 })?;
                 let code = spec.code();
                 let mut decoder = op_decoder::Decoder::new(code);
-                let mut validator =
-                    FunctionValidator::new(self.module, spec).map_err(|e| {
-                        WasmError::invalid(alloc::format!(
-                            "Function {} validator setup failed: {}",
-                            func_idx, e
-                        ))
-                    })?;
+                let mut validator = FunctionValidator::new(self.module, spec).map_err(|e| {
+                    WasmError::invalid(alloc::format!(
+                        "Function {} validator setup failed: {}",
+                        func_idx,
+                        e
+                    ))
+                })?;
                 decoder.add_handler(&mut validator);
                 decoder.decode_function().map_err(|e| {
-                    WasmError::invalid(alloc::format!(
-                        "Function {} decode failed: {}",
-                        func_idx, e
-                    ))
+                    WasmError::invalid(alloc::format!("Function {} decode failed: {}", func_idx, e))
                 })?;
                 Ok::<_, WasmError>(())
             })?;
 
         // Phase 3: Export name uniqueness
         let mut name_pool = BTreeSet::new();
-        Self::check_unique_export_names(&mut name_pool, self.module.functions().iter().map(|f| f.export_names()))?;
-        Self::check_unique_export_names(&mut name_pool, self.module.tables().iter().map(|t| t.export_names()))?;
-        Self::check_unique_export_names(&mut name_pool, self.module.memories().iter().map(|m| m.export_names()))?;
-        Self::check_unique_export_names(&mut name_pool, self.module.globals().iter().map(|g| g.export_names()))?;
+        Self::check_unique_export_names(
+            &mut name_pool,
+            self.module.functions().iter().map(|f| f.export_names()),
+        )?;
+        Self::check_unique_export_names(
+            &mut name_pool,
+            self.module.tables().iter().map(|t| t.export_names()),
+        )?;
+        Self::check_unique_export_names(
+            &mut name_pool,
+            self.module.memories().iter().map(|m| m.export_names()),
+        )?;
+        Self::check_unique_export_names(
+            &mut name_pool,
+            self.module.globals().iter().map(|g| g.export_names()),
+        )?;
 
         // Phase 4: Validate global initializers
         self.module
@@ -110,11 +119,15 @@ impl<'a> Validator<'a> {
             .filter(|&(_, g)| !g.is_import())
             .try_for_each(|(global_idx, g)| {
                 let global_spec = g.spec().ok_or_else(|| {
-                    WasmError::invalid(alloc::format!("Global {} is not a local global", global_idx))
+                    WasmError::invalid(alloc::format!(
+                        "Global {} is not a local global",
+                        global_idx
+                    ))
                 })?;
                 let ctx = ValidationContext::global(global_idx);
-                let expr_type =
-                    global_spec.init_expr().validate_in_context(self.module, &ctx)?;
+                let expr_type = global_spec
+                    .init_expr()
+                    .validate_in_context(self.module, &ctx)?;
                 let global_type = global_spec.value_type();
                 if !is_type_compatible(expr_type, global_type) {
                     return Err(WasmError::invalid("type mismatch".into()));
@@ -135,7 +148,8 @@ impl<'a> Validator<'a> {
                     if !is_type_compatible(expr_type, *value_type) {
                         return Err(WasmError::invalid(alloc::format!(
                             "element init expression must return {:?}, got {:?}",
-                            value_type, expr_type
+                            value_type,
+                            expr_type
                         )));
                     }
                 }
@@ -250,7 +264,9 @@ impl<'a> Validator<'a> {
             if ti >= type_count {
                 return Err(WasmError::invalid(alloc::format!(
                     "Function {}: type index {} out of bounds ({})",
-                    idx, ti, type_count
+                    idx,
+                    ti,
+                    type_count
                 )));
             }
         }
@@ -309,7 +325,8 @@ fn validate_valtype_ref(vt: &ValueType, type_count: usize) -> Result<(), WasmErr
             if (idx as usize) >= type_count {
                 return Err(WasmError::invalid(alloc::format!(
                     "type index {} out of bounds ({})",
-                    idx, type_count
+                    idx,
+                    type_count
                 )));
             }
         }

@@ -138,7 +138,10 @@ pub fn trap_with(ctx: *mut Context, error: WasmError) -> *mut Instruction {
 /// # Returns
 /// Always returns a valid pointer to TERM_INST (never NULL).
 #[no_mangle]
-pub unsafe extern "C" fn fast_c_trap(ctx: *mut Context, message: *const c_char) -> *mut Instruction {
+pub unsafe extern "C" fn fast_c_trap(
+    ctx: *mut Context,
+    message: *const c_char,
+) -> *mut Instruction {
     use alloc::string::ToString;
 
     // Convert C string to Rust string

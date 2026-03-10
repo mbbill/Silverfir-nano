@@ -147,7 +147,8 @@ impl<'de> Deserialize<'de> for TosPatternString {
             "none" => Ok(TosPatternString::None),
             "all" => Ok(TosPatternString::All),
             _ => Err(serde::de::Error::custom(format!(
-                "expected 'none' or 'all', got '{}'", s
+                "expected 'none' or 'all', got '{}'",
+                s
             ))),
         }
     }
@@ -245,7 +246,11 @@ impl HandlerVariantSource for FusedHandler {
         // Handles variant-qualified names (e.g., "br_if_d1").
         if self.dispatch.is_some() {
             self.dispatch
-        } else if self.pattern.iter().any(|op| op == "br_if" || op.starts_with("br_if_d")) {
+        } else if self
+            .pattern
+            .iter()
+            .any(|op| op == "br_if" || op.starts_with("br_if_d"))
+        {
             Some(DispatchMode::Nonlinear)
         } else {
             // if_ patterns and everything else use guard-check (None = default)

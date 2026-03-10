@@ -1,10 +1,7 @@
 //! ARM64 codegen for native groups and singleton entries.
 
 use crate::vm::{
-    lir::{
-        ir::LirOp,
-        lower::LirGroup,
-    },
+    lir::legacy::{ir::LirOp, lower::LirGroup},
     native::bridge::ColdWrapperSite,
 };
 

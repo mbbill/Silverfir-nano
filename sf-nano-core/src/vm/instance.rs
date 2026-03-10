@@ -58,7 +58,12 @@ impl Import {
         }
     }
 
-    pub fn memory(module: &str, name: &str, initial_pages: usize, max_pages: Option<usize>) -> Self {
+    pub fn memory(
+        module: &str,
+        name: &str,
+        initial_pages: usize,
+        max_pages: Option<usize>,
+    ) -> Self {
         Import {
             module: module.to_string(),
             name: name.to_string(),
@@ -125,8 +130,16 @@ impl Instance {
         }
 
         let start_func_index = module.start_function_index();
-        let (types, mod_functions, mod_tables, mod_memories, mod_globals, mod_elements, mod_data, _start) =
-            module.into_parts();
+        let (
+            types,
+            mod_functions,
+            mod_tables,
+            mod_memories,
+            mod_globals,
+            mod_elements,
+            mod_data,
+            _start,
+        ) = module.into_parts();
 
         let mut functions: Vec<FunctionInst> = Vec::with_capacity(mod_functions.len());
         for func in mod_functions {
@@ -142,9 +155,14 @@ impl Instance {
                     func_type,
                     ..
                 } => {
-                    let import = imports.iter().find(|i| i.module == mod_name && i.name == name);
+                    let import = imports
+                        .iter()
+                        .find(|i| i.module == mod_name && i.name == name);
                     match import {
-                        Some(Import { value: ImportValue::Func(f, ref import_type), .. }) => {
+                        Some(Import {
+                            value: ImportValue::Func(f, ref import_type),
+                            ..
+                        }) => {
                             if let Some(actual_type) = import_type {
                                 if actual_type.params() != func_type.params()
                                     || actual_type.results() != func_type.results()
@@ -177,10 +195,19 @@ impl Instance {
                 TableDef::Local(_spec) => {
                     tables.push(TableInst::new(table.limits().clone(), table.value_type()));
                 }
-                TableDef::Import { module: mod_name, name, .. } => {
-                    let import = imports.iter().find(|i| i.module == *mod_name && i.name == *name);
+                TableDef::Import {
+                    module: mod_name,
+                    name,
+                    ..
+                } => {
+                    let import = imports
+                        .iter()
+                        .find(|i| i.module == *mod_name && i.name == *name);
                     match import {
-                        Some(Import { value: ImportValue::Table(initial_size, max_size), .. }) => {
+                        Some(Import {
+                            value: ImportValue::Table(initial_size, max_size),
+                            ..
+                        }) => {
                             let declared_min = table.limits().min();
                             let declared_max = table.limits().max();
                             if *initial_size < declared_min {
@@ -220,10 +247,19 @@ impl Instance {
                 MemoryDef::Local(_spec) => {
                     memories.push(MemInst::new(mem.limits().clone()));
                 }
-                MemoryDef::Import { module: mod_name, name, .. } => {
-                    let import = imports.iter().find(|i| i.module == *mod_name && i.name == *name);
+                MemoryDef::Import {
+                    module: mod_name,
+                    name,
+                    ..
+                } => {
+                    let import = imports
+                        .iter()
+                        .find(|i| i.module == *mod_name && i.name == *name);
                     match import {
-                        Some(Import { value: ImportValue::Memory(initial_pages, max_pages), .. }) => {
+                        Some(Import {
+                            value: ImportValue::Memory(initial_pages, max_pages),
+                            ..
+                        }) => {
                             let declared_min = mem.limits().min();
                             let declared_max = mem.limits().max();
                             if *initial_pages < declared_min {
@@ -267,10 +303,20 @@ impl Instance {
                         global.value_type(),
                     ));
                 }
-                GlobalDef::Import { module: mod_name, name, value_type, mutable } => {
-                    let import = imports.iter().find(|i| i.module == *mod_name && i.name == *name);
+                GlobalDef::Import {
+                    module: mod_name,
+                    name,
+                    value_type,
+                    mutable,
+                } => {
+                    let import = imports
+                        .iter()
+                        .find(|i| i.module == *mod_name && i.name == *name);
                     match import {
-                        Some(Import { value: ImportValue::Global(val, imp_mutable), .. }) => {
+                        Some(Import {
+                            value: ImportValue::Global(val, imp_mutable),
+                            ..
+                        }) => {
                             let val_type = val.value_type();
                             if val_type != *value_type {
                                 return Err(WasmError::unlinkable(format!(
@@ -325,7 +371,11 @@ impl Instance {
 
         for (i, element) in mod_elements.iter().enumerate() {
             match element {
-                Element::Active { table_index, offset_expr, init } => {
+                Element::Active {
+                    table_index,
+                    offset_expr,
+                    init,
+                } => {
                     if *table_index >= store.module().tables.len() {
                         return Err(WasmError::unlinkable("unknown table".to_string()));
                     }
@@ -334,7 +384,9 @@ impl Instance {
 
                     let table = store.table_mut(*table_index);
                     if offset + refs.len() > table.elements.len() {
-                        return Err(WasmError::unlinkable("out of bounds table access".to_string()));
+                        return Err(WasmError::unlinkable(
+                            "out of bounds table access".to_string(),
+                        ));
                     }
                     table.elements[offset..offset + refs.len()].copy_from_slice(&refs);
                     store.module_mut().elements[i].drop_segment();
@@ -351,7 +403,11 @@ impl Instance {
 
         for data_seg in &mod_data {
             match data_seg {
-                Data::Active { memory_index, offset_expr, init } => {
+                Data::Active {
+                    memory_index,
+                    offset_expr,
+                    init,
+                } => {
                     let offset = eval_offset(offset_expr, store.module())?;
                     let mem = store.memory_mut(*memory_index);
                     if offset + init.len() > mem.data.len() {
@@ -504,7 +560,9 @@ fn materialize_element_init(
                 if idx < module.functions.len() {
                     Ok(RefHandle::new(idx))
                 } else {
-                    Err(WasmError::invalid("element function index out of range".into()))
+                    Err(WasmError::invalid(
+                        "element function index out of range".into(),
+                    ))
                 }
             })
             .collect(),
@@ -514,7 +572,9 @@ fn materialize_element_init(
                 let value = eval_const_expr(expr, module)?;
                 match value {
                     Value::Ref(handle, _) => Ok(handle),
-                    _ => Err(WasmError::invalid("element init must be a reference".into())),
+                    _ => Err(WasmError::invalid(
+                        "element init must be a reference".into(),
+                    )),
                 }
             })
             .collect(),

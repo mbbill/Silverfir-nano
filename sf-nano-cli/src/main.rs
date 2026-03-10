@@ -2,11 +2,11 @@
 mod discover_fusion;
 mod trace_compare;
 
-use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
-use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
-use sf_nano_core::Instance;
 #[cfg(feature = "micro-jit")]
 use sf_nano_core::native_stats_snapshot;
+use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
+use sf_nano_core::Instance;
+use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -110,14 +110,11 @@ fn main() {
     let mut wasi_args = vec![module_name.to_string()];
     wasi_args.extend(prog_args);
 
-    let mut ctx_builder = WasiContextBuilder::new()
-        .args(&wasi_args);
+    let mut ctx_builder = WasiContextBuilder::new().args(&wasi_args);
     // Only preopen a directory when explicitly requested
     let preopen = dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
     ctx_builder = ctx_builder.preopen_dir(".", preopen);
-    let ctx = ctx_builder
-        .inherit_env()
-        .build();
+    let ctx = ctx_builder.inherit_env().build();
     set_wasi_ctx(ctx);
 
     // Create instance with WASI imports
@@ -130,9 +127,7 @@ fn main() {
     // Invoke _start, fallback to main
     let result = instance.invoke("_start", &[]);
     let result = match result {
-        Err(ref err) if err.to_string().contains("not found") => {
-            instance.invoke("main", &[])
-        }
+        Err(ref err) if err.to_string().contains("not found") => instance.invoke("main", &[]),
         _ => result,
     };
 
@@ -148,7 +143,10 @@ fn main() {
                     s.groups, s.ops, kb, s.groups_skipped, s.ops_skipped
                 );
             } else {
-                eprintln!("[native] {} groups ({} ops), {}KB emitted", s.groups, s.ops, kb);
+                eprintln!(
+                    "[native] {} groups ({} ops), {}KB emitted",
+                    s.groups, s.ops, kb
+                );
             }
         }
     }

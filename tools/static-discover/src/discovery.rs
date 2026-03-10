@@ -15,83 +15,196 @@ use crate::trie::PatternTrie;
 pub fn is_pure_binop(op: &str) -> bool {
     matches!(
         op,
-        "i32_add" | "i32_sub" | "i32_mul"
-        | "i32_and" | "i32_or" | "i32_xor"
-        | "i32_shl" | "i32_shr_s" | "i32_shr_u" | "i32_rotl" | "i32_rotr"
-        | "i32_eq" | "i32_ne"
-        | "i32_lt_s" | "i32_lt_u" | "i32_gt_s" | "i32_gt_u"
-        | "i32_le_s" | "i32_le_u" | "i32_ge_s" | "i32_ge_u"
-        | "i64_add" | "i64_sub" | "i64_mul"
-        | "i64_and" | "i64_or" | "i64_xor"
-        | "i64_shl" | "i64_shr_s" | "i64_shr_u" | "i64_rotl" | "i64_rotr"
-        | "i64_eq" | "i64_ne"
-        | "i64_lt_s" | "i64_lt_u" | "i64_gt_s" | "i64_gt_u"
-        | "i64_le_s" | "i64_le_u" | "i64_ge_s" | "i64_ge_u"
-        | "f32_add" | "f32_sub" | "f32_mul" | "f32_div"
-        | "f32_min" | "f32_max" | "f32_copysign"
-        | "f32_eq" | "f32_ne" | "f32_lt" | "f32_gt" | "f32_le" | "f32_ge"
-        | "f64_add" | "f64_sub" | "f64_mul" | "f64_div"
-        | "f64_min" | "f64_max" | "f64_copysign"
-        | "f64_eq" | "f64_ne" | "f64_lt" | "f64_gt" | "f64_le" | "f64_ge"
+        "i32_add"
+            | "i32_sub"
+            | "i32_mul"
+            | "i32_and"
+            | "i32_or"
+            | "i32_xor"
+            | "i32_shl"
+            | "i32_shr_s"
+            | "i32_shr_u"
+            | "i32_rotl"
+            | "i32_rotr"
+            | "i32_eq"
+            | "i32_ne"
+            | "i32_lt_s"
+            | "i32_lt_u"
+            | "i32_gt_s"
+            | "i32_gt_u"
+            | "i32_le_s"
+            | "i32_le_u"
+            | "i32_ge_s"
+            | "i32_ge_u"
+            | "i64_add"
+            | "i64_sub"
+            | "i64_mul"
+            | "i64_and"
+            | "i64_or"
+            | "i64_xor"
+            | "i64_shl"
+            | "i64_shr_s"
+            | "i64_shr_u"
+            | "i64_rotl"
+            | "i64_rotr"
+            | "i64_eq"
+            | "i64_ne"
+            | "i64_lt_s"
+            | "i64_lt_u"
+            | "i64_gt_s"
+            | "i64_gt_u"
+            | "i64_le_s"
+            | "i64_le_u"
+            | "i64_ge_s"
+            | "i64_ge_u"
+            | "f32_add"
+            | "f32_sub"
+            | "f32_mul"
+            | "f32_div"
+            | "f32_min"
+            | "f32_max"
+            | "f32_copysign"
+            | "f32_eq"
+            | "f32_ne"
+            | "f32_lt"
+            | "f32_gt"
+            | "f32_le"
+            | "f32_ge"
+            | "f64_add"
+            | "f64_sub"
+            | "f64_mul"
+            | "f64_div"
+            | "f64_min"
+            | "f64_max"
+            | "f64_copysign"
+            | "f64_eq"
+            | "f64_ne"
+            | "f64_lt"
+            | "f64_gt"
+            | "f64_le"
+            | "f64_ge"
     )
 }
 
 pub fn is_trapping_binop(op: &str) -> bool {
     matches!(
         op,
-        "i32_div_s" | "i32_div_u" | "i32_rem_s" | "i32_rem_u"
-        | "i64_div_s" | "i64_div_u" | "i64_rem_s" | "i64_rem_u"
+        "i32_div_s"
+            | "i32_div_u"
+            | "i32_rem_s"
+            | "i32_rem_u"
+            | "i64_div_s"
+            | "i64_div_u"
+            | "i64_rem_s"
+            | "i64_rem_u"
     )
 }
 
 pub fn is_pure_unary(op: &str) -> bool {
     matches!(
         op,
-        "i32_eqz" | "i32_clz" | "i32_ctz" | "i32_popcnt"
-        | "i64_eqz" | "i64_clz" | "i64_ctz" | "i64_popcnt"
-        | "f32_abs" | "f32_neg" | "f32_ceil" | "f32_floor"
-        | "f32_trunc" | "f32_nearest" | "f32_sqrt"
-        | "f64_abs" | "f64_neg" | "f64_ceil" | "f64_floor"
-        | "f64_trunc" | "f64_nearest" | "f64_sqrt"
-        | "i32_wrap_i64" | "i64_extend_i32_s" | "i64_extend_i32_u"
-        | "i32_extend8_s" | "i32_extend16_s"
-        | "i64_extend8_s" | "i64_extend16_s" | "i64_extend32_s"
-        | "i32_reinterpret_f32" | "i64_reinterpret_f64"
-        | "f32_reinterpret_i32" | "f64_reinterpret_i64"
-        | "f32_convert_i32_s" | "f32_convert_i32_u"
-        | "f32_convert_i64_s" | "f32_convert_i64_u"
-        | "f64_convert_i32_s" | "f64_convert_i32_u"
-        | "f64_convert_i64_s" | "f64_convert_i64_u"
-        | "f32_demote_f64" | "f64_promote_f32"
+        "i32_eqz"
+            | "i32_clz"
+            | "i32_ctz"
+            | "i32_popcnt"
+            | "i64_eqz"
+            | "i64_clz"
+            | "i64_ctz"
+            | "i64_popcnt"
+            | "f32_abs"
+            | "f32_neg"
+            | "f32_ceil"
+            | "f32_floor"
+            | "f32_trunc"
+            | "f32_nearest"
+            | "f32_sqrt"
+            | "f64_abs"
+            | "f64_neg"
+            | "f64_ceil"
+            | "f64_floor"
+            | "f64_trunc"
+            | "f64_nearest"
+            | "f64_sqrt"
+            | "i32_wrap_i64"
+            | "i64_extend_i32_s"
+            | "i64_extend_i32_u"
+            | "i32_extend8_s"
+            | "i32_extend16_s"
+            | "i64_extend8_s"
+            | "i64_extend16_s"
+            | "i64_extend32_s"
+            | "i32_reinterpret_f32"
+            | "i64_reinterpret_f64"
+            | "f32_reinterpret_i32"
+            | "f64_reinterpret_i64"
+            | "f32_convert_i32_s"
+            | "f32_convert_i32_u"
+            | "f32_convert_i64_s"
+            | "f32_convert_i64_u"
+            | "f64_convert_i32_s"
+            | "f64_convert_i32_u"
+            | "f64_convert_i64_s"
+            | "f64_convert_i64_u"
+            | "f32_demote_f64"
+            | "f64_promote_f32"
     )
 }
 
 pub fn is_load_op(op: &str) -> bool {
     matches!(
         op,
-        "i32_load" | "i32_load8_s" | "i32_load8_u" | "i32_load16_s" | "i32_load16_u"
-        | "i64_load" | "i64_load8_s" | "i64_load8_u"
-        | "i64_load16_s" | "i64_load16_u" | "i64_load32_s" | "i64_load32_u"
-        | "f32_load" | "f64_load"
+        "i32_load"
+            | "i32_load8_s"
+            | "i32_load8_u"
+            | "i32_load16_s"
+            | "i32_load16_u"
+            | "i64_load"
+            | "i64_load8_s"
+            | "i64_load8_u"
+            | "i64_load16_s"
+            | "i64_load16_u"
+            | "i64_load32_s"
+            | "i64_load32_u"
+            | "f32_load"
+            | "f64_load"
     )
 }
 
 pub fn is_store_op(op: &str) -> bool {
     matches!(
         op,
-        "i32_store" | "i32_store8" | "i32_store16"
-        | "i64_store" | "i64_store8" | "i64_store16" | "i64_store32"
-        | "f32_store" | "f64_store"
+        "i32_store"
+            | "i32_store8"
+            | "i32_store16"
+            | "i64_store"
+            | "i64_store8"
+            | "i64_store16"
+            | "i64_store32"
+            | "f32_store"
+            | "f64_store"
     )
 }
 
 pub fn is_fusible_op(op: &str) -> bool {
-    matches!(op, "local_get" | "local_set" | "local_tee"
-        | "local_get_l0" | "local_set_l0" | "local_tee_l0"
-        | "local_get_l1" | "local_set_l1" | "local_tee_l1"
-        | "local_get_l2" | "local_set_l2" | "local_tee_l2"
-        | "i32_const" | "i64_const" | "br_if" | "if_")
-        || is_pure_binop(op)
+    matches!(
+        op,
+        "local_get"
+            | "local_set"
+            | "local_tee"
+            | "local_get_l0"
+            | "local_set_l0"
+            | "local_tee_l0"
+            | "local_get_l1"
+            | "local_set_l1"
+            | "local_tee_l1"
+            | "local_get_l2"
+            | "local_set_l2"
+            | "local_tee_l2"
+            | "i32_const"
+            | "i64_const"
+            | "br_if"
+            | "if_"
+    ) || is_pure_binop(op)
         || is_trapping_binop(op)
         || is_pure_unary(op)
         || is_load_op(op)
@@ -110,8 +223,8 @@ pub enum TosPattern {
 
 fn op_stack_effect(op: &str) -> (u32, u32) {
     match op {
-        "local_get" | "local_get_l0" | "local_get_l1" | "local_get_l2"
-        | "i32_const" | "i64_const" => (0, 1),
+        "local_get" | "local_get_l0" | "local_get_l1" | "local_get_l2" | "i32_const"
+        | "i64_const" => (0, 1),
         "local_set" | "local_set_l0" | "local_set_l1" | "local_set_l2" => (1, 0),
         "local_tee" | "local_tee_l0" | "local_tee_l1" | "local_tee_l2" => (1, 1),
         "br_if" | "if_" => (1, 0),
@@ -148,9 +261,8 @@ pub fn compute_tos_pattern(pattern: &[&str]) -> TosPattern {
 fn op_encoding_bits(op: &str) -> u32 {
     match op {
         "local_get" | "local_set" | "local_tee" => 8,
-        "local_get_l0" | "local_set_l0" | "local_tee_l0"
-        | "local_get_l1" | "local_set_l1" | "local_tee_l1"
-        | "local_get_l2" | "local_set_l2" | "local_tee_l2" => 0,
+        "local_get_l0" | "local_set_l0" | "local_tee_l0" | "local_get_l1" | "local_set_l1"
+        | "local_tee_l1" | "local_get_l2" | "local_set_l2" | "local_tee_l2" => 0,
         "i32_const" => 32,
         "i64_const" | "br_if" | "if_" => 64,
         _ if is_load_op(op) || is_store_op(op) => 32,
@@ -213,9 +325,8 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
     for op in pattern {
         match *op {
             "local_get" | "local_set" | "local_tee" => local_count += 1,
-            "local_get_l0" | "local_set_l0" | "local_tee_l0"
-            | "local_get_l1" | "local_set_l1" | "local_tee_l1"
-            | "local_get_l2" | "local_set_l2" | "local_tee_l2" => {}
+            "local_get_l0" | "local_set_l0" | "local_tee_l0" | "local_get_l1" | "local_set_l1"
+            | "local_tee_l1" | "local_get_l2" | "local_set_l2" | "local_tee_l2" => {}
             "i32_const" => const32_count += 1,
             "i64_const" => const64_count += 1,
             "br_if" => brif_count += 1,
@@ -236,7 +347,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("local_idx_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 8, kind: None, from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 8,
+                    kind: None,
+                    from: i,
+                });
             }
             "i32_const" => {
                 let name = if total_const_count == 1 {
@@ -244,7 +360,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("const_val_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 32, kind: None, from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 32,
+                    kind: None,
+                    from: i,
+                });
             }
             "i64_const" => {
                 let name = if total_const_count == 1 {
@@ -252,7 +373,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("const_val_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 64, kind: None, from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 64,
+                    kind: None,
+                    from: i,
+                });
             }
             "br_if" => {
                 let name = if total_branch_count == 1 {
@@ -260,7 +386,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("target_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 64, kind: Some(String::from("target")), from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 64,
+                    kind: Some(String::from("target")),
+                    from: i,
+                });
             }
             "if_" => {
                 let name = if total_branch_count == 1 {
@@ -268,7 +399,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("target_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 64, kind: Some(String::from("target")), from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 64,
+                    kind: Some(String::from("target")),
+                    from: i,
+                });
             }
             _ if is_load_op(op) || is_store_op(op) => {
                 let name = if load_store_count == 1 {
@@ -276,7 +412,12 @@ pub fn auto_encoding_fields(pattern: &[&str]) -> Vec<EncodingField> {
                 } else {
                     format!("offset_{}", i)
                 };
-                fields.push(EncodingField { name, bits: 32, kind: None, from: i });
+                fields.push(EncodingField {
+                    name,
+                    bits: 32,
+                    kind: None,
+                    from: i,
+                });
             }
             _ => {}
         }
@@ -503,9 +644,13 @@ pub fn format_toml_entry(candidate: &FusionCandidate) -> String {
 
 pub fn format_all_toml(candidates: &[FusionCandidate]) -> String {
     let mut out = String::new();
-    out.push_str("# =============================================================================\n");
+    out.push_str(
+        "# =============================================================================\n",
+    );
     out.push_str("# AUTO-GENERATED — do not edit manually\n");
-    out.push_str("# =============================================================================\n");
+    out.push_str(
+        "# =============================================================================\n",
+    );
     out.push_str("# Regenerate: static-discover <wasm-file>\n\n");
 
     for (i, c) in candidates.iter().enumerate() {

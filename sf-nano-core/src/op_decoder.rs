@@ -262,22 +262,20 @@ impl<'a, 'b> Decoder<'a, 'b> {
                         BlockType::ValueType(value_type)
                     }
 
-                    _ => {
-                        match ValueType::try_from(byte1) {
-                            Ok(value_type) => BlockType::ValueType(value_type),
-                            Err(_) => {
-                                payload.rewind(1)?;
-                                let value = payload.read_leb128_i32()?;
-                                if value >= 0 {
-                                    BlockType::TypeIndex(value as usize)
-                                } else {
-                                    return Err(WasmError::malformed(
-                                        "Invalid block type index".into(),
-                                    ));
-                                }
+                    _ => match ValueType::try_from(byte1) {
+                        Ok(value_type) => BlockType::ValueType(value_type),
+                        Err(_) => {
+                            payload.rewind(1)?;
+                            let value = payload.read_leb128_i32()?;
+                            if value >= 0 {
+                                BlockType::TypeIndex(value as usize)
+                            } else {
+                                return Err(WasmError::malformed(
+                                    "Invalid block type index".into(),
+                                ));
                             }
                         }
-                    }
+                    },
                 };
                 let wasm_op = OP(op);
                 let imm = Immediate::Block(block_type.clone());

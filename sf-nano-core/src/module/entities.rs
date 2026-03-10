@@ -10,7 +10,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ops::Deref;
 
-use core::cell::UnsafeCell;
 use crate::constants;
 use crate::error::WasmError;
 use crate::utils::limits::{Limitable, Limits};
@@ -18,6 +17,7 @@ use crate::value_type::ValueType;
 use crate::vm::interp::fast::fast_code::{FastCode, FastCodeCache};
 #[cfg(feature = "micro-jit")]
 use crate::vm::native::code::{NativeCode, NativeCodeCache};
+use core::cell::UnsafeCell;
 
 pub use super::type_defs::FunctionType;
 
@@ -175,7 +175,7 @@ impl FunctionSpec {
     }
 
     /// Set the compiled fast code and cache.
-    /// 
+    ///
     /// # Safety
     /// Must only be called during compilation (single-threaded).
     pub fn set_fast_code(&self, code: FastCode, cache: FastCodeCache) {
@@ -490,11 +490,7 @@ impl Memory {
         })
     }
 
-    pub fn new_import(
-        module: String,
-        name: String,
-        limits: Limits,
-    ) -> Result<Self, WasmError> {
+    pub fn new_import(module: String, name: String, limits: Limits) -> Result<Self, WasmError> {
         Ok(Memory {
             export_names: Vec::new(),
             def: MemoryDef::Import {
@@ -593,12 +589,7 @@ impl Global {
         }
     }
 
-    pub fn new_import(
-        module: String,
-        name: String,
-        value_type: ValueType,
-        mutable: bool,
-    ) -> Self {
+    pub fn new_import(module: String, name: String, value_type: ValueType, mutable: bool) -> Self {
         Global {
             export_names: Vec::new(),
             def: GlobalDef::Import {
