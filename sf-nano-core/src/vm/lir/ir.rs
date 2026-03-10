@@ -6,6 +6,8 @@
 
 use alloc::vec::Vec;
 
+use crate::vm::plan::hot_local::HotLocalPlan;
+
 use super::{
     leaf::LirLeafOp,
     slot::{FrameSlot, FrameSpan},
@@ -29,6 +31,8 @@ pub struct LirProgram {
     pub entry: LirTarget,
     pub blocks: Vec<LirBlock>,
     pub abi: LirAbi,
+    /// Function-static mapping for named hot-local slots.
+    pub hot_locals: Option<HotLocalPlan>,
 }
 
 /// One LIR basic block.
@@ -45,7 +49,8 @@ pub struct LirBlock {
 pub struct LirBlockParams {
     /// Incoming TOS-lane values. Position is the lane index.
     ///
-    /// Hot locals are ambient backend state and therefore do not appear here.
+    /// Hot locals have function-static identity and therefore do not appear
+    /// here as edge-threaded state.
     pub tos: Vec<LirValue>,
 }
 
@@ -61,7 +66,8 @@ pub struct LirEdge {
     pub target: LirTarget,
     /// Outgoing TOS-lane values for the successor. Position is the lane index.
     ///
-    /// Hot locals are ambient backend state and therefore do not appear here.
+    /// Hot locals have function-static identity and therefore do not appear
+    /// here as edge-threaded state.
     pub tos: Vec<LirValue>,
 }
 
@@ -82,12 +88,12 @@ pub enum LirInstKind {
         dst: LirValue,
     },
     ReadHotLocal {
-        /// Hot-local identity is ambient backend state, not a block param.
+        /// Hot-local identity comes from `LirProgram::hot_locals`.
         reg: u8,
         dst: LirValue,
     },
     WriteHotLocal {
-        /// Hot-local identity is ambient backend state, not a block param.
+        /// Hot-local identity comes from `LirProgram::hot_locals`.
         reg: u8,
         src: LirValue,
     },

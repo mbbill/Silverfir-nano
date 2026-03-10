@@ -11,7 +11,7 @@ use crate::vm::{
     lir::legacy::ir::{LirBrTableEntry, LirFrameCopy, LirMarkerKind, LirOp, LirOpKind},
     plan::{
         frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
-        spill::{CacheTransferDirection, SpillArtifact},
+        tos::{SpillArtifact, TosTransferDirection},
     },
     wasm::core_op::CoreOpKind,
 };
@@ -78,17 +78,17 @@ fn encode_immediates(
     match &op.kind {
         LirOpKind::Core(kind) => encode_core(kind),
         LirOpKind::InitLocals { l0, l1, l2 } => encoding::init_locals::encode(l0.0, l1.0, l2.0),
-        LirOpKind::CacheTransfer(SpillArtifact::CacheTransfer(transfer)) => {
+        LirOpKind::CacheTransfer(SpillArtifact::TosTransfer(transfer)) => {
             let slot = physical_top_slot(frame, transfer.frame);
             match (transfer.direction, transfer.frame.count) {
-                (CacheTransferDirection::Spill, 1) => encoding::spill_1::encode(slot),
-                (CacheTransferDirection::Spill, 2) => encoding::spill_2::encode(slot),
-                (CacheTransferDirection::Spill, 3) => encoding::spill_3::encode(slot),
-                (CacheTransferDirection::Spill, _) => encoding::spill_4::encode(slot),
-                (CacheTransferDirection::Fill, 1) => encoding::fill_1::encode(slot),
-                (CacheTransferDirection::Fill, 2) => encoding::fill_2::encode(slot),
-                (CacheTransferDirection::Fill, 3) => encoding::fill_3::encode(slot),
-                (CacheTransferDirection::Fill, _) => encoding::fill_4::encode(slot),
+                (TosTransferDirection::Spill, 1) => encoding::spill_1::encode(slot),
+                (TosTransferDirection::Spill, 2) => encoding::spill_2::encode(slot),
+                (TosTransferDirection::Spill, 3) => encoding::spill_3::encode(slot),
+                (TosTransferDirection::Spill, _) => encoding::spill_4::encode(slot),
+                (TosTransferDirection::Fill, 1) => encoding::fill_1::encode(slot),
+                (TosTransferDirection::Fill, 2) => encoding::fill_2::encode(slot),
+                (TosTransferDirection::Fill, 3) => encoding::fill_3::encode(slot),
+                (TosTransferDirection::Fill, _) => encoding::fill_4::encode(slot),
             }
         }
         LirOpKind::LocalGetHot { reg } => encoding::local_get::encode(*reg as u16),
@@ -107,7 +107,7 @@ fn encode_immediates(
         LirOpKind::Marker(LirMarkerKind::Else) => encoding::else_::encode(target_ptr),
         LirOpKind::Marker(_) => (0, 0, 0),
         LirOpKind::Branch {
-            kind: crate::vm::plan::plan::PlannedBranchKind::Br,
+            kind: crate::vm::plan::PlannedBranchKind::Br,
             fixup,
             ..
         } => {
@@ -115,7 +115,7 @@ fn encode_immediates(
             encoding::br::encode(target_ptr, src_slot, dst_slot, count)
         }
         LirOpKind::Branch {
-            kind: crate::vm::plan::plan::PlannedBranchKind::BrIf,
+            kind: crate::vm::plan::PlannedBranchKind::BrIf,
             fixup,
             ..
         } => {

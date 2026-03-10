@@ -124,3 +124,15 @@ impl FramePlanner {
         }
     }
 }
+
+#[inline]
+pub fn plan_frame_layout(
+    local_count: u16,
+    max_stack_height: u16,
+    hot_local_count: u8,
+) -> FrameLayoutPlan {
+    let backend_reserved = (hot_local_count as u16).saturating_sub(local_count);
+    let planner = FramePlanner::new(local_count).reserve_backend_reserved(backend_reserved);
+    let (planner, _) = planner.reserve_operands(max_stack_height);
+    planner.finish()
+}

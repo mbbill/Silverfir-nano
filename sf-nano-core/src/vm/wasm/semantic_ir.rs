@@ -1,6 +1,6 @@
 //! Semantic function-body IR before planning.
 //!
-//! `CoreOpKind` carries the shared leaf-op vocabulary. `SemanticOpKind` is the
+//! `PrimitiveOpKind` carries the shared leaf-op vocabulary. `SemanticOpKind` is the
 //! larger per-function IR that embeds those leaf ops alongside locals, calls,
 //! returns, structured control markers, and branch targets.
 //!
@@ -13,7 +13,7 @@
 use alloc::vec::Vec;
 
 use super::common::{BrTableEntry, SemanticIndex, SemanticTarget};
-use super::core_op::CoreOpKind;
+use super::primitive_op::PrimitiveOpKind;
 
 /// One semantic Wasm operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,10 +27,10 @@ pub struct SemanticOp {
 ///
 /// This owns the parts of Wasm that are not just reusable leaf ops: locals,
 /// calls, returns, structured control markers, and branch metadata. Ordinary
-/// non-structural ops are represented as `Core(CoreOpKind)`.
+/// non-structural ops are represented as `Primitive(PrimitiveOpKind)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SemanticOpKind {
-    Core(CoreOpKind),
+    Primitive(PrimitiveOpKind),
     LocalGet {
         idx: u16,
     },
@@ -98,10 +98,10 @@ pub struct SemanticProgram {
     pub ops: alloc::vec::Vec<SemanticOp>,
 }
 
-impl From<CoreOpKind> for SemanticOpKind {
+impl From<PrimitiveOpKind> for SemanticOpKind {
     #[inline]
-    fn from(kind: CoreOpKind) -> Self {
-        Self::Core(kind)
+    fn from(kind: PrimitiveOpKind) -> Self {
+        Self::Primitive(kind)
     }
 }
 
@@ -109,7 +109,7 @@ impl From<CoreOpKind> for SemanticOpKind {
 #[inline]
 pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
     match kind {
-        SemanticOpKind::Core(kind) => super::core_op::stack_effect(kind),
+        SemanticOpKind::Primitive(kind) => super::primitive_op::stack_effect(kind),
         SemanticOpKind::LocalGet { .. } => (0, 1),
         SemanticOpKind::LocalSet { .. } => (1, 0),
         SemanticOpKind::LocalTee { .. } => (0, 0),

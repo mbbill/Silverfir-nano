@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::vm::{
     lir::target::LirTarget,
-    plan::plan::PlannedProgram,
+    plan::PlannedProgram,
     wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
 };
 
@@ -91,6 +91,8 @@ fn splits_after(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. }
-            | SemanticOpKind::Core(crate::vm::wasm::core_op::CoreOpKind::Unreachable)
+            | SemanticOpKind::Primitive(
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
+            )
     )
 }

@@ -10,7 +10,14 @@ pub mod config;
 pub mod frame;
 pub mod group;
 pub mod hot_local;
+pub mod place;
 pub mod plan;
 pub mod policy;
-pub mod spill;
 pub mod tos;
+pub mod types;
+
+pub use plan::build_planned_program;
+pub use types::{
+    PlannedBrTableEntry, PlannedBranchKind, PlannedHotLocalInit, PlannedLocal, PlannedMarkerKind,
+    PlannedOp, PlannedOpKind, PlannedProgram, PlanningInput,
+};

@@ -10,7 +10,7 @@ use crate::vm::{
     lir::legacy::ir::{LirMarkerKind, LirOp, LirOpKind},
     plan::{
         frame::FrameSpan,
-        spill::{CacheTransferDirection, SpillArtifact},
+        tos::{SpillArtifact, TosTransferDirection},
     },
     wasm::{
         common::BrTableEntry,
@@ -95,14 +95,14 @@ fn lift_kind(kind: &LirOpKind) -> IrOpKind {
             k1: l1.0,
             k2: l2.0,
         },
-        LirOpKind::CacheTransfer(SpillArtifact::CacheTransfer(transfer)) => {
+        LirOpKind::CacheTransfer(SpillArtifact::TosTransfer(transfer)) => {
             let slot = transfer.frame.end().0.saturating_sub(1);
             match transfer.direction {
-                CacheTransferDirection::Spill => IrOpKind::Spill {
+                TosTransferDirection::Spill => IrOpKind::Spill {
                     slot,
                     count: transfer.frame.count as u8,
                 },
-                CacheTransferDirection::Fill => IrOpKind::Fill {
+                TosTransferDirection::Fill => IrOpKind::Fill {
                     slot,
                     count: transfer.frame.count as u8,
                 },
@@ -120,14 +120,14 @@ fn lift_kind(kind: &LirOpKind) -> IrOpKind {
         LirOpKind::Marker(LirMarkerKind::Else) => IrOpKind::Else,
         LirOpKind::Marker(LirMarkerKind::End) => IrOpKind::End,
         LirOpKind::Branch {
-            kind: crate::vm::plan::plan::PlannedBranchKind::Br,
+            kind: crate::vm::plan::PlannedBranchKind::Br,
             fixup,
             ..
         } => IrOpKind::Br {
             has_fixup: fixup.is_some(),
         },
         LirOpKind::Branch {
-            kind: crate::vm::plan::plan::PlannedBranchKind::BrIf,
+            kind: crate::vm::plan::PlannedBranchKind::BrIf,
             fixup,
             ..
         } => {

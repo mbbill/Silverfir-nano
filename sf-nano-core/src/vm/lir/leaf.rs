@@ -1,9 +1,9 @@
 //! LIR-native leaf-op vocabulary.
 //!
 //! This mirrors the reusable Wasm leaf-op set, but it is owned by LIR rather
-//! than borrowing `CoreOpKind` directly.
+//! than borrowing `PrimitiveOpKind` directly.
 
-use crate::vm::wasm::core_op::{CoreOpKind, for_each_core_op};
+use crate::vm::wasm::primitive_op::{PrimitiveOpKind, for_each_primitive_op};
 
 macro_rules! define_lir_leaf_ops {
     ($(
@@ -14,14 +14,14 @@ macro_rules! define_lir_leaf_ops {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
-        impl From<CoreOpKind> for LirLeafOp {
-            fn from(kind: CoreOpKind) -> Self {
+        impl From<PrimitiveOpKind> for LirLeafOp {
+            fn from(kind: PrimitiveOpKind) -> Self {
                 match kind {
-                    $( CoreOpKind::$name $( { $($field),* } )? => Self::$name $( { $($field),* } )?, )*
+                    $( PrimitiveOpKind::$name $( { $($field),* } )? => Self::$name $( { $($field),* } )?, )*
                 }
             }
         }
     };
 }
 
-for_each_core_op!(define_lir_leaf_ops);
+for_each_primitive_op!(define_lir_leaf_ops);

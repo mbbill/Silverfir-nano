@@ -2,7 +2,13 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::ir::{LirBlockParams, LirInst, LirValue};
+use crate::vm::{
+    lir::{
+        ir::{LirBlockParams, LirInst, LirValue},
+        slot::FrameSlot,
+    },
+    plan::frame::FrameLayoutPlan,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
@@ -24,18 +30,39 @@ impl ValueAlloc {
 
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
-    pub(super) height: u16,
-    pub(super) tos: Vec<LirValue>,
+    pub(super) stack: Vec<StackValue>,
     pub(super) ops: Vec<LirInst>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StackValue {
+    Frame(FrameSlot),
+    Ssa(LirValue),
+}
+
 impl BlockState {
-    pub(super) fn from_params(height: u16, params: &LirBlockParams) -> Self {
+    pub(super) fn from_params(
+        height: u16,
+        params: &LirBlockParams,
+        frame: FrameLayoutPlan,
+    ) -> Self {
+        let cached = params.tos.len();
+        let spilled = height as usize - cached;
+        let mut stack = Vec::with_capacity(height as usize);
+        for index in 0..spilled {
+            stack.push(StackValue::Frame(frame.operand_slot(index as u16)));
+        }
+        stack.extend(params.tos.iter().copied().map(StackValue::Ssa));
+
         Self {
-            height,
-            tos: params.tos.clone(),
+            stack,
             ops: Vec::new(),
         }
+    }
+
+    #[inline]
+    pub(super) fn height(&self) -> u16 {
+        self.stack.len() as u16
     }
 }
 

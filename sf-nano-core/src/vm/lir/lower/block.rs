@@ -9,7 +9,7 @@ use crate::vm::{
         leaf::LirLeafOp,
         target::LirTarget,
     },
-    plan::{config::PlanConfig, plan::PlannedProgram},
+    plan::{config::PlanConfig, PlannedProgram},
     wasm::semantic_ir::SemanticOpKind,
 };
 
@@ -17,8 +17,8 @@ use super::{
     edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     input::SemanticPlannedOp,
     ops::{
-        lower_call_external, lower_call_indirect, lower_call_internal, lower_core,
-        lower_local_get, lower_local_set, lower_local_tee,
+        lower_call_external, lower_call_indirect, lower_call_internal, lower_local_get,
+        lower_local_set, lower_local_tee, lower_primitive, lower_synthetic_prefix_op,
     },
     stack::{materialize_top_values, pop_one},
     state::{BlockState, ValueAlloc},
@@ -70,25 +70,34 @@ fn lower_block_body_op(
     config: PlanConfig,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
+    for prefix_op in &op.prefix {
+        lower_synthetic_prefix_op(prefix_op, state, planned.frame, values)?;
+    }
+
     match &op.semantic.kind {
-        SemanticOpKind::Core(kind)
-            if matches!(kind, crate::vm::wasm::core_op::CoreOpKind::Unreachable) =>
+        SemanticOpKind::Primitive(kind)
+            if matches!(
+                kind,
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
+            ) =>
         {
             Err(WasmError::internal(
                 "unreachable must end an LIR block, not appear in the body".into(),
             ))
         }
-        SemanticOpKind::Core(kind) => {
-            lower_core(kind, state, planned.frame, config, values);
+        SemanticOpKind::Primitive(kind) => {
+            lower_primitive(kind, state, planned.frame, values);
             Ok(())
         }
         SemanticOpKind::LocalGet { .. } => {
-            lower_local_get(&op.planned.kind, state, planned.frame, config, values)
+            lower_local_get(&op.planned.kind, state, planned.frame, values)
         }
         SemanticOpKind::LocalSet { .. } => {
             lower_local_set(&op.planned.kind, state, planned.frame, values)
         }
-        SemanticOpKind::LocalTee { .. } => lower_local_tee(&op.planned.kind, state),
+        SemanticOpKind::LocalTee { .. } => {
+            lower_local_tee(&op.planned.kind, state, planned.frame, values)
+        }
         SemanticOpKind::Block { .. }
         | SemanticOpKind::Loop { .. }
         | SemanticOpKind::Else
@@ -98,15 +107,7 @@ fn lower_block_body_op(
             params,
             results,
         } => {
-            lower_call_external(
-                *func_idx,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                config,
-                values,
-            );
+            lower_call_external(*func_idx, *params, *results, state, planned.frame, values);
             Ok(())
         }
         SemanticOpKind::CallInternal {
@@ -114,15 +115,7 @@ fn lower_block_body_op(
             params,
             results,
         } => {
-            lower_call_internal(
-                *callee,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                config,
-                values,
-            );
+            lower_call_internal(*callee, *params, *results, state, planned.frame, values);
             Ok(())
         }
         SemanticOpKind::CallIndirect {
@@ -138,7 +131,6 @@ fn lower_block_body_op(
                 *results,
                 state,
                 planned.frame,
-                config,
                 values,
             );
             Ok(())
@@ -163,9 +155,16 @@ fn lower_block_end_op(
     semantic_to_block: &[LirTarget],
     values: &mut ValueAlloc,
 ) -> Result<LirTerminator, WasmError> {
+    for planned_op in &op.prefix {
+        lower_synthetic_prefix_op(planned_op, state, planned.frame, values)?;
+    }
+
     match &op.semantic.kind {
-        SemanticOpKind::Core(kind)
-            if matches!(kind, crate::vm::wasm::core_op::CoreOpKind::Unreachable) =>
+        SemanticOpKind::Primitive(kind)
+            if matches!(
+                kind,
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
+            ) =>
         {
             state.ops.push(LirInst {
                 kind: LirInstKind::Leaf {
@@ -176,8 +175,8 @@ fn lower_block_end_op(
             });
             Ok(LirTerminator::TrapUnreachable)
         }
-        SemanticOpKind::Core(kind) => {
-            lower_core(kind, state, planned.frame, config, values);
+        SemanticOpKind::Primitive(kind) => {
+            lower_primitive(kind, state, planned.frame, values);
             goto_next(
                 op.semantic,
                 state,
@@ -188,7 +187,7 @@ fn lower_block_end_op(
             )
         }
         SemanticOpKind::LocalGet { .. } => {
-            lower_local_get(&op.planned.kind, state, planned.frame, config, values)?;
+            lower_local_get(&op.planned.kind, state, planned.frame, values)?;
             goto_next(
                 op.semantic,
                 state,
@@ -210,7 +209,7 @@ fn lower_block_end_op(
             )
         }
         SemanticOpKind::LocalTee { .. } => {
-            lower_local_tee(&op.planned.kind, state)?;
+            lower_local_tee(&op.planned.kind, state, planned.frame, values)?;
             goto_next(
                 op.semantic,
                 state,
@@ -322,15 +321,7 @@ fn lower_block_end_op(
             params,
             results,
         } => {
-            lower_call_external(
-                *func_idx,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                config,
-                values,
-            );
+            lower_call_external(*func_idx, *params, *results, state, planned.frame, values);
             goto_next(
                 op.semantic,
                 state,
@@ -345,15 +336,7 @@ fn lower_block_end_op(
             params,
             results,
         } => {
-            lower_call_internal(
-                *callee,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                config,
-                values,
-            );
+            lower_call_internal(*callee, *params, *results, state, planned.frame, values);
             goto_next(
                 op.semantic,
                 state,
@@ -376,7 +359,6 @@ fn lower_block_end_op(
                 *results,
                 state,
                 planned.frame,
-                config,
                 values,
             );
             goto_next(

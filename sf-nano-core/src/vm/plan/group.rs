@@ -5,7 +5,15 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::wasm::common::SemanticTarget;
+use crate::vm::wasm::{
+    common::SemanticTarget,
+    semantic_ir::{SemanticOp, SemanticOpKind},
+};
+
+use super::{
+    policy::{GroupPolicy, PlanPolicy},
+    types::{PlannedBranchKind, PlannedMarkerKind, PlannedOpKind},
+};
 
 /// Planned group identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,6 +68,65 @@ pub struct GroupInputOp {
     pub terminator: Option<GroupTerminator>,
     pub alt: Option<SemanticTarget>,
     pub br_table_targets: Vec<SemanticTarget>,
+}
+
+pub fn build_group_input(
+    policy: &PlanPolicy,
+    semantic_op: &SemanticOp,
+    planned_kind: &PlannedOpKind,
+) -> GroupInputOp {
+    GroupInputOp {
+        can_start: policy.can_start(semantic_op) && groupable_kind(planned_kind),
+        can_extend: policy.can_extend(0, semantic_op) && groupable_kind(planned_kind),
+        terminator: terminator_for(policy, semantic_op, planned_kind),
+        alt: semantic_op.alt,
+        br_table_targets: collect_br_table_targets(semantic_op),
+    }
+}
+
+fn groupable_kind(kind: &PlannedOpKind) -> bool {
+    !matches!(
+        kind,
+        PlannedOpKind::Marker(_) | PlannedOpKind::Spill(_) | PlannedOpKind::InitHotLocals { .. }
+    )
+}
+
+fn terminator_for(
+    policy: &PlanPolicy,
+    semantic_op: &SemanticOp,
+    planned_kind: &PlannedOpKind,
+) -> Option<GroupTerminator> {
+    if !policy.is_terminator(semantic_op) {
+        return None;
+    }
+
+    Some(match planned_kind {
+        PlannedOpKind::Branch {
+            kind: PlannedBranchKind::Br,
+            ..
+        } => GroupTerminator::Br,
+        PlannedOpKind::Branch {
+            kind: PlannedBranchKind::BrIf,
+            ..
+        } => GroupTerminator::BrIf,
+        PlannedOpKind::BrTable { .. } => GroupTerminator::BrTable,
+        PlannedOpKind::Marker(PlannedMarkerKind::If { .. }) => GroupTerminator::If,
+        PlannedOpKind::Return { results: None } => GroupTerminator::ReturnVoid,
+        PlannedOpKind::Return {
+            results: Some(span),
+        } if span.count == 1 => GroupTerminator::ReturnOne,
+        PlannedOpKind::Return { .. } => GroupTerminator::Return,
+        _ => GroupTerminator::Unreachable,
+    })
+}
+
+fn collect_br_table_targets(op: &SemanticOp) -> Vec<SemanticTarget> {
+    match &op.kind {
+        SemanticOpKind::BrTable { entries } => {
+            entries.iter().filter_map(|entry| entry.target).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn incoming_targets(ops: &[GroupInputOp]) -> Vec<bool> {

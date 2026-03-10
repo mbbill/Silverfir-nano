@@ -5,7 +5,7 @@
 //! targets. The semantic layer wraps these leaf ops in a larger function-body
 //! IR instead of duplicating the common non-structural Wasm operation set.
 
-macro_rules! for_each_core_op {
+macro_rules! for_each_primitive_op {
     ($m:ident) => {
         $m! {
             I32Add => (2, 1),
@@ -198,9 +198,8 @@ macro_rules! for_each_core_op {
     };
 }
 
-pub(crate) use for_each_core_op;
-
-macro_rules! define_core_ops {
+pub(crate) use for_each_primitive_op;
+macro_rules! define_primitive_ops {
     ($(
         $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),
     )* ) => {
@@ -209,19 +208,19 @@ macro_rules! define_core_ops {
         /// Keep this limited to non-structural ops with stable stack effects.
         /// Function-body semantics such as locals, calls, returns, structured
         /// control, and branch metadata live in `SemanticOpKind`, which embeds
-        /// `CoreOpKind` instead of expanding this enum into a whole-function IR.
+        /// `PrimitiveOpKind` instead of expanding this enum into a whole-function IR.
         #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum CoreOpKind {
+        pub enum PrimitiveOpKind {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
         #[inline]
-        pub fn stack_effect(kind: &CoreOpKind) -> (u8, u8) {
+        pub fn stack_effect(kind: &PrimitiveOpKind) -> (u8, u8) {
             match kind {
-                $( CoreOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
+                $( PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
             }
         }
     };
 }
 
-for_each_core_op!(define_core_ops);
+for_each_primitive_op!(define_primitive_ops);

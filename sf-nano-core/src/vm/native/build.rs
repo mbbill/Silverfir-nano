@@ -16,9 +16,8 @@ use crate::vm::{
     entities::ModuleInst,
     lir::legacy::lower::{self, LirProgram},
     plan::{
-        config::PlanConfig,
-        plan::{self, PlannedProgram, PlanningInput},
-        policy::PlanPolicy,
+        build_planned_program, config::PlanConfig, policy::PlanPolicy, PlannedProgram,
+        PlanningInput,
     },
     store::Store,
     wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
@@ -41,11 +40,10 @@ pub fn build_native_function(
     let backend = BackendKind::Native;
     let config = PlanConfig::for_backend(backend, backend.default_config());
     let semantic = decode::decode_to_semantic_ir(code, compile)?;
-    let planned = plan::build_planned_program(
+    let planned = build_planned_program(
         PlanningInput {
             config,
             policy: PlanPolicy::for_backend(backend),
-            hot_locals: None,
         },
         &semantic,
     );

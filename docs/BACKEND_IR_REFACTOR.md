@@ -124,13 +124,14 @@ TOS-derived values are transient SSA values inside the CFG.
 Hot locals are not just more TOS values:
 
 - hot locals are persistent VM state carried across blocks
+- each hot-local slot has function-static identity
 - hot locals are part of the target-tuned VM ABI
 - ordinary frame locals and memory remain explicit stateful effects
 
 So the IR must distinguish:
 
 - transient SSA values
-- hot-local state
+- named hot-local state
 - frame/memory effects
 
 This is also the reason the old "TOS + local cache is already the register
@@ -235,7 +236,7 @@ LIR should be a CFG with:
 - block parameters
 - SSA values
 - explicit successor arguments
-- explicit hot-local state
+- explicit hot-local state operations
 - explicit frame/memory effects
 - explicit control-flow terminators
 
@@ -255,8 +256,10 @@ example conceptually:
 
 but as block parameters and successor arguments, not as hidden stack state.
 
-Hot locals should also be explicit in the block/state model, but they are
-semantically different from transient TOS-derived SSA values.
+Hot locals should also be explicit in LIR, but not necessarily as block
+parameters or successor arguments. If hot-local slot identity is static across
+the function, LIR may model hot locals as named VM state with explicit
+read/write operations plus explicit entry initialization.
 
 ### 5. Base interpreter over LIR
 
@@ -396,7 +399,7 @@ LIR should be a CFG made of blocks.
 Each block should have:
 
 - block parameters for incoming TOS lanes
-- explicit hot-local state
+- explicit hot-local state operations
 - SSA values for transient results
 - explicit stateful frame/memory operations
 - an explicit terminator
@@ -464,25 +467,25 @@ Conceptually a block may look like:
 block B(
   t0 = v0,
   t1 = v1,
-  l0 = h0,
-  l1 = h1,
 )
 ```
 
 where:
 
 - `t*` are transient incoming TOS-lane values
-- `l*` are incoming hot-local state values
+- hot locals are named VM state with function-static slot identity
 
-The block body computes new SSA values, updates hot-local state if needed, and
-ends in a terminator that chooses successor arguments.
+The block body computes new SSA values, reads/writes hot-local state if needed,
+and ends in a terminator that chooses successor arguments for TOS lanes.
 
 Conceptually:
 
 ```text
-block B(t0 = v0, l0 = h0)
+block B(t0 = v0)
+  h0 = read_hot_local L0
   v1 = i32.add h0, v0
-  jump C(t0 = v1, l0 = v1)
+  write_hot_local L0, v1
+  jump C(t0 = v1)
 ```
 
 This is how the TOS window disappears from LIR.
@@ -495,7 +498,7 @@ Hot locals are:
 
 - persistent cached VM state
 - part of the target-tuned VM ABI
-- explicit state carried across blocks
+- explicit named state carried across blocks
 
 So LIR must keep the distinction between:
 
@@ -503,9 +506,17 @@ So LIR must keep the distinction between:
 - hot-local state
 - frame/memory effects
 
-Hot locals should be thought of as named persistent VM state values that cross
-block boundaries. They are not ordinary frame loads/stores, and they are not
-just another transient TOS SSA value.
+Hot locals should be thought of as named persistent VM state values that are
+available throughout the function. They are not ordinary frame loads/stores,
+and they are not just another transient TOS SSA value.
+
+Because hot-local slot identity is static across the function, they do not need
+to be threaded through block parameters / successor arguments the way TOS lanes
+are. The important requirements are:
+
+- explicit `read_hot_local` / `write_hot_local` style operations in LIR
+- function-level metadata describing the hot-local mapping
+- explicit entry initialization for those hot locals
 
 Ordinary locals that are not hot remain ordinary frame-home state addressed via
 explicit effects.

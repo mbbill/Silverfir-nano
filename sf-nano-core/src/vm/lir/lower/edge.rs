@@ -6,7 +6,7 @@ use crate::vm::{
         ir::{LirEdge, LirTerminator},
         target::LirTarget,
     },
-    plan::{config::PlanConfig, plan::PlannedProgram},
+    plan::{config::PlanConfig, PlannedProgram},
     wasm::{
         common::{BrTableEntry, SemanticTarget},
         semantic_ir::SemanticOp,
@@ -68,8 +68,8 @@ pub(super) fn edge_to_target(
     values: &mut ValueAlloc,
 ) -> Result<LirEdge, WasmError> {
     let target_height = match mapping {
-        EdgeMapping::Identity => state.height,
-        EdgeMapping::Branch { stack_drop, .. } => state.height.saturating_sub(stack_drop as u16),
+        EdgeMapping::Identity => state.height(),
+        EdgeMapping::Branch { stack_drop, .. } => state.height().saturating_sub(stack_drop as u16),
     };
     let target_cached = core::cmp::min(target_height as usize, config.tos_register_count as usize);
     let start = target_height as usize - target_cached;

@@ -55,8 +55,28 @@ impl ControlStack {
         let idx = self.frames.len().checked_sub(depth as usize + 1)?;
         let frame = self.frames.get(idx)?;
         match frame.kind {
-            BlockKind::Loop => Some(frame.end_target),
+            BlockKind::Loop => Some(SemanticTarget::new(frame.entry.as_usize())),
             BlockKind::Block | BlockKind::If => frame.else_target.or(Some(frame.end_target)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_branch_targets_entry() {
+        let mut stack = ControlStack::default();
+        stack.push(ControlFrame {
+            kind: BlockKind::Loop,
+            entry: SemanticIndex::new(7),
+            else_target: None,
+            end_target: SemanticTarget::new(12),
+            params: 0,
+            results: 0,
+        });
+
+        assert_eq!(stack.branch_target(0), Some(SemanticTarget::new(7)));
     }
 }
