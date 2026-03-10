@@ -1,46 +1,48 @@
-//! Fast code storage and cached metadata.
+//! Fast compiled code object.
 
-use super::instruction::Instruction;
 use alloc::boxed::Box;
 
-/// Compiled fast interpreter code for a function.
-pub struct FastCode {
-    code: Box<[Instruction]>,
-}
+use super::instruction::Instruction;
 
-impl core::fmt::Debug for FastCode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FastCode")
-            .field("code_len", &self.code.len())
-            .finish()
-    }
+#[derive(Clone, Debug, Default)]
+pub struct FastCode {
+    pub instructions: Box<[Instruction]>,
 }
 
 impl FastCode {
-    pub fn new(code: Box<[Instruction]>) -> Self {
-        FastCode { code }
+    #[inline]
+    pub fn from_instructions(instructions: alloc::vec::Vec<Instruction>) -> Self {
+        Self {
+            instructions: instructions.into_boxed_slice(),
+        }
     }
 
     #[inline]
     pub fn entry_ptr(&self) -> *mut Instruction {
-        if self.code.is_empty() {
+        if self.instructions.is_empty() {
             core::ptr::null_mut()
         } else {
-            self.code.as_ptr() as *mut Instruction
+            self.instructions.as_ptr() as *mut Instruction
         }
     }
 
     #[inline]
     pub fn code_len(&self) -> usize {
-        self.code.len()
+        self.instructions.len()
     }
 
     #[inline]
     pub fn code(&self) -> &[Instruction] {
-        &self.code
+        &self.instructions
     }
 
-    pub fn build_cache(&self, params_len: usize, locals_len: usize, results_len: usize) -> FastCodeCache {
+    #[inline]
+    pub fn build_cache(
+        &self,
+        params_len: usize,
+        locals_len: usize,
+        results_len: usize,
+    ) -> FastCodeCache {
         FastCodeCache {
             entry: self.entry_ptr(),
             params_len,
@@ -50,8 +52,7 @@ impl FastCode {
     }
 }
 
-/// Cached fast code metadata for hot-path access.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FastCodeCache {
     entry: *mut Instruction,
     params_len: usize,
@@ -61,7 +62,7 @@ pub struct FastCodeCache {
 
 impl Default for FastCodeCache {
     fn default() -> Self {
-        FastCodeCache {
+        Self {
             entry: core::ptr::null_mut(),
             params_len: 0,
             locals_len: 0,
@@ -100,14 +101,13 @@ impl FastCodeCache {
     }
 }
 
-/// Create a FastCode and cache from compiled instructions.
 pub fn create_fast_code(
     code: Box<[Instruction]>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
 ) -> (FastCode, FastCodeCache) {
-    let fast_code = FastCode::new(code);
+    let fast_code = FastCode { instructions: code };
     let cache = fast_code.build_cache(params_len, locals_len, results_len);
     (fast_code, cache)
 }

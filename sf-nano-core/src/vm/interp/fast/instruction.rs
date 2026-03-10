@@ -1,18 +1,14 @@
-//! Instruction header and basic construction helpers.
+//! Fast-interpreter instruction format.
 //!
-//! Layout MUST stay in sync with `trampoline/vm_trampoline.h`.
-//!
-//! # Layout (32 bytes)
-//! ```text
-//! handler(8B) | imm0(8B) | imm1(8B) | imm2(8B)
-//! ```
+//! This is interpreter-specific and must not leak into `native/`.
 
-use alloc::vec::Vec;
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
+
 use crate::vm::interp::fast::handlers::OpHandler;
 
+/// Fast-interpreter instruction record.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Instruction {
     pub handler: OpHandler,
     pub imm0: u64,
@@ -23,14 +19,22 @@ pub struct Instruction {
 const _: [(); 32] = [(); core::mem::size_of::<Instruction>()];
 
 impl Instruction {
+    #[inline]
     pub fn new(handler: OpHandler, imm0: u64, imm1: u64, imm2: u64) -> Self {
-        Self { handler, imm0, imm1, imm2 }
+        Self {
+            handler,
+            imm0,
+            imm1,
+            imm2,
+        }
     }
 
+    #[inline]
     pub fn new_handler_only(handler: OpHandler) -> Self {
-        Self { handler, imm0: 0, imm1: 0, imm2: 0 }
+        Self::new(handler, 0, 0, 0)
     }
 
+    #[inline]
     pub fn make_terminal(&mut self, op_term: OpHandler) {
         self.handler = op_term;
         self.imm0 = 0;

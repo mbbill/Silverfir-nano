@@ -180,33 +180,24 @@ pub fn heap_info(ctx: *mut Context) -> (*mut u8, usize) {
 // Branch Fixup (No-Stack Model)
 // =============================================================================
 
-/// Adjust frame for branch targets using STO-based addressing.
-/// Moves `arity` values from slots [sto-arity..sto) down by `stack_offset` slots
-/// to slots [sto-stack_offset-arity..sto-stack_offset).
-/// Returns the new STO after the branch (sto - stack_offset).
+/// Copy branch payload values between explicit fp-relative spans.
 #[inline(always)]
 pub fn branch_fixup_frame(
     fp_pp: *mut *mut u64,
-    sto: usize,
-    stack_offset: usize,
-    arity: usize,
-) -> usize {
-    if stack_offset == 0 {
-        return sto;
+    src_slot: usize,
+    dst_slot: usize,
+    count: usize,
+) {
+    if count == 0 {
+        return;
     }
-    if arity == 0 {
-        // No values to preserve, just adjust the height
-        return sto - stack_offset;
-    }
-    // Move `arity` values from [sto-arity..sto) to [sto-stack_offset-arity..sto-stack_offset)
     unsafe {
         let fp = *fp_pp;
-        for i in 0..arity {
-            let val = *fp.add(sto - arity + i);
-            *fp.add(sto - stack_offset - arity + i) = val;
+        for i in 0..count {
+            let val = *fp.add(src_slot + i);
+            *fp.add(dst_slot + i) = val;
         }
     }
-    sto - stack_offset
 }
 
 // =============================================================================

@@ -1,7 +1,4 @@
 //! Constant expression evaluator for WebAssembly 2.0 module instantiation.
-//!
-//! Supports: i32.const, i64.const, f32.const, f64.const, ref.null, ref.func,
-//! global.get, and extended constant expressions (i32/i64 add/sub/mul).
 
 use alloc::vec;
 
@@ -13,11 +10,7 @@ use crate::value_type::{HeapType, RefType};
 use crate::vm::entities::ModuleInst;
 use crate::vm::value::{RefHandle, Value};
 
-/// Evaluate a constant expression in the context of a module instance.
-pub fn eval_const_expr(
-    expr: &ConstExpr,
-    module: &ModuleInst,
-) -> Result<Value, WasmError> {
+pub fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, WasmError> {
     let bytes: &[u8] = expr;
     let mut code: Payload = bytes.into();
 
@@ -56,9 +49,7 @@ pub fn eval_const_expr(
                 let ref_handle = RefHandle::new(func_idx);
                 let type_idx = match &module.functions[func_idx] {
                     crate::vm::entities::FunctionInst::Local { type_index, .. } => *type_index,
-                    crate::vm::entities::FunctionInst::External { .. } => {
-                        0
-                    }
+                    crate::vm::entities::FunctionInst::External { .. } => 0,
                 };
                 let heap_type = HeapType::Concrete(type_idx);
                 let ref_type = RefType::new(false, heap_type);
@@ -67,13 +58,10 @@ pub fn eval_const_expr(
             Opcode::GLOBAL_GET => {
                 let global_idx = code.read_leb128_u32()? as usize;
                 if global_idx >= module.globals.len() {
-                    return Err(WasmError::invalid(
-                        "global.get: index out of range".into(),
-                    ));
+                    return Err(WasmError::invalid("global.get: index out of range".into()));
                 }
                 stack.push(module.globals[global_idx].value);
             }
-            // Extended constant expressions (WASM 2.0)
             Opcode::I32_ADD => {
                 let r = stack.pop().unwrap();
                 let l = stack.pop().unwrap();

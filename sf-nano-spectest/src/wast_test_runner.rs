@@ -1212,3 +1212,104 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sf_nano_core::vm::{
+        backend::{set_backend_mode, BackendMode},
+    };
+    use std::path::PathBuf;
+
+    fn instantiate_first_module(path: &str) -> WastTestRunner {
+        set_backend_mode(BackendMode::Base);
+
+        let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("webassembly-testsuite-2.0")
+            .join(path);
+        let content = fs::read_to_string(&full_path).expect("read wast");
+        let mut lexer = wast::lexer::Lexer::new(&content);
+        lexer.allow_confusing_unicode(true);
+        let buf = wast::parser::ParseBuffer::new_with_lexer(lexer).expect("parse buffer");
+        let mut wast = wast::parser::parse::<Wast>(&buf).expect("parse wast");
+
+        let mut runner = WastTestRunner::new();
+        let directive = wast.directives.first_mut().expect("module directive");
+        match directive {
+            WastDirective::Module(quote_wat) => {
+                runner.execute_wast_module(quote_wat, 0).expect("instantiate module");
+            }
+            _ => panic!("expected first directive to be a module"),
+        }
+
+        runner
+    }
+
+    fn run_wast_fixture(path: &str) -> TestResult {
+        set_backend_mode(BackendMode::Base);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("webassembly-testsuite-2.0")
+            .join(path);
+        let mut runner = WastTestRunner::new();
+        runner.run_wast_file(&path)
+    }
+
+    #[test]
+    fn regress_if_as_br_table_last_true() {
+        let mut runner = instantiate_first_module("if.wast");
+        let instance = runner.instances.values_mut().next().expect("instance");
+        let ret = instance
+            .invoke("as-br_table-last", &[Value::I32(1)])
+            .expect("invoke export");
+        assert_eq!(ret, vec![Value::I32(2)]);
+    }
+
+    #[test]
+    fn regress_br_table_as_if_else_false() {
+        let mut runner = instantiate_first_module("br_table.wast");
+        let instance = runner.instances.values_mut().next().expect("instance");
+        let ret = instance
+            .invoke("as-if-else", &[Value::I32(0), Value::I32(6)])
+            .expect("invoke export");
+        assert_eq!(ret, vec![Value::I32(4)]);
+    }
+
+    #[test]
+    fn regress_memory_redundancy_malloc_aliasing() {
+        let mut runner = instantiate_first_module("memory_redundancy.wast");
+        let instance = runner.instances.values_mut().next().expect("instance");
+        let ret = instance
+            .invoke("malloc_aliasing", &[])
+            .expect("invoke export");
+        assert_eq!(ret, vec![Value::I32(43)]);
+    }
+
+    #[test]
+    fn spectest_if_wast_passes() {
+        match run_wast_fixture("if.wast") {
+            TestResult::Pass => {}
+            other => panic!("expected if.wast to pass, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn spectest_br_table_wast_passes() {
+        match run_wast_fixture("br_table.wast") {
+            TestResult::Pass => {}
+            other => panic!("expected br_table.wast to pass, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn spectest_memory_redundancy_wast_passes() {
+        match run_wast_fixture("memory_redundancy.wast") {
+            TestResult::Pass => {}
+            other => panic!("expected memory_redundancy.wast to pass, got {:?}", other),
+        }
+    }
+
+}

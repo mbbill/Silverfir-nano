@@ -1,75 +1,53 @@
-//! WebAssembly 2.0 Runtime Instances (no_std, single-module)
-//!
-//! Simplified runtime instance definitions for a single-module WASM 2.0 interpreter:
-//! - No multi-module linking (no LinkableInstance traits)
-//! - No Rc<RefCell<>> — all instances owned directly by ModuleInst
-//! - No GC heap references
-//! - External functions use plain fn pointers
+//! WebAssembly 2.0 Runtime Instances (no_std, single-module).
 
-use alloc::rc::Rc;
-use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::{rc::Rc, string::String, vec::Vec};
 #[cfg(feature = "micro-jit")]
 use core::cell::RefCell;
 
-use crate::error::WasmError;
-use crate::module::entities::FunctionSpec;
-use crate::module::type_context::TypeContext;
-use crate::module::type_defs::FunctionType;
+use crate::module::{
+    entities::FunctionSpec,
+    type_context::TypeContext,
+    type_defs::FunctionType,
+};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
-use crate::vm::value::{RefHandle, Value};
+
+use crate::vm::{
+    value::{RefHandle, Value},
+};
 #[cfg(feature = "micro-jit")]
-use crate::vm::native::CodeBuffer;
+use crate::vm::native::code_buf::CodeBuffer;
 
-// ---------------------------------------------------------------------------
-// ExternalFn / Caller
-// ---------------------------------------------------------------------------
+pub type ExternalFn =
+    fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), crate::error::WasmError>;
 
-/// Provides host functions with access to the caller's linear memory.
 pub struct Caller<'a> {
     memory: Option<&'a mut [u8]>,
 }
 
 impl<'a> Caller<'a> {
-    /// Create a Caller with access to the module's first memory (if any).
-    pub(crate) fn new(memory: Option<&'a mut [u8]>) -> Self {
+    #[inline]
+    pub fn new(memory: Option<&'a mut [u8]>) -> Self {
         Self { memory }
     }
 
-    /// Returns the caller's linear memory, if one exists.
     #[inline]
     pub fn memory(&self) -> Option<&[u8]> {
         self.memory.as_deref()
     }
 
-    /// Returns the caller's linear memory mutably, if one exists.
     #[inline]
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
         self.memory.as_deref_mut()
     }
 }
 
-/// Function pointer type for host-provided external functions.
-///
-/// The `Caller` provides access to the caller's linear memory,
-/// enabling WASI and other host functions that need to read/write
-/// the WASM module's memory.
-pub type ExternalFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
-
-// ---------------------------------------------------------------------------
-// FunctionInst
-// ---------------------------------------------------------------------------
-
-/// A runtime function instance — either a local WASM function or an external host function.
+#[derive(Debug)]
 pub enum FunctionInst {
-    /// A function defined in the WASM module.
     Local {
         spec: FunctionSpec,
         type_index: u32,
-        // fast_code will be added later in Phase 5
     },
-    /// A host-provided external function.
     External {
         func_type: Rc<FunctionType>,
         callback: ExternalFn,
@@ -77,8 +55,7 @@ pub enum FunctionInst {
 }
 
 impl FunctionInst {
-    /// Returns the function type for this instance.
-    #[inline(always)]
+    #[inline]
     pub fn func_type(&self) -> &FunctionType {
         match self {
             FunctionInst::Local { spec, .. } => spec.func_type(),
@@ -86,7 +63,7 @@ impl FunctionInst {
         }
     }
 
-    /// Returns the type index (only meaningful for local functions).
+    #[inline]
     pub fn type_index(&self) -> u32 {
         match self {
             FunctionInst::Local { type_index, .. } => *type_index,
@@ -94,13 +71,12 @@ impl FunctionInst {
         }
     }
 
-    /// Returns `true` if this is an external (host) function.
     #[inline]
     pub fn is_external(&self) -> bool {
         matches!(self, FunctionInst::External { .. })
     }
 
-    /// Returns the FunctionSpec for local functions, `None` for externals.
+    #[inline]
     pub fn spec(&self) -> Option<&FunctionSpec> {
         match self {
             FunctionInst::Local { spec, .. } => Some(spec),
@@ -109,11 +85,6 @@ impl FunctionInst {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TableInst
-// ---------------------------------------------------------------------------
-
-/// A runtime table instance holding reference values.
 #[derive(Debug, Clone)]
 pub struct TableInst {
     pub elements: Vec<RefHandle>,
@@ -122,7 +93,6 @@ pub struct TableInst {
 }
 
 impl TableInst {
-    /// Creates a new table instance filled with null references.
     pub fn new(limits: Limits, value_type: ValueType) -> Self {
         let initial_size = limits.min();
         TableInst {
@@ -132,18 +102,12 @@ impl TableInst {
         }
     }
 
-    /// Returns the current number of elements.
     #[inline]
     pub fn size(&self) -> usize {
         self.elements.len()
     }
 }
 
-// ---------------------------------------------------------------------------
-// MemInst
-// ---------------------------------------------------------------------------
-
-/// A runtime linear memory instance.
 #[derive(Debug, Clone)]
 pub struct MemInst {
     pub data: Vec<u8>,
@@ -151,7 +115,6 @@ pub struct MemInst {
 }
 
 impl MemInst {
-    /// Creates a new memory instance with the initial size from limits (in pages).
     pub fn new(limits: Limits) -> Self {
         let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
         MemInst {
@@ -160,18 +123,12 @@ impl MemInst {
         }
     }
 
-    /// Returns the current memory size in WASM pages (64 KiB each).
     #[inline]
     pub fn current_pages(&self) -> usize {
         self.data.len() / crate::constants::WASM_PAGE_SIZE
     }
 }
 
-// ---------------------------------------------------------------------------
-// GlobalInst
-// ---------------------------------------------------------------------------
-
-/// A runtime global variable instance.
 #[derive(Debug, Clone)]
 pub struct GlobalInst {
     pub value: Value,
@@ -189,16 +146,11 @@ impl GlobalInst {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ElementInst
-// ---------------------------------------------------------------------------
-
-/// A runtime element segment instance for bulk table operations.
 #[derive(Debug, Clone)]
 pub struct ElementInst {
     pub refs: Vec<RefHandle>,
     pub value_type: ValueType,
-    dropped: bool,
+    pub dropped: bool,
 }
 
 impl ElementInst {
@@ -210,13 +162,11 @@ impl ElementInst {
         }
     }
 
-    /// Returns `true` if this segment has been dropped via `elem.drop`.
     #[inline]
     pub fn is_dropped(&self) -> bool {
         self.dropped
     }
 
-    /// Drop this element segment, releasing its references.
     pub fn drop_segment(&mut self) {
         self.refs.clear();
         self.refs.shrink_to_fit();
@@ -224,15 +174,10 @@ impl ElementInst {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DataInst
-// ---------------------------------------------------------------------------
-
-/// A runtime data segment instance for bulk memory operations.
 #[derive(Debug, Clone)]
 pub struct DataInst {
     pub bytes: Vec<u8>,
-    dropped: bool,
+    pub dropped: bool,
 }
 
 impl DataInst {
@@ -243,13 +188,11 @@ impl DataInst {
         }
     }
 
-    /// Returns `true` if this segment has been dropped via `data.drop`.
     #[inline]
     pub fn is_dropped(&self) -> bool {
         self.dropped
     }
 
-    /// Drop this data segment, releasing its bytes.
     pub fn drop_segment(&mut self) {
         self.bytes.clear();
         self.bytes.shrink_to_fit();
@@ -257,13 +200,7 @@ impl DataInst {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ModuleInst
-// ---------------------------------------------------------------------------
-
-/// A simplified single-module runtime instance.
-///
-/// All sub-instances are owned directly — no `Rc<RefCell<>>` indirection.
+#[derive(Debug)]
 pub struct ModuleInst {
     pub name: String,
     pub types: TypeContext,
@@ -293,14 +230,15 @@ impl ModuleInst {
         }
     }
 
-    /// Look up a function type by type index.
     #[inline]
     pub fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
         self.types.get(index)
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
+    pub fn native_code_buffer(
+        &self,
+    ) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
         let mut native_buf = self
             .native_buf
             .try_borrow_mut()
@@ -308,8 +246,33 @@ impl ModuleInst {
         if native_buf.is_none() {
             *native_buf = Some(CodeBuffer::new()?);
         }
-        Ok(core::cell::RefMut::map(native_buf, |native_buf| {
+        Ok(core::cell::RefMut::map(native_buf, |native_buf: &mut Option<CodeBuffer>| {
             native_buf.as_mut().expect("native code buffer initialized")
         }))
     }
 }
+
+impl Default for ModuleInst {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            types: TypeContext::empty(),
+            functions: Vec::new(),
+            tables: Vec::new(),
+            memories: Vec::new(),
+            globals: Vec::new(),
+            elements: Vec::new(),
+            data: Vec::new(),
+            #[cfg(feature = "micro-jit")]
+            native_buf: RefCell::new(None),
+        }
+    }
+}
+
+pub type FunctionEntity = FunctionInst;
+pub type TableEntity = TableInst;
+pub type MemoryEntity = MemInst;
+pub type GlobalEntity = GlobalInst;
+pub type ElementEntity = ElementInst;
+pub type DataEntity = DataInst;
+pub type ModuleEntity = ModuleInst;

@@ -191,10 +191,20 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("#[inline]");
     w.line("pub fn encode_operands<F: Fn(SlotRef) -> u16>(");
     w.line("    kind: &IrOpKind,");
+    w.line("    frame_slot: Option<SlotRef>,");
     w.line("    target_ptr: u64,");
     w.line("    fix_slot: &F,");
     w.line(") -> (u64, u64, u64) {");
     w.indent();
+    w.line("let operand_base_slot = fix_slot(SlotRef::operand_relative(0));");
+    w.line("let operand_base_offset = (operand_base_slot as u32) * 8;");
+    w.line("let stack_top_height = frame_slot");
+    w.line("    .map(|slot| match slot {");
+    w.line("        SlotRef::Absolute(slot) => slot.saturating_sub(operand_base_slot) + 1,");
+    w.line("        SlotRef::OperandRelative(offset) => offset + 1,");
+    w.line("    })");
+    w.line("    .unwrap_or(0);");
+
     w.line("match kind {");
     w.indent();
 
@@ -279,12 +289,12 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("IrOpKind::If => encoding::if_::encode(target_ptr),");
     w.line("IrOpKind::Else => encoding::else_::encode(target_ptr),");
     w.line("IrOpKind::BrIfSimple => encoding::br_if_simple::encode(target_ptr),");
-    w.line("IrOpKind::Br { stack_drop, arity, height, operand_base_offset } =>");
-    w.line("    encoding::br::encode(target_ptr, *stack_drop as u64, *arity, *height, *operand_base_offset),");
-    w.line("IrOpKind::BrIf { stack_drop, arity, height, operand_base_offset } =>");
-    w.line("    encoding::br_if::encode(target_ptr, *stack_drop as u64, *arity, *height, *operand_base_offset),");
-    w.line("IrOpKind::BrTable { entry_count, data_slot_count, height, operand_base_offset, .. } =>");
-    w.line("    encoding::br_table::encode(*entry_count as u64, *data_slot_count as u64, *operand_base_offset, *height),");
+    w.line("IrOpKind::Br { stack_drop, arity, .. } =>");
+    w.line("    encoding::br::encode(target_ptr, *stack_drop as u64, *arity, stack_top_height, operand_base_offset),");
+    w.line("IrOpKind::BrIf { stack_drop, arity, .. } =>");
+    w.line("    encoding::br_if::encode(target_ptr, *stack_drop as u64, *arity, stack_top_height, operand_base_offset),");
+    w.line("IrOpKind::BrTable { entry_count, data_slot_count, .. } =>");
+    w.line("    encoding::br_table::encode(*entry_count as u64, *data_slot_count as u64, operand_base_offset, stack_top_height),");
     w.blank();
 
     // Calls
@@ -293,17 +303,17 @@ fn generate_encode_operands(w: &mut CodeWriter) {
     w.line("    encoding::call_external::encode(*func_idx as u64, fix_slot(*delta)),");
     w.line("IrOpKind::CallInternal { callee, delta } =>");
     w.line("    encoding::call_internal::encode(*callee, fix_slot(*delta)),");
-    w.line("IrOpKind::CallIndirect { type_idx, table_idx, delta, operand_base_offset, height } =>");
-    w.line("    encoding::call_indirect::encode(*type_idx as u64, *table_idx as u64, fix_slot(*delta), *operand_base_offset, *height),");
+    w.line("IrOpKind::CallIndirect { type_idx, table_idx, delta, .. } =>");
+    w.line("    encoding::call_indirect::encode(*type_idx as u64, *table_idx as u64, fix_slot(*delta), operand_base_offset, stack_top_height),");
     w.blank();
 
     // Returns
     w.line("// Returns");
     w.line("IrOpKind::ReturnVoid { frame_size } => encoding::return_void::encode(*frame_size),");
-    w.line("IrOpKind::ReturnOne { frame_size, operand_base_offset, height } =>");
-    w.line("    encoding::return_one::encode(*frame_size, *operand_base_offset, *height),");
-    w.line("IrOpKind::Return { arity, frame_size, operand_base_offset, height } =>");
-    w.line("    encoding::r#return::encode(*arity, *frame_size, *operand_base_offset, *height),");
+    w.line("IrOpKind::ReturnOne { frame_size, .. } =>");
+    w.line("    encoding::return_one::encode(*frame_size, operand_base_offset, stack_top_height),");
+    w.line("IrOpKind::Return { arity, frame_size, .. } =>");
+    w.line("    encoding::r#return::encode(*arity, *frame_size, operand_base_offset, stack_top_height),");
     w.blank();
 
     // Prologue

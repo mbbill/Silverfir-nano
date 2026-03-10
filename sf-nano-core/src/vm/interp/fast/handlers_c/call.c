@@ -7,17 +7,18 @@
 //   - Calls are tail-call jumps, returns restore from value stack
 //
 // Stack layout after call:
-//   [callee operands...]  <- conceptual sp (tracked via height)
+//   [callee operands...]
 //   [saved_module]        <- fp[frame_size + 2]
 //   [saved_fp]            <- fp[frame_size + 1]
 //   [return_pc]           <- fp[frame_size]
+//   [local-cache home]    <- part of fp[0..frame_size-1] when logical locals < 3
 //   [locals...]           <- fp[params_count..frame_size-1]
 //   [params...]           <- fp[0..params_count-1] (args become params in-place)
 //   [caller operands...]
 //
 // Phase 3: TOS-Only Computation
 // All handlers compute using TOS registers only. SP is not used.
-// Stack access uses fp-relative addressing with operand_base_offset.
+// Frame access uses explicit fp-relative slots and deltas.
 //
 // This file is #included in vm_trampoline.c before fast_c_wrappers.inc.
 
@@ -34,34 +35,26 @@ extern void fast_function_trace_exit(struct Ctx* ctx, uint64_t* fp, uint16_t ari
 // Dereference the double pointer for direct access
 #define fp (*pfp)
 
-// Operand stack access macros (fp-relative)
-#define OPERAND_BASE(operand_base_offset) ((uint64_t*)((uint8_t*)fp + (operand_base_offset)))
-
 // =============================================================================
 // impl_call_local - Unified stack call (no run_trampoline!)
 // =============================================================================
 
-// Encoding: entry(64), params_count(16), locals_count(16), operand_base_offset(32), height(16)
-// Args are at operand_base[height-params_count..height), become params in-place
+// Encoding: entry(64), delta(16), params_count(16), locals_count(16)
+// Args start at fp[delta] and become params in-place
 FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
     struct Instruction* entry = (struct Instruction*)call_local_decode_entry(pc);
+    uint16_t delta = call_local_decode_delta(pc);
     uint16_t params_count = call_local_decode_params_count(pc);
     uint16_t locals_count = call_local_decode_locals_count(pc);
-    uint32_t operand_base_offset = call_local_decode_operand_base_offset(pc);
-    uint16_t height = call_local_decode_height(pc);
-    uint16_t frame_size = params_count + locals_count;
+    uint16_t logical_frame_size = params_count + locals_count;
+    uint16_t frame_size = FRAME_PREFIX_SIZE(logical_frame_size);
 
     // Spill l0/l1/l2 before frame setup
     fp[0] = *p_l0;
     fp[1] = *p_l1;
     fp[2] = *p_l2;
 
-    // Compute operand base for current frame
-    uint64_t* operand_base = OPERAND_BASE(operand_base_offset);
-
-    // Args are at operand_base[height-params_count..height)
-    // Callee fp = operand_base + (height - params_count)
-    uint64_t* callee_fp = operand_base + (height - params_count);
+    uint64_t* callee_fp = fp + delta;
 
     // Stack overflow check: need space for locals + metadata slots
     uint64_t* new_stack_top = callee_fp + frame_size + FRAME_METADATA_SLOTS;
@@ -82,7 +75,7 @@ FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
     // `stp xzr, xzr`, which halves the store count in local-heavy callers like
     // c-ray without turning the handler into a non-leaf `_bzero` call.
     uint64_t* local_dst = callee_fp + params_count;
-    uint16_t remaining = locals_count;
+    uint16_t remaining = frame_size - params_count;
     while (remaining >= 2) {
         local_dst[0] = 0;
         local_dst[1] = 0;
@@ -152,17 +145,14 @@ FORCE_INLINE struct Instruction* return_epilogue(
 FORCE_INLINE struct Instruction* impl_return(IMPL_PARAMS_NONE) {
     uint16_t arity = return_decode_arity(pc);
     uint16_t frame_size = return_decode_frame_size(pc);
-    uint32_t operand_base_offset = return_decode_operand_base_offset(pc);
-    uint16_t height = return_decode_height(pc);
-
-    uint64_t* operand_base = OPERAND_BASE(operand_base_offset);
+    uint16_t src_slot = return_decode_src_slot(pc);
 
     struct Instruction* return_pc = (struct Instruction*)fp[frame_size];
     uint64_t* saved_fp = (uint64_t*)fp[frame_size + 1];
     uint64_t saved_module = fp[frame_size + 2];
 
     for (uint16_t i = 0; i < arity; i++) {
-        fp[i] = operand_base[height - arity + i];
+        fp[i] = fp[src_slot + i];
     }
 
     return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module, arity);
@@ -188,20 +178,15 @@ FORCE_INLINE struct Instruction* impl_return_void(IMPL_PARAMS_NONE) {
 
 FORCE_INLINE struct Instruction* impl_return_one(IMPL_PARAMS_NONE) {
     uint16_t frame_size = return_one_decode_frame_size(pc);
-    uint32_t operand_base_offset = return_one_decode_operand_base_offset(pc);
-    uint16_t height = return_one_decode_height(pc);
-
-    uint64_t* operand_base = OPERAND_BASE(operand_base_offset);
+    uint16_t src_slot = return_one_decode_src_slot(pc);
 
     struct Instruction* return_pc = (struct Instruction*)fp[frame_size];
     uint64_t* saved_fp = (uint64_t*)fp[frame_size + 1];
     uint64_t saved_module = fp[frame_size + 2];
 
-    // Single result: fp[0] = operand_base[height - 1]
-    fp[0] = operand_base[height - 1];
+    fp[0] = fp[src_slot];
 
     return return_epilogue(ctx, pfp, p_l0, p_l1, p_l2, return_pc, saved_fp, saved_module, 1);
 }
 
 #undef fp
-#undef OPERAND_BASE

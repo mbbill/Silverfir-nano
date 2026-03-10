@@ -33,6 +33,12 @@
 
 // Metadata slots between frame and operand stack (return_pc + saved_fp + saved_module)
 #define FRAME_METADATA_SLOTS 3
+// Home slots reserved for l0/l1/l2, even when a function has fewer locals.
+#define LOCAL_CACHE_HOME_SLOTS 3
+
+// Compute the runtime frame prefix size from the logical params+locals size.
+#define FRAME_PREFIX_SIZE(logical_frame_size) \
+    (((logical_frame_size) < LOCAL_CACHE_HOME_SLOTS) ? LOCAL_CACHE_HOME_SLOTS : (logical_frame_size))
 
 // Calculate operand stack base as slot index from fp
 // operand[0] is at fp[frame_size + FRAME_METADATA_SLOTS]

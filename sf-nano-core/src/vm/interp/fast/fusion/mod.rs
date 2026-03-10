@@ -1,16 +1,10 @@
-//! Fusion subsystem for the fast interpreter.
+//! Fusion backend implementation.
 //!
-//! - `resolve`: IR-level fusion pattern matching (runtime, feature = "fusion")
-//! - `profiler`: Instruction sequence capture (feature = "profile")
-//! - `pattern_trie`: N-gram trie from profiler stats (feature = "profile")
-//! - `discovery`: Automatic fusion candidate selection (feature = "profile")
+//! Fusion consumes planning-stage grouping and emits handler-stream groups.
+//!
+//! The crucial architectural change is that grouping is no longer discovered
+//! here. Planning consumes the prebuilt fusion table and hands fast/fusion a
+//! grouped LIR program to emit.
 
-#[cfg(feature = "fusion")]
-pub mod resolve;
-
-#[cfg(feature = "profile")]
-pub mod profiler;
-#[cfg(feature = "profile")]
-pub mod pattern_trie;
-#[cfg(feature = "profile")]
-pub mod discovery;
+pub mod policy;
+pub mod table;

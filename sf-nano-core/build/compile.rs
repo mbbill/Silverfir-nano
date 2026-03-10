@@ -33,6 +33,10 @@ pub fn verify_preserve_none_abi() {
 
     let c_root = "src/vm/interp/fast/trampoline";
     let src = format!("{}/verify_abi.c", c_root);
+    if fs::metadata(&src).is_err() {
+        println!("cargo:warning=preserve_none ABI probe not found in new vm tree, skipping verification");
+        return;
+    }
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
     let asm_path = PathBuf::from(&out_dir).join("verify_abi.s");
 

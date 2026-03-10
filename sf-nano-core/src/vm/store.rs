@@ -1,19 +1,19 @@
-//! Simplified Store for single-module WebAssembly execution.
+//! Store/runtime state shared by the VM backends.
 //!
-//! In sf-core, the Store holds all instances across multiple modules.
-//! In sf-nano, since we target single-module execution, the Store is
-//! essentially a wrapper around a single `ModuleInst`.
+//! This layer should stay backend-agnostic.
 
-use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst};
+use crate::vm::entities::{
+    FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
+};
 
-/// A simplified single-module store.
 pub struct Store {
     module: ModuleInst,
 }
 
 impl Store {
+    #[inline]
     pub fn new(module: ModuleInst) -> Self {
-        Store { module }
+        Self { module }
     }
 
     #[inline]
@@ -25,8 +25,6 @@ impl Store {
     pub fn module_mut(&mut self) -> &mut ModuleInst {
         &mut self.module
     }
-
-    // -- Convenience accessors ------------------------------------------------
 
     #[inline]
     pub fn function(&self, idx: usize) -> &FunctionInst {

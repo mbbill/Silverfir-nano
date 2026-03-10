@@ -9,19 +9,18 @@ use alloc::vec::Vec;
 use super::common::*;
 use super::trap_with;
 use crate::vm::interp::fast::encoding::{call_external, call_indirect, call_ref};
+use crate::vm::interp::fast::frame_layout;
 use crate::vm::entities::{Caller, MemInst};
 use crate::error::WasmError;
 #[cfg(feature = "function-trace")]
-use crate::vm::function_trace;
+use crate::vm::debug::function_trace;
 
-/// Read a value from the operand stack using fp-relative addressing.
-/// operand_base = fp + operand_base_offset/8, slot at operand_base[index]
+/// Read a value from an explicit fp-relative slot.
 #[inline(always)]
-fn operand_read(fp_pp: *mut *mut u64, operand_base_offset: usize, index: usize) -> u64 {
+fn frame_slot_read(fp_pp: *mut *mut u64, slot: usize) -> u64 {
     unsafe {
         let fp = *fp_pp;
-        let operand_base = fp.add(operand_base_offset / 8);
-        *operand_base.add(index)
+        *fp.add(slot)
     }
 }
 
@@ -93,7 +92,7 @@ fn enter_unified_callee(
     let func_type = spec.func_type();
     let params_count = func_type.params().len();
     let locals_count = spec.locals().len();
-    let frame_size = params_count + locals_count;
+    let frame_size = frame_layout::frame_prefix_size(params_count + locals_count);
 
     // 4. Compute callee_fp
     let callee_fp = unsafe { (*fp_pp).add(delta) };
@@ -114,9 +113,9 @@ fn enter_unified_callee(
     }
 
     // 7. Zero callee's locals
-    if locals_count > 0 {
+    if frame_size > params_count {
         unsafe {
-            core::ptr::write_bytes(callee_fp.add(params_count), 0, locals_count);
+            core::ptr::write_bytes(callee_fp.add(params_count), 0, frame_size - params_count);
         }
     }
 
@@ -303,8 +302,7 @@ pub extern "C" fn impl_call_indirect(
     let delta = call_indirect::decode_delta(pc) as usize;
     let type_idx = call_indirect::decode_type_idx(pc) as usize;
     let table_idx = call_indirect::decode_table_idx(pc) as usize;
-    let operand_base_offset = call_indirect::decode_operand_base_offset(pc) as usize;
-    let height = call_indirect::decode_height(pc) as usize;
+    let index_slot = call_indirect::decode_index_slot(pc) as usize;
     let store_ptr: *const Store = ctx_store(ctx) as *const Store;
 
     // Spill l0/l1/l2 before call
@@ -312,8 +310,7 @@ pub extern "C" fn impl_call_indirect(
     l1_spill(fp_pp, p_l1);
     l2_spill(fp_pp, p_l2);
 
-    // Read element index from operand stack (at height - 1, as index is top of stack)
-    let elem_index = operand_read(fp_pp, operand_base_offset, height - 1) as usize;
+    let elem_index = frame_slot_read(fp_pp, index_slot) as usize;
 
     // Get expected type from type_idx
     let store_ref: &Store = ptr_ref(store_ptr);
@@ -388,8 +385,7 @@ pub extern "C" fn impl_call_ref(
 ) -> *mut Instruction {
     let delta = call_ref::decode_delta(pc) as usize;
     let type_idx = call_ref::decode_type_idx(pc) as usize;
-    let operand_base_offset = call_ref::decode_operand_base_offset(pc) as usize;
-    let height = call_ref::decode_height(pc) as usize;
+    let ref_slot = call_ref::decode_ref_slot(pc) as usize;
     let store_ptr = ctx_store(ctx) as *const Store;
 
     // Spill l0/l1/l2 before call
@@ -397,8 +393,7 @@ pub extern "C" fn impl_call_ref(
     l1_spill(fp_pp, p_l1);
     l2_spill(fp_pp, p_l2);
 
-    // Read function reference from operand stack (at height - 1, as ref is top of stack)
-    let func_ref_raw = operand_read(fp_pp, operand_base_offset, height - 1) as usize;
+    let func_ref_raw = frame_slot_read(fp_pp, ref_slot) as usize;
 
     // Check for null reference
     if func_ref_raw == usize::MAX {

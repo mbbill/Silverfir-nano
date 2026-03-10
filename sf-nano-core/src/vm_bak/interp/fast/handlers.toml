@@ -1,0 +1,1346 @@
+# Fast Interpreter Handler Definitions
+# =====================================
+# Single source of truth for handlers and their encodings.
+#
+# Instruction layout: handler(8B) | imm0(8B) | imm1(8B) | imm2(8B) = 32B
+#
+# Encoding modes:
+#   - (no encoding): Stack-only operation, no immediates
+#   - pattern = "name": Reference a shared [[pattern]]
+#   - encoding.fields = [...]: Inline field definition
+#
+# Field bits: 8, 16, 32, 64
+# Field kinds: constant (default), slot (needs fixup), target (branch target)
+#
+# TOS Pattern:
+#   - tos_pattern = { pop = N, push = M }: Stack effect, generates D1-D4 variants
+#   - tos_pattern = "none": No TOS interaction (control flow, calls, bulk ops)
+
+# =============================================================================
+# SHARED PATTERNS
+# =============================================================================
+# Truly shared patterns that multiple different handlers use.
+
+# Memory load/store share offset+memidx layout
+[[pattern]]
+name = "load"
+fields = [
+    { name = "offset", bits = 32 },
+    { name = "memidx", bits = 32 },
+]
+
+[[pattern]]
+name = "store"
+fields = [
+    { name = "offset", bits = 32 },
+    { name = "memidx", bits = 32 },
+]
+
+# Global get/set share the same layout
+[[pattern]]
+name = "global"
+fields = [
+    { name = "global_idx", bits = 64 },
+]
+
+# Ternary operations (memory.fill, memory.copy, table.fill, table.copy)
+[[pattern]]
+name = "ternary"
+fields = [
+    { name = "imm0", bits = 64 },
+    { name = "imm1", bits = 64 },
+]
+
+# Drop operations (elem_drop, data_drop)
+[[pattern]]
+name = "drop_op"
+fields = [
+    { name = "idx", bits = 64 },
+]
+
+# =============================================================================
+# VALUE PATTERNS
+# =============================================================================
+
+# Constant push to stack
+[[pattern]]
+name = "const"
+fields = [
+    { name = "value", bits = 64 },
+]
+
+# =============================================================================
+# SPECIAL PATTERNS
+# =============================================================================
+
+# Raw escape hatch pattern
+[[pattern]]
+name = "raw"
+fields = [
+    { name = "imm0", bits = 64 },
+    { name = "imm1", bits = 64 },
+    { name = "imm2", bits = 64 },
+]
+
+# =============================================================================
+# TERMINAL / SPECIAL
+# =============================================================================
+
+[[handler]]
+op = "term"
+custom = true
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+# =============================================================================
+# TOS SPILL/FILL (Phase 3 - FP-Based Addressing)
+# =============================================================================
+# Spill/fill use fp-based addressing to access the operand stack directly.
+# operand_base_offset = frame_size * 8 (offset from fp to operand stack start)
+# stack_height = current operand stack height (number of values)
+#
+# The cyclic register assignment depends on stack height:
+#   Position P at depth D → register t[(D - P) % 4]
+# So we encode both new_depth (TOS count) and depth_variant (height mod 4).
+#
+# Addressing: operand_base = fp + operand_base_offset
+#             slot[i] = operand_base[i]
+
+# Spill: write TOS registers to frame slots
+# 4 handlers × 4 variants = 16 generated wrappers
+# Variant D1-D4 determined by (height-1)%4, encodes register-to-position mapping
+# The tos_pattern { pop = N } passes N position registers based on variant
+# Encoding: slot = frame_size + height - 1 (top of operand stack in frame)
+
+[[handler]]
+op = "spill_1"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 1, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "spill_2"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 2, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "spill_3"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 3, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "spill_4"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 4, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+# Fill: read frame slots into TOS registers
+# 4 handlers × 4 variants = 16 generated wrappers
+
+[[handler]]
+op = "fill_1"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 0, push = 1 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "fill_2"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 0, push = 2 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "fill_3"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 0, push = 3 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "fill_4"
+c_impl = true
+encoding.fields = [{ name = "slot", bits = 16 }]
+tos_pattern = { pop = 0, push = 4 }
+variants = ["D1", "D2", "D3", "D4"]
+
+# =============================================================================
+# CONTROL FLOW
+# =============================================================================
+
+[[handler]]
+op = "unreachable"
+c_impl = true
+tos_pattern = "none"
+
+[[handler]]
+op = "nop"
+c_impl = true
+tos_pattern = "none"
+
+[[handler]]
+op = "return"
+c_impl = true
+encoding.fields = [
+    { name = "arity", bits = 16 },
+    { name = "frame_size", bits = 16 },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "return_void"
+c_impl = true
+encoding.fields = [
+    { name = "frame_size", bits = 16 },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "return_one"
+c_impl = true
+encoding.fields = [
+    { name = "frame_size", bits = 16 },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "drop"
+c_impl = true
+tos_pattern = { pop = 1, push = 0 }
+
+[[handler]]
+op = "select"
+c_impl = true
+tos_pattern = { pop = 3, push = 1 }
+
+[[handler]]
+op = "select_t"
+c_impl = true
+tos_pattern = { pop = 3, push = 1 }
+
+[[handler]]
+op = "block"
+c_impl = true
+tos_pattern = "none"
+
+[[handler]]
+op = "loop"
+c_impl = true
+tos_pattern = "none"
+
+[[handler]]
+op = "if_"
+custom = true
+c_impl = true
+encoding.fields = [
+    { name = "target", bits = 64, kind = "target" },
+]
+tos_pattern = { pop = 1, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "else_"
+custom = true
+c_impl = true
+encoding.fields = [
+    { name = "target", bits = 64, kind = "target" },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "end"
+c_impl = true
+tos_pattern = "none"
+
+[[handler]]
+op = "br"
+custom = true
+c_impl = true
+encoding.fields = [
+    { name = "target", bits = 64, kind = "target" },
+    { name = "stack_drop", bits = 64 },
+    { name = "arity", bits = 16 },
+    { name = "height", bits = 16, kind = "slot" },
+    { name = "operand_base_offset", bits = 32 },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "br_if"
+custom = true
+c_impl = true
+encoding.fields = [
+    { name = "target", bits = 64, kind = "target" },
+    { name = "stack_drop", bits = 64 },
+    { name = "arity", bits = 16 },
+    { name = "height", bits = 16, kind = "slot" },
+    { name = "operand_base_offset", bits = 32 },
+]
+tos_pattern = { pop = 1, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+
+[[handler]]
+op = "br_if_simple"
+c_impl = true
+encoding.fields = [
+    { name = "target", bits = 64, kind = "target" },
+]
+tos_pattern = { pop = 1, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+dispatch = "nonlinear"
+
+[[handler]]
+op = "br_table"
+custom = true
+c_impl = true
+encoding.fields = [
+    { name = "entry_count", bits = 64 },
+    { name = "data_slot_count", bits = 64 },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = { pop = 1, push = 0 }
+variants = ["D1", "D2", "D3", "D4"]
+dispatch = "nonlinear"
+
+# Data pseudo-instruction: holds inline br_table entries
+[[handler]]
+op = "data"
+custom = true
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "call_external"
+custom = true
+encoding.fields = [
+    { name = "func_idx", bits = 64 },
+    { name = "delta", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+
+[[handler]]
+op = "call_internal"
+custom = true
+encoding.fields = [
+    { name = "callee_func", bits = 64 },
+    { name = "delta", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+
+[[handler]]
+op = "call_local"
+c_impl = true
+encoding.fields = [
+    { name = "entry", bits = 64 },
+    { name = "params_count", bits = 16 },
+    { name = "locals_count", bits = 16 },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+dispatch = "nonlinear"
+
+[[handler]]
+op = "call_indirect"
+custom = true
+encoding.fields = [
+    { name = "type_idx", bits = 64 },
+    { name = "table_idx", bits = 64 },
+    { name = "delta", bits = 16, kind = "slot" },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+
+# =============================================================================
+# LOCAL AND GLOBAL OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "local_get"
+c_impl = true
+encoding.fields = [
+    { name = "idx", bits = 16 },
+]
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "local_set"
+c_impl = true
+encoding.fields = [
+    { name = "idx", bits = 16 },
+]
+tos_pattern = { pop = 1, push = 0 }
+
+[[handler]]
+op = "local_tee"
+c_impl = true
+encoding.fields = [
+    { name = "idx", bits = 16 },
+]
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "global_get"
+pattern = "global"
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "global_set"
+pattern = "global"
+tos_pattern = { pop = 1, push = 0 }
+
+# =============================================================================
+# CONSTANT OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "const"
+types = ["i32", "i64", "f32", "f64"]
+pattern = "const"
+c_impl = true
+tos_pattern = { pop = 0, push = 1 }
+
+# =============================================================================
+# ARITHMETIC OPERATIONS (2 inputs -> 1 output)
+# =============================================================================
+
+[[handler]]
+op = "add"
+types = ["i32", "i64", "f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "sub"
+types = ["i32", "i64", "f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "mul"
+types = ["i32", "i64", "f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "div_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "trapping_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "div_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "trapping_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "rem_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "trapping_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "rem_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "trapping_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "div"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "min"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "max"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "copysign"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+# =============================================================================
+# BITWISE OPERATIONS (2 inputs -> 1 output)
+# =============================================================================
+
+[[handler]]
+op = "and"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "or"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "xor"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "shl"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "shr_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "shr_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "rotl"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "rotr"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+# =============================================================================
+# UNARY INTEGER OPERATIONS (1 input -> 1 output)
+# =============================================================================
+
+[[handler]]
+op = "clz"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "ctz"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "popcnt"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "eqz"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# COMPARISON OPERATIONS (2 inputs -> 1 i32 output)
+# =============================================================================
+
+[[handler]]
+op = "eq"
+types = ["i32", "i64", "f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "ne"
+types = ["i32", "i64", "f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "lt_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "lt_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "gt_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "gt_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "le_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "le_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "ge_s"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "ge_u"
+types = ["i32", "i64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "lt"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "gt"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "le"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "ge"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_binop"
+tos_pattern = { pop = 2, push = 1 }
+
+# =============================================================================
+# UNARY FLOAT OPERATIONS (1 input -> 1 output)
+# =============================================================================
+
+[[handler]]
+op = "abs"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "neg"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "ceil"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "floor"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "trunc"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "nearest"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "sqrt"
+types = ["f32", "f64"]
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# REINTERPRET OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "i32_reinterpret_f32"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_reinterpret_f64"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_reinterpret_i32"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_reinterpret_i64"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# CONVERSION OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "i32_wrap_i64"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_f32_s"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_f32_u"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_f64_s"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_f64_u"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_extend_i32_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_extend_i32_u"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_f32_s"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_f32_u"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_f64_s"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_f64_u"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_convert_i32_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_convert_i32_u"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_convert_i64_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_convert_i64_u"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f32_demote_f64"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_convert_i32_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_convert_i32_u"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_convert_i64_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_convert_i64_u"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "f64_promote_f32"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+# Sign extension operations
+[[handler]]
+op = "i32_extend8_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_extend16_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_extend8_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_extend16_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_extend32_s"
+c_impl = true
+category = "pure_unary"
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# FC SATURATING TRUNCATIONS
+# =============================================================================
+
+[[handler]]
+op = "i32_trunc_sat_f32_s"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_sat_f32_u"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_sat_f64_s"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i32_trunc_sat_f64_u"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_sat_f32_s"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_sat_f32_u"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_sat_f64_s"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_trunc_sat_f64_u"
+c_impl = true
+opcode_prefix = "fc"
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# MEMORY OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "load"
+types = ["i32", "i64", "f32", "f64"]
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load8_s"
+types = ["i32", "i64"]
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load8_u"
+types = ["i32", "i64"]
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load16_s"
+types = ["i32", "i64"]
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load16_u"
+types = ["i32", "i64"]
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_load32_s"
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_load32_u"
+pattern = "load"
+c_impl = true
+category = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "store"
+types = ["i32", "i64", "f32", "f64"]
+pattern = "store"
+c_impl = true
+category = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "store8"
+types = ["i32", "i64"]
+pattern = "store"
+c_impl = true
+category = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "store16"
+types = ["i32", "i64"]
+pattern = "store"
+c_impl = true
+category = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "i64_store32"
+pattern = "store"
+c_impl = true
+category = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+# Memory management
+[[handler]]
+op = "memory_size"
+encoding.fields = [
+    { name = "mem_idx", bits = 64 },
+]
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "memory_grow"
+encoding.fields = [
+    { name = "mem_idx", bits = 64 },
+]
+tos_pattern = { pop = 1, push = 1 }
+
+# Bulk memory (FC prefix) - pop3_push0
+[[handler]]
+op = "memory_init"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+[[handler]]
+op = "data_drop"
+opcode_prefix = "fc"
+pattern = "drop_op"
+tos_pattern = "none"
+
+[[handler]]
+op = "memory_copy"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+[[handler]]
+op = "memory_fill"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+# =============================================================================
+# MULTI-MEMORY SLOW PATH HANDLERS
+# =============================================================================
+
+[[handler]]
+op = "load_mm"
+types = ["i32", "i64", "f32", "f64"]
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load8_s_mm"
+types = ["i32", "i64"]
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load8_u_mm"
+types = ["i32", "i64"]
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load16_s_mm"
+types = ["i32", "i64"]
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "load16_u_mm"
+types = ["i32", "i64"]
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_load32_s_mm"
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "i64_load32_u_mm"
+pattern = "load"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "store_mm"
+types = ["i32", "i64", "f32", "f64"]
+pattern = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "store8_mm"
+types = ["i32", "i64"]
+pattern = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "store16_mm"
+types = ["i32", "i64"]
+pattern = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+[[handler]]
+op = "i64_store32_mm"
+pattern = "store"
+tos_pattern = { pop = 2, push = 0 }
+
+# =============================================================================
+# REFERENCE OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "ref_null"
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "ref_is_null"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "ref_func"
+encoding.fields = [
+    { name = "func_idx", bits = 64 },
+]
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "ref_as_non_null"
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "ref_eq"
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "call_ref"
+custom = true
+encoding.fields = [
+    { name = "type_idx", bits = 64 },
+    { name = "delta", bits = 16, kind = "slot" },
+    { name = "operand_base_offset", bits = 32 },
+    { name = "height", bits = 16, kind = "slot" },
+]
+tos_pattern = "none"
+
+# =============================================================================
+# TABLE OPERATIONS
+# =============================================================================
+
+[[handler]]
+op = "table_get"
+encoding.fields = [
+    { name = "table_idx", bits = 64 },
+]
+tos_pattern = { pop = 1, push = 1 }
+
+[[handler]]
+op = "table_set"
+encoding.fields = [
+    { name = "table_idx", bits = 64 },
+]
+tos_pattern = { pop = 2, push = 0 }
+
+# Bulk table ops (FC prefix)
+[[handler]]
+op = "table_init"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+[[handler]]
+op = "elem_drop"
+opcode_prefix = "fc"
+pattern = "drop_op"
+tos_pattern = "none"
+
+[[handler]]
+op = "table_copy"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+[[handler]]
+op = "table_grow"
+opcode_prefix = "fc"
+encoding.fields = [
+    { name = "table_idx", bits = 64 },
+]
+tos_pattern = { pop = 2, push = 1 }
+
+[[handler]]
+op = "table_size"
+opcode_prefix = "fc"
+encoding.fields = [
+    { name = "table_idx", bits = 64 },
+]
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "table_fill"
+opcode_prefix = "fc"
+pattern = "ternary"
+tos_pattern = { pop = 3, push = 0 }
+
+# =============================================================================
+# L0 LOCAL REGISTER CACHE
+# =============================================================================
+
+[[handler]]
+op = "init_locals"
+c_impl = true
+tos_pattern = "none"
+encoding.fields = [
+    { name = "hot_local_idx_0", bits = 16 },
+    { name = "hot_local_idx_1", bits = 16 },
+    { name = "hot_local_idx_2", bits = 16 },
+]
+
+[[handler]]
+op = "local_get_l0"
+c_impl = true
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "local_set_l0"
+c_impl = true
+tos_pattern = { pop = 1, push = 0 }
+
+[[handler]]
+op = "local_tee_l0"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# L1 LOCAL REGISTER CACHE
+# =============================================================================
+
+[[handler]]
+op = "local_get_l1"
+c_impl = true
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "local_set_l1"
+c_impl = true
+tos_pattern = { pop = 1, push = 0 }
+
+[[handler]]
+op = "local_tee_l1"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# L2 Local Register Cache
+# =============================================================================
+
+[[handler]]
+op = "local_get_l2"
+c_impl = true
+tos_pattern = { pop = 0, push = 1 }
+
+[[handler]]
+op = "local_set_l2"
+c_impl = true
+tos_pattern = { pop = 1, push = 0 }
+
+[[handler]]
+op = "local_tee_l2"
+c_impl = true
+tos_pattern = { pop = 1, push = 1 }
+
+# =============================================================================
+# FUSED INSTRUCTIONS
+# =============================================================================
+# Fused patterns are auto-generated by discover-fusion into handlers_fused.toml.
+# Run: cargo run --bin sf-cli -- discover-fusion <wasm-file> --top 50

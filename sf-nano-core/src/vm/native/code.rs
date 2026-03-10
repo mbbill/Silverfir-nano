@@ -1,81 +1,94 @@
-//! Native compiled code storage and cached helper metadata.
+//! Native compiled code object.
+//!
+//! This should own:
+//! - executable code
+//! - helper metadata
+//! - patch metadata
+//!
+//! It must not own an interpreter-shaped descriptor stream.
 
-use crate::vm::entities::FunctionInst;
-use super::bridge::HelperMetadata;
-use super::instruction::{NativeEntry, NativeInst};
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
-#[derive(Debug, Clone, Copy)]
-pub struct DirectCallEntryPatch {
-    pub callee: *const FunctionInst,
-    pub literal_off: usize,
+use crate::vm::plan::group::GroupId;
+
+use super::{
+    entry::NativeEntry,
+    helper_meta::{HelperMetadataArena, HelperMetadataRecord},
+};
+
+/// Direct-call patch site that must be finalized to a native entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectCallPatch {
+    pub code_offset: u32,
+    pub target: PatchTarget,
 }
 
+/// Explicit native patch target.
+///
+/// This must stay in terms of final native entry identity, not a hidden
+/// interpreter-style descriptor index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchTarget {
+    Group(GroupId),
+    EntryIndex(u32),
+}
+
+/// Native compiled code object.
+///
+/// This is intentionally *not* a descriptor stream. It owns executable bytes
+/// plus the side metadata required by native wrappers and patching.
+#[derive(Debug, Default)]
 pub struct NativeCode {
-    code: Box<[NativeInst]>,
-    helper_metadata: Box<[HelperMetadata]>,
-    direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
-}
-
-impl core::fmt::Debug for NativeCode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("NativeCode")
-            .field("code_len", &self.code.len())
-            .field("helper_metadata_len", &self.helper_metadata.len())
-            .field("direct_call_entry_patches_len", &self.direct_call_entry_patches.len())
-            .finish()
-    }
+    pub entry: Option<NativeEntry>,
+    pub text: Box<[u8]>,
+    pub helper_metadata: Box<[HelperMetadataRecord]>,
+    pub direct_call_patches: Box<[DirectCallPatch]>,
 }
 
 impl NativeCode {
-    pub fn new(code: Box<[NativeInst]>, helper_metadata: Box<[HelperMetadata]>) -> Self {
-        Self::new_with_patches(code, helper_metadata, Box::new([]))
-    }
-
-    pub fn new_with_patches(
-        code: Box<[NativeInst]>,
-        helper_metadata: Box<[HelperMetadata]>,
-        direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
-    ) -> Self {
-        Self {
-            code,
-            helper_metadata,
-            direct_call_entry_patches,
-        }
-    }
-
     #[inline]
-    pub fn entry_ptr(&self) -> *mut NativeInst {
-        if self.code.is_empty() {
-            core::ptr::null_mut()
-        } else {
-            self.code.as_ptr() as *mut NativeInst
-        }
-    }
-
-    #[inline]
-    pub fn code(&self) -> &[NativeInst] {
-        &self.code
-    }
-
-    #[inline]
-    pub fn helper_metadata(&self) -> &[HelperMetadata] {
+    pub fn helper_metadata(&self) -> &[HelperMetadataRecord] {
         &self.helper_metadata
     }
 
     #[inline]
-    pub fn helper_metadata_mut(&mut self) -> &mut [HelperMetadata] {
-        &mut self.helper_metadata
+    pub fn direct_call_patches(&self) -> &[DirectCallPatch] {
+        &self.direct_call_patches
     }
 
     #[inline]
-    pub fn direct_call_entry_patches(&self) -> &[DirectCallEntryPatch] {
-        &self.direct_call_entry_patches
+    pub fn from_parts(
+        entry: Option<NativeEntry>,
+        text: Vec<u8>,
+        helper_metadata: HelperMetadataArena,
+        direct_call_patches: Vec<DirectCallPatch>,
+    ) -> Self {
+        Self {
+            entry,
+            text: text.into_boxed_slice(),
+            helper_metadata: helper_metadata.into_boxed_slice(),
+            direct_call_patches: direct_call_patches.into_boxed_slice(),
+        }
+    }
+
+    #[inline]
+    pub fn build_cache(
+        &self,
+        params_len: usize,
+        locals_len: usize,
+        results_len: usize,
+    ) -> NativeCodeCache {
+        NativeCodeCache {
+            entry: self.entry,
+            params_len,
+            locals_len,
+            results_len,
+        }
     }
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeCodeCache {
     entry: Option<NativeEntry>,
     params_len: usize,
@@ -124,38 +137,16 @@ impl NativeCodeCache {
     }
 }
 
-impl NativeCode {
-    pub fn build_cache(&self, params_len: usize, locals_len: usize, results_len: usize) -> NativeCodeCache {
-        NativeCodeCache {
-            entry: self.code.first().map(|inst| inst.entry),
-            params_len,
-            locals_len,
-            results_len,
-        }
-    }
-}
-
 pub fn create_native_code(
-    code: Box<[NativeInst]>,
-    helper_metadata: Box<[HelperMetadata]>,
+    entry: Option<NativeEntry>,
+    text: Vec<u8>,
+    helper_metadata: HelperMetadataArena,
+    direct_call_patches: Vec<DirectCallPatch>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
 ) -> (NativeCode, NativeCodeCache) {
-    let native_code = NativeCode::new(code, helper_metadata);
-    let cache = native_code.build_cache(params_len, locals_len, results_len);
-    (native_code, cache)
-}
-
-pub fn create_native_code_with_patches(
-    code: Box<[NativeInst]>,
-    helper_metadata: Box<[HelperMetadata]>,
-    direct_call_entry_patches: Box<[DirectCallEntryPatch]>,
-    params_len: usize,
-    locals_len: usize,
-    results_len: usize,
-) -> (NativeCode, NativeCodeCache) {
-    let native_code = NativeCode::new_with_patches(code, helper_metadata, direct_call_entry_patches);
-    let cache = native_code.build_cache(params_len, locals_len, results_len);
-    (native_code, cache)
+    let code = NativeCode::from_parts(entry, text, helper_metadata, direct_call_patches);
+    let cache = code.build_cache(params_len, locals_len, results_len);
+    (code, cache)
 }

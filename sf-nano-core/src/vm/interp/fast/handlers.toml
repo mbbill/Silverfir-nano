@@ -191,8 +191,7 @@ c_impl = true
 encoding.fields = [
     { name = "arity", bits = 16 },
     { name = "frame_size", bits = 16 },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
+    { name = "src_slot", bits = 16, kind = "slot" },
 ]
 tos_pattern = "none"
 dispatch = "nonlinear"
@@ -211,8 +210,7 @@ op = "return_one"
 c_impl = true
 encoding.fields = [
     { name = "frame_size", bits = 16 },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
+    { name = "src_slot", bits = 16, kind = "slot" },
 ]
 tos_pattern = "none"
 dispatch = "nonlinear"
@@ -273,10 +271,9 @@ custom = true
 c_impl = true
 encoding.fields = [
     { name = "target", bits = 64, kind = "target" },
-    { name = "stack_drop", bits = 64 },
-    { name = "arity", bits = 16 },
-    { name = "height", bits = 16, kind = "slot" },
-    { name = "operand_base_offset", bits = 32 },
+    { name = "src_slot", bits = 16, kind = "slot" },
+    { name = "dst_slot", bits = 16, kind = "slot" },
+    { name = "count", bits = 16 },
 ]
 tos_pattern = "none"
 dispatch = "nonlinear"
@@ -287,10 +284,9 @@ custom = true
 c_impl = true
 encoding.fields = [
     { name = "target", bits = 64, kind = "target" },
-    { name = "stack_drop", bits = 64 },
-    { name = "arity", bits = 16 },
-    { name = "height", bits = 16, kind = "slot" },
-    { name = "operand_base_offset", bits = 32 },
+    { name = "src_slot", bits = 16, kind = "slot" },
+    { name = "dst_slot", bits = 16, kind = "slot" },
+    { name = "count", bits = 16 },
 ]
 tos_pattern = { pop = 1, push = 0 }
 variants = ["D1", "D2", "D3", "D4"]
@@ -312,8 +308,6 @@ c_impl = true
 encoding.fields = [
     { name = "entry_count", bits = 64 },
     { name = "data_slot_count", bits = 64 },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
 ]
 tos_pattern = { pop = 1, push = 0 }
 variants = ["D1", "D2", "D3", "D4"]
@@ -349,10 +343,9 @@ op = "call_local"
 c_impl = true
 encoding.fields = [
     { name = "entry", bits = 64 },
+    { name = "delta", bits = 16, kind = "slot" },
     { name = "params_count", bits = 16 },
     { name = "locals_count", bits = 16 },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
 ]
 tos_pattern = "none"
 dispatch = "nonlinear"
@@ -364,8 +357,7 @@ encoding.fields = [
     { name = "type_idx", bits = 64 },
     { name = "table_idx", bits = 64 },
     { name = "delta", bits = 16, kind = "slot" },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
+    { name = "index_slot", bits = 16, kind = "slot" },
 ]
 tos_pattern = "none"
 
@@ -1208,8 +1200,7 @@ custom = true
 encoding.fields = [
     { name = "type_idx", bits = 64 },
     { name = "delta", bits = 16, kind = "slot" },
-    { name = "operand_base_offset", bits = 32 },
-    { name = "height", bits = 16, kind = "slot" },
+    { name = "ref_slot", bits = 16, kind = "slot" },
 ]
 tos_pattern = "none"
 

@@ -1,59 +1,40 @@
-//! Native backend: runtime fusion via micro-assembly.
+//! Standalone native backend.
 //!
-//! ARM64-only for now. This module is the current home of the former
-//! micro-JIT backend after being split out from `interp/fast`.
-//! See `docs/NATIVE_BACKEND_ROADMAP.md` for the architectural direction.
+//! Important design intent:
+//! - no `Instruction`
+//! - no `NativeInst`
+//! - no generic `tos_slots`
+//! - no `read_t0` / `read_topN` / `write_tN` helper entry families
+//! - no backend-side rediscovery of grouping
+//!
+//! Native consumes:
+//! - shared planning-stage groups
+//! - backend-facing LIR
+//! and emits direct native entries plus uniform cold wrappers.
 
-use crate::vm::entities::ModuleInst;
-use crate::vm::lowered::IrOp;
-use alloc::string::{String, ToString};
-
-mod code_buf;
-mod bridge;
+pub mod arm64;
+pub mod bridge;
+pub mod build;
 pub mod code;
-pub mod compiler;
+pub mod code_buf;
 pub mod context;
-mod group_meta;
-mod debug_map;
-#[cfg(feature = "native-dump")]
-mod debug_dump;
-mod finalizer;
-pub mod instruction;
+pub mod dump;
+pub mod entry;
+pub mod finalizer;
+pub mod helper;
+pub mod helper_meta;
+pub mod jitdump;
+pub mod lower;
+pub mod map;
 pub mod precompile;
-pub mod resolved;
+pub mod resolve;
 pub mod runtime;
-mod samply_jitdump;
-mod arm64;
+pub mod stats;
 
-pub(crate) use code_buf::CodeBuffer;
-pub(crate) use arm64::{resolve_native, resolve_native_with_context};
-pub use arm64::{
-    JitStatsSnapshot,
+pub use entry::NativeEntry;
+pub use stats::{
     NativeStatsSnapshot,
-    jit_capacity_skips,
-    jit_stats,
-    jit_stats_snapshot,
     native_capacity_skips,
     native_stats,
     native_stats_snapshot,
 };
-
-pub fn resolve_backend(
-    ir_ops: &[IrOp],
-    _operand_base: usize,
-    _tos_register_count: usize,
-    module: &ModuleInst,
-    hot_local_mask: [bool; 3],
-    func_idx: u32,
-) -> Result<alloc::vec::Vec<resolved::ResolvedNativeInst>, String> {
-    let mut buf = module
-        .native_code_buffer()
-        .map_err(|err| err.to_string())?;
-    arm64::resolve_native_with_context(
-        ir_ops,
-        &mut buf,
-        hot_local_mask,
-        &module.name,
-        func_idx,
-    )
-}

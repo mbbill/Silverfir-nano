@@ -6,33 +6,18 @@
 use crate::value_type::{RefType, ValueType};
 use core::fmt::Display;
 
-/// A tagged reference handle for WebAssembly references.
-/// Uses tag bits to distinguish between function references and extern references.
-///
-/// ## Tag Bit Layout (bits 60-61):
-/// - Bit 61: Extern hierarchy marker (for externref values)
-/// - Bit 60: Host reference marker (opaque host values)
-///
-/// ## Tag Combinations:
-/// - `0b00`: Plain reference (funcref or untagged)
-/// - `0b01` (bit 60): Host value
-/// - `0b10` (bit 61): Externref wrapping a plain reference
-/// - `0b11` (bits 60-61): Externref wrapping a host value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefHandle(pub(crate) usize);
 
 impl RefHandle {
-    // Tag bit constants
     const HOST_TAG: usize = 1 << 60;
     const EXTERN_TAG: usize = 1 << 61;
-    const TAG_MASK: usize = 0x3 << 60; // Bits 60-61
+    const TAG_MASK: usize = 0x3 << 60;
 
-    pub fn new(value: usize) -> Self {
+    pub const fn new(value: usize) -> Self {
         Self(value)
     }
 
-    /// Null reference — uses usize::MAX as a sentinel value since it is
-    /// guaranteed to be an invalid index.
     pub const fn null() -> Self {
         Self(usize::MAX)
     }
@@ -41,18 +26,14 @@ impl RefHandle {
         self.0 == usize::MAX
     }
 
-    /// Create an externref from a raw index (for host/test harness use).
-    /// Tag: bit 61 = 1 for extern, bit 60 = 1 for host value.
     pub fn externref(index: usize) -> Self {
         Self(Self::EXTERN_TAG | Self::HOST_TAG | (index & 0xFFF_FFFF))
     }
 
-    /// Check if this is a host reference (opaque host value)
     pub fn is_host(&self) -> bool {
         !self.is_null() && (self.0 & Self::HOST_TAG) != 0
     }
 
-    /// Check if this reference is in the extern hierarchy
     pub fn is_extern(&self) -> bool {
         if self.is_null() {
             false
@@ -61,7 +42,6 @@ impl RefHandle {
         }
     }
 
-    /// Get the raw payload value without any tag bits.
     pub fn raw_value(&self) -> usize {
         if self.is_null() {
             return usize::MAX;
@@ -82,23 +62,13 @@ impl Display for RefHandle {
     }
 }
 
-/// WebAssembly value for external API interactions.
-/// This represents values passed into and out of WebAssembly functions.
-/// Always carries both value and type information.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Value {
-    /// 32-bit integer
     I32(i32),
-    /// 64-bit integer
     I64(i64),
-    /// 32-bit float
     F32(f32),
-    /// 64-bit float
     F64(f64),
-    /// Reference type (funcref, externref)
-    /// Carries both the reference handle and its type information
     Ref(RefHandle, RefType),
-    /// Unknown/uninitialized value
     #[default]
     Unknown,
 }
@@ -236,7 +206,6 @@ impl From<Value> for RefHandle {
 }
 
 impl Value {
-    /// Get the ValueType of this Value
     pub fn value_type(&self) -> ValueType {
         match self {
             Value::I32(_) => ValueType::I32,
@@ -248,8 +217,6 @@ impl Value {
         }
     }
 
-    /// Create a default value for the given type.
-    /// For reference types, this returns a null reference with the appropriate type.
     pub fn default_for_type(value_type: ValueType) -> Self {
         match value_type {
             ValueType::I32 => Value::I32(0),
@@ -262,7 +229,6 @@ impl Value {
         }
     }
 
-    /// Convert value to raw u64 representation for the interpreter stack.
     #[inline]
     pub fn to_raw(&self) -> u64 {
         match *self {
@@ -275,7 +241,6 @@ impl Value {
         }
     }
 
-    /// Create a Value from raw u64 and a ValueType.
     #[inline]
     pub fn from_raw(raw: u64, ty: ValueType) -> Self {
         match ty {
