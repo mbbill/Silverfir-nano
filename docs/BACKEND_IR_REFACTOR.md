@@ -24,16 +24,19 @@ Important:
 Current implementation priority:
 
 1. restore and stabilize the top-level `vm/*.rs` surface
-2. bring up the base fast interpreter first
-3. bring up native second
-4. bring up fusion last
+2. refactor planning/grouping/LIR into CFG + SSA block-param form
+3. make the base interpreter consume that new LIR and pass spectest
+4. bring up native second on top of the proven LIR
+5. bring up fusion last
 
 Reason:
 
-- base is the easiest backend to make correct first
-- once base is working again, it becomes the ground truth for native debugging
+- the new LIR is the main semantic boundary and must be proven correct first
+- base is the easiest consumer to use as that proof
+- once base is green on the new LIR, it becomes the ground truth for native
+  debugging
 - fusion changes significantly under this design because grouping moves before
-  backend IR, so it should be rebuilt last
+  LIR and helper/cold-path structure also changes, so it should be rebuilt last
 
 ## Scope Discipline
 
@@ -90,40 +93,53 @@ It must not reason about:
 If backend code needs those things, that is a frontend/planning bug or a bad
 backend boundary.
 
-### 2. TOS is only a rotating register cache
+### 2. TOS becomes SSA before or at LIR construction
 
-The frontend uses a 4-register rotating cache for the operand stack top.
-That cache is always valid because frontend/planning inserts `Spill` / `Fill`
-as needed.
+The stack/TOS model survives only long enough to support:
 
-The important point:
-
-- backend must not ask whether `T0..T3` are valid
-- backend must assume the rotating cache is valid
-- backend only needs to know the current rotation
-
-Example:
-
-- top starts at `T1`
-- `drop`
-- top becomes `T0`
-- `drop`
-- top becomes `T3`
-
-`T3` must already contain the correct value. The backend does not get to
-reason about whether it is live.
-
-### 3. TOS semantics only matter in grouping/planning
-
-The only place where the stack-machine / TOS model should matter is:
-
+- planning
 - grouping
 - spill/fill planning
-- hot-local planning
-- stack-aware lowering decisions
+- backend-budget-aware lowering
 
-Once backend-facing IR is produced, the backend should only see explicit
-register and memory behavior.
+By the time LIR exists, TOS must no longer be represented as:
+
+- stack height
+- rotating window
+- `window` / `variant`
+- implicit top/next register selection
+
+Instead, LIR must represent TOS through:
+
+- block parameters
+- successor arguments
+- SSA values
+
+This is the key change in the current design direction.
+
+### 3. TOS values and hot locals are different
+
+TOS-derived values are transient SSA values inside the CFG.
+
+Hot locals are not just more TOS values:
+
+- hot locals are persistent VM state carried across blocks
+- hot locals are part of the target-tuned VM ABI
+- ordinary frame locals and memory remain explicit stateful effects
+
+So the IR must distinguish:
+
+- transient SSA values
+- hot-local state
+- frame/memory effects
+
+This is also the reason the old "TOS + local cache is already the register
+allocator" idea can still survive in the new design:
+
+- TOS lanes are not durable machine state; they are an entry/edge interface
+- hot locals are durable cached machine state
+- native lowering only has to place values into those fixed VM locations
+- there is still no general-purpose register allocator pass
 
 ### 4. Hot and cold paths obey the same lowered IR contract
 
@@ -144,6 +160,7 @@ The current lowered IR still leaks stack-machine state through:
 
 - `pre_height`
 - `variant`
+- `window`
 - helper entry selection based on `read_t0`, `read_top2_d1`, `write_t1`, etc.
 
 This makes the backend deduce register behavior from stack-machine metadata.
@@ -162,13 +179,15 @@ Those should not be backend responsibilities.
 
 ## Target Pipeline
 
-The intended pipeline is:
+The intended pipeline is now:
 
 1. Decode to semantic / stack-aware ops
 2. Planning
 3. Grouping
-4. Lower to backend-facing IR
-5. Backend codegen
+4. Convert TOS flow into CFG + SSA LIR
+5. Execute that LIR in the base interpreter
+6. Lower LIR into one target-independent native IR
+7. Translate native IR mechanically into ISA code
 
 ### 1. Semantic / stack-aware layer
 
@@ -206,75 +225,97 @@ Grouping gets its policy from the backend:
 Grouping is the only stage where the rotating TOS cache semantics should still
 be a first-class concept.
 
-### 4. Backend-facing IR
+### 4. CFG + SSA LIR
 
 This is where the stack-machine abstraction must end.
 
-Backend-facing IR should describe:
+LIR should be a CFG with:
 
-- which register classes are read
-- which register classes are written
-- which `fp[...]` slots are read
-- which `fp[...]` slots are written
-- immediates / targets
+- blocks
+- block parameters
+- SSA values
+- explicit successor arguments
+- explicit hot-local state
+- explicit frame/memory effects
+- explicit control-flow terminators
 
-It must not require the backend to deduce any of that from `pre_height`.
+It must not require any backend to deduce behavior from:
 
-Important clarification:
+- stack height
+- rotation/window
+- implicit top-of-stack location
 
-- backend-facing IR should not carry explicit `T0` / `T1` / `T2` / `T3`
-  operands
-- it is enough to carry the current rotating-window top / rotation offset
-- each instruction already has stack effect, so the backend can derive which
-  concrete T register is used from:
-  - the current rotation
-  - the opcode stack effect
+TOS values should arrive at a block through explicit lane parameters, for
+example conceptually:
 
-So the backend-facing IR still carries the rotating-cache convention, but it
-does not carry explicit stack-machine liveness or explicit per-op T-register
-lists.
+- `t0`
+- `t1`
+- `t2`
+- `t3`
 
-### 5. Backend codegen
+but as block parameters and successor arguments, not as hidden stack state.
 
-Backends consume:
+Hot locals should also be explicit in the block/state model, but they are
+semantically different from transient TOS-derived SSA values.
 
-- groups
-- explicit register/memory IR
+### 5. Base interpreter over LIR
 
-They do not redo grouping or stack reasoning.
+The base interpreter should consume this new LIR directly.
 
-## What The Backend Still Needs To Know
+This is intentional:
 
-The backend still needs one stack-related concept:
+- it proves the new LIR semantics before native work begins
+- it separates LIR bugs from native lowering bugs
+- spectest on base becomes the correctness gate for the new boundary
 
-- the current rotation of the 4-register T cache
+### 6. Native lowering
 
-This is not the same thing as stack height or number of cached values.
+Native should not lower directly from stack-shaped concepts.
 
-The backend may need a compact field describing:
+It should lower from CFG + SSA LIR into one target-independent pseudo-register
+IR.
 
-- which T register is currently the logical top
+### 7. ISA translation
 
-That field should mean only:
+ISA-specific lowering should be simple:
 
-- how to map top / next / next-next to concrete registers
+- no optimization
+- no stack reasoning
+- no Wasm semantic reinterpretation
+- just translation, legalization, and patching
 
-It should not mean:
+## Explicit Design Decision: Only One IR After LIR
 
-- how many values are live
-- how many values are cached
-- whether a given T register is valid
+We considered a deeper native stack such as:
 
-Possible names:
+- `LIR -> Entry IR -> Role IR -> ISA`
 
-- `rotation`
-- `tos_head`
-- `top_rotation`
+and rejected it for this project.
 
-Avoid vague names like `variant` unless the meaning is explicitly limited to
-rotating-cache register selection.
+Reason:
 
-## Why Grouping Must Stay Before Backend IR
+- this engine is intentionally small and embedded-friendly
+- the whole point of the TOS/local-cache model is to avoid a traditional
+  register allocator and a large optimizer stack
+- adding multiple native-only semantic layers starts to recreate a general JIT
+  compiler pipeline
+- if users want a large optimizing JIT, they can use something like Cranelift
+
+The chosen direction is:
+
+- `wasm -> planning/grouping + SSA -> LIR`
+- `LIR -> virtual-register assignment + simple optimization -> native IR`
+- `native IR -> ISA`
+
+So there is exactly one IR after LIR.
+
+The meaning of that choice is:
+
+- all semantic restructuring happens before or at LIR
+- all "real" optimization happens in `LIR -> native IR`
+- ISA lowering is intentionally dumb and mechanical
+
+## Why Grouping Must Stay Before LIR
 
 If T registers are treated as fully generic unconstrained registers too early,
 grouping becomes much harder or incorrect.
@@ -286,27 +327,36 @@ Grouping depends on the fact that:
 - spill/fill guarantees the rotating cache remains valid
 
 So the stack/TOS model should survive long enough to drive grouping.
-After grouping, it should collapse into explicit register/memory behavior.
+After grouping, it should collapse into:
+
+- CFG structure
+- block parameters
+- SSA values
+- explicit state effects
 
 ## Backend Roles
 
 ### Base backend
 
-- ignores grouping information
-- emits handler stream instruction-by-instruction
+- consumes CFG + SSA LIR directly
+- is the first semantic validator of the new LIR
 
 ### Fusion backend
 
-- consumes grouping result
-- emits handler stream mapped to groups / fusion patterns
+- should later consume the same CFG/LIR plus grouping-derived policy
+- should be rebuilt only after base and native are stable again
 
 ### Native backend
 
-- consumes grouping result and group contents
-- emits native code for groups and wrappers
+- consumes CFG + SSA LIR
+- lowers it into one target-independent pseudo-register IR
+- emits native code from that pseudo-register IR
 
-The important point is that grouping should be shared policy/planning work, not
-reimplemented inside each backend.
+The important points are:
+
+- grouping remains shared frontend work
+- LIR is the main semantic handoff
+- native IR is not another semantic IR, only a machine-shaped lowering step
 
 ## Red Flags
 
@@ -329,11 +379,365 @@ If any new code needs those things, stop and revisit the boundary.
 The next large refactor should aim for:
 
 1. Move grouping before backend-facing IR
-2. Replace `pre_height`-driven backend logic with backend-facing IR driven by:
-   - rotation
-   - stack effect
-   - register classes
-   - `fp[...]`
+2. Convert TOS flow into block parameters and SSA values in LIR
+3. Make base interpreter consume that LIR and pass spectest
+4. Lower that LIR into one target-independent pseudo-register IR
+5. Keep ISA lowering mechanical only
+
+## LIR As CFG + SSA
+
+This is the current agreed direction and supersedes the earlier idea of
+keeping a rotation/window-based LIR plus a second semantic native IR layer.
+
+### Core shape
+
+LIR should be a CFG made of blocks.
+
+Each block should have:
+
+- block parameters for incoming TOS lanes
+- explicit hot-local state
+- SSA values for transient results
+- explicit stateful frame/memory operations
+- an explicit terminator
+
+Successor edges should carry explicit arguments.
+
+This means:
+
+- no `window`
+- no `variant`
+- no implicit top-of-stack convention inside LIR
+- no backend-side stack reconstruction
+
+LIR is the semantic handoff. It is not "almost machine code". It still carries:
+
+- SSA values
+- control-flow structure
+- explicit successor arguments
+- explicit stateful effects
+
+but it must no longer carry stack-machine deduction hints.
+
+### TOS as SSA
+
+The important insight is:
+
+- TOS values are not really machine registers
+- inside a grouped/native region they behave like SSA values
+- the 4 TOS lanes are primarily a boundary convention between blocks
+
+So the TOS model should become:
+
+- block input parameters
+- successor arguments
+- SSA values inside the block body
+
+Conceptually:
+
+- a `pop1 push1` op becomes one input SSA value and one output SSA value
+- a `pop2 push1` op becomes two input SSA values and one output SSA value
+- the terminator chooses which SSA values occupy which outgoing TOS lanes
+
+Important:
+
+- slot identity belongs to the edge/block-parameter contract
+- slot identity does not belong to the SSA value itself
+
+The same SSA value may later be copied into a different outgoing TOS lane.
+
+That means LIR should think in terms of:
+
+- block parameters for incoming TOS lanes
+- SSA values within the block
+- successor arguments for outgoing TOS lanes
+
+not "value `vN` permanently lives in `t0`".
+
+### Block contract
+
+Every block should expose the incoming state it needs.
+
+Conceptually a block may look like:
+
+```text
+block B(
+  t0 = v0,
+  t1 = v1,
+  l0 = h0,
+  l1 = h1,
+)
+```
+
+where:
+
+- `t*` are transient incoming TOS-lane values
+- `l*` are incoming hot-local state values
+
+The block body computes new SSA values, updates hot-local state if needed, and
+ends in a terminator that chooses successor arguments.
+
+Conceptually:
+
+```text
+block B(t0 = v0, l0 = h0)
+  v1 = i32.add h0, v0
+  jump C(t0 = v1, l0 = v1)
+```
+
+This is how the TOS window disappears from LIR.
+
+### Hot locals are different
+
+Hot locals are not just more TOS SSA values.
+
+Hot locals are:
+
+- persistent cached VM state
+- part of the target-tuned VM ABI
+- explicit state carried across blocks
+
+So LIR must keep the distinction between:
+
+- transient SSA values
+- hot-local state
+- frame/memory effects
+
+Hot locals should be thought of as named persistent VM state values that cross
+block boundaries. They are not ordinary frame loads/stores, and they are not
+just another transient TOS SSA value.
+
+Ordinary locals that are not hot remain ordinary frame-home state addressed via
+explicit effects.
+
+### Frame state is still state
+
+One subtle but important rule:
+
+- TOS/SSA values can be forwarded like pure transient values
+- frame-local and memory writes are still real effects and must not disappear
+  just because a later read can be forwarded
+
+So this is valid:
+
+```text
+v0 = load_frame slot7
+store_frame slot8, v0
+v1 = load_frame slot8
+v2 = add v0, v1
+```
+
+may simplify to:
+
+```text
+v0 = load_frame slot7
+store_frame slot8, v0
+v2 = add v0, v0
+```
+
+but not to:
+
+```text
+v0 = load_frame slot7
+v2 = add v0, v0
+```
+
+The write is still part of the entry/block state.
+
+### Why this is the right semantic boundary
+
+Once TOS has become SSA in LIR:
+
+- intra-block optimization becomes straightforward
+- compare/branch fusion becomes straightforward
+- branch targets use explicit edge arguments instead of resume metadata
+- base can execute the same LIR the native backend lowers from
+
+That is the main architectural goal of the current refactor.
+
+## Native IR
+
+After LIR, there should be exactly one more IR before ISA lowering.
+
+This IR is not another semantic IR. It is a machine-shaped pseudo-register IR.
+
+The intended pipeline is:
+
+1. `wasm -> planning/grouping + SSA -> LIR`
+2. `LIR -> virtual register assignment + simple optimization -> native IR`
+3. `native IR -> simple machine translation`
+
+### Purpose
+
+Native IR exists to:
+
+- minimize ISA porting cost
+- isolate all optimization before ISA lowering
+- make the final emitter simple and mechanical
+
+The ISA backend should not optimize. It should only:
+
+- translate pseudo registers to physical registers
+- legalize for ISA constraints
+- encode instructions
+- patch addresses/literals
+
+This IR should look like platform-independent pseudo assembly, not another
+semantic SSA IR.
+
+### Register model
+
+Native IR should use platform-independent VM register names.
+
+Conceptually:
+
+- `T0..Tn` for TOS lane registers
+- `L0..Lm` for hot-local registers
+- `Tmp0..Tmpk` for scratch temporaries
+- `Ctx`
+- `Fp`
+
+This is still not general register allocation.
+The TOS/local-cache design remains the allocator.
+
+The main job of `LIR -> native IR` is just:
+
+- respect block input/output contracts
+- place incoming/outgoing TOS values into `T*`
+- keep hot locals in `L*`
+- use a small number of `Tmp*` values for emission convenience
+- insert edge shuffles only when a successor needs a different lane layout
+
+That is a deterministic placement problem, not a full RA problem.
+
+### Platform tuning
+
+The backend should provide a register-budget configuration.
+
+At minimum this includes:
+
+- number of TOS registers
+- number of hot-local registers
+
+and conceptually also:
+
+- available scratch temporaries
+- reserved special registers like `ctx` and `fp`
+
+The frontend should only need this backend configuration.
+
+Then different targets can tune:
+
+- how many TOS lanes to keep live
+- how many hot locals to cache
+- how much temporary capacity remains
+
+without changing the frontend architecture.
+
+This means the VM ABI becomes backend-parameterized rather than hardcoded.
+
+For example, one target may choose:
+
+- 4 TOS lanes
+- 3 hot locals
+
+while another target may choose:
+
+- 3 TOS lanes
+- 2 hot locals
+
+and a larger-register target may choose:
+
+- 6 TOS lanes
+- 5 hot locals
+
+The frontend should only consume these counts and plan accordingly.
+
+### Optimization boundary
+
+Optimization should happen in `LIR -> native IR`, not in `native IR -> ISA`.
+
+Examples of the intended pre-ISA optimizations:
+
+- constant folding
+- copy propagation
+- dead SSA value elimination
+- compare + branch fusion
+- redundant frame reload elimination
+- edge shuffle elimination
+- trivial direct-chaining cleanup
+
+This is intentionally a small/simple optimization set, not a full JIT optimizer.
+
+Non-goals here:
+
+- no global register allocation
+- no large scheduling framework
+- no attempt to become a general optimizing compiler
+- no ISA-specific optimization logic hidden inside backend folders
+
+### Cold helpers
+
+The helper ABI is intentionally deferred to the final platform-emission stage.
+
+Reason:
+
+- helper ABI is highly platform-dependent
+- it should not distort the LIR or native IR design
+- later, CFG/block-argument structure should allow cold helpers to be grouped or
+  integrated with hot paths if desired
+
+For now, the important rule is:
+
+- LIR and native IR must model helper inputs/outputs explicitly
+- exact helper call ABI details belong to the final emitter/runtime boundary
+
+This also leaves room for future work where some currently-cold helpers may be
+fused or grouped with hot blocks. The CFG/block-argument design should not
+prevent that.
+
+## Old Native Code: What Must Move Above ISA
+
+The old `vm_bak/native/` implementation mixed together three different jobs:
+
+- target-neutral optimization
+- cross-entry state adaptation
+- ISA-specific encoding
+
+Examples from the old code:
+
+- alias/state tracking such as `slots`, `local_fp_aliases`, and
+  `frame_aliases`
+- target-neutral peepholes such as compare/branch tail fusion
+- resume/adaptation logic such as packed resume-slot handling
+
+Those concerns must not stay inside `arm64/` or any future ISA folder.
+
+The new split should be:
+
+- LIR owns semantic/control-flow structure
+- `LIR -> native IR` owns value placement, simple optimization, and edge
+  adaptation
+- `native IR -> ISA` owns only platform lowering/encoding
+
+## Validation Sequence
+
+The new sequencing is deliberate:
+
+1. refactor planning/grouping/LIR into CFG + SSA form
+2. make the base interpreter run that LIR correctly
+3. use spectest on base as the proof that LIR semantics are correct
+4. only then lower LIR into native IR and build platform emitters
+
+This gives a clean debugging split:
+
+- if base fails, the bug is in planning/grouping/LIR/interpreter semantics
+- if base passes and native fails, the bug is in LIR-to-native lowering,
+  native optimization, helper ABI, or ISA emission
+
+Once native bring-up starts, dump/trace comparison should use the base
+interpreter as the oracle. That is the intended debugging flow for narrowing
+future native bugs.
 
 ## Proposed `vm/` Structure
 
@@ -460,42 +864,39 @@ should still be direct concerns.
 
 ### `lir/`
 
-Backend-facing IR boundary. This is where stack-machine deduction must stop.
+Backend-facing semantic CFG boundary. This is where stack-machine deduction
+must stop.
 
 ```text
 vm/lir/
   mod.rs
   ir.rs
   lower.rs
-  reg.rs
   slot.rs
   target.rs
   dump.rs
 ```
 
 - `ir.rs`
-  Backend-facing IR records.
+  CFG, block, SSA value, and terminator records.
 - `lower.rs`
-  Lower planned ops/groups into LIR.
-- `reg.rs`
-  Register classes and rotation helpers.
+  Lower planned ops/groups into CFG + SSA LIR.
 - `slot.rs`
   `fp[...]` slot references.
 - `target.rs`
-  Branch/call target representation.
+  Block/edge target representation.
 - `dump.rs`
   Shared LIR dump.
 
 Important:
 
-- LIR should not carry explicit `T0..T3` operands
-- it should carry only the rotating-window top / offset
-- backend derives the concrete T register from:
-  - rotation
-  - stack effect
+- LIR should not carry `window`, `variant`, or implicit stack-top state
+- LIR should represent TOS through block params, successor args, and SSA values
+- hot locals should remain explicit state, not be collapsed into ordinary TOS
+  SSA values
+- frame/memory/global effects should remain explicit operations
 
-That keeps the backend simple without leaking stack height, spill depth, or
-cached-value count.
+This makes LIR the semantic proof boundary shared by base and native.
 
 ### `interp/`
 
@@ -540,55 +941,57 @@ Standalone native backend facade and shared runtime/helper pieces.
 ```text
 vm/native/
   mod.rs
+  build.rs
+  ir.rs
+  lower.rs
   code.rs
   code_buf.rs
   runtime.rs
   precompile.rs
-
-  lower.rs
-  resolve.rs
-  finalizer.rs
+  context.rs
 
   helper.rs
   helper_meta.rs
   bridge.rs
-  context.rs
 
   dump.rs
   map.rs
   jitdump.rs
 
-  arm64/
+  arch/
 ```
 
+- `build.rs`
+  Shared decode -> plan -> group -> LIR native build entry.
+- `ir.rs`
+  Target-independent pseudo-register native IR.
+- `lower.rs`
+  Lower CFG + SSA LIR into native IR with simple optimization and virtual
+  register placement.
 - `code.rs`
   Native compiled code object.
 - `code_buf.rs`
-  Executable memory ownership.
+  Executable-memory ownership and write/exec transitions.
 - `runtime.rs`
   Native runtime entry/launch.
 - `precompile.rs`
   Native precompile entry.
-- `lower.rs`
-  LIR to native-lowered representation if needed.
-- `resolve.rs`
-  Native resolved op/group representation.
-- `finalizer.rs`
-  Native target patching and final assembly orchestration.
+- `context.rs`
+  Native runtime context ABI.
 - `helper.rs`
   Rust helper implementations that remain cold/complex.
 - `helper_meta.rs`
   Typed helper metadata records.
 - `bridge.rs`
   Native wrapper generation and helper-call ABI glue.
-- `context.rs`
-  Native runtime context ABI.
 - `dump.rs`
   Native dump appendix.
 - `map.rs`
   Address map support.
 - `jitdump.rs`
   Profiler symbol emission.
+- `arch/`
+  ISA-specific lowering and encoding only.
 
 This folder must not drift back toward:
 
@@ -598,39 +1001,56 @@ This folder must not drift back toward:
 - generic `tos_slots`
 - helper entry families like `read_t0`
 
-### `native/arm64/`
+The goal is to minimize porting cost. Adding a new ISA later should mainly mean
+adding a new `arch/<isa>/` lowering/encoding implementation, not re-implementing
+semantic optimization or value-state reasoning.
+
+### `native/arch/`
 
 ISA-specific native backend only.
 
 ```text
-vm/native/arm64/
+vm/native/arch/
   mod.rs
-  reg.rs
-  enc.rs
-  emit.rs
-  op_meta.rs
-  codegen.rs
-  group.rs
-  semantics.rs
+
+  arm64/
+    mod.rs
+    reg.rs
+    enc.rs
+    emit.rs
+    entry.rs
+    lower.rs
+
+  x64/
+    mod.rs
+    reg.rs
+    enc.rs
+    emit.rs
+    entry.rs
+    lower.rs
 ```
 
 - `reg.rs`
-  ARM64 register assignment for native ABI.
+  Physical register assignment for that ISA.
 - `enc.rs`
-  Raw ARM64 encoders.
+  Raw instruction encoders.
 - `emit.rs`
-  Small emission helpers/templates.
-- `op_meta.rs`
-  Native codegen metadata per op.
-- `codegen.rs`
-  Emit native code from native-lowered ops.
-- `group.rs`
-  Group code shape assembly for ARM64.
-- `semantics.rs`
-  Structured emission helpers.
+  Small ISA emission helpers and helper-ABI glue.
+- `entry.rs`
+  ISA-specific entry/term glue.
+- `lower.rs`
+  Lower native IR to encoded ISA bytes.
 
-This layer should not know about Wasm decode, planning policy, or generic dump
-layout.
+This layer should not know about:
+
+- Wasm decode
+- planning policy
+- LIR semantics
+- high-level optimization policy
+- generic dump layout
+
+Anything that interprets CFG/LIR semantics or performs optimization should live
+above `arch/`, not inside one ISA folder.
 
 ### `debug/`
 
@@ -671,19 +1091,18 @@ vm/abi/
 
 When reviewing a backend change, ask this first:
 
-- is this code using only:
-  - rotation
-  - stack effect
-  - registers
-  - `fp[...]`
-  - immediates / targets
+- is this code operating on:
+  - CFG structure
+  - block parameters / successor arguments
+  - SSA values
+  - explicit hot-local state
+  - `fp[...]` effects
+  - pseudo registers / machine instructions
 
-or is it trying to reconstruct stack state after backend-facing IR?
+or is it secretly trying to reconstruct a stack machine again?
 
-If it is reconstructing stack state, the boundary is wrong.
-3. Replace generic `variant` with an explicit rotating-cache descriptor
-4. Remove native helper entry specialization based on TOS reads/writes
-5. Make cold helpers use explicit memory/register contracts only
+If it is reconstructing stack state after planning/grouping, the boundary is
+wrong.
 
 ## Practical Review Question
 
