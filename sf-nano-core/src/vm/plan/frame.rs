@@ -50,10 +50,11 @@ pub struct FrameLayoutPlan {
     pub operands: FrameSpan,
     pub call_scratch: Option<FrameSpan>,
     pub backend_reserved: Option<FrameSpan>,
-    /// Size of the callee-local frame prefix (`params + locals`).
+    /// Size of the callee-local frame prefix before native call metadata.
     ///
-    /// Operand slots are logical plan-time slots beyond this prefix and become
-    /// backend/runtime slots only at finalization.
+    /// For the native backend this includes Wasm locals plus any backend-owned
+    /// frame homes, but excludes call-link metadata slots that sit between the
+    /// frame prefix and the operand area.
     pub frame_size: u16,
 }
 
@@ -74,6 +75,7 @@ impl FrameLayoutPlan {
 pub struct FramePlanner {
     local_count: u16,
     backend_reserved: u16,
+    call_scratch: u16,
     next_operand: u16,
 }
 
@@ -83,6 +85,7 @@ impl FramePlanner {
         Self {
             local_count,
             backend_reserved: 0,
+            call_scratch: 0,
             next_operand: 0,
         }
     }
@@ -94,9 +97,17 @@ impl FramePlanner {
     }
 
     #[inline]
+    pub const fn reserve_call_scratch(mut self, count: u16) -> Self {
+        self.call_scratch += count;
+        self
+    }
+
+    #[inline]
     pub const fn reserve_operands(mut self, count: u16) -> (Self, FrameSpan) {
         let span = FrameSpan::new(
-            FrameSlot(self.local_count + self.backend_reserved + self.next_operand),
+            FrameSlot(
+                self.local_count + self.backend_reserved + self.call_scratch + self.next_operand,
+            ),
             count,
         );
         self.next_operand += count;
@@ -105,13 +116,18 @@ impl FramePlanner {
 
     #[inline]
     pub const fn finish(self) -> FrameLayoutPlan {
-        let operand_base = self.local_count + self.backend_reserved;
+        let frame_size = self.local_count + self.backend_reserved;
+        let operand_base = frame_size + self.call_scratch;
         FrameLayoutPlan {
             local_base: 0,
             operand_base,
             locals: FrameSpan::new(FrameSlot(0), self.local_count),
             operands: FrameSpan::new(FrameSlot(operand_base), self.next_operand),
-            call_scratch: None,
+            call_scratch: if self.call_scratch == 0 {
+                None
+            } else {
+                Some(FrameSpan::new(FrameSlot(frame_size), self.call_scratch))
+            },
             backend_reserved: if self.backend_reserved == 0 {
                 None
             } else {
@@ -120,7 +136,7 @@ impl FramePlanner {
                     self.backend_reserved,
                 ))
             },
-            frame_size: operand_base,
+            frame_size,
         }
     }
 }
@@ -130,9 +146,12 @@ pub fn plan_frame_layout(
     local_count: u16,
     max_stack_height: u16,
     hot_local_count: u8,
+    call_scratch_slots: u16,
 ) -> FrameLayoutPlan {
     let backend_reserved = (hot_local_count as u16).saturating_sub(local_count);
-    let planner = FramePlanner::new(local_count).reserve_backend_reserved(backend_reserved);
+    let planner = FramePlanner::new(local_count)
+        .reserve_backend_reserved(backend_reserved)
+        .reserve_call_scratch(call_scratch_slots);
     let (planner, _) = planner.reserve_operands(max_stack_height);
     planner.finish()
 }

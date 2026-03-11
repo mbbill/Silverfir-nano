@@ -27,6 +27,7 @@ pub fn build_planned_program(
         semantic.local_count,
         semantic.max_stack_height,
         config.hot_local_count,
+        config.call_scratch_slots,
     );
     let placement = place_semantic_ops(semantic, frame, hot_locals.as_ref(), &policy);
     let ops = plan_tos_ops(

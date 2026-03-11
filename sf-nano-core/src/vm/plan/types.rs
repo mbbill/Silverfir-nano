@@ -373,15 +373,38 @@ fn validate_frame_layout(
         }
     }
 
-    if frame.operand_base != frame.locals.end().advance(backend_reserved).0 {
+    let call_scratch = frame.call_scratch.map_or(0, |span| span.count);
+    if call_scratch != config.call_scratch_slots {
+        return Err(WasmError::internal(alloc::format!(
+            "planned call-scratch span {} does not match expected {}",
+            call_scratch,
+            config.call_scratch_slots,
+        )));
+    }
+
+    if let Some(span) = frame.call_scratch {
+        if span.start != frame.locals.end().advance(backend_reserved) {
+            return Err(WasmError::internal(
+                "planned call-scratch span must start after locals/backend-reserved".into(),
+            ));
+        }
+    }
+
+    if frame.frame_size != frame.locals.end().advance(backend_reserved).0 {
         return Err(WasmError::internal(
-            "planned operand base does not match locals/backend-reserved layout".into(),
+            "planned frame_size does not match locals/backend-reserved layout".into(),
         ));
     }
 
-    if frame.frame_size != frame.operand_base {
+    if frame.operand_base != frame.frame_size + call_scratch {
         return Err(WasmError::internal(
-            "planned frame_size must equal operand_base in the current design".into(),
+            "planned operand base does not match frame-size/call-scratch layout".into(),
+        ));
+    }
+
+    if frame.operands.start != FrameSlot(frame.operand_base) {
+        return Err(WasmError::internal(
+            "planned operands span must start at operand_base".into(),
         ));
     }
 

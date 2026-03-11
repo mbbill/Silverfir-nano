@@ -16,12 +16,19 @@ use crate::vm::{
     plan::{
         build_planned_program,
         config::PlanConfig,
+        frame::plan_frame_layout,
         policy::{GroupingMode, PlanPolicy},
         PlannedProgram, PlanningInput,
     },
     store::Store,
     wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalCallContract {
+    pub params_count: u16,
+    pub frame_size: u16,
+}
 
 /// Native build bundle for one function.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +39,7 @@ pub struct NativeBuildBundle {
     pub semantic: SemanticProgram,
     pub planned: PlannedProgram,
     pub lir: LirProgram,
+    pub local_call_contracts: alloc::vec::Vec<Option<LocalCallContract>>,
 }
 
 #[inline]
@@ -66,6 +74,27 @@ pub fn build_native_function(
         &semantic,
     )?;
     let lir = lower::lower_to_lir(&semantic, &planned, plan_config)?;
+    let local_call_contracts = compile
+        .module
+        .functions
+        .iter()
+        .map(|func| {
+            func.spec().map(|spec| {
+                let params_count = spec.func_type().params().len() as u16;
+                let local_count = params_count.saturating_add(spec.locals().len() as u16);
+                let frame = plan_frame_layout(
+                    local_count,
+                    0,
+                    backend_config.hot_local_count,
+                    plan_config.call_scratch_slots,
+                );
+                LocalCallContract {
+                    params_count,
+                    frame_size: frame.frame_size,
+                }
+            })
+        })
+        .collect();
     Ok(NativeBuildBundle {
         backend,
         backend_config,
@@ -73,6 +102,7 @@ pub fn build_native_function(
         semantic,
         planned,
         lir,
+        local_call_contracts,
     })
 }
 

@@ -16,7 +16,8 @@ use crate::vm::{
     native::{
         abi::{BlockAbi, NativeAbi, NativeLocation, NativePlace, NativeValue},
         ir::{
-            NativeBlock, NativeEdge, NativeInst, NativeInstKind, NativeMove, NativeProgram,
+            NativeBlock, NativeBranchCond, NativeCompareKind, NativeEdge, NativeHelperEffect,
+            NativeHelperInst, NativeInst, NativeInstKind, NativeMove, NativeProgram,
             NativeTerminator,
         },
     },
@@ -25,8 +26,9 @@ use crate::vm::{
 
 use super::{
     select::{
-        SelectedBlock, SelectedEdge, SelectedInst, SelectedInstKind, SelectedProgram,
-        SelectedSource, SelectedTarget, SelectedTerminator,
+        SelectedBlock, SelectedBranchCond, SelectedCompareKind, SelectedEdge, SelectedHelperInst,
+        SelectedInst, SelectedInstKind, SelectedProgram, SelectedSource, SelectedTarget,
+        SelectedTerminator,
     },
     state::{PlacedValue, PlacementState},
 };
@@ -108,6 +110,37 @@ impl<'a> BlockPlacer<'a> {
                     },
                 });
             }
+            SelectedInstKind::Helper(helper) => {
+                match helper {
+                    SelectedHelperInst::Leaf {
+                        effect,
+                        op,
+                        args,
+                        results,
+                    } => {
+                        self.preserve_helper_clobbers(*effect, out);
+                        let args = args
+                            .iter()
+                            .copied()
+                            .map(|value| self.consume_value(value))
+                            .collect();
+                        let result_places = self.allocate_results(results.len());
+                        for (value, place) in
+                            results.iter().copied().zip(result_places.iter().copied())
+                        {
+                            self.state.assign(value, place);
+                        }
+                        out.push(NativeInst {
+                            kind: NativeInstKind::Helper(NativeHelperInst::Leaf {
+                                effect: *effect,
+                                op: op.clone(),
+                                args,
+                                results: result_places,
+                            }),
+                        });
+                    }
+                }
+            }
             SelectedInstKind::CallExternal {
                 func_idx,
                 args,
@@ -133,6 +166,8 @@ impl<'a> BlockPlacer<'a> {
             }
             SelectedInstKind::CallLocal {
                 callee,
+                callee_params_count,
+                callee_frame_size,
                 args,
                 results,
             } => {
@@ -149,6 +184,8 @@ impl<'a> BlockPlacer<'a> {
                 out.push(NativeInst {
                     kind: NativeInstKind::CallLocal {
                         callee: *callee,
+                        callee_params_count: *callee_params_count,
+                        callee_frame_size: *callee_frame_size,
                         args,
                         results: result_places,
                     },
@@ -193,7 +230,7 @@ impl<'a> BlockPlacer<'a> {
                 then_edge,
                 else_edge,
             } => NativeTerminator::Branch {
-                cond: self.consume_value(*cond),
+                cond: self.place_branch_cond(cond),
                 then_edge: self.place_edge(then_edge),
                 else_edge: self.place_edge(else_edge),
             },
@@ -209,6 +246,34 @@ impl<'a> BlockPlacer<'a> {
                     .collect(),
             },
             SelectedTerminator::TrapUnreachable => NativeTerminator::TrapUnreachable,
+        }
+    }
+
+    fn place_branch_cond(&mut self, cond: &SelectedBranchCond) -> NativeBranchCond {
+        match cond {
+            SelectedBranchCond::Value(value) => NativeBranchCond::Value(self.consume_value(*value)),
+            SelectedBranchCond::I32Eqz(value) => NativeBranchCond::I32Eqz(self.consume_value(*value)),
+            SelectedBranchCond::I64Eqz(value) => NativeBranchCond::I64Eqz(self.consume_value(*value)),
+            SelectedBranchCond::I32Compare { kind, lhs, rhs } => NativeBranchCond::I32Compare {
+                kind: map_compare_kind(*kind),
+                lhs: self.consume_value(*lhs),
+                rhs: self.consume_value(*rhs),
+            },
+            SelectedBranchCond::I64Compare { kind, lhs, rhs } => NativeBranchCond::I64Compare {
+                kind: map_compare_kind(*kind),
+                lhs: self.consume_value(*lhs),
+                rhs: self.consume_value(*rhs),
+            },
+            SelectedBranchCond::F32Compare { kind, lhs, rhs } => NativeBranchCond::F32Compare {
+                kind: map_compare_kind(*kind),
+                lhs: self.consume_value(*lhs),
+                rhs: self.consume_value(*rhs),
+            },
+            SelectedBranchCond::F64Compare { kind, lhs, rhs } => NativeBranchCond::F64Compare {
+                kind: map_compare_kind(*kind),
+                lhs: self.consume_value(*lhs),
+                rhs: self.consume_value(*rhs),
+            },
         }
     }
 
@@ -377,6 +442,27 @@ impl<'a> BlockPlacer<'a> {
     }
 
     fn preserve_call_clobbers(&mut self, out: &mut Vec<NativeInst>) {
+        self.preserve_matching_places(out, clobbered_by_call);
+    }
+
+    fn preserve_helper_clobbers(
+        &mut self,
+        effect: NativeHelperEffect,
+        out: &mut Vec<NativeInst>,
+    ) {
+        match effect {
+            NativeHelperEffect::Transparent => {
+                self.preserve_matching_places(out, clobbered_by_transparent_helper)
+            }
+            NativeHelperEffect::ControlTransfer => self.preserve_call_clobbers(out),
+        }
+    }
+
+    fn preserve_matching_places(
+        &mut self,
+        out: &mut Vec<NativeInst>,
+        clobbered: fn(NativePlace) -> bool,
+    ) {
         let mut places = Vec::new();
         for (index, &uses) in self.remaining_uses.iter().enumerate() {
             if uses == 0 {
@@ -385,7 +471,7 @@ impl<'a> BlockPlacer<'a> {
             let Some(place) = self.state.home(LirValue(index as u32)) else {
                 continue;
             };
-            if clobbered_by_call(place) && !places.contains(&place) {
+            if clobbered(place) && !places.contains(&place) {
                 places.push(place);
             }
         }
@@ -403,6 +489,10 @@ fn clobbered_by_call(place: NativePlace) -> bool {
             | NativePlace::Location(NativeLocation::Tmp(_))
             | NativePlace::Location(NativeLocation::Tos(_))
     )
+}
+
+fn clobbered_by_transparent_helper(place: NativePlace) -> bool {
+    matches!(place, NativePlace::Location(NativeLocation::Tmp(_)))
 }
 
 fn seed_block_params(selected: &SelectedProgram, state: &mut PlacementState) {
@@ -437,6 +527,7 @@ fn count_uses(block: &SelectedBlock) -> Vec<u32> {
                 }
             }
             SelectedInstKind::Leaf { args, .. }
+            | SelectedInstKind::Helper(SelectedHelperInst::Leaf { args, .. })
             | SelectedInstKind::CallExternal { args, .. }
             | SelectedInstKind::CallLocal { args, .. } => {
                 for value in args {
@@ -463,7 +554,7 @@ fn count_uses(block: &SelectedBlock) -> Vec<u32> {
             then_edge,
             else_edge,
         } => {
-            mark(*cond);
+            mark_branch_cond(cond, &mut mark);
             for value in &then_edge.tos {
                 mark(*value);
             }
@@ -504,6 +595,7 @@ fn value_count(selected: &SelectedProgram) -> usize {
                     next = next.max(source_value(src));
                 }
                 SelectedInstKind::Leaf { args, results, .. }
+                | SelectedInstKind::Helper(SelectedHelperInst::Leaf { args, results, .. })
                 | SelectedInstKind::CallExternal { args, results, .. }
                 | SelectedInstKind::CallLocal { args, results, .. } => {
                     for value in args {
@@ -536,7 +628,7 @@ fn value_count(selected: &SelectedProgram) -> usize {
                 then_edge,
                 else_edge,
             } => {
-                next = next.max(cond.0 as usize + 1);
+                next = next.max(branch_cond_value_count(cond));
                 next = next.max(edge_value_count(then_edge));
                 next = next.max(edge_value_count(else_edge));
             }
@@ -579,6 +671,54 @@ fn target_value(target: &SelectedTarget) -> usize {
     }
 }
 
+fn map_compare_kind(kind: SelectedCompareKind) -> NativeCompareKind {
+    match kind {
+        SelectedCompareKind::Eq => NativeCompareKind::Eq,
+        SelectedCompareKind::Ne => NativeCompareKind::Ne,
+        SelectedCompareKind::LtS => NativeCompareKind::LtS,
+        SelectedCompareKind::LtU => NativeCompareKind::LtU,
+        SelectedCompareKind::GtS => NativeCompareKind::GtS,
+        SelectedCompareKind::GtU => NativeCompareKind::GtU,
+        SelectedCompareKind::LeS => NativeCompareKind::LeS,
+        SelectedCompareKind::LeU => NativeCompareKind::LeU,
+        SelectedCompareKind::GeS => NativeCompareKind::GeS,
+        SelectedCompareKind::GeU => NativeCompareKind::GeU,
+        SelectedCompareKind::Lt => NativeCompareKind::Lt,
+        SelectedCompareKind::Gt => NativeCompareKind::Gt,
+        SelectedCompareKind::Le => NativeCompareKind::Le,
+        SelectedCompareKind::Ge => NativeCompareKind::Ge,
+    }
+}
+
+fn mark_branch_cond(cond: &SelectedBranchCond, mark: &mut impl FnMut(LirValue)) {
+    match cond {
+        SelectedBranchCond::Value(value)
+        | SelectedBranchCond::I32Eqz(value)
+        | SelectedBranchCond::I64Eqz(value) => mark(*value),
+        SelectedBranchCond::I32Compare { lhs, rhs, .. }
+        | SelectedBranchCond::I64Compare { lhs, rhs, .. }
+        | SelectedBranchCond::F32Compare { lhs, rhs, .. }
+        | SelectedBranchCond::F64Compare { lhs, rhs, .. } => {
+            mark(*lhs);
+            mark(*rhs);
+        }
+    }
+}
+
+fn branch_cond_value_count(cond: &SelectedBranchCond) -> usize {
+    match cond {
+        SelectedBranchCond::Value(value)
+        | SelectedBranchCond::I32Eqz(value)
+        | SelectedBranchCond::I64Eqz(value) => value.0 as usize + 1,
+        SelectedBranchCond::I32Compare { lhs, rhs, .. }
+        | SelectedBranchCond::I64Compare { lhs, rhs, .. }
+        | SelectedBranchCond::F32Compare { lhs, rhs, .. }
+        | SelectedBranchCond::F64Compare { lhs, rhs, .. } => {
+            (lhs.0 as usize + 1).max(rhs.0 as usize + 1)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::place_program;
@@ -587,7 +727,7 @@ mod tests {
         lir::{ir::LirValue, leaf::LirLeafOp, slot::FrameSlot},
         native::{
             abi::{NativeLocation, NativePlace, NativeValue},
-            ir::{NativeBlockId, NativeInstKind, NativeTerminator},
+            ir::{NativeBlockId, NativeHelperEffect, NativeInstKind, NativeTerminator},
         },
         plan::{
             frame::{FrameLayoutPlan, FramePlanner},
@@ -597,8 +737,8 @@ mod tests {
     };
 
     use crate::vm::native::lower::select::{
-        SelectedBlock, SelectedInst, SelectedInstKind, SelectedProgram, SelectedSource,
-        SelectedTarget, SelectedTerminator,
+        SelectedBlock, SelectedHelperInst, SelectedInst, SelectedInstKind, SelectedProgram,
+        SelectedSource, SelectedTarget, SelectedTerminator,
     };
 
     fn test_backend(tmp: u8, hot: u8, tos: u8) -> BackendConfig {
@@ -675,6 +815,8 @@ mod tests {
                     SelectedInst {
                         kind: SelectedInstKind::CallLocal {
                             callee: 3,
+                            callee_params_count: 0,
+                            callee_frame_size: 0,
                             args: alloc::vec![],
                             results: alloc::vec![],
                         },
@@ -833,6 +975,108 @@ mod tests {
                     NativePlace::Location(NativeLocation::Tos(0)),
                     NativePlace::Spill(crate::vm::native::abi::NativeSpillSlot(0)),
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn transparent_helper_preserves_live_hot_alias() {
+        let selected = SelectedProgram {
+            entry: NativeBlockId(0),
+            blocks: alloc::vec![SelectedBlock {
+                id: NativeBlockId(0),
+                tos_params: alloc::vec![],
+                ops: alloc::vec![
+                    SelectedInst {
+                        kind: SelectedInstKind::Copy {
+                            dst: SelectedTarget::Value(LirValue(0)),
+                            src: SelectedSource::Hot(0),
+                        },
+                    },
+                    SelectedInst {
+                        kind: SelectedInstKind::Helper(SelectedHelperInst::Leaf {
+                            effect: NativeHelperEffect::Transparent,
+                            op: LirLeafOp::TableSize { table_idx: 0 },
+                            args: alloc::vec![],
+                            results: alloc::vec![LirValue(1)],
+                        }),
+                    },
+                ],
+                terminator: SelectedTerminator::Return {
+                    values: alloc::vec![LirValue(0)],
+                },
+            }],
+        };
+
+        let program = place_program(&selected, &planned(test_frame(1, 0)), test_backend(1, 1, 1));
+        let block = &program.blocks[0];
+
+        assert_eq!(program.spill_slots, 0);
+        assert_eq!(block.ops.len(), 1);
+        assert!(matches!(
+            block.ops[0].kind,
+            NativeInstKind::Helper(crate::vm::native::ir::NativeHelperInst::Leaf {
+                effect: NativeHelperEffect::Transparent,
+                ..
+            })
+        ));
+        assert_eq!(
+            block.terminator,
+            NativeTerminator::Return {
+                values: alloc::vec![NativeValue::Place(NativePlace::Location(
+                    NativeLocation::Hot(0)
+                ))],
+            }
+        );
+    }
+
+    #[test]
+    fn transparent_helper_spills_live_tmp_alias() {
+        let selected = SelectedProgram {
+            entry: NativeBlockId(0),
+            blocks: alloc::vec![SelectedBlock {
+                id: NativeBlockId(0),
+                tos_params: alloc::vec![LirValue(1), LirValue(2)],
+                ops: alloc::vec![
+                    SelectedInst {
+                        kind: SelectedInstKind::Leaf {
+                            op: LirLeafOp::I32Add,
+                            args: alloc::vec![LirValue(1), LirValue(2)],
+                            results: alloc::vec![LirValue(0)],
+                        },
+                    },
+                    SelectedInst {
+                        kind: SelectedInstKind::Helper(SelectedHelperInst::Leaf {
+                            effect: NativeHelperEffect::Transparent,
+                            op: LirLeafOp::TableSize { table_idx: 0 },
+                            args: alloc::vec![],
+                            results: alloc::vec![LirValue(3)],
+                        }),
+                    },
+                ],
+                terminator: SelectedTerminator::Return {
+                    values: alloc::vec![LirValue(0)],
+                },
+            }],
+        };
+
+        let program = place_program(&selected, &planned(test_frame(0, 0)), test_backend(1, 0, 2));
+        let block = &program.blocks[0];
+
+        assert_eq!(program.spill_slots, 1);
+        assert_eq!(
+            block.ops[1].kind,
+            NativeInstKind::Move(crate::vm::native::ir::NativeMove {
+                dst: NativePlace::Spill(crate::vm::native::abi::NativeSpillSlot(0)),
+                src: NativeValue::Place(NativePlace::Location(NativeLocation::Tmp(0))),
+            })
+        );
+        assert_eq!(
+            block.terminator,
+            NativeTerminator::Return {
+                values: alloc::vec![NativeValue::Place(NativePlace::Spill(
+                    crate::vm::native::abi::NativeSpillSlot(0)
+                ))],
             }
         );
     }

@@ -118,6 +118,16 @@ impl NativeProgram {
                     self.validate_place(*result)?;
                 }
             }
+            NativeInstKind::Helper(helper) => match helper {
+                NativeHelperInst::Leaf { args, results, .. } => {
+                    for arg in args {
+                        self.validate_value(*arg)?;
+                    }
+                    for result in results {
+                        self.validate_place(*result)?;
+                    }
+                }
+            },
             NativeInstKind::CallIndirect {
                 index,
                 args,
@@ -149,7 +159,7 @@ impl NativeProgram {
                 then_edge,
                 else_edge,
             } => {
-                self.validate_value(*cond)?;
+                self.validate_branch_cond(cond)?;
                 self.validate_edge(then_edge, source_block)?;
                 self.validate_edge(else_edge, source_block)
             }
@@ -167,6 +177,22 @@ impl NativeProgram {
                 Ok(())
             }
             NativeTerminator::TrapUnreachable => Ok(()),
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_branch_cond(&self, cond: &NativeBranchCond) -> Result<(), WasmError> {
+        match cond {
+            NativeBranchCond::Value(value)
+            | NativeBranchCond::I32Eqz(value)
+            | NativeBranchCond::I64Eqz(value) => self.validate_value(*value),
+            NativeBranchCond::I32Compare { lhs, rhs, .. }
+            | NativeBranchCond::I64Compare { lhs, rhs, .. }
+            | NativeBranchCond::F32Compare { lhs, rhs, .. }
+            | NativeBranchCond::F64Compare { lhs, rhs, .. } => {
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)
+            }
         }
     }
 
@@ -307,6 +333,75 @@ pub struct NativeEdge {
     pub copies: Vec<NativeMove>,
 }
 
+/// Compare relation for fused native branches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCompareKind {
+    Eq,
+    Ne,
+    LtS,
+    LtU,
+    GtS,
+    GtU,
+    LeS,
+    LeU,
+    GeS,
+    GeU,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+/// One fused native branch condition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeBranchCond {
+    Value(NativeValue),
+    I32Eqz(NativeValue),
+    I64Eqz(NativeValue),
+    I32Compare {
+        kind: NativeCompareKind,
+        lhs: NativeValue,
+        rhs: NativeValue,
+    },
+    I64Compare {
+        kind: NativeCompareKind,
+        lhs: NativeValue,
+        rhs: NativeValue,
+    },
+    F32Compare {
+        kind: NativeCompareKind,
+        lhs: NativeValue,
+        rhs: NativeValue,
+    },
+    F64Compare {
+        kind: NativeCompareKind,
+        lhs: NativeValue,
+        rhs: NativeValue,
+    },
+}
+
+/// One helper-side ABI effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeHelperEffect {
+    /// Helper uses the same `fp` and falls through. Hot locals and TOS lanes
+    /// remain live across the helper boundary; only ephemeral temps are
+    /// clobbered.
+    Transparent,
+    /// Helper may change control flow and/or resume with a different `fp`.
+    ControlTransfer,
+}
+
+/// One cold helper instruction that remains explicit above the final ISA.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeHelperInst {
+    Leaf {
+        effect: NativeHelperEffect,
+        op: LirLeafOp,
+        args: Vec<NativeValue>,
+        results: Vec<NativePlace>,
+    },
+}
+
 /// Native instruction vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeInstKind {
@@ -316,6 +411,7 @@ pub enum NativeInstKind {
         args: Vec<NativeValue>,
         results: Vec<NativePlace>,
     },
+    Helper(NativeHelperInst),
     CallExternal {
         func_idx: u32,
         args: Vec<NativeValue>,
@@ -323,6 +419,8 @@ pub enum NativeInstKind {
     },
     CallLocal {
         callee: u32,
+        callee_params_count: u16,
+        callee_frame_size: u16,
         args: Vec<NativeValue>,
         results: Vec<NativePlace>,
     },
@@ -340,7 +438,7 @@ pub enum NativeInstKind {
 pub enum NativeTerminator {
     Goto(NativeEdge),
     Branch {
-        cond: NativeValue,
+        cond: NativeBranchCond,
         then_edge: NativeEdge,
         else_edge: NativeEdge,
     },

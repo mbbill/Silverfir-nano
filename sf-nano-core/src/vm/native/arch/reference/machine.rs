@@ -19,8 +19,8 @@ use crate::{
             abi::{NativeLocation, NativePlace, NativeSpillSlot, NativeValue},
             code::NativeCode,
             ir::{
-                NativeBlockId, NativeEdge, NativeInst, NativeInstKind, NativeProgram,
-                NativeTerminator,
+                NativeBlockId, NativeBranchCond, NativeCompareKind, NativeEdge, NativeHelperInst,
+                NativeInst, NativeInstKind, NativeProgram, NativeTerminator,
             },
             runtime::{context::NativeContext, layout},
         },
@@ -122,6 +122,7 @@ impl<'a> ReferenceMachine<'a> {
                 self.write_place(mov.dst, value)
             }
             NativeInstKind::Leaf { op, args, results } => self.execute_leaf(op, args, results),
+            NativeInstKind::Helper(helper) => self.execute_helper(helper),
             NativeInstKind::CallExternal {
                 func_idx,
                 args,
@@ -129,9 +130,17 @@ impl<'a> ReferenceMachine<'a> {
             } => self.execute_call_external(*func_idx, args, results),
             NativeInstKind::CallLocal {
                 callee,
+                callee_params_count,
+                callee_frame_size,
                 args,
                 results,
-            } => self.execute_call_local(*callee, args, results),
+            } => self.execute_call_local(
+                *callee,
+                *callee_params_count,
+                *callee_frame_size,
+                args,
+                results,
+            ),
             NativeInstKind::CallIndirect {
                 type_idx,
                 table_idx,
@@ -153,7 +162,7 @@ impl<'a> ReferenceMachine<'a> {
                 then_edge,
                 else_edge,
             } => {
-                let edge = if self.read_value(*cond)? != 0 {
+                let edge = if self.eval_branch_cond(cond)? {
                     then_edge
                 } else {
                     else_edge
@@ -180,6 +189,42 @@ impl<'a> ReferenceMachine<'a> {
             }
             NativeTerminator::TrapUnreachable => {
                 Err(WasmError::invalid("native reached unreachable".into()))
+            }
+        }
+    }
+
+    fn execute_helper(&mut self, helper: &NativeHelperInst) -> Result<(), WasmError> {
+        match helper {
+            NativeHelperInst::Leaf {
+                op, args, results, ..
+            } => self.execute_leaf(op, args, results),
+        }
+    }
+
+    fn eval_branch_cond(&self, cond: &NativeBranchCond) -> Result<bool, WasmError> {
+        match cond {
+            NativeBranchCond::Value(value) => Ok(self.read_value(*value)? != 0),
+            NativeBranchCond::I32Eqz(value) => Ok((self.read_value(*value)? as u32) == 0),
+            NativeBranchCond::I64Eqz(value) => Ok(self.read_value(*value)? == 0),
+            NativeBranchCond::I32Compare { kind, lhs, rhs } => {
+                let lhs = self.read_value(*lhs)? as u32;
+                let rhs = self.read_value(*rhs)? as u32;
+                Ok(eval_i32_compare(*kind, lhs, rhs))
+            }
+            NativeBranchCond::I64Compare { kind, lhs, rhs } => {
+                let lhs = self.read_value(*lhs)?;
+                let rhs = self.read_value(*rhs)?;
+                Ok(eval_i64_compare(*kind, lhs, rhs))
+            }
+            NativeBranchCond::F32Compare { kind, lhs, rhs } => {
+                let lhs = self.read_value(*lhs)? as u32;
+                let rhs = self.read_value(*rhs)? as u32;
+                Ok(eval_f32_compare(*kind, lhs, rhs))
+            }
+            NativeBranchCond::F64Compare { kind, lhs, rhs } => {
+                let lhs = self.read_value(*lhs)?;
+                let rhs = self.read_value(*rhs)?;
+                Ok(eval_f64_compare(*kind, lhs, rhs))
             }
         }
     }
@@ -781,6 +826,8 @@ impl<'a> ReferenceMachine<'a> {
     fn execute_call_local(
         &mut self,
         callee: u32,
+        callee_params_count: u16,
+        callee_frame_size: u16,
         args: &[NativeValue],
         results: &[NativePlace],
     ) -> Result<(), WasmError> {
@@ -794,8 +841,10 @@ impl<'a> ReferenceMachine<'a> {
             } => self.invoke_local(
                 code,
                 unsafe { &*program },
+                callee_params_count,
                 params_len,
                 results_len,
+                callee_frame_size,
                 &arg_values,
                 results,
             ),
@@ -851,8 +900,10 @@ impl<'a> ReferenceMachine<'a> {
             } => self.invoke_local(
                 code,
                 unsafe { &*program },
+                params_len as u16,
                 params_len,
                 results_len,
+                unsafe { (&*program).frame.frame_size },
                 &arg_values,
                 results,
             ),
@@ -929,14 +980,26 @@ impl<'a> ReferenceMachine<'a> {
         &mut self,
         code: *const NativeCode,
         callee: &NativeProgram,
+        callee_params_count: u16,
         params_len: usize,
         results_len: usize,
+        callee_frame_size: u16,
         args: &[u64],
         results: &[NativePlace],
     ) -> Result<(), WasmError> {
         if params_len != args.len() || results_len != results.len() {
             return Err(WasmError::internal(
                 "native call_local arity does not match callee function type".into(),
+            ));
+        }
+        if callee.frame.frame_size != callee_frame_size {
+            return Err(WasmError::internal(
+                "native call_local frame contract does not match callee".into(),
+            ));
+        }
+        if params_len as u16 != callee_params_count {
+            return Err(WasmError::internal(
+                "native call_local param contract does not match callee".into(),
             ));
         }
 
@@ -1377,6 +1440,84 @@ impl<'a> ReferenceMachine<'a> {
             ));
         };
         Ok(store)
+    }
+}
+
+fn eval_i32_compare(kind: NativeCompareKind, lhs: u32, rhs: u32) -> bool {
+    match kind {
+        NativeCompareKind::Eq => lhs == rhs,
+        NativeCompareKind::Ne => lhs != rhs,
+        NativeCompareKind::LtS => (lhs as i32) < (rhs as i32),
+        NativeCompareKind::LtU => lhs < rhs,
+        NativeCompareKind::GtS => (lhs as i32) > (rhs as i32),
+        NativeCompareKind::GtU => lhs > rhs,
+        NativeCompareKind::LeS => (lhs as i32) <= (rhs as i32),
+        NativeCompareKind::LeU => lhs <= rhs,
+        NativeCompareKind::GeS => (lhs as i32) >= (rhs as i32),
+        NativeCompareKind::GeU => lhs >= rhs,
+        NativeCompareKind::Lt | NativeCompareKind::Gt | NativeCompareKind::Le | NativeCompareKind::Ge => {
+            false
+        }
+    }
+}
+
+fn eval_i64_compare(kind: NativeCompareKind, lhs: u64, rhs: u64) -> bool {
+    match kind {
+        NativeCompareKind::Eq => lhs == rhs,
+        NativeCompareKind::Ne => lhs != rhs,
+        NativeCompareKind::LtS => (lhs as i64) < (rhs as i64),
+        NativeCompareKind::LtU => lhs < rhs,
+        NativeCompareKind::GtS => (lhs as i64) > (rhs as i64),
+        NativeCompareKind::GtU => lhs > rhs,
+        NativeCompareKind::LeS => (lhs as i64) <= (rhs as i64),
+        NativeCompareKind::LeU => lhs <= rhs,
+        NativeCompareKind::GeS => (lhs as i64) >= (rhs as i64),
+        NativeCompareKind::GeU => lhs >= rhs,
+        NativeCompareKind::Lt | NativeCompareKind::Gt | NativeCompareKind::Le | NativeCompareKind::Ge => {
+            false
+        }
+    }
+}
+
+fn eval_f32_compare(kind: NativeCompareKind, lhs: u32, rhs: u32) -> bool {
+    let lhs = f32::from_bits(lhs);
+    let rhs = f32::from_bits(rhs);
+    match kind {
+        NativeCompareKind::Eq => lhs == rhs,
+        NativeCompareKind::Ne => lhs != rhs,
+        NativeCompareKind::Lt => lhs < rhs,
+        NativeCompareKind::Gt => lhs > rhs,
+        NativeCompareKind::Le => lhs <= rhs,
+        NativeCompareKind::Ge => lhs >= rhs,
+        NativeCompareKind::LtS
+        | NativeCompareKind::LtU
+        | NativeCompareKind::GtS
+        | NativeCompareKind::GtU
+        | NativeCompareKind::LeS
+        | NativeCompareKind::LeU
+        | NativeCompareKind::GeS
+        | NativeCompareKind::GeU => false,
+    }
+}
+
+fn eval_f64_compare(kind: NativeCompareKind, lhs: u64, rhs: u64) -> bool {
+    let lhs = f64::from_bits(lhs);
+    let rhs = f64::from_bits(rhs);
+    match kind {
+        NativeCompareKind::Eq => lhs == rhs,
+        NativeCompareKind::Ne => lhs != rhs,
+        NativeCompareKind::Lt => lhs < rhs,
+        NativeCompareKind::Gt => lhs > rhs,
+        NativeCompareKind::Le => lhs <= rhs,
+        NativeCompareKind::Ge => lhs >= rhs,
+        NativeCompareKind::LtS
+        | NativeCompareKind::LtU
+        | NativeCompareKind::GtS
+        | NativeCompareKind::GtU
+        | NativeCompareKind::LeS
+        | NativeCompareKind::LeU
+        | NativeCompareKind::GeS
+        | NativeCompareKind::GeU => false,
     }
 }
 

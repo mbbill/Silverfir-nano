@@ -12,6 +12,7 @@ pub struct PlanConfig {
     pub backend: BackendKind,
     pub hot_local_count: u8,
     pub tos_register_count: u8,
+    pub call_scratch_slots: u16,
 }
 
 impl PlanConfig {
@@ -21,6 +22,10 @@ impl PlanConfig {
             backend,
             hot_local_count: value.hot_local_count,
             tos_register_count: value.tos_register_count,
+            call_scratch_slots: match backend {
+                BackendKind::Native => 2,
+                BackendKind::Base | BackendKind::Fusion => 0,
+            },
         }
     }
 

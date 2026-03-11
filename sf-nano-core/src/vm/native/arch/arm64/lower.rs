@@ -18,8 +18,8 @@ use crate::{
         native::{
             abi::{NativeLocation, NativePlace, NativeValue},
             ir::{
-                NativeBlockId, NativeEdge, NativeInst, NativeInstKind, NativeProgram,
-                NativeTerminator,
+                NativeBlockId, NativeBranchCond, NativeCompareKind, NativeEdge, NativeHelperInst,
+                NativeInst, NativeInstKind, NativeProgram, NativeTerminator,
             },
         },
     },
@@ -109,15 +109,19 @@ fn supports_direct_lowering(program: &NativeProgram) -> bool {
                         return false;
                     }
                 }
+                NativeInstKind::Helper(_) => return false,
                 NativeInstKind::CallExternal { .. }
                 | NativeInstKind::CallLocal { .. }
                 | NativeInstKind::CallIndirect { .. } => return false,
             }
         }
         match &block.terminator {
-            NativeTerminator::Goto(_)
-            | NativeTerminator::Branch { .. }
-            | NativeTerminator::Return { .. } => {}
+            NativeTerminator::Goto(_) | NativeTerminator::Return { .. } => {}
+            NativeTerminator::Branch { cond, .. } => {
+                if !supported_branch_cond(cond) {
+                    return false;
+                }
+            }
             NativeTerminator::BrTable { .. } | NativeTerminator::TrapUnreachable => return false,
         }
     }
@@ -187,6 +191,17 @@ fn supported_leaf(op: &LirLeafOp) -> bool {
             | LirLeafOp::F64Const { .. }
             | LirLeafOp::Nop
             | LirLeafOp::Drop
+    )
+}
+
+fn supported_branch_cond(cond: &NativeBranchCond) -> bool {
+    matches!(
+        cond,
+        NativeBranchCond::Value(_)
+            | NativeBranchCond::I32Eqz(_)
+            | NativeBranchCond::I64Eqz(_)
+            | NativeBranchCond::I32Compare { .. }
+            | NativeBranchCond::I64Compare { .. }
     )
 }
 
@@ -296,6 +311,9 @@ impl<'a> Arm64Lowerer<'a> {
         match &inst.kind {
             NativeInstKind::Move(mov) => self.emit_move(mov.dst, mov.src),
             NativeInstKind::Leaf { op, args, results } => self.emit_leaf(op, args, results),
+            NativeInstKind::Helper(NativeHelperInst::Leaf { op, .. }) => Err(WasmError::internal(
+                alloc::format!("helper leaf {:?} is not supported by direct arm64 lowering yet", op),
+            )),
             NativeInstKind::CallExternal { .. }
             | NativeInstKind::CallLocal { .. }
             | NativeInstKind::CallIndirect { .. } => Err(WasmError::internal(
@@ -547,17 +565,7 @@ impl<'a> Arm64Lowerer<'a> {
                     self.emit_branch_to_block(taken.target);
                     return Ok(());
                 }
-
-                self.read_value_into(*cond, REG_SCRATCH0)?;
-                let else_patch = self.emitter.len();
-                self.emitter.emit_u32(enc::cbz_64(REG_SCRATCH0, 0));
-                self.emit_edge(then_edge)?;
-                self.emit_branch_to_block(then_edge.target);
-                let else_offset = self.emitter.len();
-                self.patch_cbz(else_patch, REG_SCRATCH0, else_offset);
-                self.emit_edge(else_edge)?;
-                self.emit_branch_to_block(else_edge.target);
-                Ok(())
+                self.emit_branch_cond(cond, then_edge, else_edge)
             }
             NativeTerminator::Return { values } => {
                 for (index, value) in values.iter().copied().enumerate() {
@@ -576,14 +584,82 @@ impl<'a> Arm64Lowerer<'a> {
 
     fn constant_branch<'b>(
         &self,
-        cond: &NativeValue,
+        cond: &NativeBranchCond,
         then_edge: &'b NativeEdge,
         else_edge: &'b NativeEdge,
     ) -> Option<&'b NativeEdge> {
         match cond {
-            NativeValue::Imm64(value) => Some(if *value == 0 { else_edge } else { then_edge }),
+            NativeBranchCond::Value(NativeValue::Imm64(value)) => {
+                Some(if *value == 0 { else_edge } else { then_edge })
+            }
             _ => None,
         }
+    }
+
+    fn emit_branch_cond(
+        &mut self,
+        cond: &NativeBranchCond,
+        then_edge: &NativeEdge,
+        else_edge: &NativeEdge,
+    ) -> Result<(), WasmError> {
+        match cond {
+            NativeBranchCond::Value(value) => {
+                self.read_value_into(*value, REG_SCRATCH0)?;
+                let else_patch = self.emitter.len();
+                self.emitter.emit_u32(enc::cbz_64(REG_SCRATCH0, 0));
+                self.emit_edge(then_edge)?;
+                self.emit_branch_to_block(then_edge.target);
+                let else_offset = self.emitter.len();
+                self.patch_cbz(else_patch, REG_SCRATCH0, else_offset);
+                self.emit_edge(else_edge)?;
+                self.emit_branch_to_block(else_edge.target);
+                Ok(())
+            }
+            NativeBranchCond::I32Eqz(value) => {
+                self.read_value_into(*value, REG_SCRATCH0)?;
+                self.emitter.emit_u32(enc::cmp_imm_32(REG_SCRATCH0, 0));
+                self.emit_conditional_edges(Cond::Eq, then_edge, else_edge)
+            }
+            NativeBranchCond::I64Eqz(value) => {
+                self.read_value_into(*value, REG_SCRATCH0)?;
+                self.emitter.emit_u32(enc::cmp_imm_64(REG_SCRATCH0, 0));
+                self.emit_conditional_edges(Cond::Eq, then_edge, else_edge)
+            }
+            NativeBranchCond::I32Compare { kind, lhs, rhs } => {
+                self.read_value_into(*lhs, REG_SCRATCH0)?;
+                self.read_value_into(*rhs, REG_SCRATCH1)?;
+                self.emitter.emit_u32(enc::cmp_reg_32(REG_SCRATCH0, REG_SCRATCH1));
+                self.emit_conditional_edges(map_compare_cond(*kind)?, then_edge, else_edge)
+            }
+            NativeBranchCond::I64Compare { kind, lhs, rhs } => {
+                self.read_value_into(*lhs, REG_SCRATCH0)?;
+                self.read_value_into(*rhs, REG_SCRATCH1)?;
+                self.emitter.emit_u32(enc::cmp_reg_64(REG_SCRATCH0, REG_SCRATCH1));
+                self.emit_conditional_edges(map_compare_cond(*kind)?, then_edge, else_edge)
+            }
+            NativeBranchCond::F32Compare { .. } | NativeBranchCond::F64Compare { .. } => {
+                Err(WasmError::internal(
+                    "float compare branches are not supported by direct arm64 lowering yet".into(),
+                ))
+            }
+        }
+    }
+
+    fn emit_conditional_edges(
+        &mut self,
+        cond: Cond,
+        then_edge: &NativeEdge,
+        else_edge: &NativeEdge,
+    ) -> Result<(), WasmError> {
+        let else_patch = self.emitter.len();
+        self.emitter.emit_u32(enc::b_cond(cond.invert(), 0));
+        self.emit_edge(then_edge)?;
+        self.emit_branch_to_block(then_edge.target);
+        let else_offset = self.emitter.len();
+        self.patch_b_cond(else_patch, cond.invert(), else_offset)?;
+        self.emit_edge(else_edge)?;
+        self.emit_branch_to_block(else_edge.target);
+        Ok(())
     }
 
     fn emit_edge(&mut self, edge: &NativeEdge) -> Result<(), WasmError> {
@@ -773,6 +849,18 @@ impl<'a> Arm64Lowerer<'a> {
             .patch_u32(patch_offset, enc::cbz_64(reg, delta));
     }
 
+    fn patch_b_cond(
+        &mut self,
+        patch_offset: usize,
+        cond: Cond,
+        target_offset: usize,
+    ) -> Result<(), WasmError> {
+        let delta = ((target_offset as isize - patch_offset as isize) / 4) as i32;
+        self.emitter
+            .patch_u32(patch_offset, enc::b_cond(cond, delta));
+        Ok(())
+    }
+
     fn patch_block_branches(&mut self) -> Result<(), WasmError> {
         for patch in &self.branch_patches {
             let target = self
@@ -817,6 +905,26 @@ fn map_location(loc: NativeLocation) -> Arm64Reg {
         NativeLocation::Tmp(2) => REG_TMP2,
         NativeLocation::Tmp(3) => REG_TMP3,
         NativeLocation::Tmp(reg) => panic!("unsupported arm64 tmp reg {}", reg),
+    }
+}
+
+fn map_compare_cond(kind: NativeCompareKind) -> Result<Cond, WasmError> {
+    match kind {
+        NativeCompareKind::Eq => Ok(Cond::Eq),
+        NativeCompareKind::Ne => Ok(Cond::Ne),
+        NativeCompareKind::LtS => Ok(Cond::Lt),
+        NativeCompareKind::LtU => Ok(Cond::Lo),
+        NativeCompareKind::GtS => Ok(Cond::Gt),
+        NativeCompareKind::GtU => Ok(Cond::Hi),
+        NativeCompareKind::LeS => Ok(Cond::Le),
+        NativeCompareKind::LeU => Ok(Cond::Ls),
+        NativeCompareKind::GeS => Ok(Cond::Ge),
+        NativeCompareKind::GeU => Ok(Cond::Hs),
+        NativeCompareKind::Lt | NativeCompareKind::Gt | NativeCompareKind::Le | NativeCompareKind::Ge => {
+            Err(WasmError::internal(
+                "arm64 direct lowering does not support float compare branches yet".into(),
+            ))
+        }
     }
 }
 

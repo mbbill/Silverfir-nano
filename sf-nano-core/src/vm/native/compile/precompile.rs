@@ -17,7 +17,12 @@ pub struct NativePrecompiled {
 }
 
 pub fn precompile_native(bundle: NativeBuildBundle) -> Result<NativePrecompiled, WasmError> {
-    let ir = lower::lower_native(&bundle.lir, &bundle.planned, bundle.backend_config);
+    let ir = lower::lower_native(
+        &bundle.lir,
+        &bundle.planned,
+        bundle.backend_config,
+        &bundle.local_call_contracts,
+    )?;
     ir.validate()?;
     let resolved = resolve::resolve_native(&ir);
     let code = arch::compile_native(&ir, &resolved)?;
