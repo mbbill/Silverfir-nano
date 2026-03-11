@@ -95,7 +95,7 @@ impl BackendMode {
     }
 }
 
-static ACTIVE_BACKEND_MODE: AtomicU8 = AtomicU8::new(BackendMode::Auto as u8);
+static ACTIVE_BACKEND_MODE: AtomicU8 = AtomicU8::new(BackendMode::Native as u8);
 
 pub fn set_backend_mode(mode: BackendMode) {
     ACTIVE_BACKEND_MODE.store(mode as u8, Ordering::Relaxed);

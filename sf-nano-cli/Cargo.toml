@@ -20,4 +20,4 @@ function-trace = ["sf-nano-core/function-trace"]
 ir-dump = ["sf-nano-core/ir-dump"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", default-features = false, features = ["wasi"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }

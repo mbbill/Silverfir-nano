@@ -12,7 +12,7 @@ categories = ["wasm", "no-std"]
 paste = "1.0"
 
 [features]
-default = []
+default = ["micro-jit"]
 validate = []
 wasi = []
 fusion = []

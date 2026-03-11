@@ -44,7 +44,7 @@ fn main() {
 
     // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
-    let mut backend_mode = BackendMode::Auto;
+    let mut backend_mode = BackendMode::Native;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
