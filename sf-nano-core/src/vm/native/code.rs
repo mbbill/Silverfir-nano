@@ -4,6 +4,7 @@
 //! - executable code
 //! - helper metadata
 //! - patch metadata
+//! - finalized native execution metadata during bring-up
 //!
 //! It must not own an interpreter-shaped descriptor stream.
 
@@ -14,6 +15,7 @@ use crate::vm::plan::group::GroupId;
 use super::{
     entry::NativeEntry,
     helper_meta::{HelperMetadataArena, HelperMetadataRecord},
+    ir::NativeProgram,
 };
 
 /// Direct-call patch site that must be finalized to a native entry.
@@ -36,13 +38,18 @@ pub enum PatchTarget {
 /// Native compiled code object.
 ///
 /// This is intentionally *not* a descriptor stream. It owns executable bytes
-/// plus the side metadata required by native wrappers and patching.
+/// plus the side metadata required by native wrappers and patching. During
+/// native bring-up it also carries finalized native execution metadata so the
+/// native runtime can execute the native IR without falling back to the
+/// interpreter instruction stream.
 #[derive(Debug, Default)]
 pub struct NativeCode {
     pub entry: Option<NativeEntry>,
     pub text: Box<[u8]>,
     pub helper_metadata: Box<[HelperMetadataRecord]>,
     pub direct_call_patches: Box<[DirectCallPatch]>,
+    pub program: Option<NativeProgram>,
+    pub vreg_count: u32,
 }
 
 impl NativeCode {
@@ -57,17 +64,31 @@ impl NativeCode {
     }
 
     #[inline]
+    pub fn program(&self) -> Option<&NativeProgram> {
+        self.program.as_ref()
+    }
+
+    #[inline]
+    pub const fn vreg_count(&self) -> usize {
+        self.vreg_count as usize
+    }
+
+    #[inline]
     pub fn from_parts(
         entry: Option<NativeEntry>,
         text: Vec<u8>,
         helper_metadata: HelperMetadataArena,
         direct_call_patches: Vec<DirectCallPatch>,
+        program: Option<NativeProgram>,
+        vreg_count: u32,
     ) -> Self {
         Self {
             entry,
             text: text.into_boxed_slice(),
             helper_metadata: helper_metadata.into_boxed_slice(),
             direct_call_patches: direct_call_patches.into_boxed_slice(),
+            program,
+            vreg_count,
         }
     }
 
@@ -88,7 +109,7 @@ impl NativeCode {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct NativeCodeCache {
     entry: Option<NativeEntry>,
     params_len: usize,
@@ -142,11 +163,20 @@ pub fn create_native_code(
     text: Vec<u8>,
     helper_metadata: HelperMetadataArena,
     direct_call_patches: Vec<DirectCallPatch>,
+    program: Option<NativeProgram>,
+    vreg_count: u32,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
 ) -> (NativeCode, NativeCodeCache) {
-    let code = NativeCode::from_parts(entry, text, helper_metadata, direct_call_patches);
+    let code = NativeCode::from_parts(
+        entry,
+        text,
+        helper_metadata,
+        direct_call_patches,
+        program,
+        vreg_count,
+    );
     let cache = code.build_cache(params_len, locals_len, results_len);
     (code, cache)
 }

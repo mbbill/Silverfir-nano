@@ -1,57 +1,39 @@
-//! Native resolution from LIR + planned groups to native-owned resolved entries.
+//! Resolve native IR into native-owned entry identities.
 //!
-//! This must consume preplanned groups. It must not rediscover groups.
+//! This layer decides which native blocks/helpers become direct-entry patch
+//! targets. It does not rediscover frontend grouping policy or reinterpret LIR.
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::legacy::lower::LirProgram;
-use crate::vm::plan::group::GroupId;
-
-use super::{entry::NativeEntry, helper_meta::ColdHelperKind};
+use super::{
+    entry::NativeEntry,
+    helper_meta::ColdHelperKind,
+    ir::{NativeBlockId, NativeProgram},
+};
 
 /// Native-side resolved entry.
 #[derive(Clone, Debug)]
 pub struct ResolvedNativeEntry {
     pub kind: ResolvedNativeEntryKind,
-    pub group_id: Option<GroupId>,
-    pub lir_range: core::ops::Range<usize>,
+    pub block: Option<NativeBlockId>,
     pub entry: Option<NativeEntry>,
     pub cold_helper: Option<ColdHelperKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolvedNativeEntryKind {
-    Group,
-    Singleton,
+    Block,
     ColdHelper,
 }
 
-/// Resolve LIR and planned groups into native-owned entries.
-pub fn resolve_native(lir: &LirProgram) -> Vec<ResolvedNativeEntry> {
-    // TODO: Replace this structural placeholder with real native resolution.
-    // The important current property is that it starts from planned groups,
-    // not backend-local discovery.
-    if !lir.groups.is_empty() {
-        return lir
-            .groups
-            .iter()
-            .map(|group| ResolvedNativeEntry {
-                kind: ResolvedNativeEntryKind::Group,
-                group_id: Some(group.id),
-                lir_range: group.lir_range.clone(),
-                entry: None,
-                cold_helper: None,
-            })
-            .collect();
-    }
-
-    lir.ops
+/// Resolve native blocks into native-owned entry identities.
+pub fn resolve_native(program: &NativeProgram) -> Vec<ResolvedNativeEntry> {
+    program
+        .blocks
         .iter()
-        .enumerate()
-        .map(|(lir_index, _)| ResolvedNativeEntry {
-            kind: ResolvedNativeEntryKind::Singleton,
-            group_id: None,
-            lir_range: lir_index..lir_index + 1,
+        .map(|block| ResolvedNativeEntry {
+            kind: ResolvedNativeEntryKind::Block,
+            block: Some(block.id),
             entry: None,
             cold_helper: None,
         })

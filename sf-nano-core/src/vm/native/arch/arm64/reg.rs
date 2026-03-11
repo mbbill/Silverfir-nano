@@ -1,4 +1,4 @@
-//! ARM64 register assignment for the native ABI.
+//! ARM64 register naming for the native ABI.
 
 /// ARM64 register in the native ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

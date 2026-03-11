@@ -1,18 +1,15 @@
 //! Standalone native backend.
 //!
-//! Important design intent:
-//! - no `Instruction`
-//! - no `NativeInst`
-//! - no generic `tos_slots`
-//! - no `read_t0` / `read_topN` / `write_tN` helper entry families
-//! - no backend-side rediscovery of grouping
+//! Native consumes backend-facing CFG + SSA LIR and lowers it into one
+//! target-independent native IR before ISA-specific emission.
 //!
-//! Native consumes:
-//! - shared planning-stage groups
-//! - backend-facing LIR
-//! and emits direct native entries plus uniform cold wrappers.
+//! It must not drift back toward:
+//! - interpreter-style instruction streams
+//! - backend-side stack reconstruction
+//! - legacy LIR/window semantics
+//! - ISA-specific semantic optimization
 
-pub mod arm64;
+pub mod arch;
 pub mod bridge;
 pub mod build;
 pub mod code;
@@ -20,9 +17,11 @@ pub mod code_buf;
 pub mod context;
 pub mod dump;
 pub mod entry;
+pub mod executor;
 pub mod finalizer;
 pub mod helper;
 pub mod helper_meta;
+pub mod ir;
 pub mod jitdump;
 pub mod lower;
 pub mod map;

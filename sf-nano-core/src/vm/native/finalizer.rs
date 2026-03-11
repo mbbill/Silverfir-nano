@@ -1,24 +1,28 @@
 //! Native finalization and target patching.
 //!
-//! This should patch direct native entries and helper metadata without
-//! reintroducing stack/T-window reconstruction.
+//! This packages finalized native execution metadata for the runtime-facing
+//! native entry ABI. The current bring-up path points every compiled function
+//! at one shared native entry and keeps execution in terms of finalized native
+//! IR, not interpreter descriptors. Direct ARM64 block emission can replace
+//! that shared entry later without changing the backend boundary.
 
 use alloc::vec::Vec;
 
-use crate::vm::lir::legacy::lower::LirProgram;
+use crate::error::WasmError;
 
 use super::{
     code::{DirectCallPatch, NativeCode},
+    executor,
     entry::NativeEntry,
     helper_meta::{ColdHelperKind, HelperMetadataArena},
+    ir::{NativeBlockId, NativeInstKind, NativeProgram, NativeReg, NativeTerminator},
     resolve::ResolvedNativeEntry,
 };
 
 #[derive(Clone, Debug)]
 struct FinalEntryInfo {
     resolved_index: usize,
-    group_id: Option<crate::vm::plan::group::GroupId>,
-    lir_range: core::ops::Range<usize>,
+    block: Option<NativeBlockId>,
     entry: Option<NativeEntry>,
     cold_helper: Option<ColdHelperKind>,
 }
@@ -29,18 +33,26 @@ pub struct NativeFinalized {
     pub code: NativeCode,
 }
 
-pub fn finalize_native(_lir: &LirProgram, resolved: &[ResolvedNativeEntry]) -> NativeFinalized {
+pub fn finalize_native(
+    program: &NativeProgram,
+    resolved: &[ResolvedNativeEntry],
+) -> Result<NativeFinalized, WasmError> {
     let _entries = build_final_entry_table(resolved);
-    // TODO: Build direct native entry table, helper metadata, and patch lists
-    // without reintroducing generic continuation slot descriptors.
-    NativeFinalized {
+    Ok(NativeFinalized {
         code: NativeCode::from_parts(
-            Option::<NativeEntry>::None,
+            Some(shared_native_entry()),
             Vec::new(),
             HelperMetadataArena::new(),
             Vec::<DirectCallPatch>::new(),
+            Some(program.clone()),
+            count_vregs(program),
         ),
-    }
+    })
+}
+
+#[inline]
+fn shared_native_entry() -> NativeEntry {
+    executor::shared_native_entry
 }
 
 fn build_final_entry_table(resolved: &[ResolvedNativeEntry]) -> Vec<FinalEntryInfo> {
@@ -49,10 +61,93 @@ fn build_final_entry_table(resolved: &[ResolvedNativeEntry]) -> Vec<FinalEntryIn
         .enumerate()
         .map(|(resolved_index, entry)| FinalEntryInfo {
             resolved_index,
-            group_id: entry.group_id,
-            lir_range: entry.lir_range.clone(),
+            block: entry.block,
             entry: entry.entry,
             cold_helper: entry.cold_helper,
         })
         .collect()
+}
+
+fn count_vregs(program: &NativeProgram) -> u32 {
+    let mut next = 0u32;
+    for block in &program.blocks {
+        for param in &block.params {
+            next = next.max(param.0.saturating_add(1));
+        }
+        for op in &block.ops {
+            match &op.kind {
+                NativeInstKind::Leaf { args, results, .. } => {
+                    next = max_reg_slice(next, args);
+                    next = max_reg_slice(next, results);
+                }
+                NativeInstKind::ReadOperandSlot { dst, .. }
+                | NativeInstKind::ReadHotLocal { dst, .. }
+                | NativeInstKind::ReadFrameLocal { dst, .. } => {
+                    next = next.max(dst.0.saturating_add(1));
+                }
+                NativeInstKind::WriteOperandSlot { src, .. }
+                | NativeInstKind::WriteHotLocal { src, .. }
+                | NativeInstKind::WriteFrameLocal { src, .. } => {
+                    next = next.max(src.0.saturating_add(1));
+                }
+                NativeInstKind::CallExternal { args, results, .. }
+                | NativeInstKind::CallInternal { args, results, .. } => {
+                    next = max_reg_slice(next, args);
+                    next = max_reg_slice(next, results);
+                }
+                NativeInstKind::CallIndirect {
+                    index,
+                    args,
+                    results,
+                    ..
+                } => {
+                    next = next.max(index.0.saturating_add(1));
+                    next = max_reg_slice(next, args);
+                    next = max_reg_slice(next, results);
+                }
+            }
+        }
+        match &block.terminator {
+            NativeTerminator::Goto(edge) => {
+                for copy in &edge.copies {
+                    next = next.max(copy.src.0.saturating_add(1));
+                    next = next.max(copy.dst.0.saturating_add(1));
+                }
+            }
+            NativeTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            } => {
+                next = next.max(cond.0.saturating_add(1));
+                for edge in [then_edge, else_edge] {
+                    for copy in &edge.copies {
+                        next = next.max(copy.src.0.saturating_add(1));
+                        next = next.max(copy.dst.0.saturating_add(1));
+                    }
+                }
+            }
+            NativeTerminator::BrTable { index, entries } => {
+                next = next.max(index.0.saturating_add(1));
+                for edge in entries {
+                    for copy in &edge.copies {
+                        next = next.max(copy.src.0.saturating_add(1));
+                        next = next.max(copy.dst.0.saturating_add(1));
+                    }
+                }
+            }
+            NativeTerminator::Return { values } => {
+                next = max_reg_slice(next, values);
+            }
+            NativeTerminator::TrapUnreachable => {}
+        }
+    }
+    next
+}
+
+fn max_reg_slice(mut next: u32, regs: &[NativeReg]) -> u32 {
+    for reg in regs {
+        next = next.max(reg.0.saturating_add(1));
+    }
+    next
 }

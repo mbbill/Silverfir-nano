@@ -1,21 +1,18 @@
 //! Native backend build entry.
 //!
-//! Intended shape:
-//! 1. decode Wasm to semantic IR
-//! 2. run stack-aware planning
-//! 3. form shared groups
-//! 4. lower to LIR
-//! 5. resolve native entries from planned groups + LIR
-//! 6. finalize code / metadata
+//! This file runs the shared frontend pipeline for the native backend:
+//! Wasm decode -> planning -> CFG + SSA LIR.
+//! Native-owned lowering starts after this bundle, in `lower.rs`.
 //!
-//! This file must not bypass planning by rediscovering groups in the backend.
-//! It also owns the planning inputs it passes into the shared frontend.
+//! The native backend owns the planning inputs it passes into the shared
+//! frontend, and it must preserve the full backend register budget for later
+//! native IR lowering.
 
 use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendConfig, BackendKind, BackendMode},
     entities::ModuleInst,
-    lir::legacy::lower::{self, LirProgram},
+    lir::{ir::LirProgram, lower},
     plan::{
         build_planned_program,
         config::PlanConfig,
@@ -30,7 +27,8 @@ use crate::vm::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeBuildBundle {
     pub backend: BackendKind,
-    pub config: PlanConfig,
+    pub backend_config: BackendConfig,
+    pub plan_config: PlanConfig,
     pub semantic: SemanticProgram,
     pub planned: PlannedProgram,
     pub lir: LirProgram,
@@ -49,7 +47,10 @@ pub const fn native_backend_config() -> BackendConfig {
 
 #[inline]
 pub const fn native_plan_policy() -> PlanPolicy {
-    PlanPolicy::new(BackendKind::Native, GroupingMode::Maximal)
+    // Group-aware native shaping is not active yet. Keep the live native path
+    // on the straightforward one-op-at-a-time frontend contract until direct
+    // native lowering starts consuming group metadata intentionally.
+    PlanPolicy::new(BackendKind::Native, GroupingMode::Ignore)
 }
 
 pub fn build_native_function(
@@ -57,19 +58,21 @@ pub fn build_native_function(
     compile: CompileContext<'_>,
 ) -> Result<NativeBuildBundle, WasmError> {
     let backend = BackendKind::Native;
-    let config = PlanConfig::for_backend(backend, native_backend_config());
+    let backend_config = native_backend_config();
+    let plan_config = PlanConfig::for_backend(backend, backend_config);
     let semantic = decode::decode_to_semantic_ir(code, compile)?;
     let planned = build_planned_program(
         PlanningInput {
-            config,
+            config: plan_config,
             policy: native_plan_policy(),
         },
         &semantic,
     )?;
-    let lir = lower::lower_to_lir(planned.clone())?;
+    let lir = lower::lower_to_lir(&semantic, &planned, plan_config)?;
     Ok(NativeBuildBundle {
         backend,
-        config,
+        backend_config,
+        plan_config,
         semantic,
         planned,
         lir,
