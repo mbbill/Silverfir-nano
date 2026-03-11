@@ -33,6 +33,8 @@ pub fn finalize_interpreter(
     bundle: &InterpreterBuildBundle,
     module: &ModuleInst,
 ) -> Result<InterpreterFinalized, WasmError> {
+    bundle.planned.validate(&bundle.semantic, bundle.config)?;
+    bundle.lir.validate()?;
     let layout = FinalLayout::new(&bundle.lir, bundle.planned.frame)?;
     let mut emitter = Finalizer::new(bundle, module, layout);
     emitter.emit_program()?;
@@ -564,39 +566,8 @@ impl<'a> Finalizer<'a> {
     }
 
     fn emit_parallel_copies(&mut self, pending: &[(u16, u16)]) -> Result<(), WasmError> {
-        let mut pending = pending.to_vec();
-
-        while !pending.is_empty() {
-            let mut progressed = false;
-            let mut index = 0usize;
-            while index < pending.len() {
-                let (_, dst) = pending[index];
-                let read_later = pending
-                    .iter()
-                    .enumerate()
-                    .any(|(other_index, (other_src, _))| other_index != index && *other_src == dst);
-                if !read_later {
-                    let (src, dst) = pending.remove(index);
-                    self.emit_copy(src, dst)?;
-                    progressed = true;
-                } else {
-                    index += 1;
-                }
-            }
-
-            if progressed {
-                continue;
-            }
-
-            let (src, dst) = pending.remove(0);
-            let temp = self.layout.move_temp_slot;
-            self.emit_copy(src, temp)?;
-            for (pending_src, _) in &mut pending {
-                if *pending_src == src {
-                    *pending_src = temp;
-                }
-            }
-            pending.push((temp, dst));
+        for (src, dst) in schedule_parallel_copies(pending, self.layout.move_temp_slot) {
+            self.emit_copy(src, dst)?;
         }
         Ok(())
     }
@@ -855,6 +826,44 @@ fn build_hot_local_slots(
     Ok(slots)
 }
 
+fn schedule_parallel_copies(pending: &[(u16, u16)], temp: u16) -> Vec<(u16, u16)> {
+    let mut pending = pending.to_vec();
+    let mut out = Vec::with_capacity(pending.len().saturating_add(1));
+
+    while !pending.is_empty() {
+        let mut progressed = false;
+        let mut index = 0usize;
+        while index < pending.len() {
+            let (_, dst) = pending[index];
+            let read_later = pending
+                .iter()
+                .enumerate()
+                .any(|(other_index, (other_src, _))| other_index != index && *other_src == dst);
+            if !read_later {
+                out.push(pending.remove(index));
+                progressed = true;
+            } else {
+                index += 1;
+            }
+        }
+
+        if progressed {
+            continue;
+        }
+
+        let (src, dst) = pending.remove(0);
+        out.push((src, temp));
+        for (pending_src, _) in &mut pending {
+            if *pending_src == src {
+                *pending_src = temp;
+            }
+        }
+        pending.push((temp, dst));
+    }
+
+    out
+}
+
 fn encode_leaf(kind: &LirLeafOp) -> (u64, u64, u64) {
     match kind {
         LirLeafOp::I32Const { value } => encoding::r#const::encode(*value as u64),
@@ -909,6 +918,48 @@ fn encode_leaf(kind: &LirLeafOp) -> (u64, u64, u64) {
         LirLeafOp::RefFunc { func_idx } => encoding::ref_func::encode(*func_idx as u64),
 
         _ => (0, 0, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule_parallel_copies;
+
+    fn verify_parallel_copies(original: &[(u16, u16)], scheduled: &[(u16, u16)], temp: u16) {
+        let max_slot = original
+            .iter()
+            .chain(scheduled.iter())
+            .flat_map(|(src, dst)| [*src as usize, *dst as usize])
+            .chain(core::iter::once(temp as usize))
+            .max()
+            .unwrap_or(0);
+        let mut values = (0..=max_slot as u16).collect::<alloc::vec::Vec<_>>();
+
+        for (src, dst) in scheduled {
+            values[*dst as usize] = values[*src as usize];
+        }
+
+        for (src, dst) in original {
+            assert_eq!(values[*dst as usize], *src);
+        }
+    }
+
+    #[test]
+    fn schedules_acyclic_parallel_copies_without_temp() {
+        let original = [(1, 3), (2, 4)];
+        let scheduled = schedule_parallel_copies(&original, 9);
+
+        assert_eq!(scheduled.len(), 2);
+        verify_parallel_copies(&original, &scheduled, 9);
+    }
+
+    #[test]
+    fn breaks_copy_cycles_with_temp_slot() {
+        let original = [(1, 2), (2, 3), (3, 1)];
+        let scheduled = schedule_parallel_copies(&original, 9);
+
+        assert!(scheduled.iter().any(|copy| *copy == (1, 9)));
+        verify_parallel_copies(&original, &scheduled, 9);
     }
 }
 

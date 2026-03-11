@@ -65,7 +65,7 @@ pub fn build_native_function(
             policy: native_plan_policy(),
         },
         &semantic,
-    );
+    )?;
     let lir = lower::lower_to_lir(planned.clone())?;
     Ok(NativeBuildBundle {
         backend,

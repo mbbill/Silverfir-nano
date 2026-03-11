@@ -6,6 +6,7 @@
 
 use alloc::vec::Vec;
 
+use crate::error::WasmError;
 use crate::vm::wasm::semantic_ir::{SemanticOpKind, SemanticProgram};
 
 use super::{config::PlanConfig, frame::FrameLayoutPlan, types::PlannedHotLocalInit};
@@ -38,6 +39,42 @@ impl HotLocalPlan {
             .iter()
             .position(|mapped| *mapped == Some(local_idx))
             .map(|slot| slot as u8)
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    pub fn validate(&self, local_count: u16, slot_count: u8) -> Result<(), WasmError> {
+        if self.mapping.len() != slot_count as usize {
+            return Err(WasmError::internal(alloc::format!(
+                "hot-local plan slot count {} does not match configured slot budget {}",
+                self.mapping.len(),
+                slot_count,
+            )));
+        }
+
+        let mut seen = alloc::vec![false; local_count as usize];
+        for (slot, mapped) in self.mapping.iter().enumerate() {
+            let Some(local_idx) = mapped else {
+                continue;
+            };
+            if *local_idx >= local_count as u32 {
+                return Err(WasmError::internal(alloc::format!(
+                    "hot-local slot {slot} maps out-of-range local {local_idx} (local_count={local_count})",
+                )));
+            }
+            if core::mem::replace(&mut seen[*local_idx as usize], true) {
+                return Err(WasmError::internal(alloc::format!(
+                    "hot-local mapping repeats local {local_idx}",
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(debug_assertions, test)))]
+    #[inline]
+    pub fn validate(&self, _local_count: u16, _slot_count: u8) -> Result<(), WasmError> {
+        Ok(())
     }
 }
 
@@ -146,7 +183,7 @@ fn loop_weight(depth: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::analyze_hot_locals;
+    use super::{analyze_hot_locals, HotLocalPlan};
     use crate::vm::{
         backend::BackendKind,
         plan::config::PlanConfig,
@@ -247,5 +284,14 @@ mod tests {
         .expect("hot locals analyzed");
 
         assert_eq!(plan.mapping(), &[Some(0)]);
+    }
+
+    #[test]
+    fn rejects_duplicate_mapping() {
+        let error = HotLocalPlan::new(alloc::vec![Some(1), Some(1)])
+            .validate(3, 2)
+            .expect_err("hot-local validation should fail");
+
+        assert!(error.message().contains("repeats local"));
     }
 }

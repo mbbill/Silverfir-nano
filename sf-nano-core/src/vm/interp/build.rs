@@ -68,7 +68,7 @@ pub fn build_interpreter_function(
             policy: interpreter_plan_policy(backend),
         },
         &semantic,
-    );
+    )?;
     let lir = lower::lower_to_lir(&semantic, &planned, config)?;
 
     Ok(InterpreterBuildBundle {

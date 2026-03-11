@@ -2,6 +2,7 @@
 //!
 //! This is the handoff between semantic Wasm and backend-facing IR lowering.
 
+use crate::error::WasmError;
 use crate::vm::wasm::semantic_ir::SemanticProgram;
 
 use super::{
@@ -15,7 +16,11 @@ use super::{
 pub use super::types::*;
 
 /// Plan semantic IR into the stack-aware planned layer.
-pub fn build_planned_program(input: PlanningInput, semantic: &SemanticProgram) -> PlannedProgram {
+pub fn build_planned_program(
+    input: PlanningInput,
+    semantic: &SemanticProgram,
+) -> Result<PlannedProgram, WasmError> {
+    semantic.validate()?;
     let PlanningInput { config, policy } = input;
     let hot_locals = analyze_hot_locals(semantic, config);
     let frame = plan_frame_layout(
@@ -32,11 +37,12 @@ pub fn build_planned_program(input: PlanningInput, semantic: &SemanticProgram) -
         plan_hot_local_inits(hot_locals.as_ref(), frame),
     );
     let groups = plan_groups(&placement.group_inputs);
-
-    PlannedProgram {
+    let program = PlannedProgram {
         frame,
         hot_locals,
         ops,
         groups,
-    }
+    };
+    program.validate(semantic, config)?;
+    Ok(program)
 }

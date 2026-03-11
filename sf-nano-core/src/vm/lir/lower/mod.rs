@@ -32,6 +32,9 @@ pub fn lower_to_lir(
     planned: &PlannedProgram,
     config: PlanConfig,
 ) -> Result<LirProgram, WasmError> {
+    semantic.validate()?;
+    planned.validate(semantic, config)?;
+
     if semantic.ops.is_empty() {
         return Ok(LirProgram {
             entry: LirTarget(0),
@@ -84,7 +87,7 @@ pub fn lower_to_lir(
         });
     }
 
-    Ok(LirProgram {
+    let program = LirProgram {
         entry: semantic_to_block[0],
         blocks,
         abi: LirAbi {
@@ -92,7 +95,9 @@ pub fn lower_to_lir(
             hot_local_count: config.hot_local_count,
         },
         hot_locals: planned.hot_locals.clone(),
-    })
+    };
+    program.validate()?;
+    Ok(program)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -207,7 +212,7 @@ mod tests {
             ],
         };
 
-        let frame = FramePlanner::new(1).finish();
+        let frame = FramePlanner::new(1).reserve_operands(2).0.finish();
         let planned = PlannedProgram {
             frame,
             hot_locals: Some(HotLocalPlan::new(alloc::vec![Some(0)])),
