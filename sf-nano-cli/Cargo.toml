@@ -11,7 +11,7 @@ name = "sf-nano-cli"
 path = "src/main.rs"
 
 [features]
-default = ["micro-jit"]
+default = []
 profile = ["sf-nano-core/profile"]
 micro-jit = ["sf-nano-core/micro-jit"]
 fusion = ["sf-nano-core/fusion"]

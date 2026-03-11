@@ -11,7 +11,7 @@ name = "sf-nano-spectest"
 path = "src/main.rs"
 
 [features]
-default = ["micro-jit"]
+default = []
 micro-jit = ["sf-nano-core/micro-jit"]
 fusion = ["sf-nano-core/fusion"]
 

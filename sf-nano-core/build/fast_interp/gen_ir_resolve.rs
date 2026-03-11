@@ -40,7 +40,7 @@ fn generate_resolve_handler(w: &mut CodeWriter) {
     w.line("///");
     w.line("/// Auto-generated from handlers.toml. Replaces ir_backend's handler selection.");
     w.line("#[inline]");
-    w.line("pub fn resolve_handler(kind: &IrOpKind, variant: u8) -> Handler {");
+    w.line("pub(crate) fn resolve_handler(kind: &IrOpKind, variant: u8) -> Handler {");
     w.indent();
     w.line("let v = if variant > 0 { (variant - 1) as usize } else { 0 };");
     w.line("match kind {");

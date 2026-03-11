@@ -15,7 +15,7 @@ use crate::vm::{
 };
 
 use super::{
-    stack::{materialize_stack_index, materialize_top_values, pop_one, push_results},
+    stack::{consume_top, materialize_stack_index, materialize_top_values, pop_one, push_results},
     state::{BlockState, StackValue, ValueAlloc},
 };
 

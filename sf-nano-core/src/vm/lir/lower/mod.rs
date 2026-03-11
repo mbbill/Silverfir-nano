@@ -22,7 +22,7 @@ use crate::vm::{
 
 use self::{
     block::lower_block_range,
-    cfg::{build_block_ranges, build_semantic_to_block_map},
+    cfg::{build_block_ranges, build_semantic_to_block_map, retain_reachable_blocks},
     input::map_semantic_to_planned,
     state::{make_block_params, BlockState, ValueAlloc},
 };
@@ -57,13 +57,14 @@ pub fn lower_to_lir(
         });
     }
 
-    let block_ranges = build_block_ranges(semantic, planned);
+    let block_ranges = retain_reachable_blocks(semantic, build_block_ranges(semantic, planned));
     let semantic_to_block = build_semantic_to_block_map(mapped.len(), &block_ranges);
+    let semantic_entry_heights = compute_semantic_entry_heights(semantic, &mapped);
     let mut values = ValueAlloc::default();
 
     let mut blocks = Vec::with_capacity(block_ranges.len());
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
-        let entry_height = mapped[semantic_range.start].planned.height;
+        let entry_height = semantic_entry_heights[semantic_range.start];
         let params = make_block_params(entry_height, config.tos_register_count, &mut values);
         let state = BlockState::from_params(entry_height, &params, planned.frame);
         let block = lower_block_range(
@@ -92,6 +93,62 @@ pub fn lower_to_lir(
         },
         hot_locals: planned.hot_locals.clone(),
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ControlFrame {
+    start_height: u16,
+    params: u16,
+    results: u16,
+}
+
+fn compute_semantic_entry_heights(
+    semantic: &SemanticProgram,
+    mapped: &[input::SemanticPlannedOp<'_>],
+) -> Vec<u16> {
+    let mut heights = Vec::with_capacity(mapped.len());
+    let mut control = alloc::vec![ControlFrame {
+        start_height: 0,
+        params: 0,
+        results: semantic.results,
+    }];
+
+    for op in mapped {
+        let entry_height = match &op.semantic.kind {
+            crate::vm::wasm::semantic_ir::SemanticOpKind::Else => {
+                control.last().map_or(0, |frame| frame.start_height + frame.params)
+            }
+            crate::vm::wasm::semantic_ir::SemanticOpKind::End => {
+                control.last().map_or(0, |frame| frame.start_height + frame.results)
+            }
+            _ => op.planned.height,
+        };
+        heights.push(entry_height);
+
+        match &op.semantic.kind {
+            crate::vm::wasm::semantic_ir::SemanticOpKind::Block { params, results }
+            | crate::vm::wasm::semantic_ir::SemanticOpKind::Loop { params, results } => {
+                control.push(ControlFrame {
+                    start_height: entry_height.saturating_sub(*params),
+                    params: *params,
+                    results: *results,
+                });
+            }
+            crate::vm::wasm::semantic_ir::SemanticOpKind::If { params, results } => {
+                control.push(ControlFrame {
+                    start_height: entry_height.saturating_sub(1).saturating_sub(*params),
+                    params: *params,
+                    results: *results,
+                });
+            }
+            crate::vm::wasm::semantic_ir::SemanticOpKind::End => {
+                let _ = control.pop();
+            }
+            _ => {}
+        }
+    }
+
+    heights
 }
 
 #[cfg(test)]

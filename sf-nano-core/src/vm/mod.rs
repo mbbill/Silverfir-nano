@@ -17,6 +17,7 @@ pub mod expr_eval;
 pub mod instance;
 pub mod interp;
 pub mod lir;
+#[cfg(feature = "micro-jit")]
 pub mod native;
 pub mod plan;
 pub mod runtime;

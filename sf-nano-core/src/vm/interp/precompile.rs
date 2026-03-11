@@ -57,7 +57,12 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
     };
     let backend = normalize_interpreter_backend(requested);
 
-    for func in module.functions.iter().filter(|func| !func.is_external()) {
+    for (func_index, func) in module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, func)| !func.is_external())
+    {
         let Some(spec) = func.spec() else {
             continue;
         };
@@ -76,8 +81,19 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
             params_len,
             params_len.saturating_add(locals_len),
             results_len,
-        )?;
-        let finalized = finalizer::finalize_interpreter(&bundle, module)?;
+        )
+        .map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "interpreter build failed for function {}: {}",
+                func_index, err
+            ))
+        })?;
+        let finalized = finalizer::finalize_interpreter(&bundle, module).map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "interpreter finalization failed for function {}: {}",
+                func_index, err
+            ))
+        })?;
         let cache = finalized.code.build_cache(
             params_len as usize,
             locals_len as usize,

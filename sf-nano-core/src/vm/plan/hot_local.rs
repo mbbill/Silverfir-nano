@@ -105,7 +105,7 @@ pub fn plan_hot_local_inits(
 }
 
 fn local_weights(semantic: &SemanticProgram) -> Vec<u64> {
-    let mut weights = alloc::vec![0; semantic.local_count as usize];
+    let mut weights = alloc::vec![0u64; semantic.local_count as usize];
     let mut loop_depth = 0u32;
     let mut control_stack = Vec::new();
 

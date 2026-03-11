@@ -61,7 +61,7 @@ pub(super) fn materialize_stack_index(
     }
 }
 
-fn consume_top(state: &mut BlockState, count: usize) {
+pub(super) fn consume_top(state: &mut BlockState, count: usize) {
     let new_len = state.stack.len().saturating_sub(count);
     state.stack.truncate(new_len);
 }

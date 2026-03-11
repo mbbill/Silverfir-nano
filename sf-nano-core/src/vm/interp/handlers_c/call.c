@@ -11,7 +11,6 @@
 //   [saved_module]        <- fp[frame_size + 2]
 //   [saved_fp]            <- fp[frame_size + 1]
 //   [return_pc]           <- fp[frame_size]
-//   [local-cache home]    <- part of fp[0..frame_size-1] when logical locals < 3
 //   [locals...]           <- fp[params_count..frame_size-1]
 //   [params...]           <- fp[0..params_count-1] (args become params in-place)
 //   [caller operands...]
@@ -46,8 +45,7 @@ FORCE_INLINE struct Instruction* impl_call_local(IMPL_PARAMS_NONE) {
     uint16_t delta = call_local_decode_delta(pc);
     uint16_t params_count = call_local_decode_params_count(pc);
     uint16_t locals_count = call_local_decode_locals_count(pc);
-    uint16_t logical_frame_size = params_count + locals_count;
-    uint16_t frame_size = FRAME_PREFIX_SIZE(logical_frame_size);
+    uint16_t frame_size = params_count + locals_count;
 
     // Spill l0/l1/l2 before frame setup
     fp[0] = *p_l0;

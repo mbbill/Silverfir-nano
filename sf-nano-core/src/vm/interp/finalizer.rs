@@ -141,6 +141,7 @@ struct Finalizer<'a> {
     module: &'a ModuleInst,
     layout: FinalLayout,
     instructions: Vec<Instruction>,
+    transient_depth: usize,
     block_starts: Vec<Option<usize>>,
     direct_patches: Vec<DirectPatch>,
     br_table_patches: Vec<BrTablePatch>,
@@ -153,6 +154,7 @@ impl<'a> Finalizer<'a> {
             module,
             layout,
             instructions: Vec::new(),
+            transient_depth: 0,
             block_starts: alloc::vec![None; bundle.lir.blocks.len()],
             direct_patches: Vec::new(),
             br_table_patches: Vec::new(),
@@ -161,16 +163,34 @@ impl<'a> Finalizer<'a> {
 
     fn emit_program(&mut self) -> Result<(), WasmError> {
         let entry = self.bundle.lir.entry;
-        if let Some(block) = self.bundle.lir.blocks.get(entry.as_usize()).cloned() {
-            self.emit_block(&block)?;
-        } else if !self.bundle.lir.blocks.is_empty() {
+        if self.bundle.lir.blocks.get(entry.as_usize()).is_none() && !self.bundle.lir.blocks.is_empty()
+        {
             return Err(WasmError::internal(
                 "interpreter finalizer entry block is out of range".into(),
             ));
         }
-        for block in self.bundle.lir.blocks.iter().cloned() {
-            if block.id != entry {
-                self.emit_block(&block)?;
+
+        let mut visited = alloc::vec![false; self.bundle.lir.blocks.len()];
+        let mut pending = alloc::vec![entry];
+
+        while let Some(target) = pending.pop() {
+            let index = target.as_usize();
+            if visited.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(block) = self.bundle.lir.blocks.get(index).cloned() else {
+                return Err(WasmError::internal(
+                    "reachable interpreter block is out of range".into(),
+                ));
+            };
+
+            visited[index] = true;
+            self.emit_block(&block)?;
+
+            for successor in block_successors(&block.terminator).into_iter().rev() {
+                if successor.as_usize() < visited.len() && !visited[successor.as_usize()] {
+                    pending.push(successor);
+                }
             }
         }
         Ok(())
@@ -250,16 +270,19 @@ impl<'a> Finalizer<'a> {
         args: &[LirValue],
         results: &[LirValue],
     ) -> Result<(), WasmError> {
-        let mut depth = 0usize;
         for arg in args {
             self.emit_local_get(self.layout.value_home(*arg)?)?;
-            depth += 1;
         }
 
         let (imm0, imm1, imm2) = encode_leaf(op);
         let kind = IrOpKind::from(op);
-        let variant = resolve::variant_for_leaf(op, depth);
+        let variant = resolve::variant_for_leaf(op, self.transient_depth);
         self.push_instruction(kind, variant, imm0, imm1, imm2);
+        let (pop, push) = resolve::leaf_stack_effect(op);
+        self.transient_depth = self
+            .transient_depth
+            .saturating_sub(pop as usize)
+            .saturating_add(push as usize);
 
         match results {
             [] => Ok(()),
@@ -392,11 +415,12 @@ impl<'a> Finalizer<'a> {
                 let (imm0, imm1, imm2) = encoding::if_::encode(0);
                 let if_index = self.push_instruction(
                     IrOpKind::If,
-                    resolve::variant_for_depth(1),
+                    resolve::variant_for_depth(self.transient_depth),
                     imm0,
                     imm1,
                     imm2,
                 );
+                self.transient_depth = self.transient_depth.saturating_sub(1);
                 self.emit_edge_moves(then_edge)?;
                 self.emit_br_to_block(then_edge.target);
                 let else_index = self.instructions.len();
@@ -417,11 +441,12 @@ impl<'a> Finalizer<'a> {
                         entry_count: entries.len() as u32,
                         data_slot_count: entries.len() as u32,
                     },
-                    resolve::variant_for_depth(1),
+                    resolve::variant_for_depth(self.transient_depth),
                     imm0,
                     imm1,
                     imm2,
                 );
+                self.transient_depth = self.transient_depth.saturating_sub(1);
 
                 let first_data = self.instructions.len();
                 for _ in entries {
@@ -518,7 +543,12 @@ impl<'a> Finalizer<'a> {
             .ok_or_else(|| WasmError::internal("edge target block out of range".into()))?;
         if edge.tos.len() != target.params.tos.len() {
             return Err(WasmError::internal(
-                "edge TOS arity does not match target block params".into(),
+                alloc::format!(
+                    "edge TOS arity does not match target block params: target=b{} edge_tos={} target_params={}",
+                    edge.target.as_usize(),
+                    edge.tos.len(),
+                    target.params.tos.len(),
+                ),
             ));
         }
         let mut pending = Vec::with_capacity(edge.tos.len());
@@ -583,11 +613,12 @@ impl<'a> Finalizer<'a> {
         let (imm0, imm1, imm2) = encoding::local_get::encode(slot);
         self.push_instruction(
             IrOpKind::LocalGetFrame { idx: slot },
-            resolve::variant_for_depth(1),
+            resolve::variant_for_depth(self.transient_depth + 1),
             imm0,
             imm1,
             imm2,
         );
+        self.transient_depth += 1;
         Ok(())
     }
 
@@ -595,11 +626,12 @@ impl<'a> Finalizer<'a> {
         let (imm0, imm1, imm2) = encoding::local_set::encode(slot);
         self.push_instruction(
             IrOpKind::LocalSetFrame { idx: slot },
-            resolve::variant_for_depth(1),
+            resolve::variant_for_depth(self.transient_depth),
             imm0,
             imm1,
             imm2,
         );
+        self.transient_depth = self.transient_depth.saturating_sub(1);
         Ok(())
     }
 
@@ -763,6 +795,19 @@ fn max_value_index(program: &LirProgram) -> Option<u32> {
         }
     }
     max
+}
+
+fn block_successors(term: &LirTerminator) -> Vec<LirTarget> {
+    match term {
+        LirTerminator::Goto(edge) => alloc::vec![edge.target],
+        LirTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => alloc::vec![then_edge.target, else_edge.target],
+        LirTerminator::BrTable { entries, .. } => entries.iter().map(|entry| entry.target).collect(),
+        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => Vec::new(),
+    }
 }
 
 fn max_scratch_width(program: &LirProgram) -> usize {

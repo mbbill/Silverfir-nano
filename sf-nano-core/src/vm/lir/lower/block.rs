@@ -50,6 +50,7 @@ pub(super) fn lower_block_range(
 
     let terminator = lower_block_end_op(
         &mapped[last_index],
+        mapped,
         &mut state,
         planned,
         config,
@@ -100,8 +101,10 @@ fn lower_block_body_op(
         }
         SemanticOpKind::Block { .. }
         | SemanticOpKind::Loop { .. }
-        | SemanticOpKind::Else
         | SemanticOpKind::End => Ok(()),
+        SemanticOpKind::Else => Err(WasmError::internal(
+            "else must end an LIR block, not appear in the body".into(),
+        )),
         SemanticOpKind::CallExternal {
             func_idx,
             params,
@@ -149,6 +152,7 @@ fn lower_block_body_op(
 
 fn lower_block_end_op(
     op: &SemanticPlannedOp<'_>,
+    mapped: &[SemanticPlannedOp<'_>],
     state: &mut BlockState,
     planned: &PlannedProgram,
     config: PlanConfig,
@@ -238,9 +242,7 @@ fn lower_block_end_op(
                 values,
             )?;
             let else_edge = edge_to_target(
-                op.semantic
-                    .alt
-                    .ok_or_else(|| WasmError::invalid("semantic if missing alt target".into()))?,
+                resolve_if_else_target(op, mapped)?,
                 state,
                 EdgeMapping::Identity,
                 planned,
@@ -254,7 +256,29 @@ fn lower_block_end_op(
                 else_edge,
             })
         }
-        SemanticOpKind::Else | SemanticOpKind::End => goto_next(
+        SemanticOpKind::Else => {
+            if let Some(target) = op.semantic.alt {
+                Ok(LirTerminator::Goto(edge_to_target(
+                    target,
+                    state,
+                    EdgeMapping::Identity,
+                    planned,
+                    config,
+                    semantic_to_block,
+                    values,
+                )?))
+            } else {
+                goto_next(
+                    op.semantic,
+                    state,
+                    planned,
+                    config,
+                    semantic_to_block,
+                    values,
+                )
+            }
+        }
+        SemanticOpKind::End => goto_next(
             op.semantic,
             state,
             planned,
@@ -377,5 +401,28 @@ fn lower_block_end_op(
         SemanticOpKind::Return { arity } => Ok(LirTerminator::Return {
             values: materialize_top_values(state, *arity as usize, planned.frame, values),
         }),
+    }
+}
+
+fn resolve_if_else_target(
+    op: &SemanticPlannedOp<'_>,
+    mapped: &[SemanticPlannedOp<'_>],
+) -> Result<crate::vm::wasm::common::SemanticTarget, WasmError> {
+    let target = op
+        .semantic
+        .alt
+        .ok_or_else(|| WasmError::invalid("semantic if missing alt target".into()))?;
+    let Some(target_op) = mapped.get(target.index().as_usize()) else {
+        return Err(WasmError::invalid("semantic if alt target out of range".into()));
+    };
+
+    if matches!(target_op.semantic.kind, SemanticOpKind::Else) {
+        target_op
+            .semantic
+            .next
+            .map(|next| crate::vm::wasm::common::SemanticTarget::new(next.as_usize()))
+            .ok_or_else(|| WasmError::invalid("semantic else missing body target".into()))
+    } else {
+        Ok(target)
     }
 }
