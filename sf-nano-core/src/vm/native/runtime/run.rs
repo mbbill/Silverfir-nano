@@ -104,9 +104,9 @@ pub fn run_function(
             if !spec.has_native_code() {
                 precompile::precompile_module(store)?;
             }
-            let code = spec
-                .get_native_code()
-                .ok_or_else(|| WasmError::invalid("native backend unavailable for function".into()))?;
+            let code = spec.get_native_code().ok_or_else(|| {
+                WasmError::invalid("native backend unavailable for function".into())
+            })?;
             NativeRuntime { store }.run_function(code, args, func)
         }
     }

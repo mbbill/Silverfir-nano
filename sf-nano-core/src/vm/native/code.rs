@@ -13,6 +13,7 @@ use alloc::{boxed::Box, vec::Vec};
 use crate::vm::plan::group::GroupId;
 
 use super::{
+    code_buf::CodeBuffer,
     entry::NativeEntry,
     helper_meta::{HelperMetadataArena, HelperMetadataRecord},
     ir::NativeProgram,
@@ -46,6 +47,7 @@ pub enum PatchTarget {
 pub struct NativeCode {
     pub entry: Option<NativeEntry>,
     pub text: Box<[u8]>,
+    pub executable: Option<CodeBuffer>,
     pub helper_metadata: Box<[HelperMetadataRecord]>,
     pub direct_call_patches: Box<[DirectCallPatch]>,
     pub program: Option<NativeProgram>,
@@ -71,6 +73,7 @@ impl NativeCode {
     pub fn from_parts(
         entry: Option<NativeEntry>,
         text: Vec<u8>,
+        executable: Option<CodeBuffer>,
         helper_metadata: HelperMetadataArena,
         direct_call_patches: Vec<DirectCallPatch>,
         program: Option<NativeProgram>,
@@ -78,6 +81,7 @@ impl NativeCode {
         Self {
             entry,
             text: text.into_boxed_slice(),
+            executable,
             helper_metadata: helper_metadata.into_boxed_slice(),
             direct_call_patches: direct_call_patches.into_boxed_slice(),
             program,
@@ -153,6 +157,7 @@ impl NativeCodeCache {
 pub fn create_native_code(
     entry: Option<NativeEntry>,
     text: Vec<u8>,
+    executable: Option<CodeBuffer>,
     helper_metadata: HelperMetadataArena,
     direct_call_patches: Vec<DirectCallPatch>,
     program: Option<NativeProgram>,
@@ -163,6 +168,7 @@ pub fn create_native_code(
     let code = NativeCode::from_parts(
         entry,
         text,
+        executable,
         helper_metadata,
         direct_call_patches,
         program,

@@ -15,9 +15,7 @@
 use super::common::*;
 use super::trap_with;
 use crate::error::WasmError;
-use crate::vm::interp::encoding::{
-    drop_op, table_get, table_grow, table_set, table_size, ternary,
-};
+use crate::vm::interp::encoding::{drop_op, table_get, table_grow, table_set, table_size, ternary};
 
 // =============================================================================
 // Table Get / Set (Phase 3 TOS-only)

@@ -537,27 +537,47 @@ impl<'a> DecodeContext<'a> {
             OP(I64_EXTEND16_S) => self.handle_primitive(PrimitiveOpKind::I64Extend16S),
             OP(I64_EXTEND32_S) => self.handle_primitive(PrimitiveOpKind::I64Extend32S),
 
-            FC(OpcodeFC::I32_TRUNC_SAT_F32_S) => self.handle_primitive(PrimitiveOpKind::I32TruncSatF32S),
-            FC(OpcodeFC::I32_TRUNC_SAT_F32_U) => self.handle_primitive(PrimitiveOpKind::I32TruncSatF32U),
-            FC(OpcodeFC::I32_TRUNC_SAT_F64_S) => self.handle_primitive(PrimitiveOpKind::I32TruncSatF64S),
-            FC(OpcodeFC::I32_TRUNC_SAT_F64_U) => self.handle_primitive(PrimitiveOpKind::I32TruncSatF64U),
-            FC(OpcodeFC::I64_TRUNC_SAT_F32_S) => self.handle_primitive(PrimitiveOpKind::I64TruncSatF32S),
-            FC(OpcodeFC::I64_TRUNC_SAT_F32_U) => self.handle_primitive(PrimitiveOpKind::I64TruncSatF32U),
-            FC(OpcodeFC::I64_TRUNC_SAT_F64_S) => self.handle_primitive(PrimitiveOpKind::I64TruncSatF64S),
-            FC(OpcodeFC::I64_TRUNC_SAT_F64_U) => self.handle_primitive(PrimitiveOpKind::I64TruncSatF64U),
+            FC(OpcodeFC::I32_TRUNC_SAT_F32_S) => {
+                self.handle_primitive(PrimitiveOpKind::I32TruncSatF32S)
+            }
+            FC(OpcodeFC::I32_TRUNC_SAT_F32_U) => {
+                self.handle_primitive(PrimitiveOpKind::I32TruncSatF32U)
+            }
+            FC(OpcodeFC::I32_TRUNC_SAT_F64_S) => {
+                self.handle_primitive(PrimitiveOpKind::I32TruncSatF64S)
+            }
+            FC(OpcodeFC::I32_TRUNC_SAT_F64_U) => {
+                self.handle_primitive(PrimitiveOpKind::I32TruncSatF64U)
+            }
+            FC(OpcodeFC::I64_TRUNC_SAT_F32_S) => {
+                self.handle_primitive(PrimitiveOpKind::I64TruncSatF32S)
+            }
+            FC(OpcodeFC::I64_TRUNC_SAT_F32_U) => {
+                self.handle_primitive(PrimitiveOpKind::I64TruncSatF32U)
+            }
+            FC(OpcodeFC::I64_TRUNC_SAT_F64_S) => {
+                self.handle_primitive(PrimitiveOpKind::I64TruncSatF64S)
+            }
+            FC(OpcodeFC::I64_TRUNC_SAT_F64_U) => {
+                self.handle_primitive(PrimitiveOpKind::I64TruncSatF64U)
+            }
 
-            OP(I32_LOAD) => {
-                self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I32Load { offset, memidx })
-            }
-            OP(I64_LOAD) => {
-                self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load { offset, memidx })
-            }
-            OP(F32_LOAD) => {
-                self.handle_load(imm, |offset, memidx| PrimitiveOpKind::F32Load { offset, memidx })
-            }
-            OP(F64_LOAD) => {
-                self.handle_load(imm, |offset, memidx| PrimitiveOpKind::F64Load { offset, memidx })
-            }
+            OP(I32_LOAD) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I32Load {
+                offset,
+                memidx,
+            }),
+            OP(I64_LOAD) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load {
+                offset,
+                memidx,
+            }),
+            OP(F32_LOAD) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::F32Load {
+                offset,
+                memidx,
+            }),
+            OP(F64_LOAD) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::F64Load {
+                offset,
+                memidx,
+            }),
             OP(I32_LOAD8_S) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I32Load8S {
                 offset,
                 memidx,
@@ -566,13 +586,11 @@ impl<'a> DecodeContext<'a> {
                 offset,
                 memidx,
             }),
-            OP(I32_LOAD16_S) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I32Load16S {
-                offset,
-                memidx,
+            OP(I32_LOAD16_S) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I32Load16S { offset, memidx }
             }),
-            OP(I32_LOAD16_U) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I32Load16U {
-                offset,
-                memidx,
+            OP(I32_LOAD16_U) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I32Load16U { offset, memidx }
             }),
             OP(I64_LOAD8_S) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load8S {
                 offset,
@@ -582,21 +600,17 @@ impl<'a> DecodeContext<'a> {
                 offset,
                 memidx,
             }),
-            OP(I64_LOAD16_S) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load16S {
-                offset,
-                memidx,
+            OP(I64_LOAD16_S) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Load16S { offset, memidx }
             }),
-            OP(I64_LOAD16_U) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load16U {
-                offset,
-                memidx,
+            OP(I64_LOAD16_U) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Load16U { offset, memidx }
             }),
-            OP(I64_LOAD32_S) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load32S {
-                offset,
-                memidx,
+            OP(I64_LOAD32_S) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Load32S { offset, memidx }
             }),
-            OP(I64_LOAD32_U) => self.handle_load(imm, |offset, memidx| PrimitiveOpKind::I64Load32U {
-                offset,
-                memidx,
+            OP(I64_LOAD32_U) => self.handle_load(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Load32U { offset, memidx }
             }),
 
             OP(I32_STORE) => self.handle_store(imm, |offset, memidx| PrimitiveOpKind::I32Store {
@@ -619,21 +633,18 @@ impl<'a> DecodeContext<'a> {
                 offset,
                 memidx,
             }),
-            OP(I32_STORE16) => self.handle_store(imm, |offset, memidx| PrimitiveOpKind::I32Store16 {
-                offset,
-                memidx,
+            OP(I32_STORE16) => self.handle_store(imm, |offset, memidx| {
+                PrimitiveOpKind::I32Store16 { offset, memidx }
             }),
             OP(I64_STORE8) => self.handle_store(imm, |offset, memidx| PrimitiveOpKind::I64Store8 {
                 offset,
                 memidx,
             }),
-            OP(I64_STORE16) => self.handle_store(imm, |offset, memidx| PrimitiveOpKind::I64Store16 {
-                offset,
-                memidx,
+            OP(I64_STORE16) => self.handle_store(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Store16 { offset, memidx }
             }),
-            OP(I64_STORE32) => self.handle_store(imm, |offset, memidx| PrimitiveOpKind::I64Store32 {
-                offset,
-                memidx,
+            OP(I64_STORE32) => self.handle_store(imm, |offset, memidx| {
+                PrimitiveOpKind::I64Store32 { offset, memidx }
             }),
 
             OP(MEMORY_SIZE) => {
@@ -890,13 +901,21 @@ impl<'a> DecodeContext<'a> {
         Ok(())
     }
 
-    fn handle_load(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> PrimitiveOpKind) {
+    fn handle_load(
+        &mut self,
+        imm: &Immediate,
+        make_kind: impl FnOnce(u32, u32) -> PrimitiveOpKind,
+    ) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.handle_primitive(make_kind(*offset as u32, *memidx));
         }
     }
 
-    fn handle_store(&mut self, imm: &Immediate, make_kind: impl FnOnce(u32, u32) -> PrimitiveOpKind) {
+    fn handle_store(
+        &mut self,
+        imm: &Immediate,
+        make_kind: impl FnOnce(u32, u32) -> PrimitiveOpKind,
+    ) {
         if let Immediate::MemArg { memidx, offset, .. } = imm {
             self.handle_primitive(make_kind(*offset as u32, *memidx));
         }

@@ -16,8 +16,7 @@ pub(super) fn run_native_peepholes(program: &mut NativeProgram) {
         let mut cleaned = alloc::vec::Vec::with_capacity(block.ops.len());
         for inst in block.ops.drain(..) {
             match &inst.kind {
-                crate::vm::native::ir::NativeInstKind::Move(mov)
-                    if matches!(mov.src, crate::vm::native::abi::NativeValue::Place(src) if src == mov.dst) =>
+                crate::vm::native::ir::NativeInstKind::Move(mov) if matches!(mov.src, crate::vm::native::abi::NativeValue::Place(src) if src == mov.dst) =>
                 {
                     continue;
                 }

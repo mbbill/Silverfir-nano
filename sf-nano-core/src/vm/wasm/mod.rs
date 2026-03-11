@@ -11,6 +11,6 @@
 pub mod common;
 pub mod context;
 pub mod control;
-pub mod primitive_op;
 pub mod decode;
+pub mod primitive_op;
 pub mod semantic_ir;

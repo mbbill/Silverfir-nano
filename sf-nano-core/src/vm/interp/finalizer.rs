@@ -10,7 +10,10 @@ use crate::error::WasmError;
 use crate::vm::{
     entities::{FunctionInst, ModuleInst},
     interp::{
-        build::InterpreterBuildBundle, encoding, fast_code::FastCode, frame_layout,
+        build::InterpreterBuildBundle,
+        encoding,
+        fast_code::FastCode,
+        frame_layout,
         instruction::Instruction,
         resolve::{self, IrOpKind},
     },
@@ -59,16 +62,13 @@ struct FinalLayout {
 
 impl FinalLayout {
     fn new(program: &LirProgram, frame: FrameLayoutPlan) -> Result<Self, WasmError> {
-        let value_count = max_value_index(program)
-            .map(|max| max + 1)
-            .unwrap_or(0);
+        let value_count = max_value_index(program).map(|max| max + 1).unwrap_or(0);
         let value_home_base = physical_slot(frame, frame.operands.end())?;
-        let value_count_u16 = u16::try_from(value_count).map_err(|_| {
-            WasmError::internal("interpreter value-home count exceeds u16".into())
-        })?;
-        let call_base = value_home_base.checked_add(value_count_u16).ok_or_else(|| {
-            WasmError::internal("interpreter frame slots exceed u16".into())
-        })?;
+        let value_count_u16 = u16::try_from(value_count)
+            .map_err(|_| WasmError::internal("interpreter value-home count exceeds u16".into()))?;
+        let call_base = value_home_base
+            .checked_add(value_count_u16)
+            .ok_or_else(|| WasmError::internal("interpreter frame slots exceed u16".into()))?;
         let move_temp_slot = call_base;
         let call_base = call_base
             .checked_add(1)
@@ -104,9 +104,9 @@ impl FinalLayout {
                 "LIR value id exceeds finalized home-slot range".into(),
             ));
         }
-        self.value_home_base.checked_add(offset).ok_or_else(|| {
-            WasmError::internal("interpreter value-home slot exceeds u16".into())
-        })
+        self.value_home_base
+            .checked_add(offset)
+            .ok_or_else(|| WasmError::internal("interpreter value-home slot exceeds u16".into()))
     }
 
     #[inline]
@@ -150,7 +150,11 @@ struct Finalizer<'a> {
 }
 
 impl<'a> Finalizer<'a> {
-    fn new(bundle: &'a InterpreterBuildBundle, module: &'a ModuleInst, layout: FinalLayout) -> Self {
+    fn new(
+        bundle: &'a InterpreterBuildBundle,
+        module: &'a ModuleInst,
+        layout: FinalLayout,
+    ) -> Self {
         Self {
             bundle,
             module,
@@ -165,7 +169,8 @@ impl<'a> Finalizer<'a> {
 
     fn emit_program(&mut self) -> Result<(), WasmError> {
         let entry = self.bundle.lir.entry;
-        if self.bundle.lir.blocks.get(entry.as_usize()).is_none() && !self.bundle.lir.blocks.is_empty()
+        if self.bundle.lir.blocks.get(entry.as_usize()).is_none()
+            && !self.bundle.lir.blocks.is_empty()
         {
             return Err(WasmError::internal(
                 "interpreter finalizer entry block is out of range".into(),
@@ -224,12 +229,14 @@ impl<'a> Finalizer<'a> {
     fn emit_inst_kind(&mut self, kind: &LirInstKind) -> Result<(), WasmError> {
         match kind {
             LirInstKind::Leaf { op, args, results } => self.emit_leaf(op, args, results),
-            LirInstKind::WriteOperandSlot { slot, src } => {
-                self.emit_copy(self.layout.value_home(*src)?, self.layout.frame_slot(*slot)?)
-            }
-            LirInstKind::ReadOperandSlot { slot, dst } => {
-                self.emit_copy(self.layout.frame_slot(*slot)?, self.layout.value_home(*dst)?)
-            }
+            LirInstKind::WriteOperandSlot { slot, src } => self.emit_copy(
+                self.layout.value_home(*src)?,
+                self.layout.frame_slot(*slot)?,
+            ),
+            LirInstKind::ReadOperandSlot { slot, dst } => self.emit_copy(
+                self.layout.frame_slot(*slot)?,
+                self.layout.value_home(*dst)?,
+            ),
             LirInstKind::ReadHotLocal { reg, dst } => self.emit_copy(
                 self.layout.hot_local_slot(*reg)?,
                 self.layout.value_home(*dst)?,
@@ -346,13 +353,13 @@ impl<'a> Finalizer<'a> {
         results: &[LirValue],
     ) -> Result<(), WasmError> {
         self.materialize_call_args(args)?;
-        let index_slot = self
-            .layout
-            .call_base
-            .checked_add(u16::try_from(args.len()).map_err(|_| {
-                WasmError::internal("call_indirect arg count exceeds u16".into())
-            })?)
-            .ok_or_else(|| WasmError::internal("call_indirect scratch slot overflow".into()))?;
+        let index_slot =
+            self.layout
+                .call_base
+                .checked_add(u16::try_from(args.len()).map_err(|_| {
+                    WasmError::internal("call_indirect arg count exceeds u16".into())
+                })?)
+                .ok_or_else(|| WasmError::internal("call_indirect scratch slot overflow".into()))?;
         self.emit_copy(self.layout.value_home(index)?, index_slot)?;
 
         let delta = self.layout.call_base;
@@ -378,9 +385,10 @@ impl<'a> Finalizer<'a> {
             let dst = self
                 .layout
                 .call_base
-                .checked_add(u16::try_from(index).map_err(|_| {
-                    WasmError::internal("call arg count exceeds u16".into())
-                })?)
+                .checked_add(
+                    u16::try_from(index)
+                        .map_err(|_| WasmError::internal("call arg count exceeds u16".into()))?,
+                )
                 .ok_or_else(|| WasmError::internal("call arg slot overflow".into()))?;
             self.emit_copy(self.layout.value_home(*value)?, dst)?;
         }
@@ -392,9 +400,10 @@ impl<'a> Finalizer<'a> {
             let src = self
                 .layout
                 .call_base
-                .checked_add(u16::try_from(index).map_err(|_| {
-                    WasmError::internal("call result count exceeds u16".into())
-                })?)
+                .checked_add(
+                    u16::try_from(index)
+                        .map_err(|_| WasmError::internal("call result count exceeds u16".into()))?,
+                )
                 .ok_or_else(|| WasmError::internal("call result slot overflow".into()))?;
             self.emit_copy(src, self.layout.value_home(*value)?)?;
         }
@@ -471,21 +480,20 @@ impl<'a> Finalizer<'a> {
             }
             LirTerminator::Return { values } => {
                 for (index, value) in values.iter().enumerate() {
-                    let dst = self
-                        .layout
-                        .call_base
-                        .checked_add(u16::try_from(index).map_err(|_| {
-                            WasmError::internal("return arity exceeds u16".into())
-                        })?)
-                        .ok_or_else(|| WasmError::internal("return scratch overflow".into()))?;
+                    let dst =
+                        self.layout
+                            .call_base
+                            .checked_add(u16::try_from(index).map_err(|_| {
+                                WasmError::internal("return arity exceeds u16".into())
+                            })?)
+                            .ok_or_else(|| WasmError::internal("return scratch overflow".into()))?;
                     self.emit_copy(self.layout.value_home(*value)?, dst)?;
                 }
 
                 let frame_size = self.bundle.planned.frame.frame_size;
                 match values.len() {
                     0 => {
-                        let (imm0, imm1, imm2) =
-                            encoding::return_void::encode(frame_size);
+                        let (imm0, imm1, imm2) = encoding::return_void::encode(frame_size);
                         self.push_instruction(
                             IrOpKind::ReturnVoid { frame_size },
                             0,
@@ -509,9 +517,8 @@ impl<'a> Finalizer<'a> {
                         );
                     }
                     arity => {
-                        let arity = u16::try_from(arity).map_err(|_| {
-                            WasmError::internal("return arity exceeds u16".into())
-                        })?;
+                        let arity = u16::try_from(arity)
+                            .map_err(|_| WasmError::internal("return arity exceeds u16".into()))?;
                         let (imm0, imm1, imm2) =
                             encoding::r#return::encode(arity, frame_size, self.layout.call_base);
                         self.push_instruction(
@@ -608,13 +615,8 @@ impl<'a> Finalizer<'a> {
 
     fn emit_br_to_block(&mut self, target: LirTarget) {
         let (imm0, imm1, imm2) = encoding::br::encode(0, 0, 0, 0);
-        let inst_index = self.push_instruction(
-            IrOpKind::Br { has_fixup: false },
-            0,
-            imm0,
-            imm1,
-            imm2,
-        );
+        let inst_index =
+            self.push_instruction(IrOpKind::Br { has_fixup: false }, 0, imm0, imm1, imm2);
         self.direct_patches.push(DirectPatch {
             inst_index,
             target: DirectTarget::Block(target),
@@ -776,7 +778,9 @@ fn block_successors(term: &LirTerminator) -> Vec<LirTarget> {
             else_edge,
             ..
         } => alloc::vec![then_edge.target, else_edge.target],
-        LirTerminator::BrTable { entries, .. } => entries.iter().map(|entry| entry.target).collect(),
+        LirTerminator::BrTable { entries, .. } => {
+            entries.iter().map(|entry| entry.target).collect()
+        }
         LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => Vec::new(),
     }
 }
@@ -975,8 +979,9 @@ fn physical_slot(frame: FrameLayoutPlan, slot: FrameSlot) -> Result<u16, WasmErr
     if slot.0 < frame.operand_base {
         Ok(slot.0)
     } else {
-        let operand_base = u16::try_from(frame_layout::operand_stack_base(frame.frame_size as usize))
-            .map_err(|_| WasmError::internal("operand stack base exceeds u16".into()))?;
+        let operand_base =
+            u16::try_from(frame_layout::operand_stack_base(frame.frame_size as usize))
+                .map_err(|_| WasmError::internal("operand stack base exceeds u16".into()))?;
         operand_base
             .checked_add(slot.0 - frame.operand_base)
             .ok_or_else(|| WasmError::internal("physical interpreter slot exceeds u16".into()))

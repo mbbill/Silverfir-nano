@@ -220,11 +220,7 @@ impl<'a> BlockPlacer<'a> {
             }
             SelectedTarget::Hot(reg) => {
                 let src = self.consume_source(src);
-                self.place_store(
-                    NativePlace::Location(NativeLocation::Hot(reg)),
-                    src,
-                    out,
-                );
+                self.place_store(NativePlace::Location(NativeLocation::Hot(reg)), src, out);
             }
             SelectedTarget::Operand(slot) | SelectedTarget::FrameLocal(slot) => {
                 let src = self.consume_source(src);
@@ -294,7 +290,11 @@ impl<'a> BlockPlacer<'a> {
             .remaining_uses
             .get_mut(index)
             .unwrap_or_else(|| panic!("native placement use out of range for value {}", value.0));
-        assert!(*remaining > 0, "native placement consumed dead value {}", value.0);
+        assert!(
+            *remaining > 0,
+            "native placement consumed dead value {}",
+            value.0
+        );
         *remaining -= 1;
     }
 
@@ -327,14 +327,16 @@ impl<'a> BlockPlacer<'a> {
     fn allocate_free_tmp(&self, reserved: &[NativePlace]) -> Option<NativePlace> {
         (0..self.abi.tmp_register_count).find_map(|reg| {
             let place = NativePlace::Location(NativeLocation::Tmp(reg));
-            (!reserved.contains(&place) && !self.place_live_after_current_op(place)).then_some(place)
+            (!reserved.contains(&place) && !self.place_live_after_current_op(place))
+                .then_some(place)
         })
     }
 
     fn allocate_free_tos(&self, reserved: &[NativePlace]) -> Option<NativePlace> {
         (0..self.abi.tos_register_count).find_map(|lane| {
             let place = NativePlace::Location(NativeLocation::Tos(lane));
-            (!reserved.contains(&place) && !self.place_live_after_current_op(place)).then_some(place)
+            (!reserved.contains(&place) && !self.place_live_after_current_op(place))
+                .then_some(place)
         })
     }
 
@@ -342,7 +344,9 @@ impl<'a> BlockPlacer<'a> {
         self.remaining_uses
             .iter()
             .enumerate()
-            .any(|(index, &uses)| uses > 0 && self.state.home(LirValue(index as u32)) == Some(place))
+            .any(|(index, &uses)| {
+                uses > 0 && self.state.home(LirValue(index as u32)) == Some(place)
+            })
     }
 
     fn preserve_future_aliases(&mut self, place: NativePlace, out: &mut Vec<NativeInst>) {
@@ -404,7 +408,10 @@ fn clobbered_by_call(place: NativePlace) -> bool {
 fn seed_block_params(selected: &SelectedProgram, state: &mut PlacementState) {
     for block in &selected.blocks {
         for (lane, value) in block.tos_params.iter().copied().enumerate() {
-            state.assign(value, NativePlace::Location(NativeLocation::Tos(lane as u8)));
+            state.assign(
+                value,
+                NativePlace::Location(NativeLocation::Tos(lane as u8)),
+            );
         }
     }
 }
@@ -577,11 +584,7 @@ mod tests {
     use super::place_program;
     use crate::vm::{
         backend::BackendConfig,
-        lir::{
-            ir::LirValue,
-            leaf::LirLeafOp,
-            slot::FrameSlot,
-        },
+        lir::{ir::LirValue, leaf::LirLeafOp, slot::FrameSlot},
         native::{
             abi::{NativeLocation, NativePlace, NativeValue},
             ir::{NativeBlockId, NativeInstKind, NativeTerminator},
@@ -644,7 +647,9 @@ mod tests {
                         },
                     },
                 ],
-                terminator: SelectedTerminator::Return { values: alloc::vec![] },
+                terminator: SelectedTerminator::Return {
+                    values: alloc::vec![]
+                },
             }],
         };
 
@@ -693,7 +698,10 @@ mod tests {
                 src: NativeValue::Place(NativePlace::Location(NativeLocation::Hot(0))),
             })
         );
-        assert!(matches!(block.ops[1].kind, NativeInstKind::CallLocal { callee: 3, .. }));
+        assert!(matches!(
+            block.ops[1].kind,
+            NativeInstKind::CallLocal { callee: 3, .. }
+        ));
         assert_eq!(
             block.terminator,
             NativeTerminator::Return {

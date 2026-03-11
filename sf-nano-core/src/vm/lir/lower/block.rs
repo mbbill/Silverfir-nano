@@ -99,9 +99,7 @@ fn lower_block_body_op(
         SemanticOpKind::LocalTee { .. } => {
             lower_local_tee(&op.planned.kind, state, planned.frame, values)
         }
-        SemanticOpKind::Block { .. }
-        | SemanticOpKind::Loop { .. }
-        | SemanticOpKind::End => Ok(()),
+        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
         SemanticOpKind::Else => Err(WasmError::internal(
             "else must end an LIR block, not appear in the body".into(),
         )),
@@ -413,7 +411,9 @@ fn resolve_if_else_target(
         .alt
         .ok_or_else(|| WasmError::invalid("semantic if missing alt target".into()))?;
     let Some(target_op) = mapped.get(target.index().as_usize()) else {
-        return Err(WasmError::invalid("semantic if alt target out of range".into()));
+        return Err(WasmError::invalid(
+            "semantic if alt target out of range".into(),
+        ));
     };
 
     if matches!(target_op.semantic.kind, SemanticOpKind::Else) {

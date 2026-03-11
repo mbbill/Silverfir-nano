@@ -13,11 +13,7 @@ mod place;
 mod select;
 mod state;
 
-use crate::vm::{
-    backend::BackendConfig,
-    lir::ir::LirProgram,
-    plan::PlannedProgram,
-};
+use crate::vm::{backend::BackendConfig, lir::ir::LirProgram, plan::PlannedProgram};
 
 use super::ir::NativeProgram;
 

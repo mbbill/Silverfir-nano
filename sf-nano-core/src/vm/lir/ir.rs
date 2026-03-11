@@ -332,7 +332,9 @@ mod tests {
         };
 
         let error = program.validate().expect_err("LIR validation should fail");
-        assert!(error.message().contains("has 1 TOS args, but target expects 0"));
+        assert!(error
+            .message()
+            .contains("has 1 TOS args, but target expects 0"));
     }
 
     #[test]

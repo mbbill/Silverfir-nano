@@ -3,7 +3,7 @@
 //! This mirrors the reusable Wasm leaf-op set, but it is owned by LIR rather
 //! than borrowing `PrimitiveOpKind` directly.
 
-use crate::vm::wasm::primitive_op::{PrimitiveOpKind, for_each_primitive_op};
+use crate::vm::wasm::primitive_op::{for_each_primitive_op, PrimitiveOpKind};
 
 macro_rules! define_lir_leaf_ops {
     ($(

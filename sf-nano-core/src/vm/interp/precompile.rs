@@ -10,8 +10,7 @@ use crate::vm::{
 
 use super::{
     build::{
-        build_interpreter_function_for_spec, normalize_interpreter_backend,
-        InterpreterBuildBundle,
+        build_interpreter_function_for_spec, normalize_interpreter_backend, InterpreterBuildBundle,
     },
     finalizer::{self, InterpreterFinalized},
 };
@@ -85,13 +84,15 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
         .map_err(|err| {
             WasmError::internal(alloc::format!(
                 "interpreter build failed for function {}: {}",
-                func_index, err
+                func_index,
+                err
             ))
         })?;
         let finalized = finalizer::finalize_interpreter(&bundle, module).map_err(|err| {
             WasmError::internal(alloc::format!(
                 "interpreter finalization failed for function {}: {}",
-                func_index, err
+                func_index,
+                err
             ))
         })?;
         let cache = finalized.code.build_cache(

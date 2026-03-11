@@ -121,14 +121,14 @@ fn compute_semantic_entry_heights(
     for op in mapped {
         let entry_height = match &op.semantic.kind {
             crate::vm::wasm::semantic_ir::SemanticOpKind::Else => {
-                control
-                    .last()
-                    .map_or(op.planned.height, |frame| frame.start_height + frame.results)
+                control.last().map_or(op.planned.height, |frame| {
+                    frame.start_height + frame.results
+                })
             }
             crate::vm::wasm::semantic_ir::SemanticOpKind::End => {
-                control
-                    .last()
-                    .map_or(op.planned.height, |frame| frame.start_height + frame.results)
+                control.last().map_or(op.planned.height, |frame| {
+                    frame.start_height + frame.results
+                })
             }
             _ => op.planned.height,
         };
@@ -480,15 +480,18 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(compute_semantic_entry_heights(
-            &SemanticProgram {
-                params: 0,
-                results: 1,
-                local_count: 0,
-                max_stack_height: 1,
-                ops: semantic_ops.clone(),
-            },
-            &mapped,
-        )[1], 1);
+        assert_eq!(
+            compute_semantic_entry_heights(
+                &SemanticProgram {
+                    params: 0,
+                    results: 1,
+                    local_count: 0,
+                    max_stack_height: 1,
+                    ops: semantic_ops.clone(),
+                },
+                &mapped,
+            )[1],
+            1
+        );
     }
 }

@@ -4,7 +4,9 @@ use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
-    vm::wasm::{common::SemanticTarget, primitive_op::PrimitiveOpKind, semantic_ir::SemanticProgram},
+    vm::wasm::{
+        common::SemanticTarget, primitive_op::PrimitiveOpKind, semantic_ir::SemanticProgram,
+    },
 };
 
 use super::{
@@ -128,7 +130,11 @@ pub struct PlanningInput {
 
 impl PlannedProgram {
     #[cfg(any(debug_assertions, test))]
-    pub fn validate(&self, semantic: &SemanticProgram, config: PlanConfig) -> Result<(), WasmError> {
+    pub fn validate(
+        &self,
+        semantic: &SemanticProgram,
+        config: PlanConfig,
+    ) -> Result<(), WasmError> {
         validate_frame_layout(self.frame, semantic, config)?;
         validate_groups(&self.groups, semantic.ops.len())?;
 
@@ -223,7 +229,10 @@ impl PlannedProgram {
                         }
                     }
                 }
-                PlannedOpKind::BrTable { index_slot, entries } => {
+                PlannedOpKind::BrTable {
+                    index_slot,
+                    entries,
+                } => {
                     if op_reachable && !slot_in_span(*index_slot, self.frame.operands) {
                         return Err(WasmError::internal(
                             "planned br_table index must use an operand slot".into(),
@@ -281,7 +290,10 @@ impl PlannedProgram {
                 }
             }
 
-            if !matches!(op.kind, PlannedOpKind::InitHotLocals { .. } | PlannedOpKind::Spill(_)) {
+            if !matches!(
+                op.kind,
+                PlannedOpKind::InitHotLocals { .. } | PlannedOpKind::Spill(_)
+            ) {
                 semantic_index += 1;
             }
         }

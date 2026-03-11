@@ -127,11 +127,10 @@ pub(super) fn build_semantic_to_block_map(
     map
 }
 
-fn semantic_successors(op: &crate::vm::wasm::semantic_ir::SemanticOp) -> Vec<crate::vm::wasm::common::SemanticTarget> {
-    use crate::vm::wasm::{
-        common::SemanticTarget,
-        semantic_ir::SemanticOpKind,
-    };
+fn semantic_successors(
+    op: &crate::vm::wasm::semantic_ir::SemanticOp,
+) -> Vec<crate::vm::wasm::common::SemanticTarget> {
+    use crate::vm::wasm::{common::SemanticTarget, semantic_ir::SemanticOpKind};
 
     let mut targets = Vec::new();
     let push_next = |targets: &mut Vec<SemanticTarget>,
@@ -142,9 +141,7 @@ fn semantic_successors(op: &crate::vm::wasm::semantic_ir::SemanticOp) -> Vec<cra
     };
 
     match &op.kind {
-        SemanticOpKind::Primitive(
-            crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable,
-        )
+        SemanticOpKind::Primitive(crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable)
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {}

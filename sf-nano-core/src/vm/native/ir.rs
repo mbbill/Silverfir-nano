@@ -13,10 +13,7 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::{
-    lir::{
-        leaf::LirLeafOp,
-        target::LirTarget,
-    },
+    lir::{leaf::LirLeafOp, target::LirTarget},
     plan::{frame::FrameLayoutPlan, group::GroupPlan, hot_local::HotLocalPlan},
 };
 

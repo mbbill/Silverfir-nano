@@ -77,38 +77,32 @@ pub fn frame_write(fp_pp: *mut *mut u64, offset: usize, value: u64) {
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l0_spill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {
-}
+pub fn l0_spill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {}
 
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l0_fill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {
-}
+pub fn l0_fill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {}
 
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l1_spill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {
-}
+pub fn l1_spill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {}
 
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l1_fill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {
-}
+pub fn l1_fill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {}
 
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l2_spill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {
-}
+pub fn l2_spill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {}
 
 /// The live non-fused interpreter path does not materialize dedicated
 /// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l2_fill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {
-}
+pub fn l2_fill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {}
 
 // =============================================================================
 // PC Navigation

@@ -4,7 +4,10 @@ use crate::error::WasmError;
 use crate::vm::native::{arch, code::NativeCode, ir::NativeProgram, lower};
 use crate::vm::store::Store;
 
-use super::{build::{build_native_function_for_spec, NativeBuildBundle}, resolve};
+use super::{
+    build::{build_native_function_for_spec, NativeBuildBundle},
+    resolve,
+};
 
 /// Native precompile result.
 #[derive(Debug, Default)]
@@ -32,7 +35,11 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
         .functions
         .iter()
         .filter(|func| !func.is_external())
-        .all(|func| func.spec().map(|spec| spec.has_native_code()).unwrap_or(true));
+        .all(|func| {
+            func.spec()
+                .map(|spec| spec.has_native_code())
+                .unwrap_or(true)
+        });
     if all_compiled {
         return Ok(());
     }
@@ -64,13 +71,15 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
         .map_err(|err| {
             WasmError::internal(alloc::format!(
                 "native build failed for function {}: {}",
-                func_index, err
+                func_index,
+                err
             ))
         })?;
         let finalized = precompile_native(bundle).map_err(|err| {
             WasmError::internal(alloc::format!(
                 "native codegen failed for function {}: {}",
-                func_index, err
+                func_index,
+                err
             ))
         })?;
         let code = finalized

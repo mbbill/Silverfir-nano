@@ -22,6 +22,6 @@ pub mod stats;
 
 pub use compile::{build, precompile, resolve};
 pub use helper::{bridge, meta as helper_meta};
-pub use runtime::{context, entry, layout};
 pub use runtime::entry::NativeEntry;
+pub use runtime::{context, entry, layout};
 pub use stats::{native_capacity_skips, native_stats, native_stats_snapshot, NativeStatsSnapshot};

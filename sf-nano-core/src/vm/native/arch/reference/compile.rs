@@ -32,6 +32,7 @@ pub fn compile_program(
     Ok(NativeCode::from_parts(
         Some(shared_native_entry),
         Vec::new(),
+        None,
         HelperMetadataArena::new(),
         Vec::<DirectCallPatch>::new(),
         Some(program.clone()),

@@ -361,7 +361,9 @@ mod tests {
             }],
         };
 
-        let error = semantic.validate().expect_err("semantic validation should fail");
+        let error = semantic
+            .validate()
+            .expect_err("semantic validation should fail");
         assert!(error.message().contains("out-of-range local"));
     }
 
@@ -382,7 +384,9 @@ mod tests {
             }],
         };
 
-        let error = semantic.validate().expect_err("semantic validation should fail");
+        let error = semantic
+            .validate()
+            .expect_err("semantic validation should fail");
         assert!(error.message().contains("out of range"));
     }
 
@@ -400,7 +404,11 @@ mod tests {
             }],
         };
 
-        let error = semantic.validate().expect_err("semantic validation should fail");
-        assert!(error.message().contains("does not match function result arity"));
+        let error = semantic
+            .validate()
+            .expect_err("semantic validation should fail");
+        assert!(error
+            .message()
+            .contains("does not match function result arity"));
     }
 }
