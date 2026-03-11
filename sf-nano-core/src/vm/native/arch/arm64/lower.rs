@@ -110,13 +110,16 @@ pub struct Arm64LocalLiteralPatch {
     pub target_offset: u32,
 }
 
-pub fn lower_arm64(program: &NativeProgram) -> Result<Arm64LoweredFunction, WasmError> {
+pub fn lower_arm64(
+    program: &NativeProgram,
+    callee_may_change_views: Option<&[bool]>,
+) -> Result<Arm64LoweredFunction, WasmError> {
     if program.blocks.is_empty() {
         return Err(WasmError::internal(
             "arm64 lowering requires at least one native block".into(),
         ));
     }
-    Arm64Lowerer::new(program)?.lower()
+    Arm64Lowerer::new(program, callee_may_change_views)?.lower()
 }
 
 pub(crate) fn lower_shared_entry() -> Arm64LoweredFunction {
@@ -384,6 +387,7 @@ impl MemoryStoreKind {
 
 struct Arm64Lowerer<'a> {
     program: &'a NativeProgram,
+    callee_may_change_views: Option<&'a [bool]>,
     emitter: Arm64TextEmitter,
     block_offsets: Vec<Option<usize>>,
     branch_patches: Vec<BlockBranchPatch>,
@@ -393,7 +397,10 @@ struct Arm64Lowerer<'a> {
 }
 
 impl<'a> Arm64Lowerer<'a> {
-    fn new(program: &'a NativeProgram) -> Result<Self, WasmError> {
+    fn new(
+        program: &'a NativeProgram,
+        callee_may_change_views: Option<&'a [bool]>,
+    ) -> Result<Self, WasmError> {
         let max_slot = program.frame.operands.end().0 as u32 + program.spill_slots as u32;
         if max_slot >= 0x1000 {
             return Err(WasmError::internal(
@@ -421,6 +428,7 @@ impl<'a> Arm64Lowerer<'a> {
         }
         Ok(Self {
             program,
+            callee_may_change_views,
             emitter: Arm64TextEmitter::new(),
             block_offsets: alloc::vec![None; program.blocks.len()],
             branch_patches: Vec::new(),
@@ -1658,7 +1666,11 @@ impl<'a> Arm64Lowerer<'a> {
         let stack_overflow_label = self.emit_exhaustion_stub(0);
         let call_depth_label = self.emit_exhaustion_stub(1);
         let continuation_offset = self.emitter.len();
-        self.emit_call_local_continuation(results)?;
+        let refresh_cached_views = self
+            .callee_may_change_views
+            .map(|flags| flags.get(callee as usize).copied().unwrap_or(true))
+            .unwrap_or(true);
+        self.emit_call_local_continuation(results, refresh_cached_views)?;
 
         let continuation_delta =
             ((continuation_literal as isize - continuation_load as isize) / 4) as i32;
@@ -1713,13 +1725,19 @@ impl<'a> Arm64Lowerer<'a> {
         Ok(())
     }
 
-    fn emit_call_local_continuation(&mut self, results: &[NativePlace]) -> Result<(), WasmError> {
+    fn emit_call_local_continuation(
+        &mut self,
+        results: &[NativePlace],
+        refresh_cached_views: bool,
+    ) -> Result<(), WasmError> {
         for (index, place) in results.iter().copied().enumerate() {
             self.emitter
                 .emit_u32(enc::ldr_64(REG_SCRATCH0, REG_CONT_FP, index as u32));
             self.write_reg_to_place(place, REG_SCRATCH0)?;
         }
-        self.emit_refresh_cached_views();
+        if refresh_cached_views {
+            self.emit_refresh_cached_views();
+        }
         self.emit_reload_hot_locals_from_frame()?;
         Ok(())
     }

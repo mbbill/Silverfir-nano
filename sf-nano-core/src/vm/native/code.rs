@@ -27,6 +27,12 @@ pub struct DirectCallPatch {
     pub frame_slots_literal_offset: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeCodeRegion {
+    pub start: u32,
+    pub len: u32,
+}
+
 /// Native compiled code object.
 ///
 /// This is intentionally *not* a descriptor stream. It owns executable bytes
@@ -39,6 +45,7 @@ pub struct NativeCode {
     pub entry: Option<NativeEntry>,
     pub internal_entry: Option<NativeEntry>,
     pub text: Box<[u8]>,
+    pub region: Option<NativeCodeRegion>,
     pub executable: Option<CodeBuffer>,
     pub helper_metadata: Box<[HelperMetadataRecord]>,
     pub direct_call_patches: Box<[DirectCallPatch]>,
@@ -67,10 +74,16 @@ impl NativeCode {
     }
 
     #[inline]
+    pub fn region(&self) -> Option<NativeCodeRegion> {
+        self.region
+    }
+
+    #[inline]
     pub fn from_parts(
         entry: Option<NativeEntry>,
         internal_entry: Option<NativeEntry>,
         text: Vec<u8>,
+        region: Option<NativeCodeRegion>,
         executable: Option<CodeBuffer>,
         helper_metadata: HelperMetadataArena,
         direct_call_patches: Vec<DirectCallPatch>,
@@ -80,6 +93,7 @@ impl NativeCode {
             entry,
             internal_entry,
             text: text.into_boxed_slice(),
+            region,
             executable,
             helper_metadata: helper_metadata.into_boxed_slice(),
             direct_call_patches: direct_call_patches.into_boxed_slice(),
@@ -165,6 +179,7 @@ pub fn create_native_code(
     entry: Option<NativeEntry>,
     internal_entry: Option<NativeEntry>,
     text: Vec<u8>,
+    region: Option<NativeCodeRegion>,
     executable: Option<CodeBuffer>,
     helper_metadata: HelperMetadataArena,
     direct_call_patches: Vec<DirectCallPatch>,
@@ -177,6 +192,7 @@ pub fn create_native_code(
         entry,
         internal_entry,
         text,
+        region,
         executable,
         helper_metadata,
         direct_call_patches,

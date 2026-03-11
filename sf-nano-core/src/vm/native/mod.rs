@@ -16,9 +16,12 @@ pub mod code_buf;
 pub mod compile;
 pub mod helper;
 pub mod ir;
+mod jitdump;
 pub mod lower;
+mod map;
 pub mod runtime;
 pub mod stats;
+mod symbols;
 
 pub use compile::{build, precompile, resolve};
 pub use helper::{bridge, meta as helper_meta};

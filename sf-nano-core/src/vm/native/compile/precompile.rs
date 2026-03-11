@@ -3,7 +3,18 @@
 use alloc::{vec, vec::Vec};
 
 use crate::error::WasmError;
-use crate::vm::native::{arch, code::NativeCode, ir::{NativeInstKind, NativeProgram}, lower};
+use crate::vm::{
+    lir::leaf::LirLeafOp,
+    native::{
+    arch,
+    code::NativeCode,
+    ir::{NativeHelperInst, NativeInstKind, NativeProgram},
+    jitdump,
+    lower,
+    map,
+    symbols,
+    },
+};
 use crate::vm::store::Store;
 
 use super::{
@@ -135,6 +146,8 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
 
     #[cfg(target_arch = "aarch64")]
     let direct_arm64 = compute_direct_arm64(module, &pending);
+    #[cfg(target_arch = "aarch64")]
+    let callee_may_change_views = compute_callee_view_change_flags(module, &pending);
 
     for pending_func in &pending {
         #[cfg(target_arch = "aarch64")]
@@ -148,7 +161,12 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
             } else {
                 Arm64CompileMode::SharedEntry
             };
-            compile_program_with_mode(&pending_func.ir, &pending_func.resolved, mode)
+            compile_program_with_mode(
+                &pending_func.ir,
+                &pending_func.resolved,
+                mode,
+                Some(&callee_may_change_views),
+            )
         };
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -174,6 +192,8 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
 
     #[cfg(target_arch = "aarch64")]
     finalize_arm64_direct_calls(module)?;
+
+    record_native_symbols(module);
 
     Ok(())
 }
@@ -227,6 +247,86 @@ fn local_callees(program: &NativeProgram) -> Vec<u32> {
         }
     }
     out
+}
+
+#[cfg(target_arch = "aarch64")]
+fn compute_callee_view_change_flags(
+    module: &crate::vm::entities::ModuleInst,
+    pending: &[PendingNativeFunction],
+) -> Vec<bool> {
+    let mut flags = vec![false; module.functions.len()];
+    let mut programs: Vec<Option<&NativeProgram>> = vec![None; module.functions.len()];
+
+    for (index, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let Some(code) = spec.get_native_code() else {
+            continue;
+        };
+        let Some(program) = code.program() else {
+            continue;
+        };
+        flags[index] = program_self_changes_views(program);
+        programs[index] = Some(program);
+    }
+
+    for pending_func in pending {
+        flags[pending_func.func_index] = program_self_changes_views(&pending_func.ir);
+        programs[pending_func.func_index] = Some(&pending_func.ir);
+    }
+
+    loop {
+        let mut changed = false;
+        for (index, program) in programs.iter().enumerate() {
+            let Some(program) = program else {
+                continue;
+            };
+            if flags[index] {
+                continue;
+            }
+            if local_callees(program)
+                .into_iter()
+                .any(|callee| flags.get(callee as usize).copied().unwrap_or(true))
+            {
+                flags[index] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return flags;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn program_self_changes_views(program: &NativeProgram) -> bool {
+    for block in &program.blocks {
+        for inst in &block.ops {
+            match &inst.kind {
+                NativeInstKind::Leaf { op, .. } => {
+                    if leaf_changes_views(op) {
+                        return true;
+                    }
+                }
+                NativeInstKind::Helper(NativeHelperInst::Leaf { op, .. }) => {
+                    if leaf_changes_views(op) {
+                        return true;
+                    }
+                }
+                NativeInstKind::CallIndirect { .. } => return true,
+                NativeInstKind::Move(_)
+                | NativeInstKind::CallExternal { .. }
+                | NativeInstKind::CallLocal { .. } => {}
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+fn leaf_changes_views(op: &LirLeafOp) -> bool {
+    matches!(op, LirLeafOp::MemoryGrow { .. })
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -325,4 +425,104 @@ fn finalize_arm64_direct_calls(module: &crate::vm::entities::ModuleInst) -> Resu
     }
 
     Ok(())
+}
+
+fn record_native_symbols(module: &crate::vm::entities::ModuleInst) {
+    for (func_index, func) in module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, func)| !func.is_external())
+    {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let Some(code) = spec.get_native_code() else {
+            continue;
+        };
+        let Some(program) = code.program() else {
+            continue;
+        };
+
+        let Some(region) = code.region() else {
+            continue;
+        };
+        let Some(base) = code.executable.as_ref().map(|executable| executable.base_ptr()) else {
+            continue;
+        };
+        let code_start = unsafe { base.add(region.start as usize) };
+        let len = region.len as usize;
+
+        let stats = symbols::summarize_program(program);
+        let base_addr = code_start as usize;
+        let internal_offset = code
+            .internal_entry()
+            .map(|entry| entry as usize)
+            .and_then(|entry_addr| entry_addr.checked_sub(base_addr))
+            .filter(|offset| *offset > 0 && *offset < len);
+
+        if let Some(offset) = internal_offset {
+            record_native_symbol_segment(
+                code_start,
+                0,
+                offset,
+                &module.name,
+                func_index as u32,
+                "entry",
+                true,
+                stats,
+            );
+            record_native_symbol_segment(
+                code_start,
+                offset,
+                len - offset,
+                &module.name,
+                func_index as u32,
+                "body",
+                true,
+                stats,
+            );
+        } else {
+            record_native_symbol_segment(
+                code_start,
+                0,
+                len,
+                &module.name,
+                func_index as u32,
+                "function",
+                false,
+                stats,
+            );
+        }
+    }
+}
+
+fn record_native_symbol_segment(
+    base: *const u8,
+    offset: usize,
+    len: usize,
+    module_name: &str,
+    func_idx: u32,
+    segment: &str,
+    direct: bool,
+    stats: symbols::NativeSymbolStats,
+) {
+    if len == 0 {
+        return;
+    }
+
+    let code_start = unsafe { base.add(offset) };
+    let code_bytes = unsafe { core::slice::from_raw_parts(code_start, len) };
+    let symbol_name = symbols::render_symbol_name(module_name, func_idx, segment);
+
+    map::record_function(
+        code_start,
+        len,
+        module_name,
+        func_idx,
+        segment,
+        direct,
+        stats,
+    );
+    jitdump::record_function(code_start, code_bytes, &symbol_name);
 }
