@@ -1,12 +1,24 @@
 //! Native module/function precompile entry.
 
+use alloc::{vec, vec::Vec};
+
 use crate::error::WasmError;
-use crate::vm::native::{arch, code::NativeCode, ir::NativeProgram, lower};
+use crate::vm::native::{arch, code::NativeCode, ir::{NativeInstKind, NativeProgram}, lower};
 use crate::vm::store::Store;
 
 use super::{
     build::{build_native_function_for_spec, NativeBuildBundle},
-    resolve,
+    resolve::{self, ResolvedNativeEntry},
+};
+
+#[cfg(target_arch = "aarch64")]
+use crate::vm::native::{
+    arch::arm64::{
+        compile::{compile_program_with_mode, Arm64CompileMode},
+        enc,
+        lower::supports_direct_lowering_base,
+    },
+    runtime::layout,
 };
 
 /// Native precompile result.
@@ -14,6 +26,16 @@ use super::{
 pub struct NativePrecompiled {
     pub ir: Option<NativeProgram>,
     pub code: Option<NativeCode>,
+}
+
+#[derive(Debug)]
+struct PendingNativeFunction {
+    func_index: usize,
+    params_len: u16,
+    locals_len: u16,
+    results_len: u16,
+    ir: NativeProgram,
+    resolved: Vec<ResolvedNativeEntry>,
 }
 
 pub fn precompile_native(bundle: NativeBuildBundle) -> Result<NativePrecompiled, WasmError> {
@@ -49,6 +71,7 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
         return Ok(());
     }
 
+    let mut pending = Vec::new();
     for (func_index, func) in module
         .functions
         .iter()
@@ -80,22 +103,225 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
                 err
             ))
         })?;
-        let finalized = precompile_native(bundle).map_err(|err| {
+        let ir = lower::lower_native(
+            &bundle.lir,
+            &bundle.planned,
+            bundle.backend_config,
+            &bundle.local_call_contracts,
+        )
+        .map_err(|err| {
             WasmError::internal(alloc::format!(
-                "native codegen failed for function {}: {}",
+                "native lowering failed for function {}: {}",
                 func_index,
                 err
             ))
         })?;
-        let code = finalized
-            .code
-            .ok_or_else(|| WasmError::internal("native precompile produced no code".into()))?;
+        ir.validate().map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "native IR validation failed for function {}: {}",
+                func_index,
+                err
+            ))
+        })?;
+        pending.push(PendingNativeFunction {
+            func_index,
+            params_len,
+            locals_len,
+            results_len,
+            resolved: resolve::resolve_native(&ir),
+            ir,
+        });
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let direct_arm64 = compute_direct_arm64(module, &pending);
+
+    for pending_func in &pending {
+        #[cfg(target_arch = "aarch64")]
+        let code = {
+            let mode = if direct_arm64
+                .get(pending_func.func_index)
+                .copied()
+                .unwrap_or(false)
+            {
+                Arm64CompileMode::Direct
+            } else {
+                Arm64CompileMode::SharedEntry
+            };
+            compile_program_with_mode(&pending_func.ir, &pending_func.resolved, mode)
+        };
+
+        #[cfg(not(target_arch = "aarch64"))]
+        let code = arch::compile_native(&pending_func.ir, &pending_func.resolved);
+
+        let code = code.map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "native codegen failed for function {}: {}",
+                pending_func.func_index,
+                err
+            ))
+        })?;
         let cache = code.build_cache(
-            params_len as usize,
-            locals_len as usize,
-            results_len as usize,
+            pending_func.params_len as usize,
+            pending_func.locals_len as usize,
+            pending_func.results_len as usize,
         );
+        let spec = module.functions[pending_func.func_index]
+            .spec()
+            .ok_or_else(|| WasmError::internal("local function is missing spec".into()))?;
         spec.set_native_code(code, cache);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    finalize_arm64_direct_calls(module)?;
+
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+fn compute_direct_arm64(module: &crate::vm::entities::ModuleInst, pending: &[PendingNativeFunction]) -> Vec<bool> {
+    let mut direct = vec![false; module.functions.len()];
+
+    for (index, func) in module.functions.iter().enumerate() {
+        if let Some(spec) = func.spec() {
+            if spec.has_native_code() {
+                direct[index] = spec.native_cache().internal_entry().is_some();
+            }
+        }
+    }
+
+    for pending_func in pending {
+        direct[pending_func.func_index] = supports_direct_lowering_base(&pending_func.ir);
+    }
+
+    loop {
+        let mut changed = false;
+        for pending_func in pending {
+            if !direct[pending_func.func_index] {
+                continue;
+            }
+            if local_callees(&pending_func.ir)
+                .into_iter()
+                .any(|callee| !direct.get(callee as usize).copied().unwrap_or(false))
+            {
+                direct[pending_func.func_index] = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            return direct;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn local_callees(program: &NativeProgram) -> Vec<u32> {
+    let mut out = Vec::new();
+    for block in &program.blocks {
+        for inst in &block.ops {
+            if let NativeInstKind::CallLocal { callee, .. } = inst.kind {
+                if !out.contains(&callee) {
+                    out.push(callee);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+fn finalize_arm64_direct_calls(module: &crate::vm::entities::ModuleInst) -> Result<(), WasmError> {
+    for func in module.functions.iter().filter(|func| !func.is_external()) {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+
+        if let Some(result) = spec.with_native_code_mut(|code| -> Result<(), WasmError> {
+            let patches = code.direct_call_patches().to_vec();
+            if patches.is_empty() {
+                return Ok(());
+            }
+            let Some(executable) = code.executable.as_mut() else {
+                return Ok(());
+            };
+
+            let mut patch_start = usize::MAX;
+            let mut patch_end = 0usize;
+            executable.begin_write();
+            for patch in &patches {
+                let callee = module
+                    .functions
+                    .get(patch.callee_func_idx as usize)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "direct call patch references missing callee {}",
+                            patch.callee_func_idx
+                        ))
+                    })?;
+                let callee_spec = callee.spec().ok_or_else(|| {
+                    WasmError::internal("direct call patch targets external callee".into())
+                })?;
+                let target = callee_spec.native_cache().internal_entry().ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "direct call patch targets non-direct callee {}",
+                        patch.callee_func_idx
+                    ))
+                })?;
+                let callee_code = callee_spec.get_native_code().ok_or_else(|| {
+                    WasmError::internal("direct callee is missing native code".into())
+                })?;
+                let callee_program = callee_code.program().ok_or_else(|| {
+                    WasmError::internal("direct callee is missing native program".into())
+                })?;
+                let branch_site =
+                    unsafe { executable.base_ptr().add(patch.entry_branch_inst_offset as usize) as usize };
+                let delta_bytes = target as isize - branch_site as isize;
+                let delta_words = delta_bytes / 4;
+                if delta_bytes % 4 == 0
+                    && (-(1 << 25)..(1 << 25)).contains(&delta_words)
+                {
+                    executable.patch_u32(
+                        patch.entry_branch_inst_offset as usize,
+                        enc::b(delta_words as i32),
+                    );
+                    executable.patch_u32(
+                        patch.entry_branch_reg_offset as usize,
+                        enc::nop(),
+                    );
+                    patch_start = patch_start.min(
+                        patch.entry_branch_inst_offset
+                            .min(patch.entry_branch_reg_offset)
+                            .min(patch.frame_slots_literal_offset) as usize,
+                    );
+                    patch_end = patch_end.max(
+                        patch.entry_branch_inst_offset
+                            .max(patch.entry_branch_reg_offset)
+                            .max(patch.frame_slots_literal_offset) as usize
+                            + 8,
+                    );
+                } else {
+                    executable.patch_u64(patch.entry_literal_offset as usize, target as usize as u64);
+                    patch_start = patch_start.min(
+                        patch.entry_literal_offset.min(patch.frame_slots_literal_offset) as usize,
+                    );
+                    patch_end = patch_end.max(
+                        patch.entry_literal_offset.max(patch.frame_slots_literal_offset) as usize + 8,
+                    );
+                }
+                executable.patch_u64(
+                    patch.frame_slots_literal_offset as usize,
+                    layout::frame_slots_used(callee_program) as u64,
+                );
+            }
+            if patch_start == usize::MAX {
+                executable.finish_write(0, 0);
+            } else {
+                executable.finish_write(patch_start, patch_end - patch_start);
+            }
+            Ok(())
+        }) {
+            result?;
+        }
     }
 
     Ok(())

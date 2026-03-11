@@ -10,8 +10,6 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::vm::plan::group::GroupId;
-
 use super::{
     code_buf::CodeBuffer,
     entry::NativeEntry,
@@ -22,18 +20,11 @@ use super::{
 /// Direct-call patch site that must be finalized to a native entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DirectCallPatch {
-    pub code_offset: u32,
-    pub target: PatchTarget,
-}
-
-/// Explicit native patch target.
-///
-/// This must stay in terms of final native entry identity, not a hidden
-/// interpreter-style descriptor index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PatchTarget {
-    Group(GroupId),
-    EntryIndex(u32),
+    pub callee_func_idx: u32,
+    pub entry_branch_inst_offset: u32,
+    pub entry_branch_reg_offset: u32,
+    pub entry_literal_offset: u32,
+    pub frame_slots_literal_offset: u32,
 }
 
 /// Native compiled code object.
@@ -46,6 +37,7 @@ pub enum PatchTarget {
 #[derive(Debug, Default)]
 pub struct NativeCode {
     pub entry: Option<NativeEntry>,
+    pub internal_entry: Option<NativeEntry>,
     pub text: Box<[u8]>,
     pub executable: Option<CodeBuffer>,
     pub helper_metadata: Box<[HelperMetadataRecord]>,
@@ -70,8 +62,14 @@ impl NativeCode {
     }
 
     #[inline]
+    pub fn internal_entry(&self) -> Option<NativeEntry> {
+        self.internal_entry
+    }
+
+    #[inline]
     pub fn from_parts(
         entry: Option<NativeEntry>,
+        internal_entry: Option<NativeEntry>,
         text: Vec<u8>,
         executable: Option<CodeBuffer>,
         helper_metadata: HelperMetadataArena,
@@ -80,6 +78,7 @@ impl NativeCode {
     ) -> Self {
         Self {
             entry,
+            internal_entry,
             text: text.into_boxed_slice(),
             executable,
             helper_metadata: helper_metadata.into_boxed_slice(),
@@ -97,6 +96,7 @@ impl NativeCode {
     ) -> NativeCodeCache {
         NativeCodeCache {
             entry: self.entry,
+            internal_entry: self.internal_entry,
             params_len,
             locals_len,
             results_len,
@@ -108,6 +108,7 @@ impl NativeCode {
 #[derive(Debug, Clone, Copy)]
 pub struct NativeCodeCache {
     entry: Option<NativeEntry>,
+    internal_entry: Option<NativeEntry>,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
@@ -117,6 +118,7 @@ impl Default for NativeCodeCache {
     fn default() -> Self {
         Self {
             entry: None,
+            internal_entry: None,
             params_len: 0,
             locals_len: 0,
             results_len: 0,
@@ -139,6 +141,11 @@ impl NativeCodeCache {
     }
 
     #[inline(always)]
+    pub fn internal_entry(&self) -> Option<NativeEntry> {
+        self.internal_entry
+    }
+
+    #[inline(always)]
     pub fn params_len(&self) -> usize {
         self.params_len
     }
@@ -156,6 +163,7 @@ impl NativeCodeCache {
 
 pub fn create_native_code(
     entry: Option<NativeEntry>,
+    internal_entry: Option<NativeEntry>,
     text: Vec<u8>,
     executable: Option<CodeBuffer>,
     helper_metadata: HelperMetadataArena,
@@ -167,6 +175,7 @@ pub fn create_native_code(
 ) -> (NativeCode, NativeCodeCache) {
     let code = NativeCode::from_parts(
         entry,
+        internal_entry,
         text,
         executable,
         helper_metadata,

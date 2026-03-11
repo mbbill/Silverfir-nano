@@ -123,9 +123,10 @@ impl MemInst {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct GlobalInst {
-    pub value: Value,
+    raw: u64,
     pub mutable: bool,
     pub value_type: ValueType,
 }
@@ -133,10 +134,30 @@ pub struct GlobalInst {
 impl GlobalInst {
     pub fn new(value: Value, mutable: bool, value_type: ValueType) -> Self {
         GlobalInst {
-            value,
+            raw: value.to_raw(),
             mutable,
             value_type,
         }
+    }
+
+    #[inline]
+    pub fn value(&self) -> Value {
+        Value::from_raw(self.raw, self.value_type)
+    }
+
+    #[inline]
+    pub fn set_value(&mut self, value: Value) {
+        self.raw = value.to_raw();
+    }
+
+    #[inline]
+    pub fn raw(&self) -> u64 {
+        self.raw
+    }
+
+    #[inline]
+    pub fn set_raw(&mut self, raw: u64) {
+        self.raw = raw;
     }
 }
 

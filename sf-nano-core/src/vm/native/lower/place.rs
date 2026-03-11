@@ -21,7 +21,7 @@ use crate::vm::{
             NativeTerminator,
         },
     },
-    plan::PlannedProgram,
+    plan::{frame::FrameLayoutPlan, hot_local::HotLocalPlan, PlannedProgram},
 };
 
 use super::{
@@ -46,7 +46,13 @@ pub(super) fn place_program(
         .blocks
         .iter()
         .map(|block| {
-            let mut placer = BlockPlacer::new(&mut state, abi, block);
+            let mut placer = BlockPlacer::new(
+                &mut state,
+                abi,
+                planned.frame,
+                planned.hot_locals.clone(),
+                block,
+            );
             let mut ops = Vec::new();
             for inst in &block.ops {
                 placer.place_inst(inst, &mut ops);
@@ -77,14 +83,24 @@ pub(super) fn place_program(
 struct BlockPlacer<'a> {
     state: &'a mut PlacementState,
     abi: NativeAbi,
+    frame: FrameLayoutPlan,
+    hot_locals: Option<HotLocalPlan>,
     remaining_uses: Vec<u32>,
 }
 
 impl<'a> BlockPlacer<'a> {
-    fn new(state: &'a mut PlacementState, abi: NativeAbi, block: &SelectedBlock) -> Self {
+    fn new(
+        state: &'a mut PlacementState,
+        abi: NativeAbi,
+        frame: FrameLayoutPlan,
+        hot_locals: Option<HotLocalPlan>,
+        block: &SelectedBlock,
+    ) -> Self {
         Self {
             state,
             abi,
+            frame,
+            hot_locals,
             remaining_uses: count_uses(block),
         }
     }
@@ -118,6 +134,9 @@ impl<'a> BlockPlacer<'a> {
                         args,
                         results,
                     } => {
+                        if *effect == NativeHelperEffect::ControlTransfer {
+                            self.flush_hot_local_writeback(out);
+                        }
                         self.preserve_helper_clobbers(*effect, out);
                         let args = args
                             .iter()
@@ -146,6 +165,7 @@ impl<'a> BlockPlacer<'a> {
                 args,
                 results,
             } => {
+                self.flush_hot_local_writeback(out);
                 let args = args
                     .iter()
                     .copied()
@@ -171,6 +191,7 @@ impl<'a> BlockPlacer<'a> {
                 args,
                 results,
             } => {
+                self.flush_hot_local_writeback(out);
                 let args = args
                     .iter()
                     .copied()
@@ -198,6 +219,7 @@ impl<'a> BlockPlacer<'a> {
                 args,
                 results,
             } => {
+                self.flush_hot_local_writeback(out);
                 let index = self.consume_value(*index);
                 let args = args
                     .iter()
@@ -443,6 +465,36 @@ impl<'a> BlockPlacer<'a> {
 
     fn preserve_call_clobbers(&mut self, out: &mut Vec<NativeInst>) {
         self.preserve_matching_places(out, clobbered_by_call);
+    }
+
+    fn flush_hot_local_writeback(&mut self, out: &mut Vec<NativeInst>) {
+        let Some(hot_locals) = &self.hot_locals else {
+            return;
+        };
+
+        for (reg, local_idx) in hot_locals.mapping().iter().copied().enumerate() {
+            let Some(local_idx) = local_idx else {
+                continue;
+            };
+
+            let src = NativePlace::Location(NativeLocation::Hot(reg as u8));
+            let dst = NativePlace::Frame(self.frame.local_slot(local_idx as u16));
+            out.push(NativeInst {
+                kind: NativeInstKind::Move(NativeMove {
+                    dst,
+                    src: NativeValue::Place(src),
+                }),
+            });
+
+            for (value_index, &uses) in self.remaining_uses.iter().enumerate() {
+                if uses == 0 {
+                    continue;
+                }
+                if self.state.home(LirValue(value_index as u32)) == Some(src) {
+                    self.state.assign(LirValue(value_index as u32), dst);
+                }
+            }
+        }
     }
 
     fn preserve_helper_clobbers(

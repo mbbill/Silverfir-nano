@@ -33,7 +33,7 @@ pub extern "C" fn impl_global_get(
     let store_ref = ctx_store(ctx);
 
     let g = store_ref.global(idx);
-    let v = value_to_raw(g.value);
+    let v = g.raw();
 
     // Write result to TOS
     unsafe { *p_dst = v };
@@ -62,9 +62,7 @@ pub extern "C" fn impl_global_set(
     let raw = unsafe { *p_src };
     let store_mut = ctx_store_mut(ctx);
     let g = store_mut.global_mut(idx);
-    let ty = g.value_type;
-    let val = raw_to_value(raw, ty);
-    g.value = val;
+    g.set_raw(raw);
 
     pc_fallthrough(pc)
 }

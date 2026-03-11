@@ -1018,15 +1018,24 @@ impl<'a> ReferenceMachine<'a> {
             for (index, value) in args.iter().copied().enumerate() {
                 *callee_fp.add(index) = value;
             }
-            if callee_slots > params_len {
-                core::ptr::write_bytes(callee_fp.add(params_len), 0, callee_slots - params_len);
+            let frame_prefix_slots = callee_frame_size as usize;
+            if frame_prefix_slots > params_len {
+                core::ptr::write_bytes(
+                    callee_fp.add(params_len),
+                    0,
+                    frame_prefix_slots - params_len,
+                );
             }
         }
 
         let saved_code = self.ctx.current_code;
         self.ctx.current_code = code;
         self.ctx.call_depth = self.ctx.call_depth.saturating_add(1);
-        let result = ReferenceMachine::new(self.ctx, callee, callee_fp).run();
+        let result = if unsafe { (&*code).internal_entry().is_some() } {
+            self.invoke_compiled_local(unsafe { &*code }, callee_fp)
+        } else {
+            ReferenceMachine::new(self.ctx, callee, callee_fp).run()
+        };
         self.ctx.current_code = saved_code;
         self.ctx.call_depth = self.ctx.call_depth.saturating_sub(1);
         result?;
@@ -1038,9 +1047,27 @@ impl<'a> ReferenceMachine<'a> {
         Ok(())
     }
 
+    fn invoke_compiled_local(
+        &mut self,
+        code: &NativeCode,
+        callee_fp: *mut u64,
+    ) -> Result<(), WasmError> {
+        let entry = code
+            .entry
+            .ok_or_else(|| WasmError::internal("direct local callee is missing entry".into()))?;
+        unsafe {
+            entry(self.ctx, callee_fp, 0, 0, 0, 0, 0, 0, 0);
+        }
+        self.ctx.refresh_cached_views();
+        if let Some(error) = self.ctx.error.take() {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn read_global(&self, idx: u32) -> Result<u64, WasmError> {
         let store = self.store()?;
-        Ok(store.global(idx as usize).value.to_raw())
+        Ok(store.global(idx as usize).raw())
     }
 
     fn write_global(&mut self, idx: u32, raw: u64) -> Result<(), WasmError> {
@@ -1053,7 +1080,8 @@ impl<'a> ReferenceMachine<'a> {
             return Err(WasmError::invalid("global.set: immutable global".into()));
         }
         let store = self.store_mut()?;
-        store.global_mut(idx as usize).value = Value::from_raw(raw, value_type);
+        debug_assert_eq!(store.global(idx as usize).value_type, value_type);
+        store.global_mut(idx as usize).set_raw(raw);
         Ok(())
     }
 

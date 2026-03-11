@@ -9,14 +9,12 @@ use crate::{
 };
 
 pub mod arm64;
-#[cfg(any(debug_assertions, test))]
 pub mod reference;
 
 pub fn compile_native(
     program: &NativeProgram,
     resolved: &[ResolvedNativeEntry],
 ) -> Result<NativeCode, WasmError> {
-    #[cfg(any(debug_assertions, test))]
     if option_env!("SF_NATIVE_FORCE_REFERENCE").is_some() {
         return reference::compile_program(program, resolved);
     }
@@ -26,15 +24,8 @@ pub fn compile_native(
         return arm64::compile_program(program, resolved);
     }
 
-    #[cfg(all(not(target_arch = "aarch64"), any(debug_assertions, test)))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         return reference::compile_program(program, resolved);
-    }
-
-    #[cfg(all(not(target_arch = "aarch64"), not(any(debug_assertions, test))))]
-    {
-        Err(WasmError::internal(
-            "native backend is unavailable on this architecture in release builds".into(),
-        ))
     }
 }

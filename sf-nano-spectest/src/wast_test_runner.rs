@@ -1231,12 +1231,14 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sf_nano_core::module::Module;
     use sf_nano_core::vm::backend::{set_backend_mode, BackendMode};
+    use sf_nano_core::vm::entities::FunctionInst;
+    use sf_nano_core::vm::value::Value;
     use std::path::PathBuf;
 
-    fn instantiate_first_module(path: &str) -> WastTestRunner {
-        set_backend_mode(BackendMode::Base);
-
+    fn instantiate_first_module_with_backend(path: &str, backend: BackendMode) -> WastTestRunner {
+        set_backend_mode(backend);
         let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -1260,6 +1262,10 @@ mod tests {
         }
 
         runner
+    }
+
+    fn instantiate_first_module(path: &str) -> WastTestRunner {
+        instantiate_first_module_with_backend(path, BackendMode::Base)
     }
 
     fn run_wast_fixture(path: &str) -> TestResult {
@@ -1324,6 +1330,41 @@ mod tests {
         match run_wast_fixture("memory_redundancy.wast") {
             TestResult::Pass => {}
             other => panic!("expected memory_redundancy.wast to pass, got {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn native_if_mixed_operands_uses_direct_arm64() {
+        let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
+        let wasm_bytes = runner
+            .module_bytes
+            .values()
+            .next()
+            .expect("module bytes")
+            .clone();
+        let module = Module::new("debug", &wasm_bytes).expect("parse module");
+        let func_index = module
+            .functions()
+            .iter()
+            .enumerate()
+            .find(|(_, func)| func.export_names().iter().any(|name| name == "as-mixed-operands"))
+            .map(|(index, _)| index)
+            .expect("exported function index");
+        let instance = runner.instances.values_mut().next().expect("instance");
+        let ret = instance
+            .invoke("as-mixed-operands", &[Value::I32(0)])
+            .expect("invoke export");
+        assert_eq!(ret, vec![Value::I32(-3)]);
+
+        match &instance.store().module().functions[func_index] {
+            FunctionInst::Local { spec, .. } => {
+                assert!(
+                    spec.native_cache().internal_entry().is_some(),
+                    "expected direct ARM64 internal entry for as-mixed-operands"
+                );
+            }
+            FunctionInst::External { .. } => panic!("expected local export"),
         }
     }
 }

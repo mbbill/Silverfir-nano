@@ -60,7 +60,7 @@ pub fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, W
                 if global_idx >= module.globals.len() {
                     return Err(WasmError::invalid("global.get: index out of range".into()));
                 }
-                stack.push(module.globals[global_idx].value);
+                stack.push(module.globals[global_idx].value());
             }
             Opcode::I32_ADD => {
                 let r = stack.pop().unwrap();

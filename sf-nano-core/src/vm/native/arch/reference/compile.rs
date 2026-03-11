@@ -31,6 +31,7 @@ pub fn compile_program(
     let _entries = build_final_entry_table(resolved);
     Ok(NativeCode::from_parts(
         Some(shared_native_entry),
+        None,
         Vec::new(),
         None,
         HelperMetadataArena::new(),
