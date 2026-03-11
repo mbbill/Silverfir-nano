@@ -34,6 +34,7 @@ pub fn compile_program(
         None,
         Vec::new(),
         None,
+        Vec::new(),
         None,
         HelperMetadataArena::new(),
         Vec::<DirectCallPatch>::new(),

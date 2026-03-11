@@ -1,11 +1,17 @@
 use alloc::{
     format,
     string::{String, ToString},
+    vec::Vec,
 };
 
 use crate::vm::{
     lir::leaf::LirLeafOp,
-    native::ir::{NativeHelperEffect, NativeHelperInst, NativeInstKind, NativeProgram, NativeTerminator},
+    native::{
+        code::{NativeDebugRegion, NativeDebugRegionKind},
+        ir::{
+            NativeHelperEffect, NativeHelperInst, NativeInstKind, NativeProgram, NativeTerminator,
+        },
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,6 +35,39 @@ pub fn render_symbol_name(module_name: &str, func_idx: u32, segment: &str) -> St
         func_idx,
         sanitize_token(segment),
     )
+}
+
+pub fn render_region_symbol_name(
+    module_name: &str,
+    func_idx: u32,
+    program: &NativeProgram,
+    region: &NativeDebugRegion,
+) -> String {
+    render_symbol_name(
+        module_name,
+        func_idx,
+        &render_region_label(program, region),
+    )
+}
+
+pub fn render_region_label(program: &NativeProgram, region: &NativeDebugRegion) -> String {
+    match &region.kind {
+        NativeDebugRegionKind::SharedEntry => "shared_entry".into(),
+        NativeDebugRegionKind::PublicEntry => "public_entry".into(),
+        NativeDebugRegionKind::InternalEntry => "internal_entry".into(),
+        NativeDebugRegionKind::RootExit => "root_exit".into(),
+        NativeDebugRegionKind::Block { block } => {
+            let Some(block) = program.blocks.get(*block as usize) else {
+                return alloc::format!("b{block:02}");
+            };
+            alloc::format!("b{:02}__{}", block.id.0, summarize_block(block))
+        }
+        NativeDebugRegionKind::CallLocalContinuation {
+            block,
+            inst_index,
+            callee,
+        } => alloc::format!("b{block:02}_call{inst_index}_cont_f{callee}"),
+    }
 }
 
 pub fn summarize_program(program: &NativeProgram) -> NativeSymbolStats {
@@ -120,9 +159,64 @@ fn is_memory_store(op: &LirLeafOp) -> bool {
     )
 }
 
+fn summarize_block(block: &crate::vm::native::ir::NativeBlock) -> String {
+    const MAX_PARTS: usize = 3;
+
+    let mut parts = Vec::new();
+    for inst in block.ops.iter().take(MAX_PARTS) {
+        parts.push(inst_tag(inst));
+    }
+    parts.push(terminator_tag(&block.terminator));
+    sanitize_token(&parts.join("_"))
+}
+
+fn inst_tag(inst: &crate::vm::native::ir::NativeInst) -> String {
+    match &inst.kind {
+        NativeInstKind::Move(_) => "move".into(),
+        NativeInstKind::Leaf { op, .. } => leaf_tag(op),
+        NativeInstKind::Helper(NativeHelperInst::Leaf { effect, op, .. }) => alloc::format!(
+            "{}_{}",
+            match effect {
+                NativeHelperEffect::Transparent => "helper_t",
+                NativeHelperEffect::ControlTransfer => "helper_ct",
+            },
+            leaf_tag(op)
+        ),
+        NativeInstKind::CallExternal { func_idx, .. } => alloc::format!("call_external_f{func_idx}"),
+        NativeInstKind::CallLocal { callee, .. } => alloc::format!("call_local_f{callee}"),
+        NativeInstKind::CallIndirect { type_idx, .. } => alloc::format!("call_indirect_t{type_idx}"),
+    }
+}
+
+fn leaf_tag(op: &LirLeafOp) -> String {
+    let debug = alloc::format!("{:?}", op);
+    let end = debug
+        .find(|c: char| c == ' ' || c == '{')
+        .unwrap_or(debug.len());
+    sanitize_token(&debug[..end]).to_ascii_lowercase()
+}
+
+fn terminator_tag(term: &NativeTerminator) -> String {
+    match term {
+        NativeTerminator::Goto(edge) => alloc::format!("goto_b{}", edge.target.0),
+        NativeTerminator::Branch { .. } => "branch".into(),
+        NativeTerminator::BrTable { .. } => "br_table".into(),
+        NativeTerminator::Return { .. } => "return".into(),
+        NativeTerminator::TrapUnreachable => "trap".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{render_symbol_name, sanitize_token};
+    use super::{render_region_label, render_symbol_name, sanitize_token};
+    use crate::vm::{
+        native::{
+            abi::BlockAbi,
+            code::{NativeDebugRegion, NativeDebugRegionKind},
+            ir::{NativeBlock, NativeBlockId, NativeProgram, NativeTerminator},
+        },
+        plan::group::GroupPlan,
+    };
 
     #[test]
     fn render_symbol_name_sanitizes_tokens() {
@@ -130,6 +224,27 @@ mod tests {
             render_symbol_name("main module", 8, "body path"),
             "jit::main_module::func8::body_path"
         );
+    }
+
+    #[test]
+    fn render_region_label_summarizes_block_shape() {
+        let program = NativeProgram {
+            blocks: alloc::vec![NativeBlock {
+                id: NativeBlockId(3),
+                entry_abi: BlockAbi { tos_width: 0 },
+                ops: alloc::vec![],
+                terminator: NativeTerminator::TrapUnreachable,
+            }],
+            groups: GroupPlan::default(),
+            ..NativeProgram::default()
+        };
+        let region = NativeDebugRegion {
+            offset: 0,
+            len: 4,
+            kind: NativeDebugRegionKind::Block { block: 0 },
+        };
+
+        assert_eq!(render_region_label(&program, &region), "b03__trap");
     }
 
     #[test]

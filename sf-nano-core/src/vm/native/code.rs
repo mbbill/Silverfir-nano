@@ -8,7 +8,7 @@
 //!
 //! It must not own an interpreter-shaped descriptor stream.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use super::{
     code_buf::CodeBuffer,
@@ -33,6 +33,47 @@ pub struct NativeCodeRegion {
     pub len: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeDebugRegionKind {
+    SharedEntry,
+    PublicEntry,
+    InternalEntry,
+    Block {
+        block: u32,
+    },
+    CallLocalContinuation {
+        block: u32,
+        inst_index: u16,
+        callee: u32,
+    },
+    RootExit,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDebugRegion {
+    pub offset: u32,
+    pub len: u32,
+    pub kind: NativeDebugRegionKind,
+}
+
+impl NativeDebugRegion {
+    #[inline]
+    pub fn summary_label(&self) -> String {
+        match self.kind {
+            NativeDebugRegionKind::SharedEntry => "shared_entry".into(),
+            NativeDebugRegionKind::PublicEntry => "public_entry".into(),
+            NativeDebugRegionKind::InternalEntry => "internal_entry".into(),
+            NativeDebugRegionKind::Block { block } => alloc::format!("b{block:02}"),
+            NativeDebugRegionKind::CallLocalContinuation {
+                block,
+                inst_index,
+                callee,
+            } => alloc::format!("b{block:02}_call{inst_index}_cont_f{callee}"),
+            NativeDebugRegionKind::RootExit => "root_exit".into(),
+        }
+    }
+}
+
 /// Native compiled code object.
 ///
 /// This is intentionally *not* a descriptor stream. It owns executable bytes
@@ -46,6 +87,7 @@ pub struct NativeCode {
     pub internal_entry: Option<NativeEntry>,
     pub text: Box<[u8]>,
     pub region: Option<NativeCodeRegion>,
+    pub debug_regions: Box<[NativeDebugRegion]>,
     pub executable: Option<CodeBuffer>,
     pub helper_metadata: Box<[HelperMetadataRecord]>,
     pub direct_call_patches: Box<[DirectCallPatch]>,
@@ -79,11 +121,17 @@ impl NativeCode {
     }
 
     #[inline]
+    pub fn debug_regions(&self) -> &[NativeDebugRegion] {
+        &self.debug_regions
+    }
+
+    #[inline]
     pub fn from_parts(
         entry: Option<NativeEntry>,
         internal_entry: Option<NativeEntry>,
         text: Vec<u8>,
         region: Option<NativeCodeRegion>,
+        debug_regions: Vec<NativeDebugRegion>,
         executable: Option<CodeBuffer>,
         helper_metadata: HelperMetadataArena,
         direct_call_patches: Vec<DirectCallPatch>,
@@ -94,6 +142,7 @@ impl NativeCode {
             internal_entry,
             text: text.into_boxed_slice(),
             region,
+            debug_regions: debug_regions.into_boxed_slice(),
             executable,
             helper_metadata: helper_metadata.into_boxed_slice(),
             direct_call_patches: direct_call_patches.into_boxed_slice(),
@@ -180,6 +229,7 @@ pub fn create_native_code(
     internal_entry: Option<NativeEntry>,
     text: Vec<u8>,
     region: Option<NativeCodeRegion>,
+    debug_regions: Vec<NativeDebugRegion>,
     executable: Option<CodeBuffer>,
     helper_metadata: HelperMetadataArena,
     direct_call_patches: Vec<DirectCallPatch>,
@@ -193,6 +243,7 @@ pub fn create_native_code(
         internal_entry,
         text,
         region,
+        debug_regions,
         executable,
         helper_metadata,
         direct_call_patches,

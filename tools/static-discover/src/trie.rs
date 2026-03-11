@@ -25,7 +25,6 @@ impl TrieNode {
 pub struct PatternTrie {
     pub root: TrieNode,
     pub total_instructions: u64,
-    pub window_size: usize,
 }
 
 /// A candidate pattern extracted from the trie.
@@ -35,11 +34,10 @@ pub struct PatternCandidate {
 }
 
 impl PatternTrie {
-    pub fn new(total_instructions: u64, window_size: usize) -> Self {
+    pub fn new(total_instructions: u64) -> Self {
         Self {
             root: TrieNode::new("", 0),
             total_instructions,
-            window_size,
         }
     }
 

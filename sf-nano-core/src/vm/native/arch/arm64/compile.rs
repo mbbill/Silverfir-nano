@@ -109,6 +109,7 @@ fn install_lowered(
             start: code_start as u32,
             len: code_len,
         }),
+        lowered.debug_regions,
         None,
         HelperMetadataArena::new(),
         lowered.direct_call_patches,

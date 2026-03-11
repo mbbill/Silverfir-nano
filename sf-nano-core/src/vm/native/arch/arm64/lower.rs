@@ -14,7 +14,7 @@ use crate::{
         lir::{leaf::LirLeafOp, slot::FrameSlot},
         native::{
             abi::{NativeLocation, NativePlace, NativeValue},
-            code::DirectCallPatch,
+            code::{DirectCallPatch, NativeDebugRegion, NativeDebugRegionKind},
             ir::{
                 NativeBlockId, NativeBranchCond, NativeCompareKind, NativeEdge, NativeHelperEffect,
                 NativeHelperInst, NativeInst, NativeInstKind, NativeProgram, NativeTerminator,
@@ -100,6 +100,7 @@ pub struct Arm64LoweredFunction {
     pub text: Vec<u8>,
     pub entry_offset: u32,
     pub internal_entry_offset: Option<u32>,
+    pub debug_regions: Vec<NativeDebugRegion>,
     pub local_literal_patches: Vec<Arm64LocalLiteralPatch>,
     pub direct_call_patches: Vec<DirectCallPatch>,
 }
@@ -125,8 +126,14 @@ pub fn lower_arm64(
 pub(crate) fn lower_shared_entry() -> Arm64LoweredFunction {
     let mut emitter = Arm64TextEmitter::new();
     emitter.emit_tail_branch_literal(Arm64Reg::X16, shared_native_entry as usize as u64);
+    let text = emitter.finish();
     Arm64LoweredFunction {
-        text: emitter.finish(),
+        debug_regions: alloc::vec![NativeDebugRegion {
+            offset: 0,
+            len: text.len() as u32,
+            kind: NativeDebugRegionKind::SharedEntry,
+        }],
+        text,
         entry_offset: 0,
         internal_entry_offset: None,
         local_literal_patches: Vec::new(),
@@ -391,9 +398,18 @@ struct Arm64Lowerer<'a> {
     emitter: Arm64TextEmitter,
     block_offsets: Vec<Option<usize>>,
     branch_patches: Vec<BlockBranchPatch>,
+    debug_region_starts: Vec<PendingDebugRegion>,
     local_literal_patches: Vec<Arm64LocalLiteralPatch>,
     direct_call_patches: Vec<DirectCallPatch>,
     current_frame_slots: u32,
+    current_block: Option<NativeBlockId>,
+    current_inst_index: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingDebugRegion {
+    offset: u32,
+    kind: NativeDebugRegionKind,
 }
 
 impl<'a> Arm64Lowerer<'a> {
@@ -432,26 +448,35 @@ impl<'a> Arm64Lowerer<'a> {
             emitter: Arm64TextEmitter::new(),
             block_offsets: alloc::vec![None; program.blocks.len()],
             branch_patches: Vec::new(),
+            debug_region_starts: Vec::new(),
             local_literal_patches: Vec::new(),
             direct_call_patches: Vec::new(),
             current_frame_slots: max_slot,
+            current_block: None,
+            current_inst_index: 0,
         })
     }
 
     fn lower(mut self) -> Result<Arm64LoweredFunction, WasmError> {
         let entry_offset = self.emitter.len();
+        self.push_debug_region(NativeDebugRegionKind::PublicEntry);
         let root_exit_literal = self.emit_public_entry()?;
         let internal_entry_offset = self.emitter.len();
+        self.push_debug_region(NativeDebugRegionKind::InternalEntry);
         self.emit_branch_to_block(self.program.entry);
 
         for block in &self.program.blocks {
             self.block_offsets[block.id.as_usize()] = Some(self.emitter.len());
-            for inst in &block.ops {
+            self.current_block = Some(block.id);
+            self.push_debug_region(NativeDebugRegionKind::Block { block: block.id.0 });
+            for (inst_index, inst) in block.ops.iter().enumerate() {
+                self.current_inst_index = inst_index as u16;
                 self.emit_inst(inst)?;
             }
             self.emit_terminator(&block.terminator)?;
         }
 
+        self.push_debug_region(NativeDebugRegionKind::RootExit);
         let root_exit_offset = self.emit_root_exit();
         self.local_literal_patches.push(Arm64LocalLiteralPatch {
             literal_offset: root_exit_literal as u32,
@@ -459,13 +484,48 @@ impl<'a> Arm64Lowerer<'a> {
         });
         self.patch_block_branches()?;
 
+        let debug_regions = self.finalize_debug_regions();
         Ok(Arm64LoweredFunction {
             text: self.emitter.finish(),
             entry_offset: entry_offset as u32,
             internal_entry_offset: Some(internal_entry_offset as u32),
+            debug_regions,
             local_literal_patches: self.local_literal_patches,
             direct_call_patches: self.direct_call_patches,
         })
+    }
+
+    fn push_debug_region(&mut self, kind: NativeDebugRegionKind) {
+        let offset = self.emitter.len() as u32;
+        if self
+            .debug_region_starts
+            .last()
+            .is_some_and(|region| region.offset == offset && region.kind == kind)
+        {
+            return;
+        }
+        self.debug_region_starts
+            .push(PendingDebugRegion { offset, kind });
+    }
+
+    fn finalize_debug_regions(&self) -> Vec<NativeDebugRegion> {
+        let mut regions = Vec::with_capacity(self.debug_region_starts.len());
+        let text_len = self.emitter.len() as u32;
+        for (index, region) in self.debug_region_starts.iter().enumerate() {
+            let end = self
+                .debug_region_starts
+                .get(index + 1)
+                .map(|next| next.offset)
+                .unwrap_or(text_len);
+            if end > region.offset {
+                regions.push(NativeDebugRegion {
+                    offset: region.offset,
+                    len: end - region.offset,
+                    kind: region.kind.clone(),
+                });
+            }
+        }
+        regions
     }
 
     fn emit_public_entry(&mut self) -> Result<usize, WasmError> {
@@ -1666,6 +1726,14 @@ impl<'a> Arm64Lowerer<'a> {
         let stack_overflow_label = self.emit_exhaustion_stub(0);
         let call_depth_label = self.emit_exhaustion_stub(1);
         let continuation_offset = self.emitter.len();
+        let block = self
+            .current_block
+            .ok_or_else(|| WasmError::internal("call_local continuation emitted outside block".into()))?;
+        self.push_debug_region(NativeDebugRegionKind::CallLocalContinuation {
+            block: block.0,
+            inst_index: self.current_inst_index,
+            callee,
+        });
         let refresh_cached_views = self
             .callee_may_change_views
             .map(|flags| flags.get(callee as usize).copied().unwrap_or(true))

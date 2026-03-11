@@ -4,10 +4,12 @@ use alloc::{vec, vec::Vec};
 
 use crate::error::WasmError;
 use crate::vm::{
+    lir::ir::LirProgram,
     lir::leaf::LirLeafOp,
     native::{
     arch,
     code::NativeCode,
+    dump::{self, NativeDumpFunction},
     ir::{NativeHelperInst, NativeInstKind, NativeProgram},
     jitdump,
     lower,
@@ -45,6 +47,7 @@ struct PendingNativeFunction {
     params_len: u16,
     locals_len: u16,
     results_len: u16,
+    lir: LirProgram,
     ir: NativeProgram,
     resolved: Vec<ResolvedNativeEntry>,
 }
@@ -79,6 +82,9 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
                 .unwrap_or(true)
         });
     if all_compiled {
+        if dump::dump_enabled() {
+            dump::write_module_dump(module, &[])?;
+        }
         return Ok(());
     }
 
@@ -139,6 +145,7 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
             params_len,
             locals_len,
             results_len,
+            lir: bundle.lir,
             resolved: resolve::resolve_native(&ir),
             ir,
         });
@@ -194,6 +201,14 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
     finalize_arm64_direct_calls(module)?;
 
     record_native_symbols(module);
+    let dump_functions = pending
+        .iter()
+        .map(|pending_func| NativeDumpFunction {
+            func_idx: pending_func.func_index,
+            lir: &pending_func.lir,
+        })
+        .collect::<Vec<_>>();
+    dump::write_module_dump(module, &dump_functions)?;
 
     Ok(())
 }
@@ -454,45 +469,35 @@ fn record_native_symbols(module: &crate::vm::entities::ModuleInst) {
         let len = region.len as usize;
 
         let stats = symbols::summarize_program(program);
-        let base_addr = code_start as usize;
-        let internal_offset = code
-            .internal_entry()
-            .map(|entry| entry as usize)
-            .and_then(|entry_addr| entry_addr.checked_sub(base_addr))
-            .filter(|offset| *offset > 0 && *offset < len);
-
-        if let Some(offset) = internal_offset {
-            record_native_symbol_segment(
-                code_start,
-                0,
-                offset,
-                &module.name,
-                func_index as u32,
-                "entry",
-                true,
-                stats,
-            );
-            record_native_symbol_segment(
-                code_start,
-                offset,
-                len - offset,
-                &module.name,
-                func_index as u32,
-                "body",
-                true,
-                stats,
-            );
-        } else {
+        if code.debug_regions().is_empty() {
             record_native_symbol_segment(
                 code_start,
                 0,
                 len,
                 &module.name,
                 func_index as u32,
+                &symbols::render_symbol_name(&module.name, func_index as u32, "function"),
                 "function",
                 false,
                 stats,
             );
+        } else {
+            for region in code.debug_regions() {
+                let symbol_name =
+                    symbols::render_region_symbol_name(&module.name, func_index as u32, program, region);
+                let segment = symbols::render_region_label(program, region);
+                record_native_symbol_segment(
+                    code_start,
+                    region.offset as usize,
+                    region.len as usize,
+                    &module.name,
+                    func_index as u32,
+                    &symbol_name,
+                    &segment,
+                    code.internal_entry().is_some(),
+                    stats,
+                );
+            }
         }
     }
 }
@@ -503,6 +508,7 @@ fn record_native_symbol_segment(
     len: usize,
     module_name: &str,
     func_idx: u32,
+    symbol_name: &str,
     segment: &str,
     direct: bool,
     stats: symbols::NativeSymbolStats,
@@ -513,7 +519,6 @@ fn record_native_symbol_segment(
 
     let code_start = unsafe { base.add(offset) };
     let code_bytes = unsafe { core::slice::from_raw_parts(code_start, len) };
-    let symbol_name = symbols::render_symbol_name(module_name, func_idx, segment);
 
     map::record_function(
         code_start,
@@ -524,5 +529,5 @@ fn record_native_symbol_segment(
         direct,
         stats,
     );
-    jitdump::record_function(code_start, code_bytes, &symbol_name);
+    jitdump::record_function(code_start, code_bytes, symbol_name);
 }

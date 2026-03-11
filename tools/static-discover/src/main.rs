@@ -780,7 +780,7 @@ fn main() {
 
     // Build pattern trie
     eprintln!("Building pattern trie...");
-    let mut trie = PatternTrie::new(merged.total, args.window_size);
+    let mut trie = PatternTrie::new(merged.total);
     for (key, count) in &merged.counts {
         if key.len() >= 2 {
             let refs: Vec<&str> = key.iter().map(|s| s.as_str()).collect();

@@ -124,7 +124,6 @@ pub fn verify_preserve_none_abi() {
         }
     }
 
-    println!("cargo:warning=preserve_none ABI verified: register mapping matches Reg enum");
 }
 
 /// Parse a `str xN, [...]` instruction and return the source register name.

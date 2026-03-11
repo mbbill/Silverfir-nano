@@ -14,6 +14,7 @@ pub mod arch;
 pub mod code;
 pub mod code_buf;
 pub mod compile;
+mod dump;
 pub mod helper;
 pub mod ir;
 mod jitdump;
