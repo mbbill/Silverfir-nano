@@ -1,7 +1,7 @@
 // Allow #[inline(always)] on #[no_mangle] functions - needed for cross-language LTO
 #![allow(unused_attributes)]
 
-//! Handler implementations for the fast interpreter.
+//! Handler implementations for the interpreter.
 //!
 //! This module provides the centralized handler declarations and organizes
 //! handler implementations by category.
@@ -38,7 +38,7 @@ pub type NextHandler = unsafe extern "C" fn();
 
 #[allow(improper_ctypes)]
 extern "C" {
-    /// C trampoline entry point for fast interpreter.
+    /// C trampoline entry point for the interpreter.
     /// Declared here for use by call handlers.
     /// The nh parameter is the preloaded handler for pc+1, computed by the caller.
     pub fn run_trampoline(
@@ -56,7 +56,7 @@ extern "C" {
     );
 }
 
-/// Handler function pointer type used by the fast interpreter.
+/// Handler function pointer type used by the interpreter.
 /// Matches the C ABI signature in vm_trampoline.c.
 /// The nh parameter carries a preloaded handler for next-handler dispatch.
 pub type OpHandler = unsafe extern "C" fn(

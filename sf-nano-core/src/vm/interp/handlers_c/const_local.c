@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Local and constant operations
+// Interpreter C handler implementations - Local and constant operations
 // Implementations use SEM_* macros from semantics.h (single source of truth).
 //
 // This file is #included in vm_trampoline.c after semantics.h.
@@ -70,10 +70,14 @@ FORCE_INLINE struct Instruction* impl_f64_const(IMPL_PARAMS_POP0_PUSH1) {
 }
 
 // =============================================================================
-// Combined Local Register Init (saves 2 dispatches vs 3 separate init_l*)
+// Reserved Hot-Local Register Operations
 // =============================================================================
+//
+// These handlers are retained for the future hot-local-register path. The live
+// base interpreter currently keeps hot locals in frame slots instead of using
+// l0/l1/l2 directly.
 
-// init_locals: function prologue — perform all 3 hot local swaps+fills in one dispatch
+// init_locals: historical prologue helper for swap-based hot-local setup
 FORCE_INLINE struct Instruction* impl_init_locals(IMPL_PARAMS_BASE) {
     (void)ctx;
     uint16_t K0 = init_locals_decode_hot_local_idx_0(pc);
@@ -91,7 +95,7 @@ FORCE_INLINE struct Instruction* impl_init_locals(IMPL_PARAMS_BASE) {
 }
 
 // =============================================================================
-// L0 Local Register Cache Operations
+// L0 reserved hot-local register operations
 // =============================================================================
 
 // local_get_l0: push l0 to TOS
@@ -119,7 +123,7 @@ FORCE_INLINE struct Instruction* impl_local_tee_l0(IMPL_PARAMS_POP1_PUSH1) {
 }
 
 // =============================================================================
-// L1 Local Register Cache Operations
+// L1 reserved hot-local register operations
 // =============================================================================
 
 // local_get_l1: push l1 to TOS
@@ -147,7 +151,7 @@ FORCE_INLINE struct Instruction* impl_local_tee_l1(IMPL_PARAMS_POP1_PUSH1) {
 }
 
 // =============================================================================
-// L2 Local Register Cache Operations
+// L2 reserved hot-local register operations
 // =============================================================================
 
 // local_get_l2: push l2 to TOS

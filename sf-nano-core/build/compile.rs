@@ -31,7 +31,7 @@ pub fn verify_preserve_none_abi() {
         return;
     }
 
-    let c_root = "src/vm/interp/fast/trampoline";
+    let c_root = "src/vm/interp/trampoline";
     let src = format!("{}/verify_abi.c", c_root);
     if fs::metadata(&src).is_err() {
         println!(
@@ -151,8 +151,8 @@ fn parse_str_reg(line: &str) -> Option<String> {
 
 /// Compile the fast interpreter trampoline
 pub fn compile_fast_trampoline(out_dir: &str) {
-    let c_root = "src/vm/interp/fast/trampoline";
-    let c_handlers_root = "src/vm/interp/fast/handlers_c";
+    let c_root = "src/vm/interp/trampoline";
+    let c_handlers_root = "src/vm/interp/handlers_c";
     let fast_trampoline_src = format!("{}/vm_trampoline.c", c_root);
 
     if fs::metadata(&fast_trampoline_src).is_err() {

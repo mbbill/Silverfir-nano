@@ -1,4 +1,4 @@
-//! Fast compiled code object.
+//! Interpreter compiled code object.
 
 use alloc::boxed::Box;
 
@@ -42,12 +42,16 @@ impl FastCode {
         params_len: usize,
         locals_len: usize,
         results_len: usize,
+        frame_size: usize,
+        stack_slots_used: usize,
     ) -> FastCodeCache {
         FastCodeCache {
             entry: self.entry_ptr(),
             params_len,
             locals_len,
             results_len,
+            frame_size,
+            stack_slots_used,
         }
     }
 }
@@ -58,6 +62,8 @@ pub struct FastCodeCache {
     params_len: usize,
     locals_len: usize,
     results_len: usize,
+    frame_size: usize,
+    stack_slots_used: usize,
 }
 
 impl Default for FastCodeCache {
@@ -67,6 +73,8 @@ impl Default for FastCodeCache {
             params_len: 0,
             locals_len: 0,
             results_len: 0,
+            frame_size: 0,
+            stack_slots_used: 0,
         }
     }
 }
@@ -99,6 +107,16 @@ impl FastCodeCache {
     pub fn results_len(&self) -> usize {
         self.results_len
     }
+
+    #[inline(always)]
+    pub fn frame_size(&self) -> usize {
+        self.frame_size
+    }
+
+    #[inline(always)]
+    pub fn stack_slots_used(&self) -> usize {
+        self.stack_slots_used
+    }
 }
 
 pub fn create_fast_code(
@@ -106,8 +124,16 @@ pub fn create_fast_code(
     params_len: usize,
     locals_len: usize,
     results_len: usize,
+    frame_size: usize,
+    stack_slots_used: usize,
 ) -> (FastCode, FastCodeCache) {
     let fast_code = FastCode { instructions: code };
-    let cache = fast_code.build_cache(params_len, locals_len, results_len);
+    let cache = fast_code.build_cache(
+        params_len,
+        locals_len,
+        results_len,
+        frame_size,
+        stack_slots_used,
+    );
     (fast_code, cache)
 }

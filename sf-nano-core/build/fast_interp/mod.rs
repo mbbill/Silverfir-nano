@@ -25,7 +25,7 @@ use types::{FusedFile, HandlersFile};
 
 /// Generate all fast interpreter code from handlers.toml + handlers_fused.toml
 pub fn generate(out_dir: &PathBuf) {
-    let fast_dir = "src/vm/interp/fast";
+    let fast_dir = "src/vm/interp";
     let handlers_toml_path = format!("{}/handlers.toml", fast_dir);
     let fused_toml_path = format!("{}/handlers_fused.toml", fast_dir);
 

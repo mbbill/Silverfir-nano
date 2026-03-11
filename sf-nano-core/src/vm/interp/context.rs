@@ -6,7 +6,7 @@ use crate::error::WasmError;
 use crate::vm::store::Store;
 use crate::vm::{entities::ModuleInst, interp::instruction::Instruction};
 
-/// C-visible hot prefix of the fast interpreter context.
+/// C-visible hot prefix of the interpreter context.
 ///
 /// SAFETY: Field order, offsets, and size must match `vm_trampoline.h` `CtxHot`.
 #[repr(C)]

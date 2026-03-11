@@ -13,7 +13,6 @@ use crate::error::WasmError;
 use crate::vm::debug::function_trace;
 use crate::vm::entities::{Caller, MemInst};
 use crate::vm::interp::encoding::{call_external, call_indirect, call_ref};
-use crate::vm::interp::frame_layout;
 
 /// Read a value from an explicit fp-relative slot.
 #[inline(always)]
@@ -83,17 +82,18 @@ fn enter_unified_callee(
     let cache = spec.fast_cache();
     let entry = cache.entry();
 
-    // 3. Get callee function layout
+    // 3. Get callee function layout from compiled metadata so runtime frame
+    // setup stays aligned with the planner's explicit frame size.
     let func_type = spec.func_type();
     let params_count = func_type.params().len();
-    let locals_count = spec.locals().len();
-    let frame_size = frame_layout::frame_prefix_size(params_count + locals_count);
+    let frame_size = cache.frame_size();
+    let stack_slots_used = cache.stack_slots_used();
 
     // 4. Compute callee_fp
     let callee_fp = unsafe { (*fp_pp).add(delta) };
 
     // 5. Stack overflow check (frame + 3 metadata slots)
-    let new_stack_top = unsafe { callee_fp.add(frame_size + 3) };
+    let new_stack_top = unsafe { callee_fp.add(stack_slots_used) };
     if new_stack_top > unsafe { (*ctx).hot.stack_end } {
         return Err(WasmError::exhaustion("stack overflow".into()));
     }

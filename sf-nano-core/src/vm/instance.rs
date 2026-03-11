@@ -15,7 +15,7 @@ use crate::vm::entities::{
     DataInst, ElementInst, ExternalFn, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
-use crate::vm::interp::fast::precompile;
+use crate::vm::interp::precompile;
 use crate::vm::runtime;
 use crate::vm::store::Store;
 use crate::vm::value::{RefHandle, Value};

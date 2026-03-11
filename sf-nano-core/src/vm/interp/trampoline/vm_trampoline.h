@@ -77,9 +77,9 @@ typedef void (*OpHandler)(
     struct Ctx* ctx,
     struct Instruction* pc,
     uint64_t* fp,
-    uint64_t l0,               // Local register cache (fp[0] cached)
-    uint64_t l1,               // Local register cache (fp[1] cached)
-    uint64_t l2,               // Local register cache (fp[2] cached)
+    uint64_t l0,               // Reserved hot-local register lane 0
+    uint64_t l1,               // Reserved hot-local register lane 1
+    uint64_t l2,               // Reserved hot-local register lane 2
     uint64_t t0,               // TOS register 0 (by value)
     uint64_t t1,               // TOS register 1 (by value)
     uint64_t t2,               // TOS register 2 (by value)

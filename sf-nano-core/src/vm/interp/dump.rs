@@ -1,8 +1,8 @@
-//! Fast-specific debug appendix to the shared LIR dump.
+//! Interpreter-specific debug appendix to the shared LIR dump.
 
-use crate::vm::interp::resolved::ResolvedFastInst;
+use crate::vm::interp::resolved::ResolvedInterpInst;
 
-pub fn dump_fast_resolution(_resolved: &[ResolvedFastInst]) {
-    // TODO: Append fast/base/fusion-specific resolved information next to the
+pub fn dump_interpreter_resolution(_resolved: &[ResolvedInterpInst]) {
+    // TODO: Append interpreter-specific resolved information next to the
     // shared LIR dump without owning the shared dump pipeline.
 }

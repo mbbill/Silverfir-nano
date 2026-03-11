@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Float operations
+// Interpreter C handler implementations - Float operations
 // Implementations use SEM_* macros from semantics.h (single source of truth).
 //
 // This file is #included in vm_trampoline.c after semantics.h.

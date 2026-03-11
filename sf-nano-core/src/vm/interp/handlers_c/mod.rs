@@ -1,3 +1,1 @@
-//! Legacy C handler material kept under the fast interpreter family.
-
-// TODO: Preserve only what the fast interpreter family still needs.
+//! C handler implementations used by the live interpreter.

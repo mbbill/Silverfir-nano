@@ -14,7 +14,7 @@ use crate::constants;
 use crate::error::WasmError;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::ValueType;
-use crate::vm::interp::fast::fast_code::{FastCode, FastCodeCache};
+use crate::vm::interp::fast_code::{FastCode, FastCodeCache};
 #[cfg(feature = "micro-jit")]
 use crate::vm::native::code::{NativeCode, NativeCodeCache};
 use core::cell::UnsafeCell;

@@ -74,52 +74,40 @@ pub fn frame_write(fp_pp: *mut *mut u64, offset: usize, value: u64) {
     }
 }
 
-/// Spill l0 register to fp[0] before frame changes (calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l0_spill(fp_pp: *mut *mut u64, p_l0: *mut u64) {
-    unsafe {
-        *(*fp_pp) = *p_l0;
-    }
+pub fn l0_spill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {
 }
 
-/// Fill l0 register from fp[0] after frame restoration (returns, external calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l0_fill(fp_pp: *mut *mut u64, p_l0: *mut u64) {
-    unsafe {
-        *p_l0 = *(*fp_pp);
-    }
+pub fn l0_fill(_fp_pp: *mut *mut u64, _p_l0: *mut u64) {
 }
 
-/// Spill l1 register to fp[1] before frame changes (calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l1_spill(fp_pp: *mut *mut u64, p_l1: *mut u64) {
-    unsafe {
-        *((*fp_pp).add(1)) = *p_l1;
-    }
+pub fn l1_spill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {
 }
 
-/// Fill l1 register from fp[1] after frame restoration (returns, external calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l1_fill(fp_pp: *mut *mut u64, p_l1: *mut u64) {
-    unsafe {
-        *p_l1 = *((*fp_pp).add(1));
-    }
+pub fn l1_fill(_fp_pp: *mut *mut u64, _p_l1: *mut u64) {
 }
 
-/// Spill l2 register to fp[2] before frame changes (calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l2_spill(fp_pp: *mut *mut u64, p_l2: *mut u64) {
-    unsafe {
-        *((*fp_pp).add(2)) = *p_l2;
-    }
+pub fn l2_spill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {
 }
 
-/// Fill l2 register from fp[2] after frame restoration (returns, external calls).
+/// The live non-fused interpreter path does not materialize dedicated
+/// hot-local registers, so these become no-ops.
 #[inline(always)]
-pub fn l2_fill(fp_pp: *mut *mut u64, p_l2: *mut u64) {
-    unsafe {
-        *p_l2 = *((*fp_pp).add(2));
-    }
+pub fn l2_fill(_fp_pp: *mut *mut u64, _p_l2: *mut u64) {
 }
 
 // =============================================================================

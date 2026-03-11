@@ -1,5 +1,5 @@
-# Fast Interpreter Handler Definitions
-# =====================================
+# Interpreter Handler Definitions
+# ===============================
 # Single source of truth for handlers and their encodings.
 #
 # Instruction layout: handler(8B) | imm0(8B) | imm1(8B) | imm2(8B) = 32B

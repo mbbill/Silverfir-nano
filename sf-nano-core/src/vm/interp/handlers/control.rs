@@ -15,7 +15,7 @@ use crate::error::WasmError;
 
 /// Terminal instruction handler - breaks the tail-call chain.
 ///
-/// This mirrors xir_term: it simply returns NULL to exit the interpreter.
+/// It simply returns `NULL` to exit the trampoline dispatch loop.
 /// All frame management is handled by impl_return; impl_term just terminates.
 /// Error state is stored in ctx.error and checked after trampoline returns.
 #[no_mangle]

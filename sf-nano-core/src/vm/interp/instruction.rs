@@ -1,4 +1,4 @@
-//! Fast-interpreter instruction format.
+//! Interpreter instruction format.
 //!
 //! This is interpreter-specific and must not leak into `native/`.
 
@@ -6,7 +6,7 @@ use alloc::{boxed::Box, vec::Vec};
 
 use crate::vm::interp::handlers::OpHandler;
 
-/// Fast-interpreter instruction record.
+/// Interpreter instruction record.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Instruction {

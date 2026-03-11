@@ -1,4 +1,4 @@
-//! Fast interpreter runtime entry point.
+//! Interpreter runtime entry point.
 
 use alloc::string::ToString;
 use alloc::vec;
@@ -120,6 +120,7 @@ pub fn internal_eval(
         crate::vm::interp::precompile::precompile_module_two_pass(store)?;
     }
 
+    let cache = spec.fast_cache();
     let ft = spec.func_type();
     let params_len = ft.params().len();
     if sp_offset < params_len {
@@ -128,9 +129,12 @@ pub fn internal_eval(
     let fp_index = sp_offset - params_len;
     let fp = unsafe { stack_base.add(fp_index) };
 
-    let locals_len = spec.locals().len();
-    let logical_frame_size = params_len + locals_len;
-    let frame_size = super::frame_layout::frame_prefix_size(logical_frame_size);
+    let frame_size = cache.frame_size();
+    let required_slots = cache.stack_slots_used();
+    let new_stack_top = unsafe { fp.add(required_slots) };
+    if new_stack_top > stack_end {
+        return Err(WasmError::exhaustion("stack overflow".into()));
+    }
     if frame_size > params_len {
         unsafe { core::ptr::write_bytes(fp.add(params_len), 0, frame_size - params_len) };
     }
@@ -158,10 +162,10 @@ pub fn internal_eval(
         *fp.add(frame_size + 2) = 0;
     }
 
-    let entry = spec.fast_cache().entry();
+    let entry = cache.entry();
     if entry.is_null() {
         return Err(WasmError::invalid(
-            "fast backend function is not compiled yet".into(),
+            "interpreter function is not compiled yet".into(),
         ));
     }
 

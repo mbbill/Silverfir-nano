@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Memory load/store operations
+// Interpreter C handler implementations - Memory load/store operations
 // Implementations use SEM_* macros from semantics.h (single source of truth).
 //
 // NOTE: These handlers ONLY support memory index 0 (the common fast path).

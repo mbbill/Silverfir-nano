@@ -9,15 +9,18 @@
 //! 6. finalize code / metadata
 //!
 //! This file must not bypass planning by rediscovering groups in the backend.
+//! It also owns the planning inputs it passes into the shared frontend.
 
 use crate::error::WasmError;
 use crate::vm::{
-    backend::{BackendKind, BackendMode},
+    backend::{BackendConfig, BackendKind, BackendMode},
     entities::ModuleInst,
     lir::legacy::lower::{self, LirProgram},
     plan::{
-        build_planned_program, config::PlanConfig, policy::PlanPolicy, PlannedProgram,
-        PlanningInput,
+        build_planned_program,
+        config::PlanConfig,
+        policy::{GroupingMode, PlanPolicy},
+        PlannedProgram, PlanningInput,
     },
     store::Store,
     wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
@@ -33,17 +36,33 @@ pub struct NativeBuildBundle {
     pub lir: LirProgram,
 }
 
+#[inline]
+pub const fn native_backend_config() -> BackendConfig {
+    BackendConfig {
+        ctx_register_count: 1,
+        fp_register_count: 1,
+        tmp_register_count: 4,
+        hot_local_count: 3,
+        tos_register_count: 4,
+    }
+}
+
+#[inline]
+pub const fn native_plan_policy() -> PlanPolicy {
+    PlanPolicy::new(BackendKind::Native, GroupingMode::Maximal)
+}
+
 pub fn build_native_function(
     code: &[u8],
     compile: CompileContext<'_>,
 ) -> Result<NativeBuildBundle, WasmError> {
     let backend = BackendKind::Native;
-    let config = PlanConfig::for_backend(backend, backend.default_config());
+    let config = PlanConfig::for_backend(backend, native_backend_config());
     let semantic = decode::decode_to_semantic_ir(code, compile)?;
     let planned = build_planned_program(
         PlanningInput {
             config,
-            policy: PlanPolicy::for_backend(backend),
+            policy: native_plan_policy(),
         },
         &semantic,
     );

@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Control flow operations
+// Interpreter C handler implementations - Control flow operations
 // These are FORCE_INLINE impl_* functions that get inlined into the generated wrappers.
 //
 // NOTE: Only `return` remains in Rust (needs call stack access).

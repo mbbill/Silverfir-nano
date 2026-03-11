@@ -1,9 +1,9 @@
-//! Fast-interpreter resolved instruction stream.
+//! Interpreter resolved instruction stream.
 
 use crate::vm::interp::instruction::Instruction;
 
-/// Fast-interpreter resolved instruction.
+/// Interpreter resolved instruction.
 #[derive(Clone, Debug)]
-pub struct ResolvedFastInst {
+pub struct ResolvedInterpInst {
     pub inst: Instruction,
 }

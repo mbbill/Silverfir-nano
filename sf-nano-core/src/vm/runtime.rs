@@ -21,5 +21,5 @@ pub fn eval(
         }
     }
 
-    crate::vm::interp::fast::runtime::eval(func_inst, store, args)
+    crate::vm::interp::runtime::eval(func_inst, store, args)
 }

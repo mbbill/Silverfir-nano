@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Call operations
+// Interpreter C handler implementations - Call operations
 // These are FORCE_INLINE impl_* functions that get inlined into the generated wrappers.
 //
 // UNIFIED STACK DESIGN:

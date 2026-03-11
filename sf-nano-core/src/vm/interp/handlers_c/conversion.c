@@ -1,4 +1,4 @@
-// Fast interpreter C handler implementations - Conversion operations
+// Interpreter C handler implementations - Conversion operations
 // Implementations use SEM_* macros from semantics.h where applicable.
 // Trapping truncation and saturating truncation keep inline logic
 // (too complex for single-expression macros).

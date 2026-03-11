@@ -1,13 +1,8 @@
-//! Backend selection and backend-owned planning policy.
+//! Backend selection.
 //!
-//! This module decides:
-//! - which backend is active
-//! - which planning policy applies
-//! - which grouping policy applies
-//!
-//! It must not expose interpreter-era calling-convention details.
-
-use crate::vm::plan::policy::GroupingMode;
+//! This module carries only backend identity and runtime backend selection.
+//! Backend-specific planning configuration belongs to the backend
+//! implementation, not to shared VM code.
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// High-level execution backend.
@@ -20,7 +15,9 @@ pub enum BackendKind {
 
 /// Planning-time backend configuration.
 ///
-/// This is the place where backend-specific register budgets are declared.
+/// Shared shape for backend-specific register budgets.
+/// The values themselves must be chosen by the backend implementation.
+///
 /// Different layers consume different subsets of this budget:
 /// - planning/LIR shape around TOS lanes and hot locals
 /// - native lowering later consumes temps plus reserved VM roles like ctx/fp
@@ -35,12 +32,6 @@ pub struct BackendConfig {
     pub tos_register_count: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BackendCapabilities {
-    pub grouping: GroupingMode,
-    pub direct_execution: bool,
-}
-
 impl BackendKind {
     #[inline]
     pub const fn as_str(self) -> &'static str {
@@ -48,35 +39,6 @@ impl BackendKind {
             Self::Base => "base",
             Self::Fusion => "fusion",
             Self::Native => "native",
-        }
-    }
-
-    pub const fn default_config(self) -> BackendConfig {
-        match self {
-            Self::Base | Self::Fusion | Self::Native => BackendConfig {
-                ctx_register_count: 1,
-                fp_register_count: 1,
-                tmp_register_count: 4,
-                hot_local_count: 3,
-                tos_register_count: 4,
-            },
-        }
-    }
-
-    pub const fn capabilities(self) -> BackendCapabilities {
-        match self {
-            Self::Base => BackendCapabilities {
-                grouping: GroupingMode::Ignore,
-                direct_execution: false,
-            },
-            Self::Fusion => BackendCapabilities {
-                grouping: GroupingMode::PatternDriven,
-                direct_execution: false,
-            },
-            Self::Native => BackendCapabilities {
-                grouping: GroupingMode::Maximal,
-                direct_execution: true,
-            },
         }
     }
 }

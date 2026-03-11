@@ -1,8 +1,8 @@
 // =============================================================================
-// Fast Interpreter Trampoline
+// Interpreter Trampoline
 // =============================================================================
 //
-// This file implements the tail-call dispatch loop for the fast interpreter.
+// This file implements the tail-call dispatch loop for the live interpreter.
 // It uses the preserve_none calling convention for efficient register usage.
 //
 // Architecture:

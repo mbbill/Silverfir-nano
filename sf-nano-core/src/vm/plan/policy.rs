@@ -20,8 +20,7 @@ pub struct PlanPolicy {
 
 impl PlanPolicy {
     #[inline]
-    pub const fn for_backend(backend: BackendKind) -> Self {
-        let grouping = backend.capabilities().grouping;
+    pub const fn new(backend: BackendKind, grouping: GroupingMode) -> Self {
         Self { backend, grouping }
     }
 }
