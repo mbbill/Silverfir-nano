@@ -17,6 +17,7 @@ use crate::vm::{
 };
 
 use super::{
+    arch::reference,
     code::NativeCode,
     context::NativeContext,
     precompile,
@@ -138,7 +139,7 @@ fn run_local_function(
     let program = code
         .program()
         .ok_or_else(|| WasmError::internal("native code is missing finalized program".into()))?;
-    let frame_slots_used = super::executor::frame_slots_used(program);
+    let frame_slots_used = reference::frame_slots_used(program);
     let frame_end = unsafe { fp.add(frame_slots_used) };
     if frame_end > stack_end {
         return Err(WasmError::exhaustion("stack overflow".into()));

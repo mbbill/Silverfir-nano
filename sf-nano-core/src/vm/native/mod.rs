@@ -9,22 +9,19 @@
 //! - legacy LIR/window semantics
 //! - ISA-specific semantic optimization
 
+pub mod abi;
 pub mod arch;
 pub mod bridge;
 pub mod build;
 pub mod code;
 pub mod code_buf;
 pub mod context;
-pub mod dump;
 pub mod entry;
-pub mod executor;
 pub mod finalizer;
 pub mod helper;
 pub mod helper_meta;
 pub mod ir;
-pub mod jitdump;
 pub mod lower;
-pub mod map;
 pub mod precompile;
 pub mod resolve;
 pub mod runtime;

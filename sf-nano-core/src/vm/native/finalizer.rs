@@ -11,8 +11,8 @@ use alloc::vec::Vec;
 use crate::error::WasmError;
 
 use super::{
+    arch::reference,
     code::{DirectCallPatch, NativeCode},
-    executor,
     entry::NativeEntry,
     helper_meta::{ColdHelperKind, HelperMetadataArena},
     ir::{NativeBlockId, NativeInstKind, NativeProgram, NativeReg, NativeTerminator},
@@ -52,7 +52,7 @@ pub fn finalize_native(
 
 #[inline]
 fn shared_native_entry() -> NativeEntry {
-    executor::shared_native_entry
+    reference::shared_native_entry
 }
 
 fn build_final_entry_table(resolved: &[ResolvedNativeEntry]) -> Vec<FinalEntryInfo> {

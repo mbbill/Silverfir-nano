@@ -1,7 +1,7 @@
 //! Native runtime context.
 //!
 //! This is the backend-owned runtime state shared by native entries and the
-//! native executor. It stays at the native/runtime boundary and must not carry
+//! native reference machine. It stays at the native/runtime boundary and must not carry
 //! interpreter instruction-stream state.
 
 use crate::{error::WasmError, vm::store::Store};

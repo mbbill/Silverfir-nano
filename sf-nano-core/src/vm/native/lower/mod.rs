@@ -1,12 +1,23 @@
 //! Lower shared CFG + SSA LIR into target-independent native IR.
 //!
-//! This is the single native-owned semantic lowering step after LIR.
-//! It owns:
-//! - native virtual registers
-//! - explicit successor copies
-//! - direct native-facing call/control shapes
+//! This directory is the native-owned semantic lowering step after LIR.
 //!
-//! It must not reintroduce stack height or rotating-window semantics.
+//! Long-term structure:
+//! - `select`: choose inline/native/cold-helper forms from LIR
+//! - `place`: assign values onto the native VM ABI
+//! - `peephole`: target-independent native cleanups/fusions
+//! - `state`: shared lowering/placement state
+//!
+//! Transitional status:
+//! - the live implementation below is still the old direct LIR -> NativeIR
+//!   remap
+//! - new backend work should land in the submodules above rather than growing
+//!   this compatibility path
+
+mod peephole;
+mod place;
+mod select;
+mod state;
 
 use alloc::vec::Vec;
 
@@ -26,7 +37,10 @@ pub fn lower_native(
     planned: &PlannedProgram,
     backend_config: BackendConfig,
 ) -> NativeProgram {
-    NativeProgram {
+    let _selected = select::select_program(lir);
+    let _placement = place::placement_plan(lir, backend_config);
+
+    let mut program = NativeProgram {
         entry: NativeBlockId::from(lir.entry),
         blocks: lir
             .blocks
@@ -42,7 +56,10 @@ pub fn lower_native(
         frame: planned.frame,
         groups: planned.groups.clone(),
         hot_locals: planned.hot_locals.clone(),
-    }
+    };
+
+    peephole::run_native_peepholes(&mut program);
+    program
 }
 
 fn lower_inst(inst: &crate::vm::lir::ir::LirInst) -> NativeInst {
