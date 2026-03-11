@@ -11,21 +11,17 @@
 
 pub mod abi;
 pub mod arch;
-pub mod bridge;
-pub mod build;
 pub mod code;
 pub mod code_buf;
-pub mod context;
-pub mod entry;
-pub mod finalizer;
+pub mod compile;
 pub mod helper;
-pub mod helper_meta;
 pub mod ir;
 pub mod lower;
-pub mod precompile;
-pub mod resolve;
 pub mod runtime;
 pub mod stats;
 
-pub use entry::NativeEntry;
+pub use compile::{build, precompile, resolve};
+pub use helper::{bridge, meta as helper_meta};
+pub use runtime::{context, entry, layout};
+pub use runtime::entry::NativeEntry;
 pub use stats::{native_capacity_skips, native_stats, native_stats_snapshot, NativeStatsSnapshot};

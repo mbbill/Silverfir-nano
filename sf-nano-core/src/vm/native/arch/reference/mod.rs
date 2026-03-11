@@ -6,10 +6,9 @@
 //! - native lowering / placement bugs
 //! - ISA emission bugs
 
+mod compile;
 mod entry;
-mod layout;
 mod machine;
 
-pub use entry::shared_native_entry;
-pub use layout::frame_slots_used;
+pub use compile::compile_program;
 pub use machine::{execute_program, ReferenceMachine};

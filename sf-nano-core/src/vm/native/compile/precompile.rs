@@ -1,30 +1,27 @@
 //! Native module/function precompile entry.
 
 use crate::error::WasmError;
+use crate::vm::native::{arch, code::NativeCode, ir::NativeProgram, lower};
 use crate::vm::store::Store;
 
-use super::{
-    build::{build_native_function_for_spec, NativeBuildBundle},
-    finalizer::{self, NativeFinalized},
-    ir::NativeProgram,
-    lower, resolve,
-};
+use super::{build::{build_native_function_for_spec, NativeBuildBundle}, resolve};
 
 /// Native precompile result.
 #[derive(Debug, Default)]
 pub struct NativePrecompiled {
     pub ir: Option<NativeProgram>,
-    pub finalized: Option<NativeFinalized>,
+    pub code: Option<NativeCode>,
 }
 
 pub fn precompile_native(bundle: NativeBuildBundle) -> Result<NativePrecompiled, WasmError> {
     let ir = lower::lower_native(&bundle.lir, &bundle.planned, bundle.backend_config);
+    ir.validate()?;
     let resolved = resolve::resolve_native(&ir);
-    let finalized = finalizer::finalize_native(&ir, &resolved)?;
+    let code = arch::compile_native(&ir, &resolved)?;
 
     Ok(NativePrecompiled {
         ir: Some(ir),
-        finalized: Some(finalized),
+        code: Some(code),
     })
 }
 
@@ -72,19 +69,19 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
         })?;
         let finalized = precompile_native(bundle).map_err(|err| {
             WasmError::internal(alloc::format!(
-                "native finalization failed for function {}: {}",
+                "native codegen failed for function {}: {}",
                 func_index, err
             ))
         })?;
-        let finalized = finalized
-            .finalized
+        let code = finalized
+            .code
             .ok_or_else(|| WasmError::internal("native precompile produced no code".into()))?;
-        let cache = finalized.code.build_cache(
+        let cache = code.build_cache(
             params_len as usize,
             locals_len as usize,
             results_len as usize,
         );
-        spec.set_native_code(finalized.code, cache);
+        spec.set_native_code(code, cache);
     }
 
     Ok(())

@@ -9,10 +9,9 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::native::{
-    context::NativeContext,
-    helper_meta::{ColdHelperKind, HelperMetadataArena, HelperMetadataHeader, HelperResult},
-};
+use crate::vm::native::runtime::context::NativeContext;
+
+use super::meta::{ColdHelperKind, HelperMetadataArena, HelperMetadataHeader, HelperResult};
 
 /// Uniform native helper ABI.
 pub type NativeHelper = unsafe extern "C" fn(

@@ -2,10 +2,11 @@
 //!
 //! Helpers should use one uniform normal-ABI boundary and typed metadata.
 
+use crate::vm::native::runtime::context::NativeContext;
+
 use super::{
     bridge::NativeHelper,
-    context::NativeContext,
-    helper_meta::{ColdHelperKind, HelperMetadataHeader, HelperResult},
+    meta::{ColdHelperKind, HelperMetadataHeader, HelperResult},
 };
 
 /// Default cold helper stub used while the new backend is still being filled.

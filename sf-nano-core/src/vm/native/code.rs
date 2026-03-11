@@ -49,7 +49,6 @@ pub struct NativeCode {
     pub helper_metadata: Box<[HelperMetadataRecord]>,
     pub direct_call_patches: Box<[DirectCallPatch]>,
     pub program: Option<NativeProgram>,
-    pub vreg_count: u32,
 }
 
 impl NativeCode {
@@ -69,18 +68,12 @@ impl NativeCode {
     }
 
     #[inline]
-    pub const fn vreg_count(&self) -> usize {
-        self.vreg_count as usize
-    }
-
-    #[inline]
     pub fn from_parts(
         entry: Option<NativeEntry>,
         text: Vec<u8>,
         helper_metadata: HelperMetadataArena,
         direct_call_patches: Vec<DirectCallPatch>,
         program: Option<NativeProgram>,
-        vreg_count: u32,
     ) -> Self {
         Self {
             entry,
@@ -88,7 +81,6 @@ impl NativeCode {
             helper_metadata: helper_metadata.into_boxed_slice(),
             direct_call_patches: direct_call_patches.into_boxed_slice(),
             program,
-            vreg_count,
         }
     }
 
@@ -164,7 +156,6 @@ pub fn create_native_code(
     helper_metadata: HelperMetadataArena,
     direct_call_patches: Vec<DirectCallPatch>,
     program: Option<NativeProgram>,
-    vreg_count: u32,
     params_len: usize,
     locals_len: usize,
     results_len: usize,
@@ -175,7 +166,6 @@ pub fn create_native_code(
         helper_metadata,
         direct_call_patches,
         program,
-        vreg_count,
     );
     let cache = code.build_cache(params_len, locals_len, results_len);
     (code, cache)

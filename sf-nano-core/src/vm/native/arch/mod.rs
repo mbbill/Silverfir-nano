@@ -3,5 +3,14 @@
 //! This layer lowers target-independent native IR into encoded machine code.
 //! It must not own Wasm/LIR semantics or backend-wide optimization policy.
 
+use crate::{error::WasmError, vm::native::{code::NativeCode, ir::NativeProgram, resolve::ResolvedNativeEntry}};
+
 pub mod arm64;
 pub mod reference;
+
+pub fn compile_native(
+    program: &NativeProgram,
+    resolved: &[ResolvedNativeEntry],
+) -> Result<NativeCode, WasmError> {
+    reference::compile_program(program, resolved)
+}

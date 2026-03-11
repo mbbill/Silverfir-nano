@@ -5,8 +5,7 @@
 use alloc::vec::Vec;
 
 use crate::vm::lir::slot::{FrameSlot, FrameSpan};
-
-use super::entry::NativeEntry;
+use crate::vm::native::runtime::entry::NativeEntry;
 
 /// Common helper-call result.
 #[repr(C)]

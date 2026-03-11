@@ -5,8 +5,7 @@
 //! interpreter instruction-stream state.
 
 use crate::{error::WasmError, vm::store::Store};
-
-use super::code::NativeCode;
+use crate::vm::native::code::NativeCode;
 
 /// Native runtime context shared by native entries and recursive native calls.
 #[repr(C)]

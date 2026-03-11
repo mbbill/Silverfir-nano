@@ -16,12 +16,9 @@ use crate::vm::{
     value::Value,
 };
 
-use super::{
-    arch::reference,
-    code::NativeCode,
-    context::NativeContext,
-    precompile,
-};
+use crate::vm::native::{code::NativeCode, compile::precompile};
+
+use super::{context::NativeContext, layout};
 
 const MAX_SLOTS: usize = crate::constants::MAX_STACK_SIZE / core::mem::size_of::<u64>();
 
@@ -139,7 +136,7 @@ fn run_local_function(
     let program = code
         .program()
         .ok_or_else(|| WasmError::internal("native code is missing finalized program".into()))?;
-    let frame_slots_used = reference::frame_slots_used(program);
+    let frame_slots_used = layout::frame_slots_used(program);
     let frame_end = unsafe { fp.add(frame_slots_used) };
     if frame_end > stack_end {
         return Err(WasmError::exhaustion("stack overflow".into()));

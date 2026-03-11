@@ -1,6 +1,6 @@
 //! Native entry ABI.
 //!
-//! A native entry is the runtime boundary after native finalization.
+//! A native entry is the runtime boundary after native code packaging.
 //! The current bring-up path uses one shared Rust entry that executes finalized
 //! native metadata. Later direct ARM64 emission can replace that entry with
 //! real machine-code entry points without changing the runtime call shape.

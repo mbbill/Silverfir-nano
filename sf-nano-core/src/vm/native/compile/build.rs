@@ -2,7 +2,7 @@
 //!
 //! This file runs the shared frontend pipeline for the native backend:
 //! Wasm decode -> planning -> CFG + SSA LIR.
-//! Native-owned lowering starts after this bundle, in `lower.rs`.
+//! Native-owned lowering starts after this bundle in `lower.rs`.
 //!
 //! The native backend owns the planning inputs it passes into the shared
 //! frontend, and it must preserve the full backend register budget for later
@@ -47,10 +47,7 @@ pub const fn native_backend_config() -> BackendConfig {
 
 #[inline]
 pub const fn native_plan_policy() -> PlanPolicy {
-    // Group-aware native shaping is not active yet. Keep the live native path
-    // on the straightforward one-op-at-a-time frontend contract until direct
-    // native lowering starts consuming group metadata intentionally.
-    PlanPolicy::new(BackendKind::Native, GroupingMode::Ignore)
+    PlanPolicy::new(BackendKind::Native, GroupingMode::Maximal)
 }
 
 pub fn build_native_function(
@@ -95,4 +92,15 @@ pub fn build_native_function_for_spec(
         code,
         CompileContext::new(&module.types, store, module, params, local_count, results),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_plan_policy;
+    use crate::vm::plan::policy::GroupingMode;
+
+    #[test]
+    fn native_build_uses_maximal_grouping() {
+        assert_eq!(native_plan_policy().grouping, GroupingMode::Maximal);
+    }
 }

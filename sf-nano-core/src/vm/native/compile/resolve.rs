@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use super::{
+use crate::vm::native::{
     entry::NativeEntry,
     helper_meta::ColdHelperKind,
     ir::{NativeBlockId, NativeProgram},

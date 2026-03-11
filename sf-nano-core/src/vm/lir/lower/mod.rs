@@ -121,10 +121,14 @@ fn compute_semantic_entry_heights(
     for op in mapped {
         let entry_height = match &op.semantic.kind {
             crate::vm::wasm::semantic_ir::SemanticOpKind::Else => {
-                control.last().map_or(0, |frame| frame.start_height + frame.params)
+                control
+                    .last()
+                    .map_or(op.planned.height, |frame| frame.start_height + frame.results)
             }
             crate::vm::wasm::semantic_ir::SemanticOpKind::End => {
-                control.last().map_or(0, |frame| frame.start_height + frame.results)
+                control
+                    .last()
+                    .map_or(op.planned.height, |frame| frame.start_height + frame.results)
             }
             _ => op.planned.height,
         };
@@ -172,10 +176,11 @@ mod tests {
             group::GroupPlan,
             hot_local::HotLocalPlan,
             tos::{SpillArtifact, TosRotation},
-            PlannedHotLocalInit, PlannedLocal, PlannedOp, PlannedOpKind, PlannedProgram,
+            PlannedHotLocalInit, PlannedLocal, PlannedMarkerKind, PlannedOp, PlannedOpKind,
+            PlannedProgram,
         },
         wasm::{
-            common::SemanticIndex,
+            common::{SemanticIndex, SemanticTarget},
             primitive_op::PrimitiveOpKind,
             semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
         },
@@ -416,5 +421,74 @@ mod tests {
             block0.terminator,
             LirTerminator::Return { ref values } if values.len() == 2
         ));
+    }
+
+    #[test]
+    fn computes_else_block_entry_height_before_else_prefix_spills() {
+        let semantic_ops = alloc::vec![
+            SemanticOp {
+                kind: SemanticOpKind::If {
+                    params: 0,
+                    results: 1,
+                },
+                next: Some(SemanticIndex::new(1)),
+                alt: Some(SemanticTarget::new(1)),
+            },
+            SemanticOp {
+                kind: SemanticOpKind::Else,
+                next: Some(SemanticIndex::new(2)),
+                alt: Some(SemanticTarget::new(2)),
+            },
+            SemanticOp {
+                kind: SemanticOpKind::End,
+                next: None,
+                alt: None,
+            },
+        ];
+        let planned = [
+            PlannedOp {
+                kind: PlannedOpKind::Marker(PlannedMarkerKind::If {
+                    params: 0,
+                    results: 1,
+                }),
+                rotation: TosRotation::new(0),
+                height: 1,
+                alt: Some(SemanticTarget::new(1)),
+            },
+            PlannedOp {
+                kind: PlannedOpKind::Marker(PlannedMarkerKind::Else),
+                rotation: TosRotation::new(0),
+                // Planning has already reset to the else-body height after the marker.
+                // Block entry for the marker itself must still see the then-result height.
+                height: 0,
+                alt: Some(SemanticTarget::new(2)),
+            },
+            PlannedOp {
+                kind: PlannedOpKind::Marker(PlannedMarkerKind::End),
+                rotation: TosRotation::new(0),
+                height: 1,
+                alt: None,
+            },
+        ];
+        let mapped = semantic_ops
+            .iter()
+            .zip(planned.iter())
+            .map(|(semantic, planned)| input::SemanticPlannedOp {
+                semantic,
+                planned,
+                prefix: alloc::vec![],
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(compute_semantic_entry_heights(
+            &SemanticProgram {
+                params: 0,
+                results: 1,
+                local_count: 0,
+                max_stack_height: 1,
+                ops: semantic_ops.clone(),
+            },
+            &mapped,
+        )[1], 1);
     }
 }
