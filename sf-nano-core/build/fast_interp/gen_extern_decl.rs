@@ -34,7 +34,7 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
     w.line("// Fast interpreter extern handler declarations");
     w.line("// Phase 3: 9-param signature (sp removed), D1-D4 variants for TOS handlers");
     w.blank();
-    w.line("use crate::vm::interp::fast::{context::Context, instruction::Instruction};");
+    w.line("use crate::vm::interp::{context::Context, instruction::Instruction};");
     w.blank();
     w.line("#[allow(improper_ctypes)]");
     w.line("extern \"C\" {");
@@ -79,7 +79,7 @@ fn generate_handler_decl(w: &mut CodeWriter, name: &str) {
     for reg in tos_register_names() {
         wln!(w, "{}: u64,", reg);
     }
-    w.line("nh: crate::vm::interp::fast::handlers::NextHandler,");
+    w.line("nh: crate::vm::interp::handlers::NextHandler,");
     w.dedent();
     w.line(");");
     w.blank();

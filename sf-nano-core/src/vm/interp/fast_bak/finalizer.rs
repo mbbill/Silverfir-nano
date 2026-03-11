@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::vm::{
     entities::{FunctionInst, ModuleInst},
-    interp::fast::{
+    interp::{
         build::FastBuildBundle, encoding, fast_code::FastCode, frame_layout, handlers::full_set,
         instruction::Instruction, resolve,
     },

@@ -117,7 +117,7 @@ fn optimize_internal_calls(store: &Store) {
             let callee_locals = callee_spec.locals().len() as u16;
 
             let inst_ptr =
-                inst as *const _ as *mut crate::vm::interp::fast::instruction::Instruction;
+                inst as *const _ as *mut crate::vm::interp::instruction::Instruction;
             unsafe {
                 (*inst_ptr).handler = super::handlers::full_set::op_call_local;
                 (*inst_ptr).imm0 = callee_entry;

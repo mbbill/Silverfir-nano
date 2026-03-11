@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::vm::{
-    interp::fast::{
+    interp::{
         handler_lookup,
         handlers::{full_set::*, OpHandler},
     },

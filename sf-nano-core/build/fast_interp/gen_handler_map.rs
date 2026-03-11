@@ -21,7 +21,7 @@ pub fn generate(handlers: &HandlersFile, out_dir: &PathBuf) {
     output.push_str(
         "    use crate::opcodes::{Opcode::*, OpcodeFC::*, OpcodeFB::*, WasmOpcode::*};\n",
     );
-    output.push_str("    use crate::vm::interp::fast::handlers::full_set::*;\n");
+    output.push_str("    use crate::vm::interp::handlers::full_set::*;\n");
     output.push_str("    let handler = match op {\n");
 
     // Generate match arms for all handlers

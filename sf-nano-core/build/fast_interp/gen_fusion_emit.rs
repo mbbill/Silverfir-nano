@@ -40,9 +40,9 @@ pub fn generate(fused_handlers: &[FusedHandler], categories: &CategoryMap) -> St
         first_opcodes.join(", ")
     ));
 
-    code.push_str("use crate::vm::interp::fast::encoding::PatternData;\n");
-    code.push_str("use crate::vm::interp::fast::handlers::full_set;\n");
-    code.push_str("use crate::vm::interp::fast::handlers::OpHandler;\n\n");
+    code.push_str("use crate::vm::interp::encoding::PatternData;\n");
+    code.push_str("use crate::vm::interp::handlers::full_set;\n");
+    code.push_str("use crate::vm::interp::handlers::OpHandler;\n\n");
 
     // --- Spill/Fill helpers ---
     code.push_str("// =============================================================================\n");
