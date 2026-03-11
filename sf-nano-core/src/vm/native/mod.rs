@@ -19,6 +19,8 @@ pub mod helper;
 pub mod ir;
 mod jitdump;
 pub mod lower;
+#[path = "arch/reference/machine.rs"]
+pub(crate) mod machine;
 mod map;
 pub mod runtime;
 pub mod stats;

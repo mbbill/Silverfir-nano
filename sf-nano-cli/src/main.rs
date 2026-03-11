@@ -6,7 +6,7 @@ mod trace_compare;
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
-use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
+use sf_nano_core::{active_runtime_engine, set_backend_mode, set_reference_backend, BackendMode};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -18,7 +18,7 @@ fn main() {
         eprintln!("Silverfir-nano — WebAssembly interpreter");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--dir <path>] <wasm-file> [args...]");
+        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--reference] [--dir <path>] <wasm-file> [args...]");
         eprintln!("  sf-nano-cli trace-compare <left.trace> <right.trace>");
         #[cfg(feature = "profile")]
         {
@@ -45,6 +45,7 @@ fn main() {
     // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
     let mut backend_mode = BackendMode::Native;
+    let mut reference_backend = false;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
@@ -70,6 +71,8 @@ fn main() {
                     );
                     process::exit(1);
                 });
+            } else if args[i] == "--reference" {
+                reference_backend = true;
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -83,14 +86,19 @@ fn main() {
     }
 
     set_backend_mode(backend_mode);
-    if let Err(err) = active_backend() {
+    if let Err(err) = set_reference_backend(reference_backend) {
+        eprintln!("Error: {}", err);
+        process::exit(1);
+    }
+    let runtime_engine = active_runtime_engine().unwrap_or_else(|err| {
         eprintln!(
             "Error: backend '{}' is unavailable in this build: {}",
             backend_mode.as_str(),
             err,
         );
         process::exit(1);
-    }
+    });
+    print_runtime_engine(runtime_engine);
 
     let path = PathBuf::from(&remaining_args[0]);
     let prog_args: Vec<String> = remaining_args[1..].to_vec();
@@ -159,6 +167,15 @@ fn main() {
             }
             eprintln!("Error: {}", err);
             process::exit(1);
+        }
+    }
+}
+
+fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
+    match engine {
+        sf_nano_core::RuntimeEngine::Interpreter => eprintln!("[runtime] interpreter"),
+        sf_nano_core::RuntimeEngine::MicroJit(backend) => {
+            eprintln!("[runtime] micro-jit backend={backend}");
         }
     }
 }

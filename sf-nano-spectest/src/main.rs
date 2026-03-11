@@ -5,7 +5,7 @@ mod wast_test_runner;
 
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
-use sf_nano_core::{active_backend, set_backend_mode, BackendMode};
+use sf_nano_core::{active_runtime_engine, set_backend_mode, set_reference_backend, BackendMode};
 use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
 use structopt::StructOpt;
 use summary::print_summary;
@@ -31,6 +31,10 @@ struct Cli {
     /// Backend to use for execution (auto, native, fusion, base)
     #[structopt(long = "backend")]
     backend: Option<String>,
+
+    /// Use the debug-only native reference backend
+    #[structopt(long = "reference")]
+    reference: bool,
 }
 
 fn main() {
@@ -45,15 +49,25 @@ fn main() {
             std::process::exit(1);
         });
         set_backend_mode(mode);
-        if let Err(err) = active_backend() {
-            eprintln!(
-                "backend '{}' is unavailable in this build: {}",
-                mode.as_str(),
-                err
-            );
-            std::process::exit(1);
-        }
     }
+    if let Err(err) = set_reference_backend(args.reference) {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    }
+    let runtime_engine = active_runtime_engine().unwrap_or_else(|err| {
+        let requested = args
+            .backend
+            .as_deref()
+            .and_then(BackendMode::parse_str)
+            .unwrap_or(BackendMode::Native);
+        eprintln!(
+            "backend '{}' is unavailable in this build: {}",
+            requested.as_str(),
+            err
+        );
+        std::process::exit(1);
+    });
+    print_runtime_engine(runtime_engine);
 
     // Initialize logging
     if let Some(level_str) = &args.log_level {
@@ -117,6 +131,15 @@ fn main() {
     info!("Using testsuite from: {}", testsuite_dir.display());
 
     run_wast_tests(&testsuite_dir, &args.filters);
+}
+
+fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
+    match engine {
+        sf_nano_core::RuntimeEngine::Interpreter => eprintln!("[runtime] interpreter"),
+        sf_nano_core::RuntimeEngine::MicroJit(backend) => {
+            eprintln!("[runtime] micro-jit backend={backend}");
+        }
+    }
 }
 
 fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {

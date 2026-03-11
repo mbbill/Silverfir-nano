@@ -88,6 +88,9 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
         return Ok(());
     }
 
+    let native_backend = arch::active_native_backend()
+        .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
+
     let mut pending = Vec::new();
     for (func_index, func) in module
         .functions
@@ -152,15 +155,26 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    let direct_arm64 = compute_direct_arm64(module, &pending);
+    let use_arm64 = matches!(native_backend, arch::NativeBackend::Arm64);
     #[cfg(target_arch = "aarch64")]
-    let callee_may_change_views = compute_callee_view_change_flags(module, &pending);
+    let direct_arm64 = if use_arm64 {
+        Some(compute_direct_arm64(module, &pending))
+    } else {
+        None
+    };
+    #[cfg(target_arch = "aarch64")]
+    let callee_may_change_views = if use_arm64 {
+        Some(compute_callee_view_change_flags(module, &pending))
+    } else {
+        None
+    };
 
     for pending_func in &pending {
         #[cfg(target_arch = "aarch64")]
-        let code = {
+        let code = if use_arm64 {
             let mode = if direct_arm64
-                .get(pending_func.func_index)
+                .as_ref()
+                .and_then(|flags| flags.get(pending_func.func_index))
                 .copied()
                 .unwrap_or(false)
             {
@@ -172,8 +186,10 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
                 &pending_func.ir,
                 &pending_func.resolved,
                 mode,
-                Some(&callee_may_change_views),
+                callee_may_change_views.as_deref(),
             )
+        } else {
+            arch::compile_native(&pending_func.ir, &pending_func.resolved)
         };
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -198,7 +214,9 @@ pub fn precompile_module(store: &Store) -> Result<(), WasmError> {
     }
 
     #[cfg(target_arch = "aarch64")]
-    finalize_arm64_direct_calls(module)?;
+    if use_arm64 {
+        finalize_arm64_direct_calls(module)?;
+    }
 
     record_native_symbols(module);
     let dump_functions = pending

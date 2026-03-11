@@ -6,9 +6,11 @@
 //! - native lowering / placement bugs
 //! - ISA emission bugs
 
+#[cfg(debug_assertions)]
 mod compile;
+#[cfg(debug_assertions)]
 mod entry;
-mod machine;
+pub(crate) use crate::vm::native::machine;
 
+#[cfg(debug_assertions)]
 pub use compile::compile_program;
-pub use machine::{execute_program, ReferenceMachine};

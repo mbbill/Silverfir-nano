@@ -42,6 +42,7 @@ pub use utils::limits::Limitable;
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
 pub use vm::entities::ExternalFn;
 pub use vm::instance::{Import, ImportValue, Instance};
+pub use vm::runtime::{active_runtime_engine, set_reference_backend, RuntimeEngine};
 #[cfg(feature = "micro-jit")]
 pub use vm::native::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,

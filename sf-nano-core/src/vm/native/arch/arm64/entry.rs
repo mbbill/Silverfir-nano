@@ -13,10 +13,10 @@ use crate::{
     vm::{
         entities::{Caller, FunctionInst},
         native::{
-            arch::reference,
             code::NativeCode,
             context::NativeContext,
             ir::{NativeBlockId, NativeProgram},
+            machine,
             runtime::layout,
         },
         value::Value,
@@ -411,7 +411,7 @@ pub(super) unsafe extern "C" fn shared_native_entry(
     };
     let program = unsafe { &*program };
 
-    let result = reference::execute_program(ctx, program, fp);
+    let result = machine::execute_program(ctx, program, fp);
     ctx.refresh_cached_views();
     if let Err(error) = result {
         ctx.error = Some(error);
@@ -561,7 +561,7 @@ fn invoke_local_callee(
             None => Ok(()),
         }
     } else {
-        reference::execute_program(ctx, program, callee_fp)
+        machine::execute_program(ctx, program, callee_fp)
     };
     ctx.current_code = saved_code;
     ctx.call_depth = ctx.call_depth.saturating_sub(1);
