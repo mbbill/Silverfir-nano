@@ -265,6 +265,66 @@ Each section states one rule and why it exists.
 
 **Reason:** Machine IR is the final shared contract. If a backend still needs a debug executor, a shared interpreter, or architecture-only semantic helpers to finish the job, then the IR boundary is still wrong.
 
+## Rule 42: LIR Is The Prepared Frontend Handoff
+
+**Rule:** LIR is the prepared output of the frontend and the input to the native backend. It must already encode the stack-window and canonical-slot guarantees the backend relies on.
+
+**Reason:** This engine is not a traditional optimizing compiler with a later general register allocator. The backend depends on frontend preparation to make register fit trivial.
+
+## Rule 43: LIR Must Preserve The Fixed TOS-Window Contract
+
+**Rule:** LIR must preserve the target-independent TOS-window contract. The number of transient live SSA stack values visible to the backend must never exceed the configured TOS register budget.
+
+**Reason:** The fixed TOS window is not an optional optimization detail. It is the guarantee that lets the backend map transient values into a small fixed register set without running a traditional register allocator.
+
+## Rule 44: Frontend Spills And Fills To Enforce Backend Fit
+
+**Rule:** If stack depth or transient live values exceed the available TOS window, the frontend must emit spill and fill operations against canonical operand slots before the program reaches the backend.
+
+**Reason:** Backend fit is guaranteed by preparation, not discovered by backend allocation. The backend should never need to invent new spills just to make transient stack values fit.
+
+## Rule 45: LIR Must Leverage Stack Discipline, Not Erase It
+
+**Rule:** LIR may use SSA values for transient stack values, but it must still preserve the crucial Wasm stack property that operations consume the top of the stack and that the top window is the hottest near-term state.
+
+**Reason:** This stack discipline is what makes the engine fast without a traditional optimizer or lifetime-based register allocator. If LIR erases that structure into arbitrary full-stack SSA, the backend loses the main advantage of the design.
+
+## Rule 46: Locals Keep Canonical Slot Homes
+
+**Rule:** Local accesses in LIR use canonical frame-slot identity such as `ReadSlot` and `WriteSlot`. Hot-local caching must not change the canonical local slot layout.
+
+**Reason:** Calls, returns, and frame layout still rely on stable slot identity. Register-cached locals are mirrors of those canonical homes, not replacements for them.
+
+## Rule 47: Hot-Local Policy Travels As Metadata, Not As LIR Storage Kinds
+
+**Rule:** The frontend may pass down hot-local cache budget and preferred local-slot ranking, but LIR itself must not encode local accesses as special hot-local storage kinds.
+
+**Reason:** The backend needs to know how many locals it may cache and which locals are preferred, but canonical local identity must stay slot-based. The cache assignment is execution policy, not semantic storage.
+
+## Rule 48: True Runtime Boundaries Must Be Split Out In LIR
+
+**Rule:** LIR must distinguish normal leaf operations from true runtime-boundary operations such as growth and segment lifecycle ops.
+
+**Reason:** The layer between LIR and machine IR must not rediscover helper policy by pattern-matching arbitrary primitives. The runtime boundary needs to already be explicit in LIR.
+
+## Rule 49: LIR Calls Stay Semantic But Respect Canonical Stack Layout
+
+**Rule:** Direct local calls, indirect calls, and external calls remain semantic LIR operations, but their argument and result publication still follows canonical stack and frame layout prepared above the backend.
+
+**Reason:** Call-link layout and machine continuation structure belong below LIR, but stack-layout guarantees must already be stable by the time LIR is handed to the backend.
+
+## Rule 50: Backend Register Assignment Must Stay Trivial
+
+**Rule:** The native backend must only need to:
+
+- assign fixed registers for runtime anchors such as `ctx` and `fp`
+- fit transient live TOS values into the fixed TOS register window
+- map selected local slots into the fixed local-cache registers
+
+It must not require a general-purpose lifetime-based register allocator.
+
+**Reason:** The whole engine is designed around a prepared stack-window handoff so code generation remains simple, fast, and predictable.
+
 ## Current Design Decisions
 
 ### Helper ABI
@@ -320,6 +380,54 @@ Each section states one rule and why it exists.
 **Decision:** Closed helper symbols live in sidecar external binding data and are resolved to real helper wrapper addresses during backend finalization.
 
 **Reason:** The backend needs a static resolver table, but that table is part of link/finalization data, not part of machine IR semantics.
+
+### LIR Lowering Stages
+
+**Decision:** LIR lowering is structurally split into four steps: semantic/planned alignment, block-boundary shaping, straight-line body lowering, and terminator lowering.
+
+**Reason:** Stack-height reconstruction and CFG boundary shaping are semantic concerns. Keeping them separate from body and terminator lowering makes the pipeline easier to audit and prevents one file from silently owning all lowering policy.
+
+### LIR Stack Errors
+
+**Decision:** LIR lowering treats stack underflow or stack-shape mismatch as an explicit internal error. It must not silently clamp stack reads or pops.
+
+**Reason:** Silent stack clamping hides semantic/planning mismatches and produces misleading IR. A semantic lowering layer should fail loudly when its stack model becomes inconsistent.
+
+### Engine Style
+
+**Decision:** The engine is intentionally a prepared single-pass compiler. It does not rely on traditional optimization passes or a traditional general register allocator.
+
+**Reason:** The design gets its efficiency from Wasm stack discipline and from frontend preparation rather than from heavyweight backend analysis.
+
+### Prepared LIR Contract
+
+**Decision:** LIR is not arbitrary full SSA over the whole stack. It is a prepared IR where transient stack values are already bounded to the configured TOS window through explicit spill/fill against canonical operand slots.
+
+**Reason:** This is the contract that makes backend lowering easy. The backend can assume transient value fit instead of computing it.
+
+### TOS Register Budget
+
+**Decision:** The number of transient value registers is a frontend-known contract derived from backend budget. The frontend must prepare LIR so that transient live SSA values always fit inside that fixed TOS window.
+
+**Reason:** Without this contract, the backend would need real register allocation or ad hoc spilling, which is explicitly not the intended design.
+
+### Local Cache Budget
+
+**Decision:** The number of local-cache registers and the preferred local-slot ranking are passed down from frontend analysis, but locals keep canonical frame-slot homes in LIR.
+
+**Reason:** Calls and frame layout require stable slot identity. Cached locals are just fast mirrors of canonical slot homes.
+
+### Backend Simplicity
+
+**Decision:** Backend lowering should be close to mechanical:
+
+- assign fixed registers for runtime anchors
+- place the bounded TOS window into the fixed transient-value registers
+- swap the chosen canonical local slots into the fixed local-cache registers
+
+No general register allocation should be required.
+
+**Reason:** This simplicity is the whole point of preparing LIR around stack discipline and frontend-enforced fit.
 
 ## Current Helper Classification
 

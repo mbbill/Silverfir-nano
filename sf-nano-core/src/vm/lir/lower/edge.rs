@@ -1,48 +1,33 @@
 //! CFG edge construction and successor-argument mapping.
 
+use alloc::vec::Vec;
+
 use crate::error::WasmError;
 use crate::vm::{
     lir::{
         ir::{LirEdge, LirTerminator},
         target::LirTarget,
     },
-    plan::{config::PlanConfig, PlannedProgram},
     wasm::{
         common::{BrTableEntry, SemanticTarget},
         semantic_ir::SemanticOp,
     },
 };
 
-use super::{
-    stack::materialize_stack_index,
-    state::{BlockState, ValueAlloc},
-};
+use super::state::BlockState;
 
 pub(super) fn goto_next(
     semantic_op: &SemanticOp,
-    state: &mut BlockState,
-    planned: &PlannedProgram,
-    config: PlanConfig,
+    state: &BlockState,
     semantic_to_block: &[LirTarget],
-    values: &mut ValueAlloc,
 ) -> Result<LirTerminator, WasmError> {
-    Ok(LirTerminator::Goto(next_edge(
-        semantic_op,
-        state,
-        planned,
-        config,
-        semantic_to_block,
-        values,
-    )?))
+    Ok(LirTerminator::Goto(next_edge(semantic_op, state, semantic_to_block)?))
 }
 
 pub(super) fn next_edge(
     semantic_op: &SemanticOp,
-    state: &mut BlockState,
-    planned: &PlannedProgram,
-    config: PlanConfig,
+    state: &BlockState,
     semantic_to_block: &[LirTarget],
-    values: &mut ValueAlloc,
 ) -> Result<LirEdge, WasmError> {
     let next = semantic_op
         .next
@@ -51,60 +36,47 @@ pub(super) fn next_edge(
         SemanticTarget::new(next.as_usize()),
         state,
         EdgeMapping::Identity,
-        planned,
-        config,
         semantic_to_block,
-        values,
     )
 }
 
 pub(super) fn edge_to_target(
     target: SemanticTarget,
-    state: &mut BlockState,
+    state: &BlockState,
     mapping: EdgeMapping,
-    planned: &PlannedProgram,
-    config: PlanConfig,
     semantic_to_block: &[LirTarget],
-    values: &mut ValueAlloc,
 ) -> Result<LirEdge, WasmError> {
     let target_height = match mapping {
         EdgeMapping::Identity => state.height(),
         EdgeMapping::Branch { stack_drop, .. } => state.height().saturating_sub(stack_drop as u16),
     };
-    let target_cached = core::cmp::min(target_height as usize, config.tos_register_count as usize);
-    let start = target_height as usize - target_cached;
-    let tos = (start..target_height as usize)
+    let args = (0..target_height as usize)
         .map(|target_index| match mapping {
-            EdgeMapping::Identity => {
-                materialize_stack_index(state, planned.frame, values, target_index as u16)
-            }
+            EdgeMapping::Identity => state.value_at(target_index),
             EdgeMapping::Branch { stack_drop, arity } => {
                 let payload_start = target_height as usize - arity as usize;
                 let current_index = if target_index < payload_start {
-                    target_index as u16
+                    target_index
                 } else {
-                    target_index.saturating_add(stack_drop as usize) as u16
+                    target_index.saturating_add(stack_drop as usize)
                 };
-                materialize_stack_index(state, planned.frame, values, current_index)
+                state.value_at(current_index)
             }
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(LirEdge {
         target: *semantic_to_block
             .get(target.index().as_usize())
             .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?,
-        tos,
+        args,
     })
 }
 
 pub(super) fn br_table_edge(
     entry: &BrTableEntry,
-    state: &mut BlockState,
-    planned: &PlannedProgram,
-    config: PlanConfig,
+    state: &BlockState,
     semantic_to_block: &[LirTarget],
-    values: &mut ValueAlloc,
 ) -> Result<LirEdge, WasmError> {
     edge_to_target(
         entry
@@ -115,10 +87,7 @@ pub(super) fn br_table_edge(
             stack_drop: entry.stack_drop,
             arity: entry.arity,
         },
-        planned,
-        config,
         semantic_to_block,
-        values,
     )
 }
 

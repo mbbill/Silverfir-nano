@@ -1,16 +1,16 @@
-//! CFG + SSA backend-facing LIR.
+//! CFG + SSA semantic LIR.
 //!
 //! This is the shared semantic handoff between planning/grouping and the
-//! backend family. It must not carry rotating-window metadata, stack height,
-//! or backend-side stack reconstruction hints.
+//! machine-prep stage. It must not carry cache-budget policy, rotating-window
+//! metadata, or backend-side stack reconstruction hints.
 
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
-use crate::vm::plan::hot_local::HotLocalPlan;
 
 use super::{
     leaf::LirLeafOp,
+    runtime::LirRuntimeOp,
     slot::{FrameSlot, FrameSpan},
     target::LirTarget,
 };
@@ -19,21 +19,11 @@ use super::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LirValue(pub u32);
 
-/// LIR-visible subset of the backend VM register budget.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LirAbi {
-    pub tos_register_count: u8,
-    pub hot_local_count: u8,
-}
-
 /// Full LIR program for one function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LirProgram {
     pub entry: LirTarget,
     pub blocks: Vec<LirBlock>,
-    pub abi: LirAbi,
-    /// Function-static mapping for named hot-local slots.
-    pub hot_locals: Option<HotLocalPlan>,
 }
 
 impl LirProgram {
@@ -56,16 +46,6 @@ impl LirProgram {
             )));
         }
 
-        if let Some(hot_locals) = &self.hot_locals {
-            if hot_locals.slot_count() != self.abi.hot_local_count as usize {
-                return Err(WasmError::internal(alloc::format!(
-                    "LIR hot-local mapping width {} does not match ABI hot-local count {}",
-                    hot_locals.slot_count(),
-                    self.abi.hot_local_count,
-                )));
-            }
-        }
-
         for (index, block) in self.blocks.iter().enumerate() {
             if block.id.as_usize() != index {
                 return Err(WasmError::internal(alloc::format!(
@@ -73,30 +53,6 @@ impl LirProgram {
                     index,
                     block.id.as_usize(),
                 )));
-            }
-            if block.params.tos.len() > self.abi.tos_register_count as usize {
-                return Err(WasmError::internal(alloc::format!(
-                    "LIR block {} expects {} TOS params, exceeding ABI width {}",
-                    index,
-                    block.params.tos.len(),
-                    self.abi.tos_register_count,
-                )));
-            }
-
-            for op in &block.ops {
-                match &op.kind {
-                    LirInstKind::ReadHotLocal { reg, .. }
-                    | LirInstKind::WriteHotLocal { reg, .. } => {
-                        if *reg >= self.abi.hot_local_count {
-                            return Err(WasmError::internal(alloc::format!(
-                                "LIR hot-local reg {} exceeds ABI hot-local count {}",
-                                reg,
-                                self.abi.hot_local_count,
-                            )));
-                        }
-                    }
-                    _ => {}
-                }
             }
 
             match &block.terminator {
@@ -136,21 +92,13 @@ impl LirProgram {
                 edge.target.as_usize(),
             )));
         };
-        if edge.tos.len() != target.params.tos.len() {
+        if edge.args.len() != target.params.values.len() {
             return Err(WasmError::internal(alloc::format!(
-                "LIR edge b{} -> b{} has {} TOS args, but target expects {}",
+                "LIR edge b{} -> b{} has {} args, but target expects {}",
                 source_block,
                 edge.target.as_usize(),
-                edge.tos.len(),
-                target.params.tos.len(),
-            )));
-        }
-        if edge.tos.len() > self.abi.tos_register_count as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "LIR edge b{} -> b{} exceeds ABI TOS width {}",
-                source_block,
-                edge.target.as_usize(),
-                self.abi.tos_register_count,
+                edge.args.len(),
+                target.params.values.len(),
             )));
         }
         Ok(())
@@ -169,11 +117,8 @@ pub struct LirBlock {
 /// Explicit incoming block state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LirBlockParams {
-    /// Incoming TOS-lane values. Position is the lane index.
-    ///
-    /// Hot locals have function-static identity and therefore do not appear
-    /// here as edge-threaded state.
-    pub tos: Vec<LirValue>,
+    /// Full incoming operand-stack state for the block, from bottom to top.
+    pub values: Vec<LirValue>,
 }
 
 /// One SSA operation inside a block body.
@@ -186,11 +131,8 @@ pub struct LirInst {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LirEdge {
     pub target: LirTarget,
-    /// Outgoing TOS-lane values for the successor. Position is the lane index.
-    ///
-    /// Hot locals have function-static identity and therefore do not appear
-    /// here as edge-threaded state.
-    pub tos: Vec<LirValue>,
+    /// Full outgoing operand-stack state for the successor, from bottom to top.
+    pub args: Vec<LirValue>,
 }
 
 /// Target-facing operation vocabulary.
@@ -201,30 +143,17 @@ pub enum LirInstKind {
         args: Vec<LirValue>,
         results: Vec<LirValue>,
     },
-    WriteOperandSlot {
+    Runtime {
+        op: LirRuntimeOp,
+        args: Vec<LirValue>,
+        results: Vec<LirValue>,
+    },
+    ReadSlot {
         slot: FrameSlot,
-        src: LirValue,
+        dst: LirValue,
     },
-    ReadOperandSlot {
+    WriteSlot {
         slot: FrameSlot,
-        dst: LirValue,
-    },
-    ReadHotLocal {
-        /// Hot-local identity comes from `LirProgram::hot_locals`.
-        reg: u8,
-        dst: LirValue,
-    },
-    WriteHotLocal {
-        /// Hot-local identity comes from `LirProgram::hot_locals`.
-        reg: u8,
-        src: LirValue,
-    },
-    ReadFrameLocal {
-        frame_slot: FrameSlot,
-        dst: LirValue,
-    },
-    WriteFrameLocal {
-        frame_slot: FrameSlot,
         src: LirValue,
     },
     CallExternal {
@@ -268,33 +197,25 @@ pub enum LirTerminator {
 impl LirInstKind {
     pub fn reads_frame(&self) -> Vec<FrameSpan> {
         match self {
-            LirInstKind::Leaf { .. } => Vec::new(),
-            LirInstKind::WriteOperandSlot { .. } => Vec::new(),
-            LirInstKind::ReadOperandSlot { slot, .. } => alloc::vec![FrameSpan::single(*slot)],
-            LirInstKind::ReadHotLocal { .. } | LirInstKind::WriteHotLocal { .. } => Vec::new(),
-            LirInstKind::ReadFrameLocal { frame_slot, .. } => {
-                alloc::vec![FrameSpan::single(*frame_slot)]
-            }
-            LirInstKind::WriteFrameLocal { .. } => Vec::new(),
-            LirInstKind::CallExternal { .. }
+            LirInstKind::Leaf { .. }
+            | LirInstKind::Runtime { .. }
+            | LirInstKind::WriteSlot { .. }
+            | LirInstKind::CallExternal { .. }
             | LirInstKind::CallInternal { .. }
             | LirInstKind::CallIndirect { .. } => Vec::new(),
+            LirInstKind::ReadSlot { slot, .. } => alloc::vec![FrameSpan::single(*slot)],
         }
     }
 
     pub fn writes_frame(&self) -> Vec<FrameSpan> {
         match self {
-            LirInstKind::Leaf { .. } => Vec::new(),
-            LirInstKind::WriteOperandSlot { slot, .. } => alloc::vec![FrameSpan::single(*slot)],
-            LirInstKind::ReadOperandSlot { .. } => Vec::new(),
-            LirInstKind::ReadHotLocal { .. } | LirInstKind::WriteHotLocal { .. } => Vec::new(),
-            LirInstKind::ReadFrameLocal { .. } => Vec::new(),
-            LirInstKind::WriteFrameLocal { frame_slot, .. } => {
-                alloc::vec![FrameSpan::single(*frame_slot)]
-            }
-            LirInstKind::CallExternal { .. }
+            LirInstKind::Leaf { .. }
+            | LirInstKind::Runtime { .. }
+            | LirInstKind::ReadSlot { .. }
+            | LirInstKind::CallExternal { .. }
             | LirInstKind::CallInternal { .. }
             | LirInstKind::CallIndirect { .. } => Vec::new(),
+            LirInstKind::WriteSlot { slot, .. } => alloc::vec![FrameSpan::single(*slot)],
         }
     }
 }
@@ -307,11 +228,6 @@ mod tests {
     fn rejects_edge_param_arity_mismatch() {
         let program = LirProgram {
             entry: LirTarget(0),
-            abi: LirAbi {
-                tos_register_count: 1,
-                hot_local_count: 0,
-            },
-            hot_locals: None,
             blocks: alloc::vec![
                 LirBlock {
                     id: LirTarget(0),
@@ -319,7 +235,7 @@ mod tests {
                     ops: Vec::new(),
                     terminator: LirTerminator::Goto(LirEdge {
                         target: LirTarget(1),
-                        tos: alloc::vec![LirValue(0)],
+                        args: alloc::vec![LirValue(0)],
                     }),
                 },
                 LirBlock {
@@ -332,34 +248,6 @@ mod tests {
         };
 
         let error = program.validate().expect_err("LIR validation should fail");
-        assert!(error
-            .message()
-            .contains("has 1 TOS args, but target expects 0"));
-    }
-
-    #[test]
-    fn rejects_hot_local_reg_outside_abi() {
-        let program = LirProgram {
-            entry: LirTarget(0),
-            abi: LirAbi {
-                tos_register_count: 0,
-                hot_local_count: 0,
-            },
-            hot_locals: None,
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
-                params: LirBlockParams::default(),
-                ops: alloc::vec![LirInst {
-                    kind: LirInstKind::ReadHotLocal {
-                        reg: 0,
-                        dst: LirValue(0),
-                    },
-                }],
-                terminator: LirTerminator::Return { values: Vec::new() },
-            }],
-        };
-
-        let error = program.validate().expect_err("LIR validation should fail");
-        assert!(error.message().contains("exceeds ABI hot-local count"));
+        assert!(error.message().contains("has 1 args, but target expects 0"));
     }
 }

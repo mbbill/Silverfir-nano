@@ -6,6 +6,6 @@ pub mod dump;
 pub mod ir;
 pub mod leaf;
 pub mod lower;
-pub mod reg;
+pub mod runtime;
 pub mod slot;
 pub mod target;

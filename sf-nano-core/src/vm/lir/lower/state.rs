@@ -2,13 +2,8 @@
 
 use alloc::vec::Vec;
 
-use crate::vm::{
-    lir::{
-        ir::{LirBlockParams, LirInst, LirValue},
-        slot::FrameSlot,
-    },
-    plan::frame::FrameLayoutPlan,
-};
+use crate::error::WasmError;
+use crate::vm::lir::ir::{LirBlockParams, LirInst, LirValue};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
@@ -30,32 +25,14 @@ impl ValueAlloc {
 
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
-    pub(super) stack: Vec<StackValue>,
+    stack: Vec<LirValue>,
     pub(super) ops: Vec<LirInst>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum StackValue {
-    Frame(FrameSlot),
-    Ssa(LirValue),
-}
-
 impl BlockState {
-    pub(super) fn from_params(
-        height: u16,
-        params: &LirBlockParams,
-        frame: FrameLayoutPlan,
-    ) -> Self {
-        let cached = params.tos.len();
-        let spilled = height as usize - cached;
-        let mut stack = Vec::with_capacity(height as usize);
-        for index in 0..spilled {
-            stack.push(StackValue::Frame(frame.operand_slot(index as u16)));
-        }
-        stack.extend(params.tos.iter().copied().map(StackValue::Ssa));
-
+    pub(super) fn from_params(params: &LirBlockParams) -> Self {
         Self {
-            stack,
+            stack: params.values.clone(),
             ops: Vec::new(),
         }
     }
@@ -64,14 +41,56 @@ impl BlockState {
     pub(super) fn height(&self) -> u16 {
         self.stack.len() as u16
     }
-}
 
-pub(super) fn make_block_params(
-    height: u16,
-    tos_register_count: u8,
-    values: &mut ValueAlloc,
-) -> LirBlockParams {
-    LirBlockParams {
-        tos: values.many(core::cmp::min(height as usize, tos_register_count as usize)),
+    #[inline]
+    pub(super) fn values(&self) -> &[LirValue] {
+        &self.stack
+    }
+
+    pub(super) fn top_values(&self, count: usize) -> Result<Vec<LirValue>, WasmError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let height = self.stack.len();
+        if count > height {
+            return Err(WasmError::internal(alloc::format!(
+                "LIR stack underflow: requested top {} values from height {}",
+                count, height,
+            )));
+        }
+        Ok(self.stack[height - count..].to_vec())
+    }
+
+    pub(super) fn value_at(&self, index: usize) -> Result<LirValue, WasmError> {
+        self.stack.get(index).copied().ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "LIR stack index {} is out of range for height {}",
+                index,
+                self.stack.len(),
+            ))
+        })
+    }
+
+    pub(super) fn pop_one(&mut self) -> Result<LirValue, WasmError> {
+        self.stack
+            .pop()
+            .ok_or_else(|| WasmError::internal("LIR stack underflow".into()))
+    }
+
+    pub(super) fn consume_top(&mut self, count: usize) -> Result<(), WasmError> {
+        if count > self.stack.len() {
+            return Err(WasmError::internal(alloc::format!(
+                "LIR stack underflow: tried to consume {} values from height {}",
+                count,
+                self.stack.len(),
+            )));
+        }
+        let new_len = self.stack.len().saturating_sub(count);
+        self.stack.truncate(new_len);
+        Ok(())
+    }
+
+    pub(super) fn push_results(&mut self, results: Vec<LirValue>) {
+        self.stack.extend(results);
     }
 }

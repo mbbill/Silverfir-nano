@@ -1,27 +1,21 @@
-//! LIR block lowering and terminator construction.
+//! LIR block orchestration.
 
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::{
     lir::{
-        ir::{LirInst, LirInstKind, LirTerminator},
-        leaf::LirLeafOp,
+        ir::{LirInst, LirTerminator},
         target::LirTarget,
     },
-    plan::{config::PlanConfig, PlannedProgram},
-    wasm::semantic_ir::SemanticOpKind,
+    plan::frame::FrameLayoutPlan,
 };
 
 use super::{
-    edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
+    body::lower_block_body_op,
     input::SemanticPlannedOp,
-    ops::{
-        lower_call_external, lower_call_indirect, lower_call_internal, lower_local_get,
-        lower_local_set, lower_local_tee, lower_primitive, lower_synthetic_prefix_op,
-    },
-    stack::{materialize_top_values, pop_one},
     state::{BlockState, ValueAlloc},
+    terminator::lower_block_terminator,
 };
 
 #[derive(Clone, Debug)]
@@ -34,8 +28,7 @@ pub(super) fn lower_block_range(
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
     mapped: &[SemanticPlannedOp<'_>],
-    planned: &PlannedProgram,
-    config: PlanConfig,
+    frame: FrameLayoutPlan,
     semantic_to_block: &[LirTarget],
     values: &mut ValueAlloc,
 ) -> Result<LoweredBlock, WasmError> {
@@ -45,15 +38,14 @@ pub(super) fn lower_block_range(
         .ok_or_else(|| WasmError::internal("LIR block cannot be empty".into()))?;
 
     for semantic_index in semantic_range.start..last_index {
-        lower_block_body_op(&mapped[semantic_index], &mut state, planned, config, values)?;
+        lower_block_body_op(&mapped[semantic_index], &mut state, frame, values)?;
     }
 
-    let terminator = lower_block_end_op(
+    let terminator = lower_block_terminator(
         &mapped[last_index],
         mapped,
         &mut state,
-        planned,
-        config,
+        frame,
         semantic_to_block,
         values,
     )?;
@@ -62,367 +54,4 @@ pub(super) fn lower_block_range(
         ops: state.ops,
         terminator,
     })
-}
-
-fn lower_block_body_op(
-    op: &SemanticPlannedOp<'_>,
-    state: &mut BlockState,
-    planned: &PlannedProgram,
-    config: PlanConfig,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    for prefix_op in &op.prefix {
-        lower_synthetic_prefix_op(prefix_op, state, planned.frame, values)?;
-    }
-
-    match &op.semantic.kind {
-        SemanticOpKind::Primitive(kind)
-            if matches!(
-                kind,
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
-            ) =>
-        {
-            Err(WasmError::internal(
-                "unreachable must end an LIR block, not appear in the body".into(),
-            ))
-        }
-        SemanticOpKind::Primitive(kind) => {
-            lower_primitive(kind, state, planned.frame, values);
-            Ok(())
-        }
-        SemanticOpKind::LocalGet { .. } => {
-            lower_local_get(&op.planned.kind, state, planned.frame, values)
-        }
-        SemanticOpKind::LocalSet { .. } => {
-            lower_local_set(&op.planned.kind, state, planned.frame, values)
-        }
-        SemanticOpKind::LocalTee { .. } => {
-            lower_local_tee(&op.planned.kind, state, planned.frame, values)
-        }
-        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
-        SemanticOpKind::Else => Err(WasmError::internal(
-            "else must end an LIR block, not appear in the body".into(),
-        )),
-        SemanticOpKind::CallExternal {
-            func_idx,
-            params,
-            results,
-        } => {
-            lower_call_external(*func_idx, *params, *results, state, planned.frame, values);
-            Ok(())
-        }
-        SemanticOpKind::CallInternal {
-            callee,
-            params,
-            results,
-        } => {
-            lower_call_internal(*callee, *params, *results, state, planned.frame, values);
-            Ok(())
-        }
-        SemanticOpKind::CallIndirect {
-            type_idx,
-            table_idx,
-            params,
-            results,
-        } => {
-            lower_call_indirect(
-                *type_idx,
-                *table_idx,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                values,
-            );
-            Ok(())
-        }
-        SemanticOpKind::If { .. }
-        | SemanticOpKind::Br { .. }
-        | SemanticOpKind::BrIf { .. }
-        | SemanticOpKind::BrTable { .. }
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => Err(WasmError::internal(
-            "control-flow terminators must end an LIR block".into(),
-        )),
-    }
-}
-
-fn lower_block_end_op(
-    op: &SemanticPlannedOp<'_>,
-    mapped: &[SemanticPlannedOp<'_>],
-    state: &mut BlockState,
-    planned: &PlannedProgram,
-    config: PlanConfig,
-    semantic_to_block: &[LirTarget],
-    values: &mut ValueAlloc,
-) -> Result<LirTerminator, WasmError> {
-    for planned_op in &op.prefix {
-        lower_synthetic_prefix_op(planned_op, state, planned.frame, values)?;
-    }
-
-    match &op.semantic.kind {
-        SemanticOpKind::Primitive(kind)
-            if matches!(
-                kind,
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
-            ) =>
-        {
-            state.ops.push(LirInst {
-                kind: LirInstKind::Leaf {
-                    op: LirLeafOp::from(kind.clone()),
-                    args: Vec::new(),
-                    results: Vec::new(),
-                },
-            });
-            Ok(LirTerminator::TrapUnreachable)
-        }
-        SemanticOpKind::Primitive(kind) => {
-            lower_primitive(kind, state, planned.frame, values);
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::LocalGet { .. } => {
-            lower_local_get(&op.planned.kind, state, planned.frame, values)?;
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::LocalSet { .. } => {
-            lower_local_set(&op.planned.kind, state, planned.frame, values)?;
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::LocalTee { .. } => {
-            lower_local_tee(&op.planned.kind, state, planned.frame, values)?;
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } => goto_next(
-            op.semantic,
-            state,
-            planned,
-            config,
-            semantic_to_block,
-            values,
-        ),
-        SemanticOpKind::If { .. } => {
-            let cond = pop_one(state, planned.frame, values);
-            let then_edge = next_edge(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )?;
-            let else_edge = edge_to_target(
-                resolve_if_else_target(op, mapped)?,
-                state,
-                EdgeMapping::Identity,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )?;
-            Ok(LirTerminator::Branch {
-                cond,
-                then_edge,
-                else_edge,
-            })
-        }
-        SemanticOpKind::Else => {
-            if let Some(target) = op.semantic.alt {
-                Ok(LirTerminator::Goto(edge_to_target(
-                    target,
-                    state,
-                    EdgeMapping::Identity,
-                    planned,
-                    config,
-                    semantic_to_block,
-                    values,
-                )?))
-            } else {
-                goto_next(
-                    op.semantic,
-                    state,
-                    planned,
-                    config,
-                    semantic_to_block,
-                    values,
-                )
-            }
-        }
-        SemanticOpKind::End => goto_next(
-            op.semantic,
-            state,
-            planned,
-            config,
-            semantic_to_block,
-            values,
-        ),
-        SemanticOpKind::Br { stack_drop, arity } => Ok(LirTerminator::Goto(edge_to_target(
-            op.semantic
-                .alt
-                .ok_or_else(|| WasmError::invalid("semantic br missing target".into()))?,
-            state,
-            EdgeMapping::Branch {
-                stack_drop: *stack_drop,
-                arity: *arity,
-            },
-            planned,
-            config,
-            semantic_to_block,
-            values,
-        )?)),
-        SemanticOpKind::BrIf { stack_drop, arity } => {
-            let cond = pop_one(state, planned.frame, values);
-            let then_edge = edge_to_target(
-                op.semantic
-                    .alt
-                    .ok_or_else(|| WasmError::invalid("semantic br_if missing target".into()))?,
-                state,
-                EdgeMapping::Branch {
-                    stack_drop: *stack_drop,
-                    arity: *arity,
-                },
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )?;
-            let else_edge = next_edge(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )?;
-            Ok(LirTerminator::Branch {
-                cond,
-                then_edge,
-                else_edge,
-            })
-        }
-        SemanticOpKind::BrTable { entries } => {
-            let index = pop_one(state, planned.frame, values);
-            let entries = entries
-                .iter()
-                .map(|entry| {
-                    br_table_edge(entry, state, planned, config, semantic_to_block, values)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(LirTerminator::BrTable { index, entries })
-        }
-        SemanticOpKind::CallExternal {
-            func_idx,
-            params,
-            results,
-        } => {
-            lower_call_external(*func_idx, *params, *results, state, planned.frame, values);
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::CallInternal {
-            callee,
-            params,
-            results,
-        } => {
-            lower_call_internal(*callee, *params, *results, state, planned.frame, values);
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::CallIndirect {
-            type_idx,
-            table_idx,
-            params,
-            results,
-        } => {
-            lower_call_indirect(
-                *type_idx,
-                *table_idx,
-                *params,
-                *results,
-                state,
-                planned.frame,
-                values,
-            );
-            goto_next(
-                op.semantic,
-                state,
-                planned,
-                config,
-                semantic_to_block,
-                values,
-            )
-        }
-        SemanticOpKind::ReturnVoid => Ok(LirTerminator::Return { values: Vec::new() }),
-        SemanticOpKind::ReturnOne => Ok(LirTerminator::Return {
-            values: materialize_top_values(state, 1, planned.frame, values),
-        }),
-        SemanticOpKind::Return { arity } => Ok(LirTerminator::Return {
-            values: materialize_top_values(state, *arity as usize, planned.frame, values),
-        }),
-    }
-}
-
-fn resolve_if_else_target(
-    op: &SemanticPlannedOp<'_>,
-    mapped: &[SemanticPlannedOp<'_>],
-) -> Result<crate::vm::wasm::common::SemanticTarget, WasmError> {
-    let target = op
-        .semantic
-        .alt
-        .ok_or_else(|| WasmError::invalid("semantic if missing alt target".into()))?;
-    let Some(target_op) = mapped.get(target.index().as_usize()) else {
-        return Err(WasmError::invalid(
-            "semantic if alt target out of range".into(),
-        ));
-    };
-
-    if matches!(target_op.semantic.kind, SemanticOpKind::Else) {
-        target_op
-            .semantic
-            .next
-            .map(|next| crate::vm::wasm::common::SemanticTarget::new(next.as_usize()))
-            .ok_or_else(|| WasmError::invalid("semantic else missing body target".into()))
-    } else {
-        Ok(target)
-    }
 }

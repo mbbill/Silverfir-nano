@@ -1,27 +1,24 @@
-//! LIR-native leaf-op vocabulary.
+//! LIR-local leaf-op vocabulary.
 //!
-//! This mirrors the reusable Wasm leaf-op set, but it is owned by LIR rather
-//! than borrowing `PrimitiveOpKind` directly.
+//! This wraps `PrimitiveOpKind` but excludes operations that are designated as
+//! true runtime-boundary ops in `LirRuntimeOp`.
 
-use crate::vm::wasm::primitive_op::{for_each_primitive_op, PrimitiveOpKind};
+use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
-macro_rules! define_lir_leaf_ops {
-    ($(
-        $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),
-    )* ) => {
-        #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum LirLeafOp {
-            $( $name $( { $($field : $ty),* } )?, )*
-        }
+use super::runtime::is_runtime_boundary_primitive;
 
-        impl From<PrimitiveOpKind> for LirLeafOp {
-            fn from(kind: PrimitiveOpKind) -> Self {
-                match kind {
-                    $( PrimitiveOpKind::$name $( { $($field),* } )? => Self::$name $( { $($field),* } )?, )*
-                }
-            }
-        }
-    };
+/// One local, non-runtime leaf op.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LirLeafOp(PrimitiveOpKind);
+
+impl LirLeafOp {
+    #[inline]
+    pub fn from_primitive(kind: PrimitiveOpKind) -> Option<Self> {
+        (!is_runtime_boundary_primitive(&kind)).then_some(Self(kind))
+    }
+
+    #[inline]
+    pub fn primitive(&self) -> &PrimitiveOpKind {
+        &self.0
+    }
 }
-
-for_each_primitive_op!(define_lir_leaf_ops);
