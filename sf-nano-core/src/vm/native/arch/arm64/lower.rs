@@ -1710,6 +1710,16 @@ impl<'a> Arm64Lowerer<'a> {
                 .emit_u32(enc::str_64(REG_FP, REG_SCRATCH0, callee_frame_size as u32 + 1));
         }
         self.move_if_needed(REG_FP, REG_SCRATCH0);
+        #[cfg(feature = "function-trace")]
+        {
+            self.move_if_needed(Arm64Reg::X0, REG_CTX);
+            self.materialize_u64(Arm64Reg::X1, u64::from(callee));
+            self.materialize_u64(
+                REG_BRANCH_TARGET,
+                super::entry::arm64_function_trace_enter_func_idx as usize as u64,
+            );
+            self.emitter.emit_u32(enc::blr(REG_BRANCH_TARGET));
+        }
 
         let callee_entry_load = self.emitter.len();
         self.emitter
@@ -1838,7 +1848,7 @@ impl<'a> Arm64Lowerer<'a> {
         Ok(())
     }
 
-    fn emit_return_sequence(&mut self) -> Result<(), WasmError> {
+    fn emit_return_sequence(&mut self, arity: usize) -> Result<(), WasmError> {
         let call_scratch = self
             .program
             .frame
@@ -1868,6 +1878,30 @@ impl<'a> Arm64Lowerer<'a> {
             .emit_u32(enc::sub_imm_64(REG_SCRATCH0, REG_SCRATCH0, 1));
         self.emitter
             .emit_u32(enc::str_64(REG_SCRATCH0, REG_CTX, CALL_DEPTH_OFFSET));
+        #[cfg(feature = "function-trace")]
+        {
+            self.move_if_needed(Arm64Reg::X0, REG_CTX);
+            self.move_if_needed(Arm64Reg::X1, REG_FP);
+            self.materialize_u64(Arm64Reg::X2, arity as u64);
+            self.materialize_u64(
+                REG_BRANCH_TARGET,
+                super::entry::arm64_function_trace_exit as usize as u64,
+            );
+            self.emitter.emit_u32(enc::blr(REG_BRANCH_TARGET));
+            if continuation_slot <= 63 {
+                self.emitter.emit_u32(enc::ldp_64(
+                    REG_BRANCH_TARGET,
+                    REG_SCRATCH1,
+                    REG_FP,
+                    continuation_slot as i32,
+                ));
+            } else {
+                self.emitter
+                    .emit_u32(enc::ldr_64(REG_BRANCH_TARGET, REG_FP, continuation_slot));
+                self.emitter
+                    .emit_u32(enc::ldr_64(REG_SCRATCH1, REG_FP, continuation_slot + 1));
+            }
+        }
         self.move_if_needed(REG_CONT_FP, REG_FP);
         self.move_if_needed(REG_FP, REG_SCRATCH1);
         self.emitter.emit_u32(enc::br(REG_BRANCH_TARGET));
@@ -1910,7 +1944,7 @@ impl<'a> Arm64Lowerer<'a> {
                     })
                     .collect();
                 self.emit_parallel_copies(pending)?;
-                self.emit_return_sequence()?;
+                self.emit_return_sequence(values.len())?;
                 Ok(())
             }
             NativeTerminator::BrTable { index, entries } => self.emit_br_table(*index, entries),

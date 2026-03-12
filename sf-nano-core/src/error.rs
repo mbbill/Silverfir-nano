@@ -215,6 +215,18 @@ impl WasmError {
         }
     }
 
+    pub fn class(&self) -> &'static str {
+        match &*self.inner {
+            WasmErrorInner::Malformed { .. } => "malformed",
+            WasmErrorInner::Invalid { .. } => "invalid",
+            WasmErrorInner::Unlinkable { .. } => "unlinkable",
+            WasmErrorInner::Exhaustion { .. } => "exhaustion",
+            WasmErrorInner::Trap { .. } => "trap",
+            WasmErrorInner::Exit { .. } => "exit",
+            WasmErrorInner::Internal { .. } => "internal",
+        }
+    }
+
     pub fn exit_code(&self) -> Option<i32> {
         match &*self.inner {
             WasmErrorInner::Exit { code, .. } => Some(*code),

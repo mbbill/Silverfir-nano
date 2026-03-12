@@ -5,6 +5,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
+#[cfg(feature = "function-trace")]
+use crate::vm::debug::function_trace;
 use crate::vm::entities::{FunctionInst, MemInst, ModuleInst};
 use crate::vm::interp::context::Context;
 use crate::vm::interp::handlers::run_trampoline;
@@ -156,6 +158,12 @@ pub fn internal_eval(
         heap_size as u64,
     );
 
+    #[cfg(feature = "function-trace")]
+    {
+        function_trace::init_from_env();
+        function_trace::fast_root_entry(&mut ctx, spec);
+    }
+
     unsafe {
         *fp.add(frame_size) = 0;
         *fp.add(frame_size + 1) = 0;
@@ -186,7 +194,15 @@ pub fn internal_eval(
     }
 
     if let Some(error) = ctx.error.clone() {
+        #[cfg(feature = "function-trace")]
+        function_trace::fast_trap_current(&mut ctx, &error);
         return Err(error);
+    }
+
+    #[cfg(feature = "function-trace")]
+    {
+        let results = unsafe { core::slice::from_raw_parts(stack_base, ft.results().len()) };
+        function_trace::fast_root_exit(store, spec, results);
     }
 
     Ok(())

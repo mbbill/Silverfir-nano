@@ -1,6 +1,5 @@
 #[cfg(feature = "profile")]
 mod discover_fusion;
-mod trace_compare;
 
 #[cfg(feature = "micro-jit")]
 use sf_nano_core::native_stats_snapshot;
@@ -19,7 +18,6 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--reference] [--dir <path>] <wasm-file> [args...]");
-        eprintln!("  sf-nano-cli trace-compare <left.trace> <right.trace>");
         #[cfg(feature = "profile")]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -37,9 +35,6 @@ fn main() {
     if args[1] == "discover-fusion" {
         discover_fusion::run_from_args(&args[2..]);
         return;
-    }
-    if args[1] == "trace-compare" {
-        trace_compare::run_from_args(&args[2..]);
     }
 
     // Parse global runtime options.

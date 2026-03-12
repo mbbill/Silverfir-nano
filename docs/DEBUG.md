@@ -282,7 +282,7 @@ SF_FUNCTION_TRACE=/tmp/native.trace \
 Compare:
 
 ```bash
-./target/release/sf-nano-cli trace-compare /tmp/base.trace /tmp/native.trace
+diff -u /tmp/base.trace /tmp/native.trace
 ```
 
 Extra knob:

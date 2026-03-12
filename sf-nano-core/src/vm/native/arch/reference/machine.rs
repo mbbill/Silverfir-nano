@@ -28,6 +28,8 @@ use crate::{
         value::{RefHandle, Value},
     },
 };
+#[cfg(feature = "function-trace")]
+use crate::vm::debug::function_trace;
 
 use crate::vm::lir::leaf::LirLeafOp;
 
@@ -183,6 +185,17 @@ impl<'a> ReferenceMachine<'a> {
                 for (index, raw) in raws.into_iter().enumerate() {
                     unsafe {
                         *self.fp.add(index) = raw;
+                    }
+                }
+                #[cfg(feature = "function-trace")]
+                if self.ctx.call_depth != 0 {
+                    self.ctx.call_depth = self.ctx.call_depth.saturating_sub(1);
+                    unsafe {
+                        function_trace::native_function_trace_exit(
+                            self.ctx as *mut NativeContext,
+                            self.fp,
+                            values.len() as u64,
+                        );
                     }
                 }
                 Ok(MachineStep::Return)
@@ -839,6 +852,7 @@ impl<'a> ReferenceMachine<'a> {
                 params_len,
                 results_len,
             } => self.invoke_local(
+                callee,
                 code,
                 unsafe { &*program },
                 callee_params_count,
@@ -898,6 +912,7 @@ impl<'a> ReferenceMachine<'a> {
                 params_len,
                 results_len,
             } => self.invoke_local(
+                func_idx,
                 code,
                 unsafe { &*program },
                 params_len as u16,
@@ -978,6 +993,7 @@ impl<'a> ReferenceMachine<'a> {
 
     fn invoke_local(
         &mut self,
+        callee_func_idx: u32,
         code: *const NativeCode,
         callee: &NativeProgram,
         callee_params_count: u16,
@@ -1031,13 +1047,14 @@ impl<'a> ReferenceMachine<'a> {
         let saved_code = self.ctx.current_code;
         self.ctx.current_code = code;
         self.ctx.call_depth = self.ctx.call_depth.saturating_add(1);
+        #[cfg(feature = "function-trace")]
+        function_trace::native_function_trace_enter_func_idx(self.ctx, callee_func_idx);
         let result = if unsafe { (&*code).internal_entry().is_some() } {
             self.invoke_compiled_local(unsafe { &*code }, callee_fp)
         } else {
-            ReferenceMachine::new(self.ctx, callee, callee_fp).run()
+            execute_program(self.ctx, callee, callee_fp)
         };
         self.ctx.current_code = saved_code;
-        self.ctx.call_depth = self.ctx.call_depth.saturating_sub(1);
         result?;
 
         for (index, place) in results.iter().copied().enumerate() {
@@ -2031,7 +2048,12 @@ pub fn execute_program(
     program: &NativeProgram,
     fp: *mut u64,
 ) -> Result<(), WasmError> {
-    ReferenceMachine::new(ctx, program, fp).run()
+    let result = ReferenceMachine::new(ctx, program, fp).run();
+    #[cfg(feature = "function-trace")]
+    if let Err(ref error) = result {
+        function_trace::native_trap_current(ctx, error);
+    }
+    result
 }
 
 #[cfg(test)]

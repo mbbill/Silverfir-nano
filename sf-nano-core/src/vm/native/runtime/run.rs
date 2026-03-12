@@ -9,6 +9,8 @@
 use alloc::{vec, vec::Vec};
 
 use crate::error::WasmError;
+#[cfg(feature = "function-trace")]
+use crate::vm::debug::function_trace;
 use crate::vm::{
     entities::{Caller, FunctionInst, MemInst},
     interp::stack::InterpreterStack,
@@ -55,6 +57,7 @@ impl<'a> NativeRuntime<'a> {
 
         let results = run_local_function(
             code,
+            func,
             self.store,
             stack_base,
             stack_end,
@@ -127,6 +130,7 @@ pub fn eval(
 
 fn run_local_function(
     code: &NativeCode,
+    func: &FunctionInst,
     store: &mut Store,
     fp: *mut u64,
     stack_end: *mut u64,
@@ -152,6 +156,15 @@ fn run_local_function(
         .entry
         .ok_or_else(|| WasmError::internal("native code is missing entry".into()))?;
 
+    #[cfg(feature = "function-trace")]
+    if let FunctionInst::Local { spec, .. } = func {
+        function_trace::init_from_env();
+        let backend = crate::vm::native::arch::active_native_backend()
+            .map(|backend| backend.as_str())
+            .unwrap_or("native");
+        function_trace::native_root_entry(&mut ctx, spec, backend);
+    }
+
     unsafe {
         entry(&mut ctx, fp, 0, 0, 0, 0, 0, 0, 0);
     }
@@ -160,7 +173,92 @@ fn run_local_function(
         return Err(error);
     }
 
+    #[cfg(feature = "function-trace")]
+    if let FunctionInst::Local { spec, .. } = func {
+        let results = unsafe { core::slice::from_raw_parts(fp, results_len) };
+        function_trace::native_root_exit(&mut ctx, spec, results);
+    }
+
     Ok((0..results_len)
         .map(|index| unsafe { *fp.add(index) })
         .collect())
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+mod tests {
+    use super::run_function;
+    use alloc::{rc::Rc, vec};
+    use crate::{
+        module::{
+            entities::{Bytecode, FunctionSpec},
+            type_context::TypeContext,
+            type_defs::FunctionType,
+        },
+        utils::limits::Limits,
+        value_type::ValueType,
+        vm::{
+            entities::{FunctionInst, ModuleInst, TableInst},
+            native::arch::set_reference_backend,
+            store::Store,
+            value::{RefHandle, Value},
+        },
+    };
+
+    fn build_call_indirect_store() -> Store {
+        let sig = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![sig.clone()]);
+        let mut module = ModuleInst::new("test".into(), types);
+        module.functions.push(FunctionInst::Local {
+            spec: FunctionSpec::new(sig.clone(), 0),
+            type_index: 0,
+        });
+        module.functions.push(FunctionInst::Local {
+            spec: FunctionSpec::new(sig, 0),
+            type_index: 0,
+        });
+        module
+            .tables
+            .push(TableInst::new(Limits::new(1, Some(1)).expect("limits"), ValueType::funcref()));
+        module.tables[0].elements[0] = RefHandle::new(0);
+
+        let callee_spec = match &mut module.functions[0] {
+            FunctionInst::Local { spec, .. } => spec,
+            _ => unreachable!(),
+        };
+        callee_spec.set_code(Bytecode::from(&[0x41, 0xb2, 0x02, 0x0b][..]));
+
+        let caller_spec = match &mut module.functions[1] {
+            FunctionInst::Local { spec, .. } => spec,
+            _ => unreachable!(),
+        };
+        caller_spec.set_code(Bytecode::from(&[
+            0x41, 0x00, // i32.const 0
+            0x11, 0x00, 0x00, // call_indirect type 0 table 0
+            0x0b, // end
+        ][..]));
+
+        Store::new(module)
+    }
+
+    #[test]
+    fn native_runtime_call_indirect_arm64() {
+        set_reference_backend(false).expect("arm64 backend");
+        let mut store = build_call_indirect_store();
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func = unsafe { &*func_ptr };
+        let results = run_function(func, &mut store, &[]).expect("native run");
+        assert_eq!(results, vec![Value::I32(306)]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn native_runtime_call_indirect_reference() {
+        set_reference_backend(true).expect("reference backend");
+        let mut store = build_call_indirect_store();
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func = unsafe { &*func_ptr };
+        let results = run_function(func, &mut store, &[]).expect("reference run");
+        assert_eq!(results, vec![Value::I32(306)]);
+        set_reference_backend(false).expect("reset arm64 backend");
+    }
 }

@@ -3,7 +3,7 @@
 //! This file should stay limited to ARM64 entry/patch representation, not
 //! frontend semantics.
 
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{rc::Rc, string::ToString, vec::Vec};
 use core::slice;
 
 use crate::{
@@ -22,6 +22,12 @@ use crate::{
         value::Value,
     },
 };
+#[cfg(feature = "function-trace")]
+use crate::vm::debug::function_trace;
+
+unsafe extern "C" {
+    fn trunc(x: f64) -> f64;
+}
 
 /// One unresolved ARM64 block-entry patch site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +87,7 @@ pub(super) unsafe extern "C" fn arm64_raise_exhaustion(ctx: *mut NativeContext, 
         1 => "call stack exhausted",
         _ => "native execution failed",
     };
-    ctx.error = Some(WasmError::exhaustion(message.into()));
+    set_ctx_error(ctx, WasmError::exhaustion(message.into()));
 }
 
 pub(super) unsafe extern "C" fn arm64_raise_trap(ctx: *mut NativeContext, kind: u64) {
@@ -96,7 +102,24 @@ pub(super) unsafe extern "C" fn arm64_raise_trap(ctx: *mut NativeContext, kind: 
         4 => WasmError::trap("integer overflow".into()),
         _ => WasmError::trap("native execution trapped".into()),
     };
-    ctx.error = Some(error);
+    set_ctx_error(ctx, error);
+}
+
+#[cfg(feature = "function-trace")]
+pub(super) unsafe extern "C" fn arm64_function_trace_enter_func_idx(
+    ctx: *mut NativeContext,
+    func_idx: u64,
+) {
+    function_trace::native_function_trace_enter_func_idx_entry(ctx, func_idx);
+}
+
+#[cfg(feature = "function-trace")]
+pub(super) unsafe extern "C" fn arm64_function_trace_exit(
+    ctx: *mut NativeContext,
+    fp: *mut u64,
+    arity: u64,
+) {
+    function_trace::native_function_trace_exit(ctx, fp, arity);
 }
 
 pub(super) unsafe extern "C" fn arm64_f64_add(lhs: u64, rhs: u64) -> u64 {
@@ -152,7 +175,7 @@ pub(super) unsafe extern "C" fn arm64_i32_trunc_sat_f64_s(value: u64) -> u64 {
     } else if value <= i32::MIN as f64 {
         i32::MIN
     } else {
-        value.trunc() as i32
+        unsafe { trunc(value) as i32 }
     };
     u64::from(out as u32)
 }
@@ -164,7 +187,7 @@ pub(super) unsafe extern "C" fn arm64_i32_trunc_sat_f64_u(value: u64) -> u64 {
     } else if value >= u32::MAX as f64 {
         u32::MAX
     } else {
-        value.trunc() as u32
+        unsafe { trunc(value) as u32 }
     };
     u64::from(out)
 }
@@ -195,7 +218,7 @@ pub(super) unsafe extern "C" fn arm64_memory_fill_helper(
         Ok(()) => 0,
         Err(error) => {
             if let Some(ctx) = unsafe { ctx.as_mut() } {
-                ctx.error = Some(error);
+                set_ctx_error(ctx, error);
             }
             1
         }
@@ -254,7 +277,7 @@ pub(super) unsafe extern "C" fn arm64_memory_copy_helper(
         Ok(()) => 0,
         Err(error) => {
             if let Some(ctx) = unsafe { ctx.as_mut() } {
-                ctx.error = Some(error);
+                set_ctx_error(ctx, error);
             }
             1
         }
@@ -297,7 +320,7 @@ pub(super) unsafe extern "C" fn arm64_call_external_helper(
         Ok(()) => 0,
         Err(error) => {
             if let Some(ctx) = unsafe { ctx.as_mut() } {
-                ctx.error = Some(error);
+                set_ctx_error(ctx, error);
             }
             1
         }
@@ -323,11 +346,28 @@ pub(super) unsafe extern "C" fn arm64_call_indirect_helper(
             })?;
             let table = store.table(req.table_idx as usize);
             let handle = table.elements.get(req.index as usize).ok_or_else(|| {
-                WasmError::invalid("call_indirect: table index out of range".into())
+                WasmError::invalid(alloc::format!(
+                    "call_indirect: table index out of range (func={} table={} index={} len={})",
+                    debug_current_func_idx(ctx)
+                        .map(|idx| idx.to_string())
+                        .unwrap_or_else(|| "?".into()),
+                    req.table_idx,
+                    req.index,
+                    table.elements.len(),
+                ))
             })?;
             if handle.is_null() {
                 return Err(WasmError::invalid(
-                    "call_indirect: null function reference".into(),
+                    alloc::format!(
+                        "call_indirect: null function reference (func={} table={} index={} len={} elems={})",
+                        debug_current_func_idx(ctx)
+                            .map(|idx| idx.to_string())
+                            .unwrap_or_else(|| "?".into()),
+                        req.table_idx,
+                        req.index,
+                        table.elements.len(),
+                        table_preview(table.elements.as_slice()),
+                    ),
                 ));
             }
             handle.raw_value() as u32
@@ -363,6 +403,7 @@ pub(super) unsafe extern "C" fn arm64_call_indirect_helper(
                 ctx,
                 fp,
                 req.caller_frame_slots as usize,
+                func_idx,
                 unsafe { &*code },
                 unsafe { &*program },
                 params_len,
@@ -380,11 +421,47 @@ pub(super) unsafe extern "C" fn arm64_call_indirect_helper(
         Ok(()) => 0,
         Err(error) => {
             if let Some(ctx) = unsafe { ctx.as_mut() } {
-                ctx.error = Some(error);
+                set_ctx_error(ctx, error);
             }
             1
         }
     }
+}
+
+fn debug_current_func_idx(ctx: &NativeContext) -> Option<usize> {
+    let store = unsafe { ctx.store.as_ref() }?;
+    let current_code = ctx.current_code;
+    store
+        .module()
+        .functions
+        .iter()
+        .enumerate()
+        .find(|(_, func)| {
+            func.spec()
+                .and_then(|spec| spec.get_native_code())
+                .map(|code| core::ptr::eq(code as *const NativeCode, current_code))
+                .unwrap_or(false)
+        })
+        .map(|(func_idx, _)| func_idx)
+}
+
+fn table_preview(elements: &[crate::vm::value::RefHandle]) -> alloc::string::String {
+    let preview_len = elements.len().min(8);
+    let mut out = alloc::string::String::new();
+    for (index, handle) in elements.iter().take(preview_len).enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        if handle.is_null() {
+            out.push_str("null");
+        } else {
+            out.push_str(&alloc::format!("{}", handle.raw_value()));
+        }
+    }
+    if elements.len() > preview_len {
+        out.push_str(",...");
+    }
+    out
 }
 
 /// Shared Rust target for the bring-up ARM64 entry trampoline.
@@ -414,7 +491,7 @@ pub(super) unsafe extern "C" fn shared_native_entry(
     let result = machine::execute_program(ctx, program, fp);
     ctx.refresh_cached_views();
     if let Err(error) = result {
-        ctx.error = Some(error);
+        set_ctx_error(ctx, error);
     }
 }
 
@@ -510,6 +587,7 @@ fn invoke_local_callee(
     ctx: &mut NativeContext,
     caller_fp: *mut u64,
     caller_frame_slots: usize,
+    func_idx: u32,
     code: &NativeCode,
     program: &NativeProgram,
     params_len: usize,
@@ -549,6 +627,8 @@ fn invoke_local_callee(
     let saved_code = ctx.current_code;
     ctx.current_code = code as *const NativeCode;
     ctx.call_depth = ctx.call_depth.saturating_add(1);
+    #[cfg(feature = "function-trace")]
+    function_trace::native_function_trace_enter_func_idx(ctx, func_idx);
     let result = if code.internal_entry().is_some() {
         let entry = code
             .entry
@@ -564,7 +644,6 @@ fn invoke_local_callee(
         machine::execute_program(ctx, program, callee_fp)
     };
     ctx.current_code = saved_code;
-    ctx.call_depth = ctx.call_depth.saturating_sub(1);
     result?;
 
     for (index, slot) in results.iter_mut().enumerate() {
@@ -572,4 +651,10 @@ fn invoke_local_callee(
     }
     ctx.refresh_cached_views();
     Ok(())
+}
+
+fn set_ctx_error(ctx: &mut NativeContext, error: WasmError) {
+    #[cfg(feature = "function-trace")]
+    function_trace::native_trap_current(ctx, &error);
+    ctx.error = Some(error);
 }

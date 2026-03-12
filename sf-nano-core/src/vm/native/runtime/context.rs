@@ -26,6 +26,8 @@ pub struct NativeContext {
     pub error: Option<WasmError>,
     pub current_code: *const NativeCode,
     pub term_entry: Option<NativeEntry>,
+    #[cfg(feature = "function-trace")]
+    pub trace_stack: std::vec::Vec<u32>,
 }
 
 impl NativeContext {
@@ -46,6 +48,8 @@ impl NativeContext {
             error: None,
             current_code,
             term_entry: None,
+            #[cfg(feature = "function-trace")]
+            trace_stack: std::vec::Vec::new(),
         };
         ctx.refresh_cached_views();
         ctx
