@@ -473,3 +473,234 @@ No general register allocation should be required.
 - `table.fill`
 
 **Reason:** These can be lowered later as explicit loops, memcpy/memmove-style lowering, or narrow runtime primitives. They are not inherently helper-shaped in the final design, but they may remain helpers briefly if that speeds staged refactoring without changing the intended boundary.
+
+## Conceptual Walkthrough
+
+This section is not another set of rules. It is a walkthrough of how the whole pipeline is supposed to work end to end.
+
+The most important point is that this engine is not designed like a traditional compiler backend. It does not try to preserve arbitrary full SSA and then solve register pressure with a general-purpose register allocator. The engine gets its efficiency from the Wasm stack discipline:
+
+- stack values are used from the top down
+- the top of the stack is the hottest near-term state
+- if we keep a fixed top-of-stack window in registers, we get a very simple and very effective execution model
+
+That is why frontend preparation matters so much.
+
+### 1. Wasm Instructions To Semantic Form
+
+The first step removes bytecode syntax and keeps only program meaning:
+
+- structured control flow
+- explicit branch targets
+- local/global/table/memory operations
+- call shape: local, indirect, external
+- runtime-boundary operations
+
+At this point we still care about Wasm semantics, not about registers or native code shape.
+
+### 2. Semantic Form To Prepared LIR
+
+This is the important engine-specific preparation stage.
+
+The backend passes down configuration such as:
+
+- `tos_lanes`
+- `cached_locals`
+- other fixed native budget information
+
+This stage does not "choose" those numbers. They are provided by the target/backend configuration.
+
+This stage also does not invent a new local layout. Local layout follows the Wasm/frame contract. In particular, arguments still appear where the callee expects them in its frame layout, and the frame shape still follows the calling convention the engine already relies on.
+
+What this stage does do:
+
+- preserve the canonical frame layout
+- preserve canonical local slots
+- analyze which locals are good local-cache candidates
+- pass down that hot-local preference metadata for later local-cache swapping
+- enforce the fixed TOS-window contract
+
+The key job here is to emit explicit `spill` / `load` in LIR so that transient live stack values never exceed `tos_lanes`.
+
+That means if a block would otherwise have 100 live stack values, this stage does not hand 100 live SSA values to the backend. Instead:
+
+- it keeps only the top `tos_lanes` transient values live in the TOS window
+- it spills deeper transient values to their canonical operand slots
+- it reloads them when they come back into the top window
+
+This is how the frontend guarantees backend fit without a traditional register allocator.
+
+### 3. What LIR Focuses On
+
+Prepared LIR is the frontend/backend contract.
+
+It should focus on:
+
+- CFG
+- SSA values for the current TOS window
+- canonical frame slots for locals and spilled stack values
+- explicit spill/load against operand slots when the TOS window is not enough
+- semantic calls
+- semantic runtime-boundary ops
+
+It should not focus on:
+
+- physical register names
+- general register allocation
+- ISA-specific addressing
+- machine-level continuation encoding
+
+For locals, LIR keeps canonical slot identity:
+
+- `local.set 0` writes `slot0`
+- `local.set 4` writes `slot4`
+
+The hot-local analysis does not change that. It only passes down which canonical local slots should later be swapped into the fixed local-cache registers.
+
+For transient stack values, LIR does carry the prepared TOS discipline. This is different from local caching. The TOS-window preparation must already be reflected in LIR so the backend never sees more transient live values than it can hold.
+
+### 4. Calls In Prepared LIR
+
+Calls need special care.
+
+The current design uses stack/frame layout to pass call arguments. That means before a call, this frontend-to-LIR preparation stage must:
+
+- spill any still-live TOS values to the correct `fp[...]` operand slots if they are needed there
+- make sure call arguments are in the canonical stack/frame locations the callee expects
+
+So LIR must be able to contain explicit operations like:
+
+- `spill(v1, slot3)`
+- `load(slot3, v2)`
+
+or whatever exact naming we settle on for those prepared stack-window operations.
+
+This is important: LIR does not need to say "SSA value `v1` lives in register X". But it does need to say when a transient value is published to its canonical frame slot so that calls and later reloads are correct.
+
+Local cache is different. We do not need the same kind of spill/load modeling in LIR for local-cache registers. Local-cache handling happens later, between LIR and MachineIR.
+
+### 5. Between LIR And MachineIR
+
+This is not another public IR. It is the lowering stage that consumes prepared LIR and produces machine-shaped IR.
+
+Its job is simple because LIR has already done the hard fit work.
+
+It needs to:
+
+- assign the bounded TOS live set into the fixed transient-value register window
+- assign fixed runtime registers such as `ctx` and `fp`
+- use the hot-local analysis metadata to swap selected canonical local slots into the fixed local-cache registers
+- save modified local-cache registers before a call if the callee may overwrite them
+- reload those cached locals back into their cache registers after return
+- lower semantic memory/global/table operations into explicit address computation, checks, loads, and stores
+- lower semantic calls into explicit machine control flow and call-link protocol
+
+This stage should still stay simple. It is not doing general RA. It is mostly a mechanical use of:
+
+- bounded TOS live values
+- fixed local-cache budget
+- fixed runtime registers
+
+### 6. What MachineIR Focuses On
+
+MachineIR is where VM-shaped concepts disappear.
+
+MachineIR should contain:
+
+- generic registers
+- explicit addresses
+- loads/stores
+- arithmetic
+- branches
+- jump tables
+- call/return/control-transfer structure
+- explicit helper boundaries
+
+MachineIR should not contain:
+
+- TOS lanes
+- hot-local ops
+- Wasm-local/global/table semantic names
+- planner spill provenance
+- VM register kinds
+
+By this point, the useful stack preparation has already done its job. MachineIR is just the architecture-neutral machine view of the already-prepared program.
+
+### 7. MachineIR To Machine Code Or Emulator
+
+From MachineIR, the final step is straightforward.
+
+The real backend:
+
+- maps generic machine registers to ISA registers
+- encodes instructions
+- lays out blocks
+- patches direct-call targets
+- resolves helper/external targets
+- emits code and sidecar data
+
+The emulator:
+
+- executes the same MachineIR
+- uses the same runtime contract
+- serves as the debug oracle for the machine layer
+
+It must not invent a different execution model from the one the real backend consumes.
+
+### Example Walkthrough
+
+Assume:
+
+- `tos_lanes = 4`
+- `cached_locals = 3`
+- local `0` is hot
+- local `4` is cold
+
+Wasm:
+
+```wat
+local.get 0
+i32.const 1
+i32.add
+local.set 0
+local.get 4
+call $g
+return
+```
+
+Prepared LIR conceptually looks like:
+
+```text
+v0 = ReadSlot(local_slot(0))
+v1 = Leaf(I32Const 1)
+v2 = Leaf(I32Add, [v0, v1])
+WriteSlot(local_slot(0), v2)
+
+v3 = ReadSlot(local_slot(4))
+spill(v3, operand_slot(0))
+CallInternal g
+load(operand_slot(result0), v4)
+Return [v4]
+```
+
+The exact operation names can change, but the important ideas are:
+
+- locals use canonical local slots
+- call arguments are published through canonical stack/frame layout
+- transient stack values are explicitly spilled/loaded when needed
+- backend fit is already guaranteed
+
+Then the LIR-to-MachineIR lowering does the simple backend work:
+
+- map the bounded live TOS values into the fixed TOS registers
+- map selected local slots into the fixed local-cache registers
+- save dirty cached locals before call if needed
+- restore/reload them after return
+- turn the call into machine-level control transfer
+
+This is the core design intention of the engine:
+
+- frontend preparation uses Wasm stack discipline to guarantee fit
+- LIR is prepared, not arbitrary full SSA
+- backend stays simple and single-pass
+- no traditional optimizer or general register allocator is required
