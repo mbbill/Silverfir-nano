@@ -9,6 +9,9 @@
 //!
 //! It must not reintroduce stack height, TOS rotation, or legacy LIR metadata.
 
+pub mod contract;
+pub mod machine;
+
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
