@@ -159,7 +159,7 @@ Each section states one rule and why it exists.
 
 ## Rule 24: ABI Modules Define Contracts, Not IR Storage Nodes
 
-**Rule:** `abi.rs` should define ABI contracts such as pinned inputs, call-facing register assignments, register budgets, and entry or edge contracts. It should not define final IR storage nodes like places, values, or addresses.
+**Rule:** `abi.rs` should define ABI contracts such as external boundary register assignments, call-facing register assignments, register budgets, and entry or edge contracts. It should not define final IR storage nodes like places, values, or addresses.
 
 **Reason:** ABI configuration and IR structure are related, but they are not the same thing. Keeping them separate makes it easier to see whether a concept is a contract the backend consumes or an IR node the compiler transforms.
 
@@ -169,11 +169,11 @@ Each section states one rule and why it exists.
 
 **Reason:** These names encode VM meaning or lowering history. A machine IR should use generic registers. If some registers are pinned by ABI, that belongs in ABI metadata, not in the semantic meaning of every IR operand.
 
-## Rule 26: Pinned ABI Inputs Are Opaque To The Backend
+## Rule 26: External Boundary Registers Are Opaque To The Backend
 
-**Rule:** If the runtime passes a distinguished input register into native code, that register is opaque below the IR boundary. The backend may know its assigned machine register, but not its VM meaning.
+**Rule:** If the runtime passes distinguished registers into native code at an external boundary, those registers are opaque below the IR boundary. The backend may know their assigned machine registers, but not their VM meaning.
 
-**Reason:** For example, a runtime base pointer may be passed in a pinned input register. Above the IR boundary, lowering may use it to derive addresses. Below the boundary, the backend should only see ordinary register-based address computation and memory operations.
+**Reason:** For example, a runtime base pointer may be passed in a fixed external-boundary register. Above the IR boundary, lowering may use it to derive addresses. Below the boundary, the backend should only see ordinary register-based address computation and memory operations.
 
 ## Rule 27: Context Is An ABI Contract, Not An ISA Concept
 
@@ -211,33 +211,157 @@ Each section states one rule and why it exists.
 
 **Reason:** The public shim is a boundary adapter. If it starts owning special behavior, the real function body no longer has a uniform native calling model.
 
-## Rule 33: Helpers Must Use Typed Machine-Level ABI Contracts
+## Rule 33: Helpers Use One Uniform Logical ABI
 
-**Rule:** Helper calls must be described by typed machine-level call contracts: explicit argument values, explicit result values, explicit clobbers, and explicit continuation behavior.
+**Rule:** All helpers must share one logical call shape: `helper(runtime, metadata, scratch) -> status`. The machine IR must not allow per-helper calling conventions.
 
-**Reason:** A helper boundary is still a call boundary. It must not smuggle VM semantics through generic metadata blobs or implicit frame conventions that only one backend understands.
+**Reason:** Per-helper signatures create another hidden ABI surface that can drift out of sync with runtime code. A single logical helper shape keeps helper lowering mechanical and reviewable.
 
-## Rule 34: Transparent Helpers Are Normal Calls, Not Semantic Escape Hatches
+## Rule 34: MachineIR Uses Opaque External Targets
 
-**Rule:** A helper that falls through in the same function must lower as an ordinary machine-level call with explicit clobber behavior and explicit result registers.
+**Rule:** The machine IR must refer to helpers and other external native targets through opaque external target ids. Machine IR must not encode helper symbols or backend addresses directly.
 
-**Reason:** Transparent helpers are still backend-visible calls. They should not force hidden spilling policy or hidden runtime-state refresh rules inside one architecture backend.
+**Reason:** Helper meaning and symbol resolution are sidecar link data, not machine code semantics. Keeping external target identity opaque prevents helper policy from leaking into the machine layer.
 
-## Rule 35: Control-Transfer Helpers Must Return Native Resume State
+## Rule 35: External Binding Data Owns Helper Meaning
 
-**Rule:** If a helper may resume execution at a different function body or frame, it must return explicit native resume state, such as the next entry and next frame base.
+**Rule:** Closed helper symbols and their mapping to real helper wrapper addresses belong in external binding metadata beside the machine module, not in the machine IR itself.
 
-**Reason:** This keeps control transfer in the native world. The helper computes the next native target; the backend resumes there directly instead of reinvoking a function through a host-facing entry.
+**Reason:** The backend needs a static resolver table, but machine IR should not know what a given external target id means. Sidecar binding data is the correct home for that meaning.
 
-## Rule 36: Table And Global Layout Knowledge Belongs Above MachineIR
+## Rule 36: Helper Metadata Is Read-Only And Helper Scratch Is Writable
+
+**Rule:** Helper-specific immutable data must live in read-only sidecar metadata. Helper-specific inputs and outputs must live in writable native scratch memory. These are different things and must not be conflated.
+
+**Reason:** Read-only metadata belongs beside the code. Writable helper data must not live in Wasm memory, Wasm globals, or code metadata. Keeping the two separate makes the contract explicit and avoids hidden aliasing or lifetime problems.
+
+## Rule 37: Helper Scratch Lives In Native Frame Memory
+
+**Rule:** Writable helper scratch must come from planned native frame space, not from Wasm memory, Wasm globals, or backend-invented ad hoc host stack blobs.
+
+**Reason:** Helper scratch is part of the native execution contract. Planning it above machine IR keeps helper calls uniform and prevents one backend from inventing a private scratch allocation model.
+
+## Rule 38: Helpers Return Only Status In ABI Registers
+
+**Rule:** Helper calls return only a status code in the helper ABI. Any helper-specific outputs must be written into writable scratch memory.
+
+**Reason:** Multi-value helper returns complicate backend lowering and make the ABI harder to keep stable. A single status return keeps the ABI small and lets the machine IR treat helper inputs and outputs as ordinary memory traffic.
+
+## Rule 39: Call Indirect And Local Control Transfer Stay Native
+
+**Rule:** `call_local` and local `call_indirect` must stay in native control flow. They must not rely on helper-driven control transfer.
+
+**Reason:** If local control transfer leaves native execution and comes back through a helper, then the machine IR still is not carrying enough control structure. Helpers are for true runtime boundaries, not for ordinary local calls.
+
+## Rule 40: Table And Global Layout Knowledge Belongs Above MachineIR
 
 **Rule:** Knowledge of table entry shape, global layout, memory view layout, and runtime object offsets must be resolved above the machine IR into explicit address computations and checks.
 
 **Reason:** The backend should not know how a table entry or global is laid out semantically. It should only lower the resulting loads, stores, compares, and branches.
 
-## Rule 37: MachineIR Must Be Sufficient To Lower The Whole Function
+## Rule 41: MachineIR Must Be Sufficient To Lower The Whole Function
 
 **Rule:** Once machine IR is formed, every function must be fully lowerable to an ISA backend without falling back to another executor or inventing architecture-local semantics.
 
 **Reason:** Machine IR is the final shared contract. If a backend still needs a debug executor, a shared interpreter, or architecture-only semantic helpers to finish the job, then the IR boundary is still wrong.
 
+## Current Design Decisions
+
+### Helper ABI
+
+**Decision:** The helper ABI is `helper(runtime, metadata, scratch) -> status`.
+
+**Reason:** This keeps the register budget small, avoids helper-id dispatch, and avoids multi-value Rust ABI returns. It is a documented logical contract, not a separate code-level ABI type.
+
+### External Targets
+
+**Decision:** Machine IR stores opaque external target ids, not helper kinds and not raw addresses.
+
+**Reason:** Real helper addresses are pointer-sized finalization details, and helper meaning belongs in sidecar binding data. The shared machine IR should stay ISA-neutral and should not encode either backend addresses or helper symbols directly.
+
+### Compare And Select
+
+**Decision:** Machine IR includes value-producing compare operations and `select` as straight-line instructions.
+
+**Reason:** Wasm relational operators and `select` produce values. Forcing them into CFG structure would expand the program unnecessarily and would leak a frontend lowering choice into machine IR.
+
+### Module Ownership
+
+**Decision:** Function ids, constant ids, and external target ids are owned by a top-level machine module artifact, not by isolated function bodies.
+
+**Reason:** Direct-call targets, helper metadata ids, and opaque external targets need one canonical allocation domain. A machine module makes those references explicit and validates them in one place.
+
+### Runtime Layout
+
+**Decision:** Final machine runtime contract does not carry memory/global/table layout offsets.
+
+**Reason:** Those offsets are runtime semantics that must be consumed above machine IR when lowering into explicit address computation.
+
+### Helper Metadata
+
+**Decision:** Helper metadata is a read-only sidecar record referenced from machine IR by a symbolic constant id.
+
+**Reason:** The backend only needs to materialize a metadata pointer. It must not understand helper-specific metadata structure.
+
+### Helper Scratch
+
+**Decision:** Helper scratch is writable native frame memory planned above machine IR.
+
+**Reason:** Helper inputs and outputs need writable storage, but that storage must not come from Wasm memory, Wasm globals, or read-only code metadata.
+
+### Helper Scope
+
+**Decision:** Helpers are reserved for true runtime boundaries such as host calls, growth operations, and segment-lifecycle operations.
+
+**Reason:** Normal memory/global/table access and local control transfer should lower above machine IR into explicit loads, stores, checks, and CFG.
+
+### External Bindings
+
+**Decision:** Closed helper symbols live in sidecar external binding data and are resolved to real helper wrapper addresses during backend finalization.
+
+**Reason:** The backend needs a static resolver table, but that table is part of link/finalization data, not part of machine IR semantics.
+
+## Current Helper Classification
+
+### Must Stay In Rust
+
+**Decision:** These operations remain true Rust/runtime helpers:
+
+- `call_external`
+- `memory.grow`
+- `table.grow`
+- `memory.init`
+- `data.drop`
+- `table.init`
+- `elem.drop`
+
+**Reason:** These are real runtime boundaries. They depend on host callbacks, runtime-owned allocation growth, or runtime-owned segment lifecycle, so keeping them as helpers is a real contract boundary rather than a lowering shortcut.
+
+### Must Lower Above MachineIR
+
+**Decision:** These operations must not remain helpers in the final design:
+
+- normal memory loads and stores
+- `memory.size`
+- `global.get`
+- `global.set`
+- `table.get`
+- `table.set`
+- `table.size`
+- `call_local`
+- local `call_indirect`
+- float arithmetic and conversions
+- ordinary integer/float compares that produce values
+
+**Reason:** These do not fundamentally differ by ISA except in encoding and register choice. They should lower above machine IR into explicit address computation, loads, stores, checks, arithmetic, and CFG.
+
+### Gray Area: Temporary Bring-Up Helpers Only
+
+**Decision:** These may temporarily remain helpers during refactor bring-up, but they are not considered fundamental Rust boundaries:
+
+- `memory.copy`
+- `memory.fill`
+- `table.copy`
+- `table.fill`
+
+**Reason:** These can be lowered later as explicit loops, memcpy/memmove-style lowering, or narrow runtime primitives. They are not inherently helper-shaped in the final design, but they may remain helpers briefly if that speeds staged refactoring without changing the intended boundary.

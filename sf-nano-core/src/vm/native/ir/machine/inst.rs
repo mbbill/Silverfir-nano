@@ -1,0 +1,108 @@
+use super::types::{
+    MachineAddr, MachineConstId, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
+    MachineFloatWidth, MachineExternId, MachineIntBinaryOp, MachineIntUnaryOp,
+    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineValue,
+    MachineCompareKind, MachineSign,
+};
+
+/// Helper call that falls through in the same function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineHelperCall {
+    /// Opaque external target id. Sidecar binding data resolves this to the
+    /// real Rust helper wrapper address during backend finalization.
+    pub target: MachineExternId,
+    /// Read-only sidecar metadata for this call site.
+    ///
+    /// The backend treats this as an opaque constant reference. Helper-specific
+    /// interpretation stays out of the ISA layer.
+    pub metadata: MachineConstId,
+    /// Register holding the base pointer of the writable native scratch area
+    /// for this helper call.
+    ///
+    /// Helper-specific inputs and outputs flow through explicit machine memory
+    /// accesses around the call, so the helper ABI itself stays uniform.
+    pub scratch: MachineReg,
+}
+
+/// One machine instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineInst {
+    pub kind: MachineInstKind,
+}
+
+/// Straight-line machine instruction vocabulary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MachineInstKind {
+    Move {
+        dst: MachineReg,
+        src: MachineValue,
+    },
+    Lea {
+        dst: MachineReg,
+        addr: MachineAddr,
+    },
+    Load {
+        dst: MachineReg,
+        addr: MachineAddr,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    },
+    Store {
+        addr: MachineAddr,
+        width: MachineMemWidth,
+        src: MachineValue,
+    },
+    IntUnary {
+        width: MachineIntWidth,
+        op: MachineIntUnaryOp,
+        dst: MachineReg,
+        src: MachineValue,
+    },
+    IntBinary {
+        width: MachineIntWidth,
+        op: MachineIntBinaryOp,
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    IntCompare {
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        sign: MachineSign,
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    FloatUnary {
+        width: MachineFloatWidth,
+        op: MachineFloatUnaryOp,
+        dst: MachineReg,
+        src: MachineValue,
+    },
+    FloatBinary {
+        width: MachineFloatWidth,
+        op: MachineFloatBinaryOp,
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    FloatCompare {
+        width: MachineFloatWidth,
+        kind: MachineCompareKind,
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    Convert {
+        op: MachineConvertOp,
+        dst: MachineReg,
+        src: MachineValue,
+    },
+    Select {
+        dst: MachineReg,
+        on_true: MachineValue,
+        on_false: MachineValue,
+        cond: MachineValue,
+    },
+    CallHelper(MachineHelperCall),
+}
