@@ -1,11 +1,11 @@
-//! CFG edge construction and successor-window mapping.
+//! CFG edge construction and successor binding shaping.
 
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::{
     lir::{
-        ir::{LirEdge, LirTerminator},
+        ir::{LirBinding, LirEdge, LirTerminator, LirValue},
         target::LirTarget,
     },
     plan::frame::FrameSpan,
@@ -21,12 +21,14 @@ pub(super) fn goto_next(
     semantic_op: &SemanticOp,
     state: &BlockState,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirTerminator, WasmError> {
     Ok(LirTerminator::Goto(next_edge(
         semantic_op,
         state,
         semantic_to_block,
+        block_params,
         entry_states,
     )?))
 }
@@ -35,6 +37,7 @@ pub(super) fn next_edge(
     semantic_op: &SemanticOp,
     state: &BlockState,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
     let next = semantic_op
@@ -45,6 +48,7 @@ pub(super) fn next_edge(
         state,
         EdgeMapping::Identity,
         semantic_to_block,
+        block_params,
         entry_states,
     )
 }
@@ -54,10 +58,17 @@ pub(super) fn edge_to_target(
     state: &BlockState,
     mapping: EdgeMapping,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
     let target_entry = *entry_states
         .get(target.index().as_usize())
+        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+    let target_block = *semantic_to_block
+        .get(target.index().as_usize())
+        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+    let target_params = block_params
+        .get(target_block.as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
 
     let mapped_height = match mapping {
@@ -75,15 +86,24 @@ pub(super) fn edge_to_target(
         )));
     }
 
-    let tos = match mapping {
-        EdgeMapping::Identity => state.top_values(target_entry.live_tos_count() as usize)?,
+    let bindings = match mapping {
+        EdgeMapping::Identity => {
+            let live_values = state.top_values(target_entry.live_tos_count() as usize)?;
+            bind_values(target_params, &live_values)?
+        }
         EdgeMapping::TakenBranch { payload, .. } => {
             if target_entry.live_tos_count() != 0 {
                 return Err(WasmError::internal(alloc::format!(
-                    "taken branch to semantic op {} must enter with canonical frame payload only, but target expects {} live TOS values (payload_slots={})",
+                    "taken branch to semantic op {} must enter with canonical frame payload only, but target expects {} live params (payload_slots={})",
                     target.index().as_usize(),
                     target_entry.live_tos_count(),
                     payload.map_or(0, |span| span.count),
+                )));
+            }
+            if !target_params.is_empty() {
+                return Err(WasmError::internal(alloc::format!(
+                    "taken branch to semantic op {} must not require live params when payload is canonical frame state",
+                    target.index().as_usize(),
                 )));
             }
             Vec::new()
@@ -91,11 +111,8 @@ pub(super) fn edge_to_target(
     };
 
     Ok(LirEdge {
-        target: *semantic_to_block
-            .get(target.index().as_usize())
-            .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?,
-        stack_height: mapped_height,
-        tos,
+        target: target_block,
+        bindings,
     })
 }
 
@@ -104,6 +121,7 @@ pub(super) fn br_table_edge(
     payload: Option<FrameSpan>,
     state: &BlockState,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
     edge_to_target(
@@ -116,8 +134,28 @@ pub(super) fn br_table_edge(
             payload,
         },
         semantic_to_block,
+        block_params,
         entry_states,
     )
+}
+
+fn bind_values(target_params: &[LirValue], values: &[LirValue]) -> Result<Vec<LirBinding>, WasmError> {
+    if target_params.len() != values.len() {
+        return Err(WasmError::internal(alloc::format!(
+            "prepared LIR edge binding mismatch: target expects {} params but source provides {} values",
+            target_params.len(),
+            values.len(),
+        )));
+    }
+
+    Ok(target_params
+        .iter()
+        .zip(values.iter())
+        .map(|(param, value)| LirBinding {
+            param: *param,
+            value: *value,
+        })
+        .collect())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

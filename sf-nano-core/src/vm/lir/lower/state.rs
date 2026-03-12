@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
-use crate::vm::lir::ir::{LirBlockParams, LirInst, LirValue};
+use crate::vm::lir::ir::{LirInst, LirValue};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
@@ -46,15 +46,16 @@ pub(super) struct BlockState {
 }
 
 impl BlockState {
-    pub(super) fn from_params(params: &LirBlockParams, tos_limit: u8) -> Result<Self, WasmError> {
-        let spill_depth = params
-            .stack_height
-            .saturating_sub(params.tos.len() as u16);
+    pub(super) fn from_entry(
+        entry: EntryState,
+        params: &[LirValue],
+        tos_limit: u8,
+    ) -> Result<Self, WasmError> {
         let state = Self {
             tos_limit,
-            stack_height: params.stack_height,
-            spill_depth,
-            tos: params.tos.clone(),
+            stack_height: entry.stack_height,
+            spill_depth: entry.spill_depth,
+            tos: params.to_vec(),
             ops: Vec::new(),
         };
         state.ensure_tos_fit("block entry")?;

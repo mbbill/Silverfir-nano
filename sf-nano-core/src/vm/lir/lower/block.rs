@@ -30,6 +30,7 @@ pub(super) fn lower_block_range(
     aligned: &[AlignedOp<'_>],
     frame: FrameLayoutPlan,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<crate::vm::lir::ir::LirValue>],
     entry_states: &[EntryState],
     values: &mut ValueAlloc,
 ) -> Result<LoweredBlock, WasmError> {
@@ -49,6 +50,7 @@ pub(super) fn lower_block_range(
         &mut state,
         frame,
         semantic_to_block,
+        block_params,
         entry_states,
         values,
     )?;

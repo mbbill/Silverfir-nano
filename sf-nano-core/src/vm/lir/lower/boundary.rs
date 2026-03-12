@@ -1,7 +1,6 @@
 //! Block-entry boundary shaping for prepared LIR lowering.
 
 use crate::vm::{
-    lir::ir::LirBlockParams,
     plan::{
         tos::{SpillArtifact, TosTransferDirection},
         PlannedBranchKind, PlannedMarkerKind, PlannedOpKind,
@@ -44,11 +43,8 @@ impl PreparedState {
     }
 }
 
-pub(super) fn make_block_params(entry: EntryState, values: &mut ValueAlloc) -> LirBlockParams {
-    LirBlockParams {
-        stack_height: entry.stack_height,
-        tos: values.many(entry.live_tos_count() as usize),
-    }
+pub(super) fn make_block_params(entry: EntryState, values: &mut ValueAlloc) -> alloc::vec::Vec<crate::vm::lir::ir::LirValue> {
+    values.many(entry.live_tos_count() as usize)
 }
 
 pub(super) fn compute_entry_states(

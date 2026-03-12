@@ -23,6 +23,7 @@ use crate::vm::{
     lir::{
         ir::{LirBlock, LirProgram},
         target::LirTarget,
+        validate::validate_program,
     },
     plan::{config::PlanConfig, PlannedProgram},
     wasm::semantic_ir::SemanticProgram,
@@ -65,17 +66,23 @@ pub fn lower_to_lir(
     let semantic_to_block = build_semantic_to_block_map(aligned.len(), &block_ranges);
     let entry_states = compute_entry_states(semantic, &aligned);
     let mut values = ValueAlloc::default();
+    let block_params = block_ranges
+        .iter()
+        .map(|semantic_range| make_block_params(entry_states[semantic_range.start], &mut values))
+        .collect::<Vec<_>>();
 
     let mut blocks = Vec::with_capacity(block_ranges.len());
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
-        let params = make_block_params(entry_states[semantic_range.start], &mut values);
-        let state = BlockState::from_params(&params, config.tos_register_count)?;
+        let params = block_params[block_index].clone();
+        let state =
+            BlockState::from_entry(entry_states[semantic_range.start], &params, config.tos_register_count)?;
         let block = lower_block_range(
             semantic_range.clone(),
             state,
             &aligned,
             planned.frame,
             &semantic_to_block,
+            &block_params,
             &entry_states,
             &mut values,
         )?;
@@ -92,6 +99,6 @@ pub fn lower_to_lir(
         local_cache: lower_local_cache_plan(planned.hot_locals.as_ref(), planned.frame),
         blocks,
     };
-    program.validate()?;
+    validate_program(&program)?;
     Ok(program)
 }

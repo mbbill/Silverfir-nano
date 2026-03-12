@@ -25,6 +25,7 @@ pub(super) fn lower_block_terminator(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     semantic_to_block: &[LirTarget],
+    block_params: &[Vec<crate::vm::lir::ir::LirValue>],
     entry_states: &[EntryState],
     values: &mut ValueAlloc,
 ) -> Result<LirTerminator, WasmError> {
@@ -41,32 +42,34 @@ pub(super) fn lower_block_terminator(
         }
         (SemanticOpKind::Primitive(kind), PlannedOpKind::Primitive(_)) => {
             lower_primitive(kind, state, values)?;
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::LocalGet { .. }, PlannedOpKind::LocalGet { .. }) => {
             lower_local_get(resolve_local_index(op)?, state, frame, values)?;
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::LocalSet { .. }, PlannedOpKind::LocalSet { .. }) => {
             lower_local_set(resolve_local_index(op)?, state, frame)?;
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::LocalTee { .. }, PlannedOpKind::LocalTee { .. }) => {
             lower_local_tee(resolve_local_index(op)?, state, frame)?;
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::Block { .. }, PlannedOpKind::Marker(_))
         | (SemanticOpKind::Loop { .. }, PlannedOpKind::Marker(_)) => {
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::If { .. }, PlannedOpKind::Marker(_)) => {
             let cond = state.pop_one()?;
-            let then_edge = next_edge(op.semantic, state, semantic_to_block, entry_states)?;
+            let then_edge =
+                next_edge(op.semantic, state, semantic_to_block, block_params, entry_states)?;
             let else_edge = edge_to_target(
                 resolve_if_else_target(op, aligned)?,
                 state,
                 EdgeMapping::Identity,
                 semantic_to_block,
+                block_params,
                 entry_states,
             )?;
             Ok(LirTerminator::Branch {
@@ -82,14 +85,15 @@ pub(super) fn lower_block_terminator(
                     state,
                     EdgeMapping::Identity,
                     semantic_to_block,
+                    block_params,
                     entry_states,
                 )?))
             } else {
-                goto_next(op.semantic, state, semantic_to_block, entry_states)
+                goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
             }
         }
         (SemanticOpKind::End, PlannedOpKind::Marker(_)) => {
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (SemanticOpKind::Br { stack_drop, .. }, PlannedOpKind::Branch { .. }) => Ok(
             LirTerminator::Goto(edge_to_target(
@@ -102,6 +106,7 @@ pub(super) fn lower_block_terminator(
                 payload: branch_payload(op),
             },
             semantic_to_block,
+            block_params,
             entry_states,
         )?)),
         (SemanticOpKind::BrIf { stack_drop, .. }, PlannedOpKind::Branch { .. }) => {
@@ -116,9 +121,11 @@ pub(super) fn lower_block_terminator(
                     payload: branch_payload(op),
                 },
                 semantic_to_block,
+                block_params,
                 entry_states,
             )?;
-            let else_edge = next_edge(op.semantic, state, semantic_to_block, entry_states)?;
+            let else_edge =
+                next_edge(op.semantic, state, semantic_to_block, block_params, entry_states)?;
             Ok(LirTerminator::Branch {
                 cond,
                 then_edge,
@@ -148,6 +155,7 @@ pub(super) fn lower_block_terminator(
                         planned_entry.payload,
                         state,
                         semantic_to_block,
+                        block_params,
                         entry_states,
                     )
                 })
@@ -163,7 +171,7 @@ pub(super) fn lower_block_terminator(
             },
         ) => {
             lower_call_external(*func_idx, *args, *results, state);
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (
             SemanticOpKind::CallInternal { .. },
@@ -174,7 +182,7 @@ pub(super) fn lower_block_terminator(
             },
         ) => {
             lower_call_internal(*callee, *args, *results, state);
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (
             SemanticOpKind::CallIndirect { .. },
@@ -187,7 +195,7 @@ pub(super) fn lower_block_terminator(
             },
         ) => {
             lower_call_indirect(*type_idx, *table_idx, *index_slot, *args, *results, state);
-            goto_next(op.semantic, state, semantic_to_block, entry_states)
+            goto_next(op.semantic, state, semantic_to_block, block_params, entry_states)
         }
         (
             SemanticOpKind::ReturnVoid,

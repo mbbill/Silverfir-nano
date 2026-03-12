@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::vm::{
-    lir::ir::LirLocalCachePlan,
+    lir::ir::LirLocalCachePrefs,
     plan::{hot_local::HotLocalPlan, frame::FrameLayoutPlan, PlannedOp, PlannedOpKind, PlannedProgram},
     wasm::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
 };
@@ -13,7 +13,7 @@ use crate::vm::{
 pub(super) struct AlignedOp<'a> {
     pub(super) semantic: &'a SemanticOp,
     pub(super) planned: &'a PlannedOp,
-    /// Synthetic TOS-window prep emitted immediately before the semantic op.
+    /// Synthetic transient-window prep emitted immediately before the semantic op.
     pub(super) prefix: Vec<&'a PlannedOp>,
 }
 
@@ -73,7 +73,7 @@ pub(super) fn resolve_local_index(op: &AlignedOp<'_>) -> Result<u32, WasmError> 
 pub(super) fn lower_local_cache_plan(
     hot_locals: Option<&HotLocalPlan>,
     frame: FrameLayoutPlan,
-) -> LirLocalCachePlan {
+) -> LirLocalCachePrefs {
     let preferred_slots = hot_locals
         .map(|plan| {
             plan.mapping()
@@ -82,5 +82,5 @@ pub(super) fn lower_local_cache_plan(
                 .collect()
         })
         .unwrap_or_default();
-    LirLocalCachePlan { preferred_slots }
+    LirLocalCachePrefs { preferred_slots }
 }

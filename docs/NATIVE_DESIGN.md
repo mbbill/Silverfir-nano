@@ -318,7 +318,7 @@ Each section states one rule and why it exists.
 **Rule:** The native backend must only need to:
 
 - assign fixed registers for runtime anchors such as `ctx` and `fp`
-- fit transient live TOS values into the fixed TOS register window
+- fit transient live values into the fixed transient-value register window
 - map selected local slots into the fixed local-cache registers
 
 It must not require a general-purpose lifetime-based register allocator.
@@ -413,13 +413,13 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### Local Cache Budget
 
-**Decision:** Backend configuration is the source of truth for the local-cache budget. LIR carries only preferred local-slot ranking, and locals keep canonical frame-slot homes in LIR.
+**Decision:** Backend configuration is the source of truth for the local-cache budget. LIR carries only preferred local-slot ranking hints, and locals keep canonical frame-slot homes in LIR.
 
 **Reason:** Calls and frame layout require stable slot identity. Cached locals are just fast mirrors of canonical slot homes, and the backend is free to choose which fixed cache register mirrors which preferred slot.
 
 ### Branch Payload State
 
-**Decision:** Taken branch payload travels through canonical operand slots prepared above LIR. Taken branch edges do not remap payload as live TOS SSA values.
+**Decision:** Taken branch payload travels through canonical operand slots prepared above LIR. Taken branch edges do not remap payload as live boundary SSA values.
 
 **Reason:** Branch payload publication is part of the prepared frame contract. Reconstructing it as edge SSA would reintroduce hidden stack policy and would disagree with the canonical slot-based branch layout.
 
@@ -434,7 +434,7 @@ It must not require a general-purpose lifetime-based register allocator.
 **Decision:** Backend lowering should be close to mechanical:
 
 - assign fixed registers for runtime anchors
-- place the bounded TOS window into the fixed transient-value registers
+- place the bounded transient live set into the fixed transient-value registers
 - swap the chosen canonical local slots into the fixed local-cache registers
 
 No general register allocation should be required.
@@ -494,7 +494,7 @@ The most important point is that this engine is not designed like a traditional 
 
 - stack values are used from the top down
 - the top of the stack is the hottest near-term state
-- if we keep a fixed top-of-stack window in registers, we get a very simple and very effective execution model
+- if we keep a fixed bounded live-value window in registers, we get a very simple and very effective execution model
 
 That is why frontend preparation matters so much.
 
@@ -551,9 +551,10 @@ Prepared LIR is the frontend/backend contract.
 It should focus on:
 
 - CFG
-- SSA values for the current TOS window
-- canonical frame slots for locals and spilled stack values
-- explicit spill/load against operand slots when the TOS window is not enough
+- explicit block params and edge bindings for live boundary values
+- SSA values for the current bounded transient live set
+- canonical frame slots for locals and spilled transient values
+- explicit spill/load against operand slots when the transient live set is not enough
 - semantic calls
 - semantic runtime-boundary ops
 - preferred local-slot ranking for later local-cache swapping
@@ -572,7 +573,13 @@ For locals, LIR keeps canonical slot identity:
 
 The hot-local analysis does not change that. It only passes down which canonical local slots should later be swapped into the fixed local-cache registers.
 
-For transient stack values, LIR does carry the prepared TOS discipline. This is different from local caching. The TOS-window preparation must already be reflected in LIR so the backend never sees more transient live values than it can hold.
+For transient stack values, LIR still carries the prepared bounded-live-value discipline. This is different from local caching. That preparation must already be reflected in LIR so the backend never sees more transient live values than it can hold.
+
+At block boundaries, LIR does not require a positional stack-order contract. The contract is:
+
+- successor blocks declare the live SSA params they require
+- edges bind predecessor live-out values to those params explicitly
+- backend lowering decides how to reconcile those bindings into real registers or moves
 
 ### 4. Calls In Prepared LIR
 
@@ -580,7 +587,7 @@ Calls need special care.
 
 The current design uses stack/frame layout to pass call arguments. That means before a call, this frontend-to-LIR preparation stage must:
 
-- spill any still-live TOS values to the correct `fp[...]` operand slots if they are needed there
+- spill any still-live transient values to the correct `fp[...]` operand slots if they are needed there
 - make sure call arguments are in the canonical stack/frame locations the callee expects
 
 So LIR must be able to contain explicit operations like:
@@ -595,7 +602,7 @@ This is important: LIR does not need to say "SSA value `v1` lives in register X"
 The same principle applies to branches:
 
 - taken branch payload is published to canonical operand slots during frontend preparation
-- taken branch edges do not carry those payload values as live TOS SSA
+- taken branch edges do not carry those payload values as live boundary SSA
 - the target block reloads what it needs from canonical slots through its prepared prefix
 
 Local cache is different. We do not need the same kind of spill/load modeling in LIR for local-cache registers. Local-cache handling happens later, between LIR and MachineIR.
@@ -608,7 +615,7 @@ Its job is simple because LIR has already done the hard fit work.
 
 It needs to:
 
-- assign the bounded TOS live set into the fixed transient-value register window
+- assign the bounded transient live set into the fixed transient-value register window
 - assign fixed runtime registers such as `ctx` and `fp`
 - use the hot-local analysis metadata to swap selected canonical local slots into the fixed local-cache registers
 - save modified local-cache registers before a call if the callee may overwrite them
@@ -618,7 +625,7 @@ It needs to:
 
 This stage should still stay simple. It is not doing general RA. It is mostly a mechanical use of:
 
-- bounded TOS live values
+- bounded transient live values
 - fixed local-cache budget from backend configuration
 - fixed runtime registers
 
@@ -692,7 +699,7 @@ return
 Prepared LIR conceptually looks like:
 
 ```text
-b0(stack_height=0, tos=[]):
+b0(params=[]):
   v0 = ReadSlot(local_slot(0))
   v1 = Leaf(I32Const 1)
   v2 = Leaf(I32Add, [v0, v1])
@@ -715,10 +722,10 @@ The exact operation names can change, but the important ideas are:
 The current intended LIR shape is:
 
 - program metadata:
-  - local-cache slot preferences
+  - local-cache slot preference hints
 - block boundary state:
-  - full `stack_height`
-  - live `tos` window only
+  - block params are generic live-in SSA values
+  - edges bind predecessor values to successor params explicitly
 - body ops:
   - `Leaf`
   - `Runtime`
@@ -726,19 +733,19 @@ The current intended LIR shape is:
   - `Spill` / `Fill`
   - `CallExternal` / `CallInternal` / `CallIndirect` with canonical frame spans
 - terminators:
-  - edges carry `stack_height + tos window`
+  - edges carry explicit param bindings
   - `Return` names canonical result span, not SSA values
 
 The current intended validation split is:
 
 - LIR validation checks structural consistency
-- lowering validates that every live TOS window fits the backend-configured `tos_lanes`
-- lowering validates that taken branch targets expect canonical frame payload, not live TOS payload
+- lowering validates that every bounded transient live set fits the backend-configured `tos_lanes`
+- lowering validates that taken branch targets expect canonical frame payload, not live boundary SSA payload
 - lowering uses the backend-configured `cached_locals` budget to select the top preferred local slots
 
 Then the LIR-to-MachineIR lowering does the simple backend work:
 
-- map the bounded live TOS values into the fixed TOS registers
+- map the bounded transient live values into the fixed TOS registers
 - map selected local slots into the fixed local-cache registers
 - save dirty cached locals before call if needed
 - restore/reload them after return
