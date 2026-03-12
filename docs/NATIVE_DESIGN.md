@@ -297,9 +297,9 @@ Each section states one rule and why it exists.
 
 ## Rule 47: Hot-Local Policy Travels As Metadata, Not As LIR Storage Kinds
 
-**Rule:** The frontend may pass down hot-local cache budget and preferred local-slot ranking, but LIR itself must not encode local accesses as special hot-local storage kinds.
+**Rule:** The frontend may pass down preferred local-slot ranking, but LIR itself must not encode local accesses as special hot-local storage kinds or fixed cache-register assignment.
 
-**Reason:** The backend needs to know how many locals it may cache and which locals are preferred, but canonical local identity must stay slot-based. The cache assignment is execution policy, not semantic storage.
+**Reason:** Backend configuration remains the source of truth for the local-cache budget. LIR only needs to say which canonical local slots are preferred. The final swap assignment is execution policy, not semantic storage.
 
 ## Rule 48: True Runtime Boundaries Must Be Split Out In LIR
 
@@ -407,15 +407,27 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### TOS Register Budget
 
-**Decision:** The number of transient value registers is a frontend-known contract derived from backend budget. The frontend must prepare LIR so that transient live SSA values always fit inside that fixed TOS window.
+**Decision:** Backend configuration is the source of truth for the TOS-register budget. The frontend must prepare LIR so that lowering validates successfully against that fixed TOS window, but LIR does not need to redundantly store the number itself.
 
-**Reason:** Without this contract, the backend would need real register allocation or ad hoc spilling, which is explicitly not the intended design.
+**Reason:** The real contract is the prepared shape of the program. If the frontend forgets a spill or fill, lowering should fail against backend configuration instead of trusting duplicated metadata.
 
 ### Local Cache Budget
 
-**Decision:** The number of local-cache registers and the preferred local-slot ranking are passed down from frontend analysis, but locals keep canonical frame-slot homes in LIR.
+**Decision:** Backend configuration is the source of truth for the local-cache budget. LIR carries only preferred local-slot ranking, and locals keep canonical frame-slot homes in LIR.
 
-**Reason:** Calls and frame layout require stable slot identity. Cached locals are just fast mirrors of canonical slot homes.
+**Reason:** Calls and frame layout require stable slot identity. Cached locals are just fast mirrors of canonical slot homes, and the backend is free to choose which fixed cache register mirrors which preferred slot.
+
+### Branch Payload State
+
+**Decision:** Taken branch payload travels through canonical operand slots prepared above LIR. Taken branch edges do not remap payload as live TOS SSA values.
+
+**Reason:** Branch payload publication is part of the prepared frame contract. Reconstructing it as edge SSA would reintroduce hidden stack policy and would disagree with the canonical slot-based branch layout.
+
+### Lowering-Time Fit Validation
+
+**Decision:** TOS-window fit and local-cache assumptions are validated during lowering against real backend configuration.
+
+**Reason:** This is where the engine catches missed frontend spill/fill preparation or invalid hot-local metadata. The backend should reject an invalid prepared program loudly instead of silently compensating for it.
 
 ### Backend Simplicity
 
@@ -530,6 +542,8 @@ That means if a block would otherwise have 100 live stack values, this stage doe
 
 This is how the frontend guarantees backend fit without a traditional register allocator.
 
+The configured budget itself does not need to be duplicated into LIR. The important part is that the prepared LIR validates against backend configuration during lowering.
+
 ### 3. What LIR Focuses On
 
 Prepared LIR is the frontend/backend contract.
@@ -542,6 +556,7 @@ It should focus on:
 - explicit spill/load against operand slots when the TOS window is not enough
 - semantic calls
 - semantic runtime-boundary ops
+- preferred local-slot ranking for later local-cache swapping
 
 It should not focus on:
 
@@ -577,6 +592,12 @@ or whatever exact naming we settle on for those prepared stack-window operations
 
 This is important: LIR does not need to say "SSA value `v1` lives in register X". But it does need to say when a transient value is published to its canonical frame slot so that calls and later reloads are correct.
 
+The same principle applies to branches:
+
+- taken branch payload is published to canonical operand slots during frontend preparation
+- taken branch edges do not carry those payload values as live TOS SSA
+- the target block reloads what it needs from canonical slots through its prepared prefix
+
 Local cache is different. We do not need the same kind of spill/load modeling in LIR for local-cache registers. Local-cache handling happens later, between LIR and MachineIR.
 
 ### 5. Between LIR And MachineIR
@@ -598,7 +619,7 @@ It needs to:
 This stage should still stay simple. It is not doing general RA. It is mostly a mechanical use of:
 
 - bounded TOS live values
-- fixed local-cache budget
+- fixed local-cache budget from backend configuration
 - fixed runtime registers
 
 ### 6. What MachineIR Focuses On
@@ -671,16 +692,17 @@ return
 Prepared LIR conceptually looks like:
 
 ```text
-v0 = ReadSlot(local_slot(0))
-v1 = Leaf(I32Const 1)
-v2 = Leaf(I32Add, [v0, v1])
-WriteSlot(local_slot(0), v2)
+b0(stack_height=0, tos=[]):
+  v0 = ReadSlot(local_slot(0))
+  v1 = Leaf(I32Const 1)
+  v2 = Leaf(I32Add, [v0, v1])
+  WriteSlot(local_slot(0), v2)
 
-v3 = ReadSlot(local_slot(4))
-spill(v3, operand_slot(0))
-CallInternal g
-load(operand_slot(result0), v4)
-Return [v4]
+  v3 = ReadSlot(local_slot(4))
+  Spill(operand_slot(0), v3)
+  CallInternal g args=operand_span(0, 1) results=operand_span(0, 1)
+  Fill(operand_slot(0), v4)
+  Return results=operand_span(0, 1)
 ```
 
 The exact operation names can change, but the important ideas are:
@@ -689,6 +711,30 @@ The exact operation names can change, but the important ideas are:
 - call arguments are published through canonical stack/frame layout
 - transient stack values are explicitly spilled/loaded when needed
 - backend fit is already guaranteed
+
+The current intended LIR shape is:
+
+- program metadata:
+  - local-cache slot preferences
+- block boundary state:
+  - full `stack_height`
+  - live `tos` window only
+- body ops:
+  - `Leaf`
+  - `Runtime`
+  - `ReadSlot` / `WriteSlot`
+  - `Spill` / `Fill`
+  - `CallExternal` / `CallInternal` / `CallIndirect` with canonical frame spans
+- terminators:
+  - edges carry `stack_height + tos window`
+  - `Return` names canonical result span, not SSA values
+
+The current intended validation split is:
+
+- LIR validation checks structural consistency
+- lowering validates that every live TOS window fits the backend-configured `tos_lanes`
+- lowering validates that taken branch targets expect canonical frame payload, not live TOS payload
+- lowering uses the backend-configured `cached_locals` budget to select the top preferred local slots
 
 Then the LIR-to-MachineIR lowering does the simple backend work:
 

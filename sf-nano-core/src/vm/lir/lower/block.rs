@@ -13,8 +13,8 @@ use crate::vm::{
 
 use super::{
     body::lower_block_body_op,
-    input::SemanticPlannedOp,
-    state::{BlockState, ValueAlloc},
+    input::AlignedOp,
+    state::{BlockState, EntryState, ValueAlloc},
     terminator::lower_block_terminator,
 };
 
@@ -27,9 +27,10 @@ pub(super) struct LoweredBlock {
 pub(super) fn lower_block_range(
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
-    mapped: &[SemanticPlannedOp<'_>],
+    aligned: &[AlignedOp<'_>],
     frame: FrameLayoutPlan,
     semantic_to_block: &[LirTarget],
+    entry_states: &[EntryState],
     values: &mut ValueAlloc,
 ) -> Result<LoweredBlock, WasmError> {
     let last_index = semantic_range
@@ -38,17 +39,20 @@ pub(super) fn lower_block_range(
         .ok_or_else(|| WasmError::internal("LIR block cannot be empty".into()))?;
 
     for semantic_index in semantic_range.start..last_index {
-        lower_block_body_op(&mapped[semantic_index], &mut state, frame, values)?;
+        lower_block_body_op(&aligned[semantic_index], &mut state, frame, values)?;
+        state.validate_tos_fit("block body")?;
     }
 
     let terminator = lower_block_terminator(
-        &mapped[last_index],
-        mapped,
+        &aligned[last_index],
+        aligned,
         &mut state,
         frame,
         semantic_to_block,
+        entry_states,
         values,
     )?;
+    state.validate_tos_fit("block terminator")?;
 
     Ok(LoweredBlock {
         ops: state.ops,

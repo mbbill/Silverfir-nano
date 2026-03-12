@@ -1,4 +1,4 @@
-//! Block-body op lowering into LIR instructions.
+//! Prepared block-body op lowering into LIR instructions.
 
 use crate::error::WasmError;
 use crate::vm::{
@@ -7,11 +7,80 @@ use crate::vm::{
         leaf::LirLeafOp,
         runtime::LirRuntimeOp,
     },
-    plan::frame::FrameLayoutPlan,
+    plan::{
+        frame::{FrameLayoutPlan, FrameSpan},
+        tos::{SpillArtifact, TosTransferDirection},
+        PlannedOp, PlannedOpKind,
+    },
     wasm::primitive_op::stack_effect,
 };
 
-use super::state::{BlockState, ValueAlloc};
+use super::{
+    input::AlignedOp,
+    state::{BlockState, ValueAlloc},
+};
+
+pub(super) fn lower_prefix_ops(
+    op: &AlignedOp<'_>,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    for planned in &op.prefix {
+        lower_synthetic(planned, state, values)?;
+    }
+    Ok(())
+}
+
+fn lower_synthetic(
+    planned: &PlannedOp,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    match planned.kind {
+        PlannedOpKind::InitHotLocals { .. } => Ok(()),
+        PlannedOpKind::Spill(artifact) => lower_tos_transfer(artifact, state, values),
+        _ => Err(WasmError::internal(
+            "prepared LIR synthetic lowering expected spill/fill artifact".into(),
+        )),
+    }
+}
+
+fn lower_tos_transfer(
+    artifact: SpillArtifact,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    match artifact {
+        SpillArtifact::TosTransfer(transfer) => match transfer.direction {
+            TosTransferDirection::Spill => {
+                let spilled = state.spill_prefix(transfer.frame.count)?;
+                for (offset, src) in spilled.into_iter().enumerate() {
+                    state.ops.push(LirInst {
+                        kind: LirInstKind::Spill {
+                            slot: transfer.frame.start.advance(offset as u16),
+                            src,
+                        },
+                    });
+                }
+                Ok(())
+            }
+            TosTransferDirection::Fill => {
+                let mut reloaded = alloc::vec::Vec::with_capacity(transfer.frame.count as usize);
+                for offset in 0..transfer.frame.count as usize {
+                    let dst = values.fresh();
+                    state.ops.push(LirInst {
+                        kind: LirInstKind::Fill {
+                            slot: transfer.frame.start.advance(offset as u16),
+                            dst,
+                        },
+                    });
+                    reloaded.push(dst);
+                }
+                state.fill_prefix(reloaded)
+            }
+        },
+    }
+}
 
 pub(super) fn lower_primitive(
     kind: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
@@ -37,8 +106,7 @@ pub(super) fn lower_primitive(
         }
     };
     state.ops.push(LirInst { kind });
-    state.push_results(results);
-    Ok(())
+    state.push_results(results)
 }
 
 pub(super) fn lower_local_get(
@@ -48,12 +116,13 @@ pub(super) fn lower_local_get(
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     let dst = values.fresh();
-    let slot = frame.local_slot(local_idx as u16);
     state.ops.push(LirInst {
-        kind: LirInstKind::ReadSlot { slot, dst },
+        kind: LirInstKind::ReadSlot {
+            slot: frame.local_slot(local_idx as u16),
+            dst,
+        },
     });
-    state.push_results(alloc::vec![dst]);
-    Ok(())
+    state.push_results(alloc::vec![dst])
 }
 
 pub(super) fn lower_local_set(
@@ -62,9 +131,11 @@ pub(super) fn lower_local_set(
     frame: FrameLayoutPlan,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
-    let slot = frame.local_slot(local_idx as u16);
     state.ops.push(LirInst {
-        kind: LirInstKind::WriteSlot { slot, src },
+        kind: LirInstKind::WriteSlot {
+            slot: frame.local_slot(local_idx as u16),
+            src,
+        },
     });
     Ok(())
 }
@@ -74,83 +145,67 @@ pub(super) fn lower_local_tee(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
 ) -> Result<(), WasmError> {
-    let top_index = state
-        .values()
-        .len()
-        .checked_sub(1)
-        .ok_or_else(|| WasmError::internal("local.tee requires a stack value".into()))?;
-    let src = state.value_at(top_index)?;
-    let slot = frame.local_slot(local_idx as u16);
+    let src = *state
+        .tos()
+        .last()
+        .ok_or_else(|| WasmError::internal("local.tee requires a live TOS value".into()))?;
     state.ops.push(LirInst {
-        kind: LirInstKind::WriteSlot { slot, src },
+        kind: LirInstKind::WriteSlot {
+            slot: frame.local_slot(local_idx as u16),
+            src,
+        },
     });
     Ok(())
 }
 
 pub(super) fn lower_call_external(
     func_idx: u32,
-    params: u16,
-    results: u16,
+    args: FrameSpan,
+    results: FrameSpan,
     state: &mut BlockState,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    let args = state.top_values(params as usize)?;
-    state.consume_top(params as usize)?;
-    let result_values = values.many(results as usize);
+) {
     state.ops.push(LirInst {
         kind: LirInstKind::CallExternal {
             func_idx,
             args,
-            results: result_values.clone(),
+            results,
         },
     });
-    state.push_results(result_values);
-    Ok(())
+    state.finish_call(args.count, results.count);
 }
 
 pub(super) fn lower_call_internal(
     callee: u32,
-    params: u16,
-    results: u16,
+    args: FrameSpan,
+    results: FrameSpan,
     state: &mut BlockState,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    let args = state.top_values(params as usize)?;
-    state.consume_top(params as usize)?;
-    let result_values = values.many(results as usize);
+) {
     state.ops.push(LirInst {
         kind: LirInstKind::CallInternal {
             callee,
             args,
-            results: result_values.clone(),
+            results,
         },
     });
-    state.push_results(result_values);
-    Ok(())
+    state.finish_call(args.count, results.count);
 }
 
 pub(super) fn lower_call_indirect(
     type_idx: u32,
     table_idx: u32,
-    params: u16,
-    results: u16,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+    args: FrameSpan,
+    results: FrameSpan,
     state: &mut BlockState,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    let full = state.top_values(params as usize + 1)?;
-    let index = *full.last().expect("call_indirect index present");
-    let args = full[..full.len().saturating_sub(1)].to_vec();
-    state.consume_top(params as usize + 1)?;
-    let result_values = values.many(results as usize);
+) {
     state.ops.push(LirInst {
         kind: LirInstKind::CallIndirect {
             type_idx,
             table_idx,
-            index,
+            index_slot,
             args,
-            results: result_values.clone(),
+            results,
         },
     });
-    state.push_results(result_values);
-    Ok(())
+    state.finish_call(args.count.saturating_add(1), results.count);
 }
