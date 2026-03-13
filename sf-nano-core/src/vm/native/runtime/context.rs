@@ -49,7 +49,11 @@ pub mod function_kind {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeFunctionView {
     pub kind: u32,
-    pub type_idx: u32,
+    /// Canonical equivalence class for the callee signature within the current
+    /// module type context. `call_indirect` compares this against the cached
+    /// canonical id for the expected type index instead of comparing raw type
+    /// indices directly.
+    pub type_canon: u32,
     /// Native-local target token for `MachineTerminator::CallIndirect`.
     ///
     /// In the current single-module lowering path this is the module function
@@ -72,12 +76,15 @@ pub struct NativeContext {
     pub table_views_len: usize,
     pub function_views_base: *const NativeFunctionView,
     pub function_views_len: usize,
+    pub type_canon_base: *const u32,
+    pub type_canon_len: usize,
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
     function_views: Vec<NativeFunctionView>,
+    type_canon: Vec<u32>,
     #[cfg(feature = "function-trace")]
     pub trace_stack: std::vec::Vec<u32>,
 }
@@ -97,12 +104,15 @@ impl NativeContext {
             table_views_len: 0,
             function_views_base: core::ptr::null(),
             function_views_len: 0,
+            type_canon_base: core::ptr::null(),
+            type_canon_len: 0,
             store,
             current_module: core::ptr::null(),
             error: None,
             memory_views: Vec::new(),
             table_views: Vec::new(),
             function_views: Vec::new(),
+            type_canon: Vec::new(),
             #[cfg(feature = "function-trace")]
             trace_stack: std::vec::Vec::new(),
         };
@@ -120,6 +130,7 @@ impl NativeContext {
         self.refresh_globals_view();
         self.refresh_memory_views();
         self.refresh_table_views();
+        self.refresh_type_canon();
         self.refresh_function_views();
     }
 
@@ -227,6 +238,7 @@ impl NativeContext {
         };
 
         let module = store.module();
+        let type_canon = &self.type_canon;
         let function_views: Vec<_> = module
             .functions
             .iter()
@@ -236,19 +248,22 @@ impl NativeContext {
                     FunctionInst::Local { .. } => (function_kind::LOCAL, func_idx as u32),
                     FunctionInst::External { .. } => (function_kind::EXTERNAL, u32::MAX),
                 };
-                let type_idx = match func {
-                    FunctionInst::Local { type_index, .. } => *type_index,
+                let type_canon = match func {
+                    FunctionInst::Local { type_index, .. } => type_canon
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(u32::MAX),
                     FunctionInst::External { func_type, .. } => module
                         .types
                         .as_slice()
                         .iter()
                         .position(|candidate| candidate.as_ref() == func_type.as_ref())
-                        .map(|index| index as u32)
+                        .and_then(|index| type_canon.get(index).copied())
                         .unwrap_or(u32::MAX),
                 };
                 NativeFunctionView {
                     kind,
-                    type_idx,
+                    type_canon,
                     local_target,
                 }
             })
@@ -261,6 +276,39 @@ impl NativeContext {
             self.function_views.as_ptr()
         };
         self.function_views_len = self.function_views.len();
+    }
+
+    #[inline]
+    pub fn refresh_type_canon(&mut self) {
+        let Some(store) = self.store() else {
+            self.type_canon.clear();
+            self.type_canon_base = core::ptr::null();
+            self.type_canon_len = 0;
+            return;
+        };
+
+        let type_ctx = &store.module().types;
+        let mut type_canon = Vec::with_capacity(type_ctx.len());
+        for idx in 0..type_ctx.len() {
+            let idx_u32 = idx as u32;
+            let mut canonical = idx_u32;
+            for prior in 0..idx {
+                let prior_u32 = prior as u32;
+                if type_ctx.types_equivalent(prior_u32, idx_u32) {
+                    canonical = type_canon[prior];
+                    break;
+                }
+            }
+            type_canon.push(canonical);
+        }
+
+        self.type_canon = type_canon;
+        self.type_canon_base = if self.type_canon.is_empty() {
+            core::ptr::null()
+        } else {
+            self.type_canon.as_ptr()
+        };
+        self.type_canon_len = self.type_canon.len();
     }
 
     #[inline]
@@ -291,6 +339,8 @@ pub mod ctx_offset {
         core::mem::offset_of!(NativeContext, function_views_base) as u32;
     pub const FUNCTION_VIEWS_LEN: u32 =
         core::mem::offset_of!(NativeContext, function_views_len) as u32;
+    pub const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
+    pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
     pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
     pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
 }
@@ -320,6 +370,71 @@ pub mod function_view_offset {
     use super::NativeFunctionView;
 
     pub const KIND: u32 = core::mem::offset_of!(NativeFunctionView, kind) as u32;
-    pub const TYPE_IDX: u32 = core::mem::offset_of!(NativeFunctionView, type_idx) as u32;
+    pub const TYPE_CANON: u32 = core::mem::offset_of!(NativeFunctionView, type_canon) as u32;
     pub const LOCAL_TARGET: u32 = core::mem::offset_of!(NativeFunctionView, local_target) as u32;
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, rc::Rc, string::String, vec};
+
+    use super::*;
+    use crate::{
+        module::{type_context::TypeContext, type_defs::FunctionType},
+        vm::{
+            entities::{Caller, ModuleInst},
+            store::Store,
+            value::Value,
+        },
+        value_type::ValueType,
+    };
+
+    fn external_noop(
+        _caller: &mut Caller<'_>,
+        _args: &[Value],
+        _results: &mut [Value],
+    ) -> Result<(), WasmError> {
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_function_views_canonicalizes_equivalent_type_indices() {
+        let duplicated_sig = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64]));
+        let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        module.functions.push(FunctionInst::Local {
+            spec: crate::module::entities::FunctionSpec::new(
+                Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64])),
+                1,
+            ),
+            type_index: 1,
+        });
+        let mut store = Box::new(Store::new(module));
+        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+
+        assert_eq!(ctx.type_canon_len, 2);
+        let type_canon = unsafe { core::slice::from_raw_parts(ctx.type_canon_base, ctx.type_canon_len) };
+        assert_eq!(type_canon, &[0, 0]);
+        assert_eq!(ctx.function_views_len, 1);
+        let view = unsafe { &*ctx.function_views_base };
+        assert_eq!(view.type_canon, 0);
+    }
+
+    #[test]
+    fn refresh_function_views_canonicalizes_equivalent_external_signatures() {
+        let duplicated_sig = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64]));
+        let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        module.functions.push(FunctionInst::External {
+            func_type: Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64])),
+            callback: external_noop,
+        });
+        let mut store = Box::new(Store::new(module));
+        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+
+        assert_eq!(ctx.type_canon_len, 2);
+        assert_eq!(ctx.function_views_len, 1);
+        let view = unsafe { &*ctx.function_views_base };
+        assert_eq!(view.type_canon, 0);
+    }
 }

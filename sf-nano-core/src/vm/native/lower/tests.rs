@@ -851,6 +851,86 @@ fn lowers_direct_local_call_with_continuation_block() {
 }
 
 #[test]
+fn lowers_direct_local_call_with_sparse_machine_function_ids() {
+    let caller_frame = plan_frame_layout(1, 4, 4);
+    let callee_frame = plan_frame_layout(3, 2, 4);
+
+    let caller = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                    callee: 2,
+                    args: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(
+                        caller_frame.operand_slot(0),
+                        1,
+                    ),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+    let callee = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    callee_frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(0),
+                frame: caller_frame,
+                lir: &caller,
+            },
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(2),
+                frame: callee_frame,
+                lir: &callee,
+            },
+        ],
+    })
+    .expect("sparse-id local call lowering should succeed");
+
+    assert_eq!(lowered.module.functions.len(), 3);
+    assert_eq!(lowered.runtime.functions.len(), 3);
+    assert!(matches!(
+        lowered.module.functions[1].program.blocks[0].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::Unreachable
+        }
+    ));
+    assert!(matches!(
+        lowered.module.functions[0].program.blocks[0].terminator,
+        MachineTerminator::CallDirect {
+            callee: crate::vm::native::ir::machine::MachineFuncId(2),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn lowers_memory_size_without_helper_boundary() {
     let frame = plan_frame_layout(0, 1, 2);
     let lir = LirProgram {
@@ -986,6 +1066,24 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         other => panic!("expected function-view base load in type-check block, got {other:?}"),
     };
     assert_ne!(type_check_scaled, type_check_base);
+    let type_canon_offset = match &type_check_ops[6].kind {
+        MachineInstKind::Load { addr, .. } => addr.offset,
+        other => panic!("expected type-canon base load in type-check block, got {other:?}"),
+    };
+    assert_eq!(
+        type_canon_offset,
+        crate::vm::native::runtime::context::ctx_offset::TYPE_CANON_BASE as i32
+    );
+    assert!(matches!(
+        program.blocks[3].terminator,
+        MachineTerminator::Branch {
+            cond: crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                rhs: MachineValue::Reg(_),
+                ..
+            },
+            ..
+        }
+    ));
 
     let dispatch_ops = &program.blocks[5].ops;
     let dispatch_scaled = match &dispatch_ops[1].kind {

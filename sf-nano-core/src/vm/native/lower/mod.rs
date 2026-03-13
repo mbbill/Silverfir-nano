@@ -79,15 +79,27 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
         slot_count: 3,
     };
 
-    let mut functions = Vec::with_capacity(input.functions.len());
-    let mut function_runtime = Vec::with_capacity(input.functions.len());
+    let function_count = input
+        .functions
+        .iter()
+        .map(|function| function.id.0 as usize)
+        .max()
+        .map(|max| max + 1)
+        .unwrap_or(0);
+    let mut functions = alloc::vec![None; function_count];
+    let mut function_runtime = (0..function_count)
+        .map(|index| MachineFunctionRuntime {
+            id: MachineFuncId(index as u32),
+            ..MachineFunctionRuntime::default()
+        })
+        .collect::<Vec<_>>();
     let mut sidecar = SidecarBuilder::new();
     for function in input.functions {
         validate_program(function.lir)?;
-        function_runtime.push(lower_function_runtime(*function, call_link)?);
+        function_runtime[function.id.0 as usize] = lower_function_runtime(*function, call_link)?;
     }
     for function in input.functions {
-        functions.push(lower_function(
+        functions[function.id.0 as usize] = Some(lower_function(
             *function,
             &regfile,
             &function_runtime,
@@ -101,6 +113,15 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
     };
 
     let (consts, externs) = sidecar.finish();
+    let functions = functions
+        .into_iter()
+        .enumerate()
+        .map(|(index, function)| {
+            function.unwrap_or_else(|| {
+                stub_machine_function(MachineFuncId(index as u32), regfile.reg_count())
+            })
+        })
+        .collect();
     let module = MachineModule {
         functions,
         consts,
@@ -357,7 +378,11 @@ fn lower_function(
                             &mut original_blocks,
                             &mut extra_blocks,
                             Vec::new(),
-                            build_call_indirect_type_check_block(&lower, func_idx_slot)?,
+                            build_call_indirect_type_check_block(
+                                &lower,
+                                type_idx,
+                                func_idx_slot,
+                            )?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
                                     width:
@@ -366,7 +391,7 @@ fn lower_function(
                                     sign:
                                         crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(1)?),
-                                    rhs: MachineValue::Imm64(type_idx as u64),
+                                    rhs: MachineValue::Reg(lower.transient_reg(3)?),
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: trap_type,
@@ -503,6 +528,24 @@ fn lower_function(
         id: input.id,
         program,
     })
+}
+
+fn stub_machine_function(id: MachineFuncId, reg_count: u16) -> MachineFunction {
+    MachineFunction {
+        id,
+        program: MachineProgram {
+            entry: MachineBlockId(0),
+            reg_count,
+            blocks: vec![MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Trap {
+                    kind: MachineTrapKind::Unreachable,
+                },
+            }],
+        },
+    }
 }
 
 #[inline]
@@ -744,21 +787,45 @@ fn build_call_indirect_checked_block(
 
 fn build_call_indirect_type_check_block(
     lower: &BlockLowerContext<'_>,
+    expected_type_idx: u32,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let func_idx = lower.transient_reg(0)?;
     let actual_type = lower.transient_reg(1)?;
     let function_views = lower.temp_reg(0)?;
     let scaled_index = lower.transient_reg(2)?;
-    Ok(dynamic_function_view_load(
+    let expected_type = lower.transient_reg(3)?;
+    let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
         func_idx,
         function_views,
         scaled_index,
-        function_view_offset::TYPE_IDX,
+        function_view_offset::TYPE_CANON,
         actual_type,
-    )?)
+    )?;
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: function_views,
+            addr: lower.runtime_addr(ctx_offset::TYPE_CANON_BASE),
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: expected_type,
+            addr: indexed_const_addr(
+                function_views,
+                expected_type_idx,
+                core::mem::size_of::<u32>(),
+                0,
+            )?,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+    });
+    Ok(ops)
 }
 
 fn build_call_indirect_dispatch_block(
