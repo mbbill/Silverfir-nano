@@ -15,8 +15,8 @@ use crate::{
         native::{
             helper::meta::{
                 CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta,
-                MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta,
+                TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
             },
             ir::runtime::MachineHelperSymbol,
             runtime::context::NativeContext,
@@ -412,36 +412,19 @@ fn memory_grow_helper(
     let delta_pages_raw =
         unsafe { region_read(frame, meta.io, 0, "memory.grow io slot is out of bounds")? };
 
-    let result = {
+    let (result, error_value) = {
         let mem = memory_mut(ctx, meta.mem_idx)?;
         let is_64 = mem.limits.is64;
-        let error_value = if is_64 { u64::MAX } else { u32::MAX as u64 };
-        let delta_pages = if is_64 {
-            delta_pages_raw as i64 as usize
-        } else {
-            let delta = delta_pages_raw as i32;
-            if delta < 0 {
-                unsafe {
-                    region_write(
-                        frame,
-                        meta.io,
-                        0,
-                        error_value,
-                        "memory.grow io slot is out of bounds",
-                    )?;
-                }
-                return Ok(());
-            }
-            delta as usize
-        };
+        let error_value = memory_grow_error_value(is_64);
+        let delta_pages = decode_memory_grow_delta(delta_pages_raw, is_64);
 
         let old_pages = mem.current_pages();
         let new_pages = old_pages.checked_add(delta_pages).unwrap_or(usize::MAX);
         if new_pages > mem.limits.get_max() {
-            error_value
+            (error_value, error_value)
         } else {
             mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
-            old_pages as u64
+            (old_pages as u64, error_value)
         }
     };
 
@@ -454,10 +437,33 @@ fn memory_grow_helper(
             "memory.grow io slot is out of bounds",
         )?;
     }
-    if result != u32::MAX as u64 && result != u64::MAX {
+    if memory_grow_succeeded(result, error_value) {
         ctx.refresh_memory_views();
     }
     Ok(())
+}
+
+#[inline]
+fn memory_grow_error_value(is_64: bool) -> u64 {
+    if is_64 {
+        u64::MAX
+    } else {
+        u32::MAX as u64
+    }
+}
+
+#[inline]
+fn decode_memory_grow_delta(delta_pages_raw: u64, is_64: bool) -> usize {
+    if is_64 {
+        delta_pages_raw as usize
+    } else {
+        (delta_pages_raw as u32) as usize
+    }
+}
+
+#[inline]
+fn memory_grow_succeeded(result: u64, error_value: u64) -> bool {
+    result != error_value
 }
 
 fn memory_fill_helper(
@@ -899,6 +905,25 @@ mod tests {
         assert_eq!(ctx.mem0_size, (2 * WASM_PAGE_SIZE) as u64);
         assert_eq!(ctx.memory_views_len, 1);
         assert!(ctx.error.is_none());
+    }
+
+    #[test]
+    fn memory_grow_uses_unsigned_delta_for_32_bit_memories() {
+        assert_eq!(
+            decode_memory_grow_delta(u32::MAX as u64, false),
+            u32::MAX as usize
+        );
+        assert_eq!(
+            decode_memory_grow_delta(0x8000_0000u64, false),
+            0x8000_0000usize
+        );
+    }
+
+    #[test]
+    fn memory_grow_success_check_uses_selected_error_sentinel() {
+        assert!(memory_grow_succeeded(u32::MAX as u64, u64::MAX));
+        assert!(!memory_grow_succeeded(u64::MAX, u64::MAX));
+        assert!(!memory_grow_succeeded(u32::MAX as u64, u32::MAX as u64));
     }
 
     #[test]
