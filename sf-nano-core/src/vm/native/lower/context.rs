@@ -15,12 +15,10 @@ use crate::{
         native::{
             ir::machine::{
                 MachineAddr, MachineBlockId, MachineBranchCond, MachineEdge, MachineFuncId,
-                MachineInst, MachineInstKind, MachineTerminator, MachineTrapKind,
-                MachineValue, MachineMemWidth, MachineLoadExtension, MachineReg,
+                MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
+                MachineTerminator, MachineTrapKind, MachineValue,
             },
-            ir::runtime::{
-                MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime,
-            },
+            ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
         },
         plan::frame::FrameLayoutPlan,
@@ -182,14 +180,14 @@ impl<'a> BlockLowerContext<'a> {
             LirInstKind::LoadSlot { slot, dst } => {
                 let dst_reg = self.alloc_value(*dst)?;
                 if let Some(cached_index) = self.cached_local_index(*slot) {
-                    self.ops.push(MachineInst {
+                    self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
                             dst: dst_reg,
                             src: MachineValue::Reg(self.cached_locals[cached_index].reg),
                         },
                     });
                 } else {
-                    self.ops.push(MachineInst {
+                    self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Load {
                             dst: dst_reg,
                             addr: self.frame_addr(*slot)?,
@@ -202,7 +200,7 @@ impl<'a> BlockLowerContext<'a> {
             LirInstKind::StoreSlot { slot, src } => {
                 let src_reg = self.use_value(*src)?;
                 if let Some(cached_index) = self.cached_local_index(*slot) {
-                    self.ops.push(MachineInst {
+                    self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
                             dst: self.cached_locals[cached_index].reg,
                             src: MachineValue::Reg(src_reg),
@@ -210,7 +208,7 @@ impl<'a> BlockLowerContext<'a> {
                     });
                     self.cached_locals[cached_index].dirty = true;
                 } else {
-                    self.ops.push(MachineInst {
+                    self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
                             addr: self.frame_addr(*slot)?,
                             width: MachineMemWidth::U64,
@@ -237,7 +235,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_const(&mut self, results: &[LirValue], imm: u64) -> Result<(), WasmError> {
         let dst = single_result(results)?;
         let dst_reg = self.alloc_value(dst)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
                 dst: dst_reg,
                 src: MachineValue::Imm64(imm),
@@ -255,7 +253,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src = self.use_value(single_arg(args)?)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntUnary {
                 width,
                 op,
@@ -276,7 +274,7 @@ impl<'a> BlockLowerContext<'a> {
         let lhs = self.use_value(two_args(args)?.0)?;
         let rhs = self.use_value(two_args(args)?.1)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width,
                 op,
@@ -300,7 +298,7 @@ impl<'a> BlockLowerContext<'a> {
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width,
                 kind,
@@ -324,7 +322,7 @@ impl<'a> BlockLowerContext<'a> {
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatBinary {
                 width,
                 op,
@@ -347,7 +345,7 @@ impl<'a> BlockLowerContext<'a> {
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatCompare {
                 width,
                 kind,
@@ -368,7 +366,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src = self.use_value(single_arg(args)?)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
                 op,
@@ -387,7 +385,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src = self.use_value(single_arg(args)?)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Convert {
                 op,
                 dst,
@@ -397,7 +395,11 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_select(&mut self, args: &[LirValue], results: &[LirValue]) -> Result<(), WasmError> {
+    pub(super) fn lower_select(
+        &mut self,
+        args: &[LirValue],
+        results: &[LirValue],
+    ) -> Result<(), WasmError> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
@@ -405,7 +407,7 @@ impl<'a> BlockLowerContext<'a> {
         let on_true = self.use_value(args[1])?;
         let cond = self.use_value(args[2])?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {
                 dst,
                 on_true: MachineValue::Reg(on_true),
@@ -423,7 +425,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src = self.use_value(single_arg(args)?)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        self.ops.push(MachineInst {
+        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width: super::super::ir::machine::MachineIntWidth::I64,
                 kind: super::super::ir::machine::MachineCompareKind::Eq,
@@ -442,14 +444,20 @@ impl<'a> BlockLowerContext<'a> {
             .program
             .blocks
             .get(edge.target.as_usize())
-            .ok_or_else(|| WasmError::internal("edge target is out of range during native lowering".into()))?;
+            .ok_or_else(|| {
+                WasmError::internal("edge target is out of range during native lowering".into())
+            })?;
         let mut args = Vec::with_capacity(target.params.len());
         for target_param in &target.params {
             let binding = edge
                 .bindings
                 .iter()
                 .find(|binding| binding.param == *target_param)
-                .ok_or_else(|| WasmError::internal("missing LIR edge binding for target param during native lowering".into()))?;
+                .ok_or_else(|| {
+                    WasmError::internal(
+                        "missing LIR edge binding for target param during native lowering".into(),
+                    )
+                })?;
             args.push(MachineValue::Reg(self.value_reg(binding.value)?));
         }
         Ok(MachineEdge {
@@ -462,7 +470,7 @@ impl<'a> BlockLowerContext<'a> {
         for index in 0..self.cached_locals.len() {
             let reg = self.cached_locals[index].reg;
             let slot = self.cached_locals[index].slot;
-            self.ops.push(MachineInst {
+            self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
                     dst: reg,
                     addr: self.frame_addr(slot)?,
@@ -481,7 +489,7 @@ impl<'a> BlockLowerContext<'a> {
                 continue;
             }
             let cached = self.cached_locals[index];
-            self.ops.push(MachineInst {
+            self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
                     addr: self.frame_addr(cached.slot)?,
                     width: MachineMemWidth::U64,
@@ -501,6 +509,13 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
         self.frame_addr_from(self.regfile.frame_base(), slot)
+    }
+
+    pub(super) fn runtime_addr(&self, offset: u32) -> MachineAddr {
+        MachineAddr {
+            base: self.regfile.runtime_base(),
+            offset: offset as i32,
+        }
     }
 
     pub(super) fn frame_addr_from(
@@ -534,16 +549,20 @@ impl<'a> BlockLowerContext<'a> {
         self.all_runtime
             .get(func.0 as usize)
             .copied()
-            .ok_or_else(|| WasmError::internal("machine runtime metadata missing for callee".into()))
+            .ok_or_else(|| {
+                WasmError::internal("machine runtime metadata missing for callee".into())
+            })
     }
 
     pub(super) fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
-        let reg = self
-            .first_free_transient()
-            .ok_or_else(|| WasmError::internal("prepared LIR exceeded transient register budget during native lowering".into()))?;
+        let reg = self.first_free_transient().ok_or_else(|| {
+            WasmError::internal(
+                "prepared LIR exceeded transient register budget during native lowering".into(),
+            )
+        })?;
         self.values.push(ValueLocation { value, reg });
         self.mark_transient(reg, Some(value))?;
         Ok(reg)
@@ -581,8 +600,12 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn value_reg(&self, value: LirValue) -> Result<MachineReg, WasmError> {
-        self.try_value_reg(value)
-            .ok_or_else(|| WasmError::internal(alloc::format!("no machine register assigned for LIR value {:?}", value)))
+        self.try_value_reg(value).ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "no machine register assigned for LIR value {:?}",
+                value
+            ))
+        })
     }
 
     fn first_free_transient(&self) -> Option<MachineReg> {
@@ -594,20 +617,27 @@ impl<'a> BlockLowerContext<'a> {
         None
     }
 
-    fn mark_transient(&mut self, reg: MachineReg, value: Option<LirValue>) -> Result<(), WasmError> {
+    fn mark_transient(
+        &mut self,
+        reg: MachineReg,
+        value: Option<LirValue>,
+    ) -> Result<(), WasmError> {
         let index = reg
             .0
             .checked_sub(
                 self.regfile
                     .transient(0)
-                    .ok_or_else(|| WasmError::internal("native lowering has no transient registers".into()))?
+                    .ok_or_else(|| {
+                        WasmError::internal("native lowering has no transient registers".into())
+                    })?
                     .0,
             )
-            .ok_or_else(|| WasmError::internal("machine register is not in transient partition".into()))? as usize;
-        let slot = self
-            .transient_owner
-            .get_mut(index)
-            .ok_or_else(|| WasmError::internal("transient register index is out of range".into()))?;
+            .ok_or_else(|| {
+                WasmError::internal("machine register is not in transient partition".into())
+            })? as usize;
+        let slot = self.transient_owner.get_mut(index).ok_or_else(|| {
+            WasmError::internal("transient register index is out of range".into())
+        })?;
         *slot = value;
         Ok(())
     }
@@ -632,6 +662,10 @@ impl<'a> BlockLowerContext<'a> {
         self.regfile.frame_base()
     }
 
+    pub(super) fn runtime_base_reg(&self) -> MachineReg {
+        self.regfile.runtime_base()
+    }
+
     pub(super) fn temp_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
         self.regfile
             .temp(index)
@@ -654,5 +688,12 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {
         self.ops.push(inst);
+    }
+
+    pub(super) fn emit_machine_ops<I>(&mut self, insts: I)
+    where
+        I: IntoIterator<Item = MachineInst>,
+    {
+        self.ops.extend(insts);
     }
 }

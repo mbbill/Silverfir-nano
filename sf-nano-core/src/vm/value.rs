@@ -6,6 +6,7 @@
 use crate::value_type::{RefType, ValueType};
 use core::fmt::Display;
 
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefHandle(pub(crate) usize);
 

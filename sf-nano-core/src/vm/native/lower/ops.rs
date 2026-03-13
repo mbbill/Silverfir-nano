@@ -1,14 +1,97 @@
+use alloc::vec::Vec;
+
 use crate::{
     error::WasmError,
     vm::{
+        entities::global_offset,
         lir::{ir::LirValue, leaf::LirLeafOp},
+        native::ir::machine::{
+            MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineInst,
+            MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineTerminator,
+            MachineTrapKind, MachineValue,
+        },
+        native::runtime::context::{
+            ctx_offset, globals_view_offset, memory_view_offset, table_view_offset,
+            NativeMemoryView, NativeTableView,
+        },
         wasm::primitive_op::PrimitiveOpKind,
     },
 };
 
-use super::context::BlockLowerContext;
+use super::{
+    context::BlockLowerContext,
+    util::{single_arg, single_result, two_args},
+};
+
+pub(super) enum LeafLowering {
+    InPlace,
+    Split {
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+        trap_kind: MachineTrapKind,
+        terminator: MachineTerminator,
+        continuation_ops: Vec<MachineInst>,
+    },
+}
 
 impl<'a> BlockLowerContext<'a> {
+    pub(super) fn lower_special_leaf(
+        &mut self,
+        op: &LirLeafOp,
+        args: &[LirValue],
+        results: &[LirValue],
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<Option<LeafLowering>, WasmError> {
+        use PrimitiveOpKind as P;
+
+        let lowered = match op.primitive() {
+            P::MemorySize { mem_idx } => {
+                self.lower_memory_size(*mem_idx, results)?;
+                LeafLowering::InPlace
+            }
+            P::GlobalGet { idx } => {
+                self.lower_global_get(*idx, results)?;
+                LeafLowering::InPlace
+            }
+            P::GlobalSet { idx } => {
+                self.lower_global_set(*idx, args)?;
+                LeafLowering::InPlace
+            }
+            P::TableSize { table_idx } => {
+                self.lower_table_size(*table_idx, results)?;
+                LeafLowering::InPlace
+            }
+            P::TableGet { table_idx } => {
+                self.lower_table_get(*table_idx, args, results, continuation, trap)?
+            }
+            P::TableSet { table_idx } => {
+                self.lower_table_set(*table_idx, args, continuation, trap)?
+            }
+            primitive => {
+                if let Some(spec) = machine_load(primitive) {
+                    return Ok(Some(self.lower_memory_load(
+                        spec,
+                        args,
+                        results,
+                        continuation,
+                        trap,
+                    )?));
+                }
+                if let Some(spec) = machine_store(primitive) {
+                    return Ok(Some(self.lower_memory_store(
+                        spec,
+                        args,
+                        continuation,
+                        trap,
+                    )?));
+                }
+                return Ok(None);
+            }
+        };
+        Ok(Some(lowered))
+    }
+
     pub(super) fn lower_leaf(
         &mut self,
         op: &LirLeafOp,
@@ -62,6 +145,604 @@ impl<'a> BlockLowerContext<'a> {
                 )))
             }
         }
+    }
+
+    fn lower_memory_size(&mut self, mem_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+        let dst = self.alloc_value(single_result(results)?)?;
+        if mem_idx == 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst,
+                    addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        } else {
+            let temp = self.temp_reg(0)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst: temp,
+                    addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst,
+                    addr: self.indexed_addr(
+                        temp,
+                        mem_idx,
+                        core::mem::size_of::<NativeMemoryView>(),
+                        memory_view_offset::LEN,
+                    )?,
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::DivU,
+                dst,
+                lhs: MachineValue::Reg(dst),
+                rhs: MachineValue::Imm64(crate::constants::WASM_PAGE_SIZE as u64),
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+        let dst = self.alloc_value(single_result(results)?)?;
+        let base = self.temp_reg(0)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: base,
+                addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: self.indexed_addr(
+                    base,
+                    idx,
+                    core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                    global_offset::RAW,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
+        let src = self.use_value(single_arg(args)?)?;
+        let base = self.temp_reg(0)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: base,
+                addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                addr: self.indexed_addr(
+                    base,
+                    idx,
+                    core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                    global_offset::RAW,
+                )?,
+                width: MachineMemWidth::U64,
+                src: MachineValue::Reg(src),
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_table_size(&mut self, table_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+        let dst = self.alloc_value(single_result(results)?)?;
+        let table_views = self.temp_reg(0)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: table_views,
+                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: self.indexed_addr(
+                    table_views,
+                    table_idx,
+                    core::mem::size_of::<NativeTableView>(),
+                    table_view_offset::ELEMENTS_LEN,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_table_get(
+        &mut self,
+        table_idx: u32,
+        args: &[LirValue],
+        results: &[LirValue],
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<LeafLowering, WasmError> {
+        let index = self.use_value(single_arg(args)?)?;
+        let dst = self.alloc_value(single_result(results)?)?;
+        let index64 = self.temp_reg(0)?;
+        let table_len = self.temp_reg(1)?;
+        let continuation_ops = self.lower_table_access_continuation(
+            table_idx,
+            index,
+            index64,
+            table_len,
+            Some(dst),
+            None,
+        )?;
+        let terminator = self.lower_table_bounds_check(
+            table_idx,
+            index,
+            index64,
+            table_len,
+            continuation,
+            trap,
+        )?;
+        Ok(LeafLowering::Split {
+            continuation,
+            trap,
+            trap_kind: MachineTrapKind::TableOutOfBounds,
+            terminator,
+            continuation_ops,
+        })
+    }
+
+    fn lower_table_set(
+        &mut self,
+        table_idx: u32,
+        args: &[LirValue],
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<LeafLowering, WasmError> {
+        let (index_value, src_value) = two_args(args)?;
+        let index = self.use_value(index_value)?;
+        let src = self.use_value(src_value)?;
+        let index64 = self.temp_reg(0)?;
+        let table_len = self.temp_reg(1)?;
+        let continuation_ops = self.lower_table_access_continuation(
+            table_idx,
+            index,
+            index64,
+            table_len,
+            None,
+            Some(src),
+        )?;
+        let terminator = self.lower_table_bounds_check(
+            table_idx,
+            index,
+            index64,
+            table_len,
+            continuation,
+            trap,
+        )?;
+        Ok(LeafLowering::Split {
+            continuation,
+            trap,
+            trap_kind: MachineTrapKind::TableOutOfBounds,
+            terminator,
+            continuation_ops,
+        })
+    }
+
+    fn lower_memory_load(
+        &mut self,
+        spec: MemoryLoadSpec,
+        args: &[LirValue],
+        results: &[LirValue],
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<LeafLowering, WasmError> {
+        let addr = self.use_value(single_arg(args)?)?;
+        let dst = self.alloc_value(single_result(results)?)?;
+        let addr32 = self.temp_reg(0)?;
+        let scratch = self.temp_reg(1)?;
+        let continuation_ops = self.lower_memory_continuation(
+            spec.memidx,
+            spec.offset,
+            addr,
+            addr32,
+            scratch,
+            Some((dst, spec.width, spec.extension)),
+            None,
+        )?;
+        let terminator = self.lower_memory_bounds_check(
+            spec.memidx,
+            spec.offset,
+            spec.access_bytes(),
+            addr,
+            addr32,
+            scratch,
+            continuation,
+            trap,
+        )?;
+        Ok(LeafLowering::Split {
+            continuation,
+            trap,
+            trap_kind: MachineTrapKind::MemoryOutOfBounds,
+            terminator,
+            continuation_ops,
+        })
+    }
+
+    fn lower_memory_store(
+        &mut self,
+        spec: MemoryStoreSpec,
+        args: &[LirValue],
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<LeafLowering, WasmError> {
+        let (addr_value, src_value) = two_args(args)?;
+        let addr = self.use_value(addr_value)?;
+        let src = self.use_value(src_value)?;
+        let addr32 = self.temp_reg(0)?;
+        let scratch = self.temp_reg(1)?;
+        let continuation_ops = self.lower_memory_continuation(
+            spec.memidx,
+            spec.offset,
+            addr,
+            addr32,
+            scratch,
+            None,
+            Some((src, spec.width)),
+        )?;
+        let terminator = self.lower_memory_bounds_check(
+            spec.memidx,
+            spec.offset,
+            spec.access_bytes(),
+            addr,
+            addr32,
+            scratch,
+            continuation,
+            trap,
+        )?;
+        Ok(LeafLowering::Split {
+            continuation,
+            trap,
+            trap_kind: MachineTrapKind::MemoryOutOfBounds,
+            terminator,
+            continuation_ops,
+        })
+    }
+
+    fn lower_memory_bounds_check(
+        &mut self,
+        memidx: u32,
+        offset: u32,
+        access_bytes: u32,
+        addr: crate::vm::native::ir::machine::MachineReg,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        scratch: crate::vm::native::ir::machine::MachineReg,
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<MachineTerminator, WasmError> {
+        self.emit_effective_addr(offset, addr, addr32)?;
+        self.emit_memory_len_load(memidx, scratch)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(addr32),
+                rhs: MachineValue::Imm64(access_bytes as u64),
+            },
+        });
+        Ok(MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                kind: MachineCompareKind::Gt,
+                sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                lhs: MachineValue::Reg(addr32),
+                rhs: MachineValue::Reg(scratch),
+            },
+            then_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: trap,
+                args: Vec::new(),
+            },
+            else_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: continuation,
+                args: Vec::new(),
+            },
+        })
+    }
+
+    fn lower_memory_continuation(
+        &self,
+        memidx: u32,
+        offset: u32,
+        addr: crate::vm::native::ir::machine::MachineReg,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        scratch: crate::vm::native::ir::machine::MachineReg,
+        load_dst: Option<(
+            crate::vm::native::ir::machine::MachineReg,
+            MachineMemWidth,
+            MachineLoadExtension,
+        )>,
+        store_src: Option<(crate::vm::native::ir::machine::MachineReg, MachineMemWidth)>,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        emit_effective_addr_ops(&mut ops, offset, addr, addr32);
+        emit_memory_base_load_ops(&mut ops, self.runtime_base_reg(), memidx, scratch)?;
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: scratch,
+                lhs: MachineValue::Reg(scratch),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        if let Some((dst, width, extension)) = load_dst {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst,
+                    addr: crate::vm::native::ir::machine::MachineAddr {
+                        base: scratch,
+                        offset: 0,
+                    },
+                    width,
+                    extension,
+                },
+            });
+        }
+        if let Some((src, width)) = store_src {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Store {
+                    addr: crate::vm::native::ir::machine::MachineAddr {
+                        base: scratch,
+                        offset: 0,
+                    },
+                    width,
+                    src: MachineValue::Reg(src),
+                },
+            });
+        }
+        Ok(ops)
+    }
+
+    fn lower_table_bounds_check(
+        &mut self,
+        table_idx: u32,
+        index: crate::vm::native::ir::machine::MachineReg,
+        index64: crate::vm::native::ir::machine::MachineReg,
+        table_len: crate::vm::native::ir::machine::MachineReg,
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<MachineTerminator, WasmError> {
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
+                dst: index64,
+                src: MachineValue::Reg(index),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: table_len,
+                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: table_len,
+                addr: self.indexed_addr(
+                    table_len,
+                    table_idx,
+                    core::mem::size_of::<NativeTableView>(),
+                    table_view_offset::ELEMENTS_LEN,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                kind: MachineCompareKind::Ge,
+                sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                lhs: MachineValue::Reg(index64),
+                rhs: MachineValue::Reg(table_len),
+            },
+            then_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: trap,
+                args: Vec::new(),
+            },
+            else_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: continuation,
+                args: Vec::new(),
+            },
+        })
+    }
+
+    fn lower_table_access_continuation(
+        &self,
+        table_idx: u32,
+        index: crate::vm::native::ir::machine::MachineReg,
+        index64: crate::vm::native::ir::machine::MachineReg,
+        scratch: crate::vm::native::ir::machine::MachineReg,
+        load_dst: Option<crate::vm::native::ir::machine::MachineReg>,
+        store_src: Option<crate::vm::native::ir::machine::MachineReg>,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        ops.push(MachineInst {
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
+                dst: index64,
+                src: MachineValue::Reg(index),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: scratch,
+                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: scratch,
+                addr: self.indexed_addr(
+                    scratch,
+                    table_idx,
+                    core::mem::size_of::<NativeTableView>(),
+                    table_view_offset::ELEMENTS_BASE,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
+                dst: index64,
+                lhs: MachineValue::Reg(index64),
+                rhs: MachineValue::Imm64(core::mem::size_of::<crate::vm::value::RefHandle>() as u64),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: scratch,
+                lhs: MachineValue::Reg(scratch),
+                rhs: MachineValue::Reg(index64),
+            },
+        });
+        if let Some(dst) = load_dst {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst,
+                    addr: crate::vm::native::ir::machine::MachineAddr {
+                        base: scratch,
+                        offset: 0,
+                    },
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
+        if let Some(src) = store_src {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Store {
+                    addr: crate::vm::native::ir::machine::MachineAddr {
+                        base: scratch,
+                        offset: 0,
+                    },
+                    width: MachineMemWidth::U64,
+                    src: MachineValue::Reg(src),
+                },
+            });
+        }
+        Ok(ops)
+    }
+
+    fn emit_effective_addr(
+        &mut self,
+        offset: u32,
+        addr: crate::vm::native::ir::machine::MachineReg,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(addr),
+                rhs: MachineValue::Imm64(offset as u64),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
+                dst: addr32,
+                src: MachineValue::Reg(addr32),
+            },
+        });
+        Ok(())
+    }
+
+    fn emit_memory_len_load(
+        &mut self,
+        memidx: u32,
+        dst: crate::vm::native::ir::machine::MachineReg,
+    ) -> Result<(), WasmError> {
+        if memidx == 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst,
+                    addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            return Ok(());
+        }
+
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: self.indexed_addr(
+                    dst,
+                    memidx,
+                    core::mem::size_of::<NativeMemoryView>(),
+                    memory_view_offset::LEN,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
+    }
+
+    fn indexed_addr(
+        &self,
+        base: crate::vm::native::ir::machine::MachineReg,
+        index: u32,
+        stride: usize,
+        field_offset: u32,
+    ) -> Result<crate::vm::native::ir::machine::MachineAddr, WasmError> {
+        let scaled = (index as u64)
+            .checked_mul(stride as u64)
+            .and_then(|value| value.checked_add(field_offset as u64))
+            .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
+        let offset = i32::try_from(scaled)
+            .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))?;
+        Ok(crate::vm::native::ir::machine::MachineAddr { base, offset })
     }
 }
 
@@ -297,4 +978,270 @@ fn machine_convert(
         P::F64ReinterpretI64 => Op::F64ReinterpretI64,
         _ => return None,
     })
+}
+
+#[derive(Clone, Copy)]
+struct MemoryLoadSpec {
+    memidx: u32,
+    offset: u32,
+    width: MachineMemWidth,
+    extension: MachineLoadExtension,
+}
+
+impl MemoryLoadSpec {
+    #[inline]
+    fn access_bytes(self) -> u32 {
+        mem_width_bytes(self.width)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MemoryStoreSpec {
+    memidx: u32,
+    offset: u32,
+    width: MachineMemWidth,
+}
+
+impl MemoryStoreSpec {
+    #[inline]
+    fn access_bytes(self) -> u32 {
+        mem_width_bytes(self.width)
+    }
+}
+
+fn machine_load(primitive: &PrimitiveOpKind) -> Option<MemoryLoadSpec> {
+    use PrimitiveOpKind as P;
+
+    Some(match primitive {
+        P::I32Load { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::I64Load { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+        P::F32Load { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::F64Load { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+        P::I32Load8S { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+            extension: MachineLoadExtension::SignExtend,
+        },
+        P::I32Load8U { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::I32Load16S { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+            extension: MachineLoadExtension::SignExtend,
+        },
+        P::I32Load16U { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::I64Load8S { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+            extension: MachineLoadExtension::SignExtend,
+        },
+        P::I64Load8U { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::I64Load16S { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+            extension: MachineLoadExtension::SignExtend,
+        },
+        P::I64Load16U { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        P::I64Load32S { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::SignExtend,
+        },
+        P::I64Load32U { offset, memidx } => MemoryLoadSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+        _ => return None,
+    })
+}
+
+fn machine_store(primitive: &PrimitiveOpKind) -> Option<MemoryStoreSpec> {
+    use PrimitiveOpKind as P;
+
+    Some(match primitive {
+        P::I32Store { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+        },
+        P::I64Store { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U64,
+        },
+        P::F32Store { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+        },
+        P::F64Store { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U64,
+        },
+        P::I32Store8 { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+        },
+        P::I32Store16 { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+        },
+        P::I64Store8 { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U8,
+        },
+        P::I64Store16 { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U16,
+        },
+        P::I64Store32 { offset, memidx } => MemoryStoreSpec {
+            memidx: *memidx,
+            offset: *offset,
+            width: MachineMemWidth::U32,
+        },
+        _ => return None,
+    })
+}
+
+fn mem_width_bytes(width: MachineMemWidth) -> u32 {
+    match width {
+        MachineMemWidth::U8 => 1,
+        MachineMemWidth::U16 => 2,
+        MachineMemWidth::U32 => 4,
+        MachineMemWidth::U64 => 8,
+    }
+}
+
+fn emit_effective_addr_ops(
+    ops: &mut Vec<MachineInst>,
+    offset: u32,
+    addr: crate::vm::native::ir::machine::MachineReg,
+    addr32: crate::vm::native::ir::machine::MachineReg,
+) {
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntBinary {
+            width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+            op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+            dst: addr32,
+            lhs: MachineValue::Reg(addr),
+            rhs: MachineValue::Imm64(offset as u64),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Convert {
+            op: MachineConvertOp::I64ExtendI32U,
+            dst: addr32,
+            src: MachineValue::Reg(addr32),
+        },
+    });
+}
+
+fn emit_memory_base_load_ops(
+    ops: &mut Vec<MachineInst>,
+    runtime_base: crate::vm::native::ir::machine::MachineReg,
+    memidx: u32,
+    dst: crate::vm::native::ir::machine::MachineReg,
+) -> Result<(), WasmError> {
+    if memidx == 0 {
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: crate::vm::native::ir::machine::MachineAddr {
+                    base: runtime_base,
+                    offset: ctx_offset::MEM0_BASE as i32,
+                },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        return Ok(());
+    }
+
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            dst,
+            addr: crate::vm::native::ir::machine::MachineAddr {
+                base: runtime_base,
+                offset: ctx_offset::MEMORY_VIEWS_BASE as i32,
+            },
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            dst,
+            addr: crate::vm::native::ir::machine::MachineAddr {
+                base: dst,
+                offset: indexed_field_offset(
+                    memidx,
+                    core::mem::size_of::<NativeMemoryView>(),
+                    memory_view_offset::BASE,
+                )?,
+            },
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    Ok(())
+}
+
+fn indexed_field_offset(index: u32, stride: usize, field_offset: u32) -> Result<i32, WasmError> {
+    let scaled = (index as u64)
+        .checked_mul(stride as u64)
+        .and_then(|value| value.checked_add(field_offset as u64))
+        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
+    i32::try_from(scaled)
+        .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))
 }

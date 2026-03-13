@@ -161,6 +161,12 @@ impl GlobalInst {
     }
 }
 
+pub mod global_offset {
+    use super::GlobalInst;
+
+    pub const RAW: u32 = core::mem::offset_of!(GlobalInst, raw) as u32;
+}
+
 #[derive(Debug, Clone)]
 pub struct ElementInst {
     pub refs: Vec<RefHandle>,

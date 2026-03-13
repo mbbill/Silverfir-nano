@@ -193,6 +193,7 @@ pub enum MachineLoadExtension {
 pub enum MachineTrapKind {
     Unreachable,
     MemoryOutOfBounds,
+    TableOutOfBounds,
     IntegerDivideByZero,
     IntegerOverflow,
     CallStackExhausted,

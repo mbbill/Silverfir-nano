@@ -27,7 +27,7 @@ use crate::{
         },
         native::ir::{
             machine::{
-                MachineBlock, MachineBlockId, MachineConstData, MachineFunction, MachineFuncId,
+                MachineBlock, MachineBlockId, MachineConstData, MachineFuncId, MachineFunction,
                 MachineModule, MachineProgram, MachineReg, MachineTerminator,
             },
             runtime::{
@@ -40,9 +40,7 @@ use crate::{
 };
 
 use self::{
-    context::BlockLowerContext,
-    regfile::MachineRegFile,
-    sidecar::SidecarBuilder,
+    context::BlockLowerContext, ops::LeafLowering, regfile::MachineRegFile, sidecar::SidecarBuilder,
 };
 
 /// One prepared function ready for LIR -> MachineIR lowering.
@@ -139,14 +137,13 @@ fn lower_function(
     call_link: MachineCallLinkLayout,
     sidecar: &mut SidecarBuilder,
 ) -> Result<MachineFunction, WasmError> {
-    let caller_runtime = runtime
-        .get(input.id.0 as usize)
-        .copied()
-        .ok_or_else(|| WasmError::internal("machine runtime metadata missing for function".into()))?;
+    let caller_runtime = runtime.get(input.id.0 as usize).copied().ok_or_else(|| {
+        WasmError::internal("machine runtime metadata missing for function".into())
+    })?;
     let original_block_count = input.lir.blocks.len();
     let mut original_blocks = alloc::vec![None; original_block_count];
-    let mut continuation_blocks = Vec::new();
-    let mut next_continuation = original_block_count as u32;
+    let mut extra_blocks = Vec::new();
+    let mut next_extra_block = original_block_count as u32;
 
     for block in &input.lir.blocks {
         let target = block.id;
@@ -166,6 +163,48 @@ fn lower_function(
 
         for inst in &block.ops {
             match &inst.kind {
+                LirInstKind::Value { op, args, results } => {
+                    if let Some(lowered) = lower.lower_special_leaf(
+                        op,
+                        args,
+                        results,
+                        MachineBlockId(next_extra_block + 1),
+                        MachineBlockId(next_extra_block),
+                    )? {
+                        lower.release_dead_values()?;
+                        match lowered {
+                            LeafLowering::InPlace => {}
+                            LeafLowering::Split {
+                                continuation,
+                                trap,
+                                trap_kind,
+                                terminator,
+                                continuation_ops,
+                            } => {
+                                next_extra_block += 2;
+                                push_lowered_block(
+                                    current_block,
+                                    &mut original_blocks,
+                                    &mut extra_blocks,
+                                    current_params,
+                                    lower.take_ops(),
+                                    terminator,
+                                )?;
+                                extra_blocks.push(MachineBlock {
+                                    id: trap,
+                                    params: Vec::new(),
+                                    ops: Vec::new(),
+                                    terminator: MachineTerminator::Trap { kind: trap_kind },
+                                });
+                                current_block = continuation;
+                                current_params = Vec::new();
+                                lower.emit_machine_ops(continuation_ops);
+                            }
+                        }
+                        continue;
+                    }
+                    lower.lower_inst(inst)?;
+                }
                 LirInstKind::Boundary(boundary) => match boundary {
                     LirBoundaryOp::MemoryGrow { .. }
                     | LirBoundaryOp::TableGrow { .. }
@@ -187,18 +226,14 @@ fn lower_function(
                         args,
                         results,
                     } => {
-                        let continuation = MachineBlockId(next_continuation);
-                        next_continuation += 1;
-                        let terminator = lower.lower_call_internal(
-                            *callee,
-                            *args,
-                            *results,
-                            continuation,
-                        )?;
+                        let continuation = MachineBlockId(next_extra_block);
+                        next_extra_block += 1;
+                        let terminator =
+                            lower.lower_call_internal(*callee, *args, *results, continuation)?;
                         push_lowered_block(
                             current_block,
                             &mut original_blocks,
-                            &mut continuation_blocks,
+                            &mut extra_blocks,
                             current_params,
                             lower.take_ops(),
                             terminator,
@@ -222,14 +257,14 @@ fn lower_function(
         push_lowered_block(
             current_block,
             &mut original_blocks,
-            &mut continuation_blocks,
+            &mut extra_blocks,
             current_params,
             lower.take_ops(),
             terminator,
         )?;
     }
 
-    let mut blocks = Vec::with_capacity(original_block_count + continuation_blocks.len());
+    let mut blocks = Vec::with_capacity(original_block_count + extra_blocks.len());
     for (index, block) in original_blocks.into_iter().enumerate() {
         blocks.push(block.ok_or_else(|| {
             WasmError::internal(alloc::format!(
@@ -238,7 +273,7 @@ fn lower_function(
             ))
         })?);
     }
-    blocks.extend(continuation_blocks);
+    blocks.extend(extra_blocks);
 
     let program = MachineProgram {
         entry: MachineBlockId(input.lir.entry.as_u32()),
@@ -328,9 +363,9 @@ fn push_lowered_block(
 fn target_param_regs(count: usize, regfile: &MachineRegFile) -> Result<Vec<MachineReg>, WasmError> {
     let mut regs = Vec::with_capacity(count);
     for index in 0..count {
-        regs.push(regfile
-            .transient(index)
-            .ok_or_else(|| WasmError::internal("target params exceed transient register budget".into()))?);
+        regs.push(regfile.transient(index).ok_or_else(|| {
+            WasmError::internal("target params exceed transient register budget".into())
+        })?);
     }
     Ok(regs)
 }

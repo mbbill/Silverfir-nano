@@ -2,8 +2,8 @@ use crate::vm::{
     backend::BackendConfig,
     lir::{
         ir::{
-            LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind,
-            LirLocalCachePrefs, LirProgram, LirTerminator, LirValue,
+            LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs,
+            LirProgram, LirTerminator, LirValue,
         },
         leaf::LirLeafOp,
         target::LirTarget,
@@ -38,7 +38,8 @@ fn lowers_simple_slot_and_add_block() {
                 },
                 LirInst {
                     kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                            .unwrap(),
                         args: alloc::vec![],
                         results: alloc::vec![LirValue(1)],
                     },
@@ -82,7 +83,10 @@ fn lowers_simple_slot_and_add_block() {
     assert_eq!(lowered.runtime.call_link.slot_count, 3);
     assert_eq!(lowered.runtime.functions.len(), 1);
     assert_eq!(lowered.runtime.functions[0].frame_prefix_slots, 1);
-    assert_eq!(lowered.runtime.functions[0].total_frame_slots, frame.total_slots());
+    assert_eq!(
+        lowered.runtime.functions[0].total_frame_slots,
+        frame.total_slots()
+    );
     assert_eq!(
         lowered.runtime.functions[0].call_scratch,
         Some(crate::vm::native::ir::runtime::MachineFrameRegion {
@@ -94,9 +98,15 @@ fn lowers_simple_slot_and_add_block() {
     assert_eq!(lowered.runtime.functions[0].return_results, None);
     assert_eq!(program.entry, MachineBlockId(0));
     assert_eq!(program.blocks.len(), 1);
-    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Return
+    ));
     assert_eq!(program.blocks[0].ops.len(), 4);
-    assert!(matches!(program.blocks[0].ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        program.blocks[0].ops[0].kind,
+        MachineInstKind::Load { .. }
+    ));
     assert!(matches!(
         program.blocks[0].ops[1].kind,
         MachineInstKind::Move {
@@ -111,7 +121,10 @@ fn lowers_simple_slot_and_add_block() {
             ..
         }
     ));
-    assert!(matches!(program.blocks[0].ops[3].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(
+        program.blocks[0].ops[3].kind,
+        MachineInstKind::Store { .. }
+    ));
 }
 
 #[test]
@@ -177,7 +190,10 @@ fn rejects_inconsistent_return_result_spans() {
                 params: alloc::vec![],
                 ops: alloc::vec![],
                 terminator: LirTerminator::Return {
-                    results: Some(crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1)),
+                    results: Some(crate::vm::plan::frame::FrameSpan::new(
+                        frame.operand_slot(0),
+                        1
+                    )),
                 },
             },
             LirBlock {
@@ -185,7 +201,10 @@ fn rejects_inconsistent_return_result_spans() {
                 params: alloc::vec![],
                 ops: alloc::vec![],
                 terminator: LirTerminator::Return {
-                    results: Some(crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(1), 1)),
+                    results: Some(crate::vm::plan::frame::FrameSpan::new(
+                        frame.operand_slot(1),
+                        1
+                    )),
                 },
             },
         ],
@@ -289,7 +308,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
                 },
                 LirInst {
                     kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 }).unwrap(),
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                            .unwrap(),
                         args: alloc::vec![],
                         results: alloc::vec![LirValue(1)],
                     },
@@ -322,7 +342,13 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     .expect("lowering should succeed");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert!(matches!(ops[0].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(2),
+            ..
+        }
+    ));
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -382,7 +408,10 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
     .expect("runtime helper lowering should succeed");
 
     assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(lowered.module.externs[0].symbol, MachineHelperSymbol::MemoryGrow);
+    assert_eq!(
+        lowered.module.externs[0].symbol,
+        MachineHelperSymbol::MemoryGrow
+    );
     assert_eq!(lowered.module.consts.len(), 1);
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 1);
@@ -426,7 +455,10 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     .expect("external helper lowering should succeed");
 
     assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(lowered.module.externs[0].symbol, MachineHelperSymbol::CallExternal);
+    assert_eq!(
+        lowered.module.externs[0].symbol,
+        MachineHelperSymbol::CallExternal
+    );
     assert_eq!(lowered.module.consts.len(), 1);
     assert!(lowered.runtime.functions[0].helper_scratch.is_none());
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
@@ -449,7 +481,10 @@ fn lowers_direct_local_call_with_continuation_block() {
                 kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
                     callee: 1,
                     args: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
-                    results: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                    results: crate::vm::plan::frame::FrameSpan::new(
+                        caller_frame.operand_slot(0),
+                        1
+                    ),
                 }),
             }],
             terminator: LirTerminator::TrapUnreachable,
@@ -515,13 +550,55 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         }
     ));
-    assert!(matches!(call_block.ops[1].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
-    assert!(matches!(call_block.ops[2].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(2)), .. }));
-    assert!(matches!(call_block.ops[3].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
-    assert!(matches!(call_block.ops[4].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(2)), .. }));
-    assert!(matches!(call_block.ops[5].kind, MachineInstKind::Store { src: MachineValue::Imm64(0), .. }));
-    assert!(matches!(call_block.ops[6].kind, MachineInstKind::Store { src: MachineValue::Imm64(1), .. }));
-    assert!(matches!(call_block.ops[7].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(1)), .. }));
+    assert!(matches!(
+        call_block.ops[1].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(2),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[2].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Reg(MachineReg(2)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[3].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(2),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[4].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Reg(MachineReg(2)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[5].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Imm64(0),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[6].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Imm64(1),
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[7].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Reg(MachineReg(1)),
+            ..
+        }
+    ));
     assert!(matches!(
         call_block.ops[8].kind,
         MachineInstKind::Store {
@@ -538,5 +615,269 @@ fn lowers_direct_local_call_with_continuation_block() {
         MachineTerminator::Trap {
             kind: crate::vm::native::ir::machine::MachineTrapKind::Unreachable
         }
+    ));
+}
+
+#[test]
+fn lowers_memory_size_without_helper_boundary() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Value {
+                    op: LirLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
+                        .unwrap(),
+                    args: alloc::vec![],
+                    results: alloc::vec![LirValue(0)],
+                },
+            }],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 2,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("memory.size should lower directly");
+
+    let block = &lowered.module.functions[0].program.blocks[0];
+    assert_eq!(block.ops.len(), 3);
+    assert!(matches!(block.ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(block.ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::DivU,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn lowers_global_get_and_set_without_helpers() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                            .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 2,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("global get/set should lower directly");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 5);
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Imm64(9),
+            ..
+        }
+    ));
+    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
+}
+
+#[test]
+fn lowers_table_get_with_explicit_oob_trap_block() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 0 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
+                            .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 2,
+            hot_local_count: 0,
+            tos_register_count: 2,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("table.get should lower with an explicit trap split");
+
+    let program = &lowered.module.functions[0].program;
+    assert_eq!(program.blocks.len(), 3);
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[1].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::TableOutOfBounds
+        }
+    ));
+    assert!(matches!(
+        program.blocks[2].ops.last().unwrap().kind,
+        MachineInstKind::Load { .. }
+    ));
+    assert!(matches!(
+        program.blocks[2].terminator,
+        MachineTerminator::Return
+    ));
+}
+
+#[test]
+fn lowers_i32_load_with_explicit_oob_trap_block() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                            offset: 4,
+                            memidx: 1,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 2,
+            hot_local_count: 0,
+            tos_register_count: 2,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("i32.load should lower with an explicit trap split");
+
+    let program = &lowered.module.functions[0].program;
+    assert_eq!(program.blocks.len(), 3);
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[1].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds
+        }
+    ));
+    assert!(matches!(
+        program.blocks[2].ops.last().unwrap().kind,
+        MachineInstKind::Load {
+            width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[2].terminator,
+        MachineTerminator::Return
     ));
 }

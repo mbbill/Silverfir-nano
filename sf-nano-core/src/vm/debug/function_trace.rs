@@ -383,7 +383,7 @@ mod imp {
         let Some(&func_idx) = ctx.trace_stack.last() else {
             return;
         };
-        let depth = ctx.hot.call_depth as u32;
+        let depth = ctx.call_depth as u32;
         let store = ctx.store_mut();
         record_event(None, EventKind::Trap, func_idx, depth, &[], store, Some(error));
         ctx.trace_stack.clear();
@@ -406,7 +406,7 @@ mod imp {
             return;
         };
         ctx.trace_stack.push(func_idx);
-        let depth = ctx.hot.call_depth as u32;
+        let depth = ctx.call_depth as u32;
         let store = ctx.store_mut();
         record_event(None, EventKind::Entry, func_idx, depth, &[], store, None);
     }
@@ -425,7 +425,7 @@ mod imp {
         let Some(func_idx) = ctx.trace_stack.pop() else {
             return;
         };
-        let depth = ctx.hot.call_depth as u32;
+        let depth = ctx.call_depth as u32;
         let results = unsafe { core::slice::from_raw_parts(fp, arity as usize) };
         let store = ctx.store_mut();
         record_event(None, EventKind::Exit, func_idx, depth, results, store, None);
