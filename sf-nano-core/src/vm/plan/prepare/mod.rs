@@ -26,8 +26,6 @@ use super::{
     analyze_local_cache_prefs,
     config::PlanConfig,
     frame::{plan_frame_layout, FrameLayoutPlan},
-    group::{plan_groups, GroupPlan},
-    policy::PlanPolicy,
 };
 use self::{
     block::lower_block_range,
@@ -40,14 +38,12 @@ use self::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepareInput {
     pub config: PlanConfig,
-    pub policy: PlanPolicy,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedFunction {
     pub frame: FrameLayoutPlan,
-    pub groups: GroupPlan,
     pub lir: LirProgram,
 }
 
@@ -68,7 +64,6 @@ pub fn prepare_function(
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
             frame,
-            groups: GroupPlan::default(),
             lir: LirProgram {
                 entry: LirTarget(0),
                 local_cache,
@@ -114,11 +109,7 @@ pub fn prepare_function(
     };
     validate_program(&lir)?;
 
-    Ok(PreparedFunction {
-        frame,
-        groups: plan_groups(&lir, input.policy),
-        lir,
-    })
+    Ok(PreparedFunction { frame, lir })
 }
 
 #[inline]

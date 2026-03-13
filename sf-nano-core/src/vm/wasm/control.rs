@@ -1,7 +1,8 @@
 //! Structured control-flow analysis helpers.
 //!
 //! This is the right place for block/loop/if stacks and semantic target
-//! resolution. It is not the right place for spill/fill or grouping.
+//! resolution. It is not the right place for spill/fill or prepared block
+//! shaping.
 
 use super::common::{SemanticIndex, SemanticTarget};
 

@@ -2070,7 +2070,7 @@ mod tests {
             },
             runtime::context::NativeContext,
         },
-        plan::{frame::FramePlanner, group::GroupPlan},
+        plan::frame::FramePlanner,
     };
 
     fn test_abi() -> NativeAbi {
@@ -2114,7 +2114,6 @@ mod tests {
             abi: test_abi(),
             frame,
             spill_slots: 0,
-            groups: GroupPlan::default(),
             hot_locals: None,
         };
 

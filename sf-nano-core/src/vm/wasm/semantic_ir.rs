@@ -8,7 +8,7 @@
 //! - no frame-slot layout
 //! - no spill/fill preparation artifacts
 //! - no local-cache decisions
-//! - no grouping or machine placement
+//! - no prepared block shaping or machine placement
 
 use alloc::vec::Vec;
 

@@ -5,7 +5,7 @@
 //! It must not commit to backend-local preparation such as:
 //! - hot locals
 //! - spill/fill insertion
-//! - grouping
+//! - prepared block shaping
 //! - frame-slot layout
 //! - prepared transient-window contracts
 

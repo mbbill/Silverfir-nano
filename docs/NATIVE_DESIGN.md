@@ -520,9 +520,15 @@ There is no separate public "planned op" IR here.
 
 - canonical frame layout
 - local-cache preference analysis
-- prepared-LIR grouping metadata
+- prepared LIR block shaping
 
 But the only public code handoff it emits is prepared LIR itself.
+
+Prepared LIR blocks are also the only execution-region concept above MachineIR:
+
+- maximal mode means blocks are split only at real control boundaries
+- any future fusion constraints must split blocks earlier
+- there is no separate "group" abstraction on top of blocks
 
 The backend passes down configuration such as:
 

@@ -9,7 +9,7 @@
 //! - insert spill/fill
 //! - assign frame slots
 //! - assign transient-window handlers
-//! - form groups
+//! - shape prepared execution blocks
 
 use alloc::{vec, vec::Vec};
 
