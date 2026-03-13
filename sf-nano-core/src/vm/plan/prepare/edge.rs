@@ -1,31 +1,32 @@
-//! CFG edge construction and successor binding shaping.
+//! CFG edge construction.
 
 use alloc::vec::Vec;
 
-use crate::error::WasmError;
-use crate::vm::{
-    lir::{
-        ir::{LirBinding, LirEdge, LirTerminator, LirValue},
-        target::LirTarget,
-    },
-    plan::frame::FrameSpan,
-    wasm::{
-        common::{BrTableEntry, SemanticTarget},
-        semantic_ir::SemanticOp,
+use crate::{
+    error::WasmError,
+    vm::{
+        lir::{
+            ir::{LirBinding, LirEdge, LirTerminator, LirValue},
+            target::LirTarget,
+        },
+        plan::frame::FrameSpan,
+        wasm::common::{BrTableEntry, SemanticTarget},
     },
 };
 
 use super::state::{BlockState, EntryState};
 
 pub(super) fn goto_next(
-    semantic_op: &SemanticOp,
+    semantic_index: usize,
+    semantic_len: usize,
     state: &BlockState,
     semantic_to_block: &[LirTarget],
     block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirTerminator, WasmError> {
     Ok(LirTerminator::Goto(next_edge(
-        semantic_op,
+        semantic_index,
+        semantic_len,
         state,
         semantic_to_block,
         block_params,
@@ -34,17 +35,19 @@ pub(super) fn goto_next(
 }
 
 pub(super) fn next_edge(
-    semantic_op: &SemanticOp,
+    semantic_index: usize,
+    semantic_len: usize,
     state: &BlockState,
     semantic_to_block: &[LirTarget],
     block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
-    let next = semantic_op
-        .next
+    let next = semantic_index
+        .checked_add(1)
+        .filter(|next| *next < semantic_len)
         .ok_or_else(|| WasmError::invalid("missing fallthrough target".into()))?;
     edge_to_target(
-        SemanticTarget::new(next.as_usize()),
+        SemanticTarget::new(next),
         state,
         EdgeMapping::Identity,
         semantic_to_block,
@@ -88,15 +91,15 @@ pub(super) fn edge_to_target(
 
     let bindings = match mapping {
         EdgeMapping::Identity => {
-            let live_values = state.top_values(target_entry.live_tos_count() as usize)?;
+            let live_values = state.top_values(target_entry.live_value_count() as usize)?;
             bind_values(target_params, &live_values)?
         }
         EdgeMapping::TakenBranch { payload, .. } => {
-            if target_entry.live_tos_count() != 0 {
+            if target_entry.live_value_count() != 0 {
                 return Err(WasmError::internal(alloc::format!(
                     "taken branch to semantic op {} must enter with canonical frame payload only, but target expects {} live params (payload_slots={})",
                     target.index().as_usize(),
-                    target_entry.live_tos_count(),
+                    target_entry.live_value_count(),
                     payload.map_or(0, |span| span.count),
                 )));
             }
@@ -125,9 +128,7 @@ pub(super) fn br_table_edge(
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
     edge_to_target(
-        entry
-            .target
-            .ok_or_else(|| WasmError::invalid("br_table entry missing target".into()))?,
+        entry.target,
         state,
         EdgeMapping::TakenBranch {
             stack_drop: entry.stack_drop,

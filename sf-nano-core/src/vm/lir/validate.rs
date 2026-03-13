@@ -4,6 +4,7 @@ use crate::error::WasmError;
 
 use super::ir::{LirBlock, LirBinding, LirEdge, LirProgram, LirTerminator, LirValue};
 
+#[cfg(any(debug_assertions, test))]
 pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
     if program.blocks.is_empty() {
         if program.entry.as_usize() != 0 {
@@ -54,6 +55,12 @@ pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
         }
     }
 
+    Ok(())
+}
+
+#[cfg(not(any(debug_assertions, test)))]
+#[inline]
+pub fn validate_program(_program: &LirProgram) -> Result<(), WasmError> {
     Ok(())
 }
 

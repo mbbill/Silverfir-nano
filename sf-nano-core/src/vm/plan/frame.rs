@@ -1,9 +1,11 @@
-//! Frame layout planning.
+//! Canonical frame layout planning.
 //!
-//! This is where logical locals / operands become `fp[...]`-relative memory
-//! concepts. Backends should consume the result, not recompute it.
+//! This is the shared Wasm/native contract:
+//! - locals keep their Wasm-relative frame homes
+//! - call scratch sits after locals
+//! - deep stack / call payloads live in operand slots after call scratch
 
-/// Explicit `fp[...]` frame-relative slot selected during planning.
+/// Explicit `fp[...]` frame-relative slot selected during preparation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameSlot(pub u16);
 
@@ -41,117 +43,46 @@ impl FrameSpan {
     }
 }
 
-/// Planned frame layout for one function.
+/// Canonical frame layout for one function.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameLayoutPlan {
-    pub local_base: u16,
-    pub operand_base: u16,
     pub locals: FrameSpan,
-    pub operands: FrameSpan,
     pub call_scratch: Option<FrameSpan>,
-    pub backend_reserved: Option<FrameSpan>,
-    /// Size of the callee-local frame prefix before native call metadata.
-    ///
-    /// For the native backend this includes Wasm locals plus any backend-owned
-    /// frame homes, but excludes call-link metadata slots that sit between the
-    /// frame prefix and the operand area.
+    pub operands: FrameSpan,
+    /// Size of the callee-local frame prefix before native call scratch.
     pub frame_size: u16,
 }
 
 impl FrameLayoutPlan {
     #[inline]
     pub const fn local_slot(self, idx: u16) -> FrameSlot {
-        FrameSlot(self.local_base + idx)
+        self.locals.start.advance(idx)
     }
 
     #[inline]
     pub const fn operand_slot(self, idx: u16) -> FrameSlot {
-        FrameSlot(self.operand_base + idx)
-    }
-}
-
-/// Incremental frame planner used before backend-facing IR exists.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FramePlanner {
-    local_count: u16,
-    backend_reserved: u16,
-    call_scratch: u16,
-    next_operand: u16,
-}
-
-impl FramePlanner {
-    #[inline]
-    pub const fn new(local_count: u16) -> Self {
-        Self {
-            local_count,
-            backend_reserved: 0,
-            call_scratch: 0,
-            next_operand: 0,
-        }
-    }
-
-    #[inline]
-    pub const fn reserve_backend_reserved(mut self, count: u16) -> Self {
-        self.backend_reserved += count;
-        self
-    }
-
-    #[inline]
-    pub const fn reserve_call_scratch(mut self, count: u16) -> Self {
-        self.call_scratch += count;
-        self
-    }
-
-    #[inline]
-    pub const fn reserve_operands(mut self, count: u16) -> (Self, FrameSpan) {
-        let span = FrameSpan::new(
-            FrameSlot(
-                self.local_count + self.backend_reserved + self.call_scratch + self.next_operand,
-            ),
-            count,
-        );
-        self.next_operand += count;
-        (self, span)
-    }
-
-    #[inline]
-    pub const fn finish(self) -> FrameLayoutPlan {
-        let frame_size = self.local_count + self.backend_reserved;
-        let operand_base = frame_size + self.call_scratch;
-        FrameLayoutPlan {
-            local_base: 0,
-            operand_base,
-            locals: FrameSpan::new(FrameSlot(0), self.local_count),
-            operands: FrameSpan::new(FrameSlot(operand_base), self.next_operand),
-            call_scratch: if self.call_scratch == 0 {
-                None
-            } else {
-                Some(FrameSpan::new(FrameSlot(frame_size), self.call_scratch))
-            },
-            backend_reserved: if self.backend_reserved == 0 {
-                None
-            } else {
-                Some(FrameSpan::new(
-                    FrameSlot(self.local_count),
-                    self.backend_reserved,
-                ))
-            },
-            frame_size,
-        }
+        self.operands.start.advance(idx)
     }
 }
 
 #[inline]
-pub fn plan_frame_layout(
+pub const fn plan_frame_layout(
     local_count: u16,
     max_stack_height: u16,
-    hot_local_count: u8,
     call_scratch_slots: u16,
 ) -> FrameLayoutPlan {
-    let backend_reserved = (hot_local_count as u16).saturating_sub(local_count);
-    let planner = FramePlanner::new(local_count)
-        .reserve_backend_reserved(backend_reserved)
-        .reserve_call_scratch(call_scratch_slots);
-    let (planner, _) = planner.reserve_operands(max_stack_height);
-    planner.finish()
+    let locals = FrameSpan::new(FrameSlot(0), local_count);
+    let frame_size = local_count;
+    let call_scratch = if call_scratch_slots == 0 {
+        None
+    } else {
+        Some(FrameSpan::new(FrameSlot(frame_size), call_scratch_slots))
+    };
+    let operand_base = frame_size + call_scratch_slots;
+    FrameLayoutPlan {
+        locals,
+        call_scratch,
+        operands: FrameSpan::new(FrameSlot(operand_base), max_stack_height),
+        frame_size,
+    }
 }

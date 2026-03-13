@@ -1,14 +1,14 @@
-//! Wasm decoder to semantic IR.
+//! Wasm decoder to the decoded semantic function model.
 //!
 //! This stage stops at semantic structure:
 //! - structured control targets
 //! - abstract local / call / branch semantics
-//! - semantic stack height for planning input
+//! - semantic stack height for later frame sizing
 //!
 //! It must not:
 //! - insert spill/fill
 //! - assign frame slots
-//! - assign rotating-window handlers
+//! - assign transient-window handlers
 //! - form groups
 
 use alloc::{vec, vec::Vec};
@@ -40,27 +40,34 @@ impl SemanticBuilder {
 
     pub fn push(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
         let idx = self.current_index();
-        self.ops.push(SemanticOp {
-            kind: kind.into(),
-            next: Some(idx.next()),
-            alt: None,
-        });
+        self.ops.push(SemanticOp { kind: kind.into() });
         idx
     }
 
-    pub fn push_terminal(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
-        let idx = self.current_index();
-        self.ops.push(SemanticOp {
-            kind: kind.into(),
-            next: None,
-            alt: None,
-        });
-        idx
-    }
-
-    pub fn patch_alt(&mut self, idx: SemanticIndex, target: SemanticTarget) {
+    pub fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
         if let Some(op) = self.ops.get_mut(idx.as_usize()) {
-            op.alt = Some(target);
+            match &mut op.kind {
+                SemanticOpKind::If { else_target, .. } => *else_target = target,
+                SemanticOpKind::Else { end_target } => *end_target = target,
+                SemanticOpKind::Br { target: branch, .. }
+                | SemanticOpKind::BrIf { target: branch, .. } => *branch = target,
+                _ => {}
+            }
+        }
+    }
+
+    pub fn patch_br_table_target(
+        &mut self,
+        idx: SemanticIndex,
+        entry_idx: usize,
+        target: SemanticTarget,
+    ) {
+        if let Some(op) = self.ops.get_mut(idx.as_usize()) {
+            if let SemanticOpKind::BrTable { entries } = &mut op.kind {
+                if let Some(entry) = entries.get_mut(entry_idx) {
+                    entry.target = target;
+                }
+            }
         }
     }
 
@@ -92,8 +99,6 @@ enum DecodeBlockKind {
 #[derive(Clone, Debug)]
 struct PendingBranchFixup {
     inst_idx: SemanticIndex,
-    stack_drop: u32,
-    arity: u16,
     br_table_entry: Option<usize>,
 }
 
@@ -149,13 +154,18 @@ impl<'a> DecodeContext<'a> {
     }
 
     #[inline]
-    pub fn push_terminal(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
-        self.builder.push_terminal(kind)
+    pub fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
+        self.builder.patch_target(idx, target);
     }
 
     #[inline]
-    pub fn patch_alt(&mut self, idx: SemanticIndex, target: SemanticTarget) {
-        self.builder.patch_alt(idx, target);
+    pub fn patch_br_table_target(
+        &mut self,
+        idx: SemanticIndex,
+        entry_idx: usize,
+        target: SemanticTarget,
+    ) {
+        self.builder.patch_br_table_target(idx, entry_idx, target);
     }
 
     #[inline]
@@ -267,13 +277,9 @@ impl<'a> DecodeContext<'a> {
         inst_idx: SemanticIndex,
         br_table_entry: Option<usize>,
     ) {
-        let (stack_drop, _) = self.branch_info(depth);
-        let arity = self.branch_arity(depth);
         if let Some(frame) = self.frame_at_depth_mut(depth) {
             frame.pending_fixups.push(PendingBranchFixup {
                 inst_idx,
-                stack_drop,
-                arity,
                 br_table_entry,
             });
         }
@@ -293,13 +299,13 @@ impl<'a> DecodeContext<'a> {
         let arity = self.compile.results;
         match arity {
             0 => {
-                self.push_terminal(SemanticOpKind::ReturnVoid);
+                self.push_op(SemanticOpKind::ReturnVoid);
             }
             1 => {
-                self.push_terminal(SemanticOpKind::ReturnOne);
+                self.push_op(SemanticOpKind::ReturnOne);
             }
             _ => {
-                self.push_terminal(SemanticOpKind::Return { arity });
+                self.push_op(SemanticOpKind::Return { arity });
             }
         }
         self.set_unreachable();
@@ -764,24 +770,28 @@ impl<'a> DecodeContext<'a> {
             OP(IF) => {
                 self.pop_values(1);
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
-                let idx = self.push_op(SemanticOpKind::If { params, results });
+                let idx = self.push_op(SemanticOpKind::If {
+                    params,
+                    results,
+                    else_target: SemanticTarget::pending(),
+                });
                 let target = SemanticTarget::new(self.current_index().as_usize());
                 self.enter_block(DecodeBlockKind::If, params, results, target);
                 self.set_if_inst(idx);
             }
             OP(ELSE) => {
-                let else_idx = self.push_op(SemanticOpKind::Else);
+                let else_idx = self.push_op(SemanticOpKind::Else {
+                    end_target: SemanticTarget::pending(),
+                });
                 let else_body_start = SemanticTarget::new(self.current_index().as_usize());
                 if let Some(frame) = self.control.last() {
                     if let Some(if_idx) = frame.if_inst_idx {
-                        self.patch_alt(if_idx, else_body_start);
+                        self.patch_target(if_idx, else_body_start);
                     }
                 }
                 if let Some(frame) = self.control.last_mut() {
                     frame.pending_fixups.push(PendingBranchFixup {
                         inst_idx: else_idx,
-                        stack_drop: 0,
-                        arity: 0,
                         br_table_entry: None,
                     });
                 }
@@ -797,24 +807,22 @@ impl<'a> DecodeContext<'a> {
                                 .builder
                                 .ops
                                 .get(if_idx.as_usize())
-                                .and_then(|op| op.alt)
-                                .is_none()
+                                .is_some_and(|op| {
+                                    matches!(
+                                        op.kind,
+                                        SemanticOpKind::If { else_target, .. } if else_target.is_pending()
+                                    )
+                                })
                             {
-                                self.patch_alt(if_idx, end_target);
+                                self.patch_target(if_idx, end_target);
                             }
                         }
                     }
                     for fixup in frame.pending_fixups {
                         if let Some(entry_idx) = fixup.br_table_entry {
-                            if let Some(op) = self.builder.ops.get_mut(fixup.inst_idx.as_usize()) {
-                                if let SemanticOpKind::BrTable { entries } = &mut op.kind {
-                                    if let Some(entry) = entries.get_mut(entry_idx) {
-                                        entry.target = Some(end_target);
-                                    }
-                                }
-                            }
+                            self.patch_br_table_target(fixup.inst_idx, entry_idx, end_target);
                         } else {
-                            self.patch_alt(fixup.inst_idx, end_target);
+                            self.patch_target(fixup.inst_idx, end_target);
                         }
                     }
                 }
@@ -823,9 +831,13 @@ impl<'a> DecodeContext<'a> {
                 if let Immediate::LabelIndex(label) = imm {
                     let arity = self.branch_arity(*label);
                     let (stack_drop, target) = self.branch_info(*label);
-                    let idx = self.push_op(SemanticOpKind::Br { stack_drop, arity });
+                    let idx = self.push_op(SemanticOpKind::Br {
+                        stack_drop,
+                        arity,
+                        target: target.unwrap_or_else(SemanticTarget::pending),
+                    });
                     if let Some(target) = target {
-                        self.patch_alt(idx, target);
+                        self.patch_target(idx, target);
                     } else {
                         self.register_forward_branch(*label, idx, None);
                     }
@@ -837,9 +849,13 @@ impl<'a> DecodeContext<'a> {
                     self.pop_values(1);
                     let arity = self.branch_arity(*label);
                     let (stack_drop, target) = self.branch_info(*label);
-                    let idx = self.push_op(SemanticOpKind::BrIf { stack_drop, arity });
+                    let idx = self.push_op(SemanticOpKind::BrIf {
+                        stack_drop,
+                        arity,
+                        target: target.unwrap_or_else(SemanticTarget::pending),
+                    });
                     if let Some(target) = target {
-                        self.patch_alt(idx, target);
+                        self.patch_target(idx, target);
                     } else {
                         self.register_forward_branch(*label, idx, None);
                     }
@@ -858,7 +874,7 @@ impl<'a> DecodeContext<'a> {
                         let arity = self.branch_arity(*label);
                         let (stack_drop, target) = self.branch_info(*label);
                         entries.push(BrTableEntry {
-                            target,
+                            target: target.unwrap_or_else(SemanticTarget::pending),
                             stack_drop,
                             arity,
                         });

@@ -1,4 +1,4 @@
-//! Shared lowering state for prepared LIR construction.
+//! Shared preparation state.
 
 use alloc::vec::Vec;
 
@@ -31,7 +31,7 @@ pub(super) struct EntryState {
 
 impl EntryState {
     #[inline]
-    pub(super) const fn live_tos_count(self) -> u16 {
+    pub(super) const fn live_value_count(self) -> u16 {
         self.stack_height.saturating_sub(self.spill_depth)
     }
 }
@@ -41,7 +41,7 @@ pub(super) struct BlockState {
     tos_limit: u8,
     stack_height: u16,
     spill_depth: u16,
-    tos: Vec<LirValue>,
+    live: Vec<LirValue>,
     pub(super) ops: Vec<LirInst>,
 }
 
@@ -55,10 +55,10 @@ impl BlockState {
             tos_limit,
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
-            tos: params.to_vec(),
+            live: params.to_vec(),
             ops: Vec::new(),
         };
-        state.ensure_tos_fit("block entry")?;
+        state.ensure_live_fit("block entry")?;
         Ok(state)
     }
 
@@ -68,45 +68,46 @@ impl BlockState {
     }
 
     #[inline]
-    pub(super) fn tos(&self) -> &[LirValue] {
-        &self.tos
+    pub(super) fn live(&self) -> &[LirValue] {
+        &self.live
     }
 
     pub(super) fn top_values(&self, count: usize) -> Result<Vec<LirValue>, WasmError> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        if count > self.tos.len() {
+        if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR TOS underflow: requested top {} values from live window {} (stack_height={}, spill_depth={})",
+                "prepared LIR transient underflow: requested {} values from live window {} (stack_height={}, spill_depth={})",
                 count,
-                self.tos.len(),
+                self.live.len(),
                 self.stack_height,
                 self.spill_depth,
             )));
         }
-        Ok(self.tos[self.tos.len() - count..].to_vec())
+        Ok(self.live[self.live.len() - count..].to_vec())
     }
 
     pub(super) fn pop_one(&mut self) -> Result<LirValue, WasmError> {
-        let value = self.tos.pop().ok_or_else(|| {
-            WasmError::internal("prepared LIR TOS underflow".into())
-        })?;
+        let value = self
+            .live
+            .pop()
+            .ok_or_else(|| WasmError::internal("prepared LIR transient underflow".into()))?;
         self.stack_height = self.stack_height.saturating_sub(1);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(value)
     }
 
     pub(super) fn consume_top(&mut self, count: usize) -> Result<(), WasmError> {
-        if count > self.tos.len() {
+        if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR TOS underflow: tried to consume {} values from live window {}",
+                "prepared LIR transient underflow: tried to consume {} values from live window {}",
                 count,
-                self.tos.len(),
+                self.live.len(),
             )));
         }
-        let new_len = self.tos.len().saturating_sub(count);
-        self.tos.truncate(new_len);
+        let new_len = self.live.len().saturating_sub(count);
+        self.live.truncate(new_len);
         self.stack_height = self.stack_height.saturating_sub(count as u16);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(())
@@ -114,30 +115,30 @@ impl BlockState {
 
     pub(super) fn push_results(&mut self, results: Vec<LirValue>) -> Result<(), WasmError> {
         self.stack_height = self.stack_height.saturating_add(results.len() as u16);
-        self.tos.extend(results);
-        self.ensure_tos_fit("value push")
+        self.live.extend(results);
+        self.ensure_live_fit("value push")
     }
 
     pub(super) fn spill_prefix(&mut self, count: u16) -> Result<Vec<LirValue>, WasmError> {
         let count = count as usize;
-        if count > self.tos.len() {
+        if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
                 "prepared LIR spill requested {} values from live window {}",
                 count,
-                self.tos.len(),
+                self.live.len(),
             )));
         }
-        let spilled = self.tos.drain(..count).collect::<Vec<_>>();
+        let spilled = self.live.drain(..count).collect::<Vec<_>>();
         self.spill_depth = self.spill_depth.saturating_add(count as u16);
         Ok(spilled)
     }
 
     pub(super) fn fill_prefix(&mut self, values: Vec<LirValue>) -> Result<(), WasmError> {
         self.spill_depth = self.spill_depth.saturating_sub(values.len() as u16);
-        let mut new_tos = values;
-        new_tos.extend(self.tos.drain(..));
-        self.tos = new_tos;
-        self.ensure_tos_fit("prefix fill")
+        let mut new_live = values;
+        new_live.extend(self.live.drain(..));
+        self.live = new_live;
+        self.ensure_live_fit("prefix fill")
     }
 
     pub(super) fn finish_call(&mut self, consumed: u16, produced: u16) {
@@ -146,19 +147,26 @@ impl BlockState {
             .saturating_sub(consumed)
             .saturating_add(produced);
         self.spill_depth = self.stack_height;
-        self.tos.clear();
+        self.live.clear();
     }
 
+    #[cfg(any(debug_assertions, test))]
     #[inline]
-    pub(super) fn validate_tos_fit(&self, context: &'static str) -> Result<(), WasmError> {
-        self.ensure_tos_fit(context)
+    pub(super) fn validate_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
+        self.ensure_live_fit(context)
     }
 
-    fn ensure_tos_fit(&self, context: &'static str) -> Result<(), WasmError> {
-        if self.tos.len() > self.tos_limit as usize {
+    #[cfg(not(any(debug_assertions, test)))]
+    #[inline]
+    pub(super) fn validate_live_fit(&self, _context: &'static str) -> Result<(), WasmError> {
+        Ok(())
+    }
+
+    fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
+        if self.live.len() > self.tos_limit as usize {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeds configured TOS width during {context}: live window {} > limit {} (stack_height={}, spill_depth={})",
-                self.tos.len(),
+                "prepared LIR exceeds configured transient width during {context}: live window {} > limit {} (stack_height={}, spill_depth={})",
+                self.live.len(),
                 self.tos_limit,
                 self.stack_height,
                 self.spill_depth,

@@ -1,23 +1,20 @@
-//! Stack-aware planning layer.
+//! Frontend preparation between decoded Wasm semantics and prepared LIR.
 //!
-//! This is the last layer allowed to reason about:
-//! - rotating T-window semantics
-//! - spill/fill insertion
-//! - hot-local policy
-//! - grouping
+//! Responsibilities:
+//! - canonical frame layout
+//! - local-cache preference analysis
+//! - semantic-to-LIR preparation with explicit spill/fill
+//! - prepared-LIR grouping side metadata
 
 pub mod config;
 pub mod frame;
 pub mod group;
-pub mod hot_local;
-pub mod place;
-pub mod plan;
 pub mod policy;
-pub mod tos;
-pub mod types;
+pub mod prepare;
 
-pub use plan::build_planned_program;
-pub use types::{
-    PlannedBrTableEntry, PlannedBranchKind, PlannedHotLocalInit, PlannedLocal, PlannedMarkerKind,
-    PlannedOp, PlannedOpKind, PlannedProgram, PlanningInput,
-};
+mod local_cache;
+
+pub use group::{GroupId, GroupPlan, GroupRange, GroupTerminator};
+pub use local_cache::analyze_local_cache_prefs;
+pub use policy::{GroupingMode, PlanPolicy};
+pub use prepare::{prepare_function, PrepareInput, PreparedFunction};

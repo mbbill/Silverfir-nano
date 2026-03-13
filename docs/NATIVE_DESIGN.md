@@ -514,6 +514,16 @@ At this point we still care about Wasm semantics, not about registers or native 
 
 This is the important engine-specific preparation stage.
 
+There is no separate public "planned op" IR here.
+
+`plan/` owns preparation logic and side metadata:
+
+- canonical frame layout
+- local-cache preference analysis
+- prepared-LIR grouping metadata
+
+But the only public code handoff it emits is prepared LIR itself.
+
 The backend passes down configuration such as:
 
 - `tos_lanes`
@@ -589,6 +599,7 @@ The current design uses stack/frame layout to pass call arguments. That means be
 
 - spill any still-live transient values to the correct `fp[...]` operand slots if they are needed there
 - make sure call arguments are in the canonical stack/frame locations the callee expects
+- describe the call argument and result spans relative to the current canonical call window, not as a hard-coded `operand_slot(0)` base
 
 So LIR must be able to contain explicit operations like:
 
@@ -606,6 +617,23 @@ The same principle applies to branches:
 - the target block reloads what it needs from canonical slots through its prepared prefix
 
 Local cache is different. We do not need the same kind of spill/load modeling in LIR for local-cache registers. Local-cache handling happens later, between LIR and MachineIR.
+
+### 4a. Semantic Control Must Be Explicit Where It Matters
+
+The semantic Wasm layer should not carry generic per-op `next` / `alt` side channels.
+
+Instead:
+
+- ordinary fallthrough is implicit by instruction order
+- `if` carries its false-target explicitly
+- `else` carries its end-target explicitly
+- `br`, `br_if`, and each `br_table` entry carry their branch targets explicitly
+
+This keeps the semantic layer honest:
+
+- only branching ops carry control targets
+- fallthrough is not duplicated in every op
+- frontend preparation does not need to rediscover control meaning from generic side fields
 
 ### 5. Between LIR And MachineIR
 
@@ -628,6 +656,14 @@ This stage should still stay simple. It is not doing general RA. It is mostly a 
 - bounded transient live values
 - fixed local-cache budget from backend configuration
 - fixed runtime registers
+
+The shared planning config only carries those concrete constraints:
+
+- transient window width
+- local-cache budget
+- call scratch budget
+
+It must not branch on backend identity to invent behavior on its own.
 
 ### 6. What MachineIR Focuses On
 
@@ -706,16 +742,17 @@ b0(params=[]):
   WriteSlot(local_slot(0), v2)
 
   v3 = ReadSlot(local_slot(4))
-  Spill(operand_slot(0), v3)
-  CallInternal g args=operand_span(0, 1) results=operand_span(0, 1)
-  Fill(operand_slot(0), v4)
+  Spill(operand_slot(call_base), v3)
+  CallInternal g args=operand_span(call_base, 1) results=operand_span(call_base, 1)
+  Fill(operand_slot(call_base), v4)
   Return results=operand_span(0, 1)
 ```
 
 The exact operation names can change, but the important ideas are:
 
 - locals use canonical local slots
-- call arguments are published through canonical stack/frame layout
+- call arguments and results use the current canonical call window inside the operand area
+- function return results still live at `operand_span(0, arity)` because a valid Wasm function return carries only the function results on the stack
 - transient stack values are explicitly spilled/loaded when needed
 - backend fit is already guaranteed
 

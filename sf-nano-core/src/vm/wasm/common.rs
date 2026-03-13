@@ -18,10 +18,6 @@ impl SemanticIndex {
         self.0 as usize
     }
 
-    #[inline]
-    pub const fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
 }
 
 /// Structured control-flow target in semantic space.
@@ -38,12 +34,22 @@ impl SemanticTarget {
     pub const fn index(self) -> SemanticIndex {
         self.0
     }
+
+    #[inline]
+    pub const fn pending() -> Self {
+        Self(SemanticIndex(u32::MAX))
+    }
+
+    #[inline]
+    pub const fn is_pending(self) -> bool {
+        self.0.0 == u32::MAX
+    }
 }
 
 /// Semantic branch-table entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrTableEntry {
-    pub target: Option<SemanticTarget>,
+    pub target: SemanticTarget,
     pub stack_drop: u32,
     pub arity: u16,
 }

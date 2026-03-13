@@ -18,7 +18,6 @@ pub enum BlockKind {
 pub struct ControlFrame {
     pub kind: BlockKind,
     pub entry: SemanticIndex,
-    pub else_target: Option<SemanticTarget>,
     pub end_target: SemanticTarget,
     pub params: u16,
     pub results: u16,
@@ -56,7 +55,7 @@ impl ControlStack {
         let frame = self.frames.get(idx)?;
         match frame.kind {
             BlockKind::Loop => Some(SemanticTarget::new(frame.entry.as_usize())),
-            BlockKind::Block | BlockKind::If => frame.else_target.or(Some(frame.end_target)),
+            BlockKind::Block | BlockKind::If => Some(frame.end_target),
         }
     }
 }
@@ -71,7 +70,6 @@ mod tests {
         stack.push(ControlFrame {
             kind: BlockKind::Loop,
             entry: SemanticIndex::new(7),
-            else_target: None,
             end_target: SemanticTarget::new(12),
             params: 0,
             results: 0,

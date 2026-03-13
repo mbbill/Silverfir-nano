@@ -1,28 +1,26 @@
-//! Semantic function-body IR before planning.
+//! Decoded semantic function-body model.
 //!
 //! `PrimitiveOpKind` carries the shared leaf-op vocabulary. `SemanticOpKind` is the
 //! larger per-function IR that embeds those leaf ops alongside locals, calls,
 //! returns, structured control markers, and branch targets.
 //!
 //! Important:
-//! - no backend-facing `variant`
-//! - no `pre_height`
-//! - no spill/fill planning artifacts
-//! - no backend helper-entry specialization
+//! - no frame-slot layout
+//! - no spill/fill preparation artifacts
+//! - no local-cache decisions
+//! - no grouping or machine placement
 
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
 
-use super::common::{BrTableEntry, SemanticIndex, SemanticTarget};
+use super::common::{BrTableEntry, SemanticTarget};
 use super::primitive_op::PrimitiveOpKind;
 
 /// One semantic Wasm operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticOp {
     pub kind: SemanticOpKind,
-    pub next: Option<SemanticIndex>,
-    pub alt: Option<SemanticTarget>,
 }
 
 /// Semantic function-body op kind.
@@ -53,16 +51,21 @@ pub enum SemanticOpKind {
     If {
         params: u16,
         results: u16,
+        else_target: SemanticTarget,
     },
-    Else,
+    Else {
+        end_target: SemanticTarget,
+    },
     End,
     Br {
         stack_drop: u32,
         arity: u16,
+        target: SemanticTarget,
     },
     BrIf {
         stack_drop: u32,
         arity: u16,
+        target: SemanticTarget,
     },
     BrTable {
         entries: Vec<BrTableEntry>,
@@ -106,9 +109,6 @@ impl SemanticProgram {
         let len = self.ops.len();
 
         for (index, op) in self.ops.iter().enumerate() {
-            validate_optional_index(op.next, len, "semantic next target")?;
-            validate_optional_target(op.alt, len, "semantic alt target")?;
-
             match &op.kind {
                 SemanticOpKind::LocalGet { idx }
                 | SemanticOpKind::LocalSet { idx }
@@ -120,35 +120,23 @@ impl SemanticProgram {
                         )));
                     }
                 }
-                SemanticOpKind::If { .. } => {
-                    if op.alt.is_none() {
-                        return Err(WasmError::internal(alloc::format!(
-                            "semantic if at op {index} is missing else/end target",
-                        )));
-                    }
+                SemanticOpKind::If { else_target, .. } => {
+                    validate_target(*else_target, len, "semantic if else target")?;
                 }
-                SemanticOpKind::Else => {
-                    if op.next.is_none() || op.alt.is_none() {
-                        return Err(WasmError::internal(alloc::format!(
-                            "semantic else at op {index} is missing body/end target",
-                        )));
-                    }
+                SemanticOpKind::Else { end_target } => {
+                    validate_target(*end_target, len, "semantic else end target")?;
                 }
-                SemanticOpKind::Br { .. } | SemanticOpKind::BrIf { .. } => {
-                    if op.alt.is_none() {
-                        return Err(WasmError::internal(alloc::format!(
-                            "semantic branch at op {index} is missing target",
-                        )));
-                    }
+                SemanticOpKind::Br { target, .. } | SemanticOpKind::BrIf { target, .. } => {
+                    validate_target(*target, len, "semantic branch target")?;
                 }
                 SemanticOpKind::BrTable { entries } => {
                     for (entry_index, entry) in entries.iter().enumerate() {
-                        let Some(target) = entry.target else {
-                            return Err(WasmError::internal(alloc::format!(
-                                "semantic br_table at op {index} has missing target for entry {entry_index}",
-                            )));
-                        };
-                        validate_target(target, len, "semantic br_table target")?;
+                        validate_target(
+                            entry.target,
+                            len,
+                            alloc::format!("semantic br_table target for entry {entry_index}")
+                                .as_str(),
+                        )?;
                     }
                 }
                 SemanticOpKind::ReturnVoid if self.results != 0 => {
@@ -200,7 +188,7 @@ impl SemanticProgram {
             let Some(op) = self.ops.get(index) else {
                 continue;
             };
-            for target in semantic_successors(op) {
+            for target in semantic_successors(index, self.ops.len(), op) {
                 let target_index = target.index().as_usize();
                 if target_index < reachable.len() && !reachable[target_index] {
                     pending.push(target_index);
@@ -235,7 +223,7 @@ pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
         SemanticOpKind::LocalTee { .. } => (0, 0),
         SemanticOpKind::Block { .. }
         | SemanticOpKind::Loop { .. }
-        | SemanticOpKind::Else
+        | SemanticOpKind::Else { .. }
         | SemanticOpKind::End => (0, 0),
         SemanticOpKind::If { .. } => (1, 0),
         SemanticOpKind::Br { .. } => (0, 0),
@@ -249,42 +237,12 @@ pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_optional_index(
-    index: Option<SemanticIndex>,
-    len: usize,
-    label: &str,
-) -> Result<(), WasmError> {
-    if let Some(index) = index {
-        validate_index(index, len, label)?;
-    }
-    Ok(())
-}
-
-#[cfg(any(debug_assertions, test))]
-fn validate_optional_target(
-    target: Option<SemanticTarget>,
-    len: usize,
-    label: &str,
-) -> Result<(), WasmError> {
-    if let Some(target) = target {
-        validate_target(target, len, label)?;
-    }
-    Ok(())
-}
-
-#[cfg(any(debug_assertions, test))]
-fn validate_index(index: SemanticIndex, len: usize, label: &str) -> Result<(), WasmError> {
-    if index.as_usize() >= len {
+fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<(), WasmError> {
+    if target.is_pending() {
         return Err(WasmError::internal(alloc::format!(
-            "{label} {idx} is out of range for semantic length {len}",
-            idx = index.as_usize(),
+            "{label} is still pending at semantic validation time",
         )));
     }
-    Ok(())
-}
-
-#[cfg(any(debug_assertions, test))]
-fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<(), WasmError> {
     if target.index().as_usize() >= len {
         return Err(WasmError::internal(alloc::format!(
             "{label} {idx} is out of range for semantic length {len}",
@@ -295,11 +253,11 @@ fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<()
 }
 
 #[cfg(any(debug_assertions, test))]
-fn semantic_successors(op: &SemanticOp) -> Vec<SemanticTarget> {
+fn semantic_successors(index: usize, len: usize, op: &SemanticOp) -> Vec<SemanticTarget> {
     let mut targets = Vec::new();
-    let push_next = |targets: &mut Vec<SemanticTarget>, next: Option<SemanticIndex>| {
-        if let Some(next) = next {
-            targets.push(SemanticTarget::new(next.as_usize()));
+    let push_fallthrough = |targets: &mut Vec<SemanticTarget>| {
+        if index + 1 < len {
+            targets.push(SemanticTarget::new(index + 1));
         }
     };
 
@@ -308,36 +266,26 @@ fn semantic_successors(op: &SemanticOp) -> Vec<SemanticTarget> {
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {}
-        SemanticOpKind::Br { .. } => {
-            if let Some(target) = op.alt {
-                targets.push(target);
-            }
+        SemanticOpKind::Br { target, .. } => {
+            targets.push(*target);
         }
-        SemanticOpKind::BrIf { .. } => {
-            if let Some(target) = op.alt {
-                targets.push(target);
-            }
-            push_next(&mut targets, op.next);
+        SemanticOpKind::BrIf { target, .. } => {
+            targets.push(*target);
+            push_fallthrough(&mut targets);
         }
         SemanticOpKind::BrTable { entries } => {
             for entry in entries {
-                if let Some(target) = entry.target {
-                    targets.push(target);
-                }
+                targets.push(entry.target);
             }
         }
-        SemanticOpKind::If { .. } => {
-            push_next(&mut targets, op.next);
-            if let Some(target) = op.alt {
-                targets.push(target);
-            }
+        SemanticOpKind::If { else_target, .. } => {
+            push_fallthrough(&mut targets);
+            targets.push(*else_target);
         }
-        SemanticOpKind::Else => {
-            if let Some(target) = op.alt {
-                targets.push(target);
-            }
+        SemanticOpKind::Else { end_target } => {
+            targets.push(*end_target);
         }
-        _ => push_next(&mut targets, op.next),
+        _ => push_fallthrough(&mut targets),
     }
 
     targets
@@ -356,8 +304,6 @@ mod tests {
             max_stack_height: 0,
             ops: alloc::vec![SemanticOp {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
-                next: None,
-                alt: None,
             }],
         };
 
@@ -378,9 +324,8 @@ mod tests {
                 kind: SemanticOpKind::Br {
                     stack_drop: 0,
                     arity: 0,
+                    target: SemanticTarget::new(3),
                 },
-                next: None,
-                alt: Some(SemanticTarget::new(3)),
             }],
         };
 
@@ -399,8 +344,6 @@ mod tests {
             max_stack_height: 1,
             ops: alloc::vec![SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
-                next: None,
-                alt: None,
             }],
         };
 

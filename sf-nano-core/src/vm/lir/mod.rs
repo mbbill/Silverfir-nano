@@ -11,7 +11,6 @@ pub mod dump;
 pub mod frame_effects;
 pub mod ir;
 pub mod leaf;
-pub mod lower;
 pub mod runtime;
 pub mod slot;
 pub mod target;

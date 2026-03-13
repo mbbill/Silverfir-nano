@@ -1,0 +1,280 @@
+//! Straight-line prepared LIR op lowering.
+
+use crate::{
+    error::WasmError,
+    vm::{
+        lir::{
+            ir::{LirInst, LirInstKind},
+            leaf::LirLeafOp,
+            runtime::LirRuntimeOp,
+        },
+        plan::frame::{FrameLayoutPlan, FrameSpan},
+        wasm::{primitive_op, semantic_ir::SemanticOpKind},
+    },
+};
+
+use super::{
+    state::{BlockState, ValueAlloc},
+    steps::{PrepAction, PreparedOp},
+};
+
+pub(super) fn lower_prefix_actions(
+    op: &PreparedOp<'_>,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    for action in &op.prefix {
+        match action {
+            PrepAction::Spill(frame) => {
+                let spilled = state.spill_prefix(frame.count)?;
+                for (offset, src) in spilled.into_iter().enumerate() {
+                    state.ops.push(LirInst {
+                        kind: LirInstKind::Spill {
+                            slot: frame.start.advance(offset as u16),
+                            src,
+                        },
+                    });
+                }
+            }
+            PrepAction::Fill(frame) => {
+                let mut reloaded = alloc::vec::Vec::with_capacity(frame.count as usize);
+                for offset in 0..frame.count as usize {
+                    let dst = values.fresh();
+                    state.ops.push(LirInst {
+                        kind: LirInstKind::Fill {
+                            slot: frame.start.advance(offset as u16),
+                            dst,
+                        },
+                    });
+                    reloaded.push(dst);
+                }
+                state.fill_prefix(reloaded)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn lower_primitive(
+    kind: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    let (pop, push) = primitive_op::stack_effect(kind);
+    let args = state.top_values(pop as usize)?;
+    state.consume_top(pop as usize)?;
+    let results = values.many(push as usize);
+    let kind = if let Some(op) = LirRuntimeOp::from_primitive(kind.clone()) {
+        LirInstKind::Runtime {
+            op,
+            args,
+            results: results.clone(),
+        }
+    } else {
+        LirInstKind::Leaf {
+            op: LirLeafOp::from_primitive(kind.clone())
+                .expect("non-runtime primitive must lower as a leaf op"),
+            args,
+            results: results.clone(),
+        }
+    };
+    state.ops.push(LirInst { kind });
+    state.push_results(results)
+}
+
+pub(super) fn lower_local_get(
+    local_idx: u16,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    let dst = values.fresh();
+    state.ops.push(LirInst {
+        kind: LirInstKind::ReadSlot {
+            slot: frame.local_slot(local_idx),
+            dst,
+        },
+    });
+    state.push_results(alloc::vec![dst])
+}
+
+pub(super) fn lower_local_set(
+    local_idx: u16,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+) -> Result<(), WasmError> {
+    let src = state.pop_one()?;
+    state.ops.push(LirInst {
+        kind: LirInstKind::WriteSlot {
+            slot: frame.local_slot(local_idx),
+            src,
+        },
+    });
+    Ok(())
+}
+
+pub(super) fn lower_local_tee(
+    local_idx: u16,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+) -> Result<(), WasmError> {
+    let src = *state
+        .live()
+        .last()
+        .ok_or_else(|| WasmError::internal("local.tee requires a live transient value".into()))?;
+    state.ops.push(LirInst {
+        kind: LirInstKind::WriteSlot {
+            slot: frame.local_slot(local_idx),
+            src,
+        },
+    });
+    Ok(())
+}
+
+pub(super) fn lower_call_external(
+    func_idx: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &mut BlockState,
+) {
+    let call_base = call_base_slot(frame, state.height(), params);
+    state.ops.push(LirInst {
+        kind: LirInstKind::CallExternal {
+            func_idx,
+            args: FrameSpan::new(call_base, params),
+            results: FrameSpan::new(call_base, results),
+        },
+    });
+    state.finish_call(params, results);
+}
+
+pub(super) fn lower_call_internal(
+    callee: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &mut BlockState,
+) {
+    let call_base = call_base_slot(frame, state.height(), params);
+    state.ops.push(LirInst {
+        kind: LirInstKind::CallInternal {
+            callee,
+            args: FrameSpan::new(call_base, params),
+            results: FrameSpan::new(call_base, results),
+        },
+    });
+    state.finish_call(params, results);
+}
+
+pub(super) fn lower_call_indirect(
+    type_idx: u32,
+    table_idx: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &mut BlockState,
+) {
+    let consumed = params.saturating_add(1);
+    let call_base = call_base_slot(frame, state.height(), consumed);
+    state.ops.push(LirInst {
+        kind: LirInstKind::CallIndirect {
+            type_idx,
+            table_idx,
+            index_slot: call_base.advance(params),
+            args: FrameSpan::new(call_base, params),
+            results: FrameSpan::new(call_base, results),
+        },
+    });
+    state.finish_call(consumed, results);
+}
+
+#[inline]
+pub(super) fn branch_payload(frame: FrameLayoutPlan, stack_drop: u32, arity: u16) -> Option<FrameSpan> {
+    if arity == 0 {
+        None
+    } else {
+        Some(FrameSpan::new(frame.operand_slot(stack_drop as u16), arity))
+    }
+}
+
+#[inline]
+pub(super) fn call_results(frame: FrameLayoutPlan, results: u16) -> FrameSpan {
+    FrameSpan::new(frame.operand_slot(0), results)
+}
+
+#[inline]
+fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> crate::vm::plan::frame::FrameSlot {
+    // Calls consume the current canonical top-of-stack window. The argument and
+    // result spans therefore start at the stack position that will remain after
+    // the consumed inputs are removed.
+    frame.operand_slot(stack_height.saturating_sub(consumed))
+}
+
+#[inline]
+pub(super) fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<FrameSpan> {
+    (results != 0).then(|| call_results(frame, results))
+}
+
+pub(super) fn lower_block_body_op(
+    op: &PreparedOp<'_>,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    lower_prefix_actions(op, state, values)?;
+
+    match &op.semantic.kind {
+        SemanticOpKind::Primitive(kind)
+            if matches!(kind, crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable) =>
+        {
+            Err(WasmError::internal(
+                "unreachable must end a prepared LIR block, not appear in the body".into(),
+            ))
+        }
+        SemanticOpKind::Primitive(kind) => lower_primitive(kind, state, values),
+        SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values),
+        SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame),
+        SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame),
+        SemanticOpKind::CallExternal {
+            func_idx,
+            params,
+            results,
+        } => {
+            lower_call_external(*func_idx, *params, *results, frame, state);
+            Ok(())
+        }
+        SemanticOpKind::CallInternal {
+            callee,
+            params,
+            results,
+        } => {
+            lower_call_internal(*callee, *params, *results, frame, state);
+            Ok(())
+        }
+        SemanticOpKind::CallIndirect {
+            type_idx,
+            table_idx,
+            params,
+            results,
+        } => {
+            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
+            Ok(())
+        }
+        SemanticOpKind::Block { .. }
+        | SemanticOpKind::Loop { .. }
+        | SemanticOpKind::End => Ok(()),
+        SemanticOpKind::Else { .. } => Err(WasmError::internal(
+            "else must end a prepared LIR block, not appear in the body".into(),
+        )),
+        SemanticOpKind::If { .. }
+        | SemanticOpKind::Br { .. }
+        | SemanticOpKind::BrIf { .. }
+        | SemanticOpKind::BrTable { .. }
+        | SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. } => Err(WasmError::internal(
+            "control-flow terminators must end a prepared LIR block".into(),
+        )),
+    }
+}

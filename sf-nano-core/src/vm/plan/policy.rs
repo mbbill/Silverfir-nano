@@ -1,65 +1,24 @@
-//! Backend-supplied grouping and planning policy.
-
-use crate::vm::{
-    backend::BackendKind,
-    wasm::semantic_ir::{SemanticOp, SemanticOpKind},
-};
+//! Backend-supplied preparation policy.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupingMode {
     Ignore,
+    /// Reserved for future fusion-specific grouping. Today this falls back to
+    /// the same maximal grouping used by native.
     PatternDriven,
+    /// Group every prepared LIR op that is not separated by an explicit call,
+    /// runtime boundary, or control boundary.
     Maximal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanPolicy {
-    pub backend: BackendKind,
     pub grouping: GroupingMode,
 }
 
 impl PlanPolicy {
     #[inline]
-    pub const fn new(backend: BackendKind, grouping: GroupingMode) -> Self {
-        Self { backend, grouping }
-    }
-}
-
-/// Grouping policy over planned/semantic ops.
-pub trait GroupPolicy {
-    fn can_start(&self, _op: &SemanticOp) -> bool;
-    fn can_extend(&self, _current_len: usize, _next: &SemanticOp) -> bool;
-    fn is_terminator(&self, _op: &SemanticOp) -> bool;
-}
-
-impl GroupPolicy for PlanPolicy {
-    fn can_start(&self, op: &SemanticOp) -> bool {
-        match self.grouping {
-            GroupingMode::Ignore => false,
-            GroupingMode::PatternDriven | GroupingMode::Maximal => !matches!(
-                op.kind,
-                SemanticOpKind::Block { .. }
-                    | SemanticOpKind::Loop { .. }
-                    | SemanticOpKind::Else
-                    | SemanticOpKind::End
-            ),
-        }
-    }
-
-    fn can_extend(&self, _current_len: usize, next: &SemanticOp) -> bool {
-        self.can_start(next)
-    }
-
-    fn is_terminator(&self, op: &SemanticOp) -> bool {
-        matches!(
-            op.kind,
-            SemanticOpKind::Br { .. }
-                | SemanticOpKind::BrIf { .. }
-                | SemanticOpKind::BrTable { .. }
-                | SemanticOpKind::If { .. }
-                | SemanticOpKind::ReturnVoid
-                | SemanticOpKind::ReturnOne
-                | SemanticOpKind::Return { .. }
-        )
+    pub const fn new(grouping: GroupingMode) -> Self {
+        Self { grouping }
     }
 }

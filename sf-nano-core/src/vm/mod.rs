@@ -5,7 +5,7 @@
 //!
 //! Hard boundary:
 //! - `wasm/` may think in semantic / stack-machine terms
-//! - `plan/` may think in rotating-cache / spill-fill / grouping terms
+//! - `plan/` may think in prepared stack-window / spill-fill / grouping terms
 //! - `lir/` is the backend boundary
 //! - after `lir/`, no backend may reintroduce stack-height or spill-depth logic
 

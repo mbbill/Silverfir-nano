@@ -1,7 +1,7 @@
 //! Interpreter compilation entry.
 //!
 //! This file runs the shared frontend pipeline for the interpreter backend:
-//! Wasm decode -> planning -> LIR lowering.
+//! Wasm decode -> preparation -> prepared LIR.
 //! Final interpreter instruction emission happens in `finalizer.rs`.
 //!
 //! The interpreter owns the planning inputs it passes into the shared frontend.
@@ -11,12 +11,13 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendConfig, BackendKind},
     entities::ModuleInst,
-    lir::{ir::LirProgram, lower},
+    lir::ir::LirProgram,
     plan::{
-        build_planned_program,
         config::PlanConfig,
+        frame::FrameLayoutPlan,
+        group::GroupPlan,
         policy::{GroupingMode, PlanPolicy},
-        PlannedProgram, PlanningInput,
+        prepare_function, PrepareInput,
     },
     store::Store,
     wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
@@ -27,7 +28,8 @@ pub struct InterpreterBuildBundle {
     pub backend: BackendKind,
     pub config: PlanConfig,
     pub semantic: SemanticProgram,
-    pub planned: PlannedProgram,
+    pub frame: FrameLayoutPlan,
+    pub groups: GroupPlan,
     pub lir: LirProgram,
 }
 
@@ -50,8 +52,8 @@ pub const fn interpreter_backend_config() -> BackendConfig {
 
 #[inline]
 pub const fn interpreter_plan_policy(backend: BackendKind) -> PlanPolicy {
-    let backend = normalize_interpreter_backend(backend);
-    PlanPolicy::new(backend, GroupingMode::Ignore)
+    let _backend = normalize_interpreter_backend(backend);
+    PlanPolicy::new(GroupingMode::Ignore)
 }
 
 pub fn build_interpreter_function(
@@ -60,23 +62,23 @@ pub fn build_interpreter_function(
     compile: CompileContext<'_>,
 ) -> Result<InterpreterBuildBundle, WasmError> {
     let backend = normalize_interpreter_backend(backend);
-    let config = PlanConfig::for_backend(backend, interpreter_backend_config());
+    let config = PlanConfig::from_backend_config(interpreter_backend_config(), 0);
     let semantic = decode::decode_to_semantic_ir(code, compile)?;
-    let planned = build_planned_program(
-        PlanningInput {
+    let prepared = prepare_function(
+        PrepareInput {
             config,
             policy: interpreter_plan_policy(backend),
         },
         &semantic,
     )?;
-    let lir = lower::lower_to_lir(&semantic, &planned, config)?;
 
     Ok(InterpreterBuildBundle {
         backend,
         config,
         semantic,
-        planned,
-        lir,
+        frame: prepared.frame,
+        groups: prepared.groups,
+        lir: prepared.lir,
     })
 }
 
