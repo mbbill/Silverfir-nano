@@ -7,6 +7,7 @@ use super::super::machine::MachineExternId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MachineHelperSymbol {
     CallExternal,
+    CallIndirectExternal,
     MemoryGrow,
     MemoryFill,
     MemoryCopy,

@@ -2,9 +2,9 @@ use alloc::{collections::BTreeMap, vec::Vec};
 
 use crate::vm::native::{
     helper::meta::{
-        encode_record, CallExternalMeta, DataDropMeta, ElemDropMeta, MemoryCopyMeta,
-        MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta, TableFillMeta,
-        TableGrowMeta, TableInitMeta,
+        encode_record, CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
+        MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta,
+        TableFillMeta, TableGrowMeta, TableInitMeta,
     },
     ir::{
         machine::{MachineConstData, MachineConstId, MachineExternId},
@@ -44,6 +44,13 @@ impl SidecarBuilder {
     }
 
     pub(super) fn call_external_meta(&mut self, meta: CallExternalMeta) -> MachineConstId {
+        self.push_encoded(meta)
+    }
+
+    pub(super) fn call_indirect_external_meta(
+        &mut self,
+        meta: CallIndirectExternalMeta,
+    ) -> MachineConstId {
         self.push_encoded(meta)
     }
 

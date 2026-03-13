@@ -194,6 +194,8 @@ pub enum MachineTrapKind {
     Unreachable,
     MemoryOutOfBounds,
     TableOutOfBounds,
+    InvalidFunctionReference,
+    IndirectCallTypeMismatch,
     IntegerDivideByZero,
     IntegerOverflow,
     CallStackExhausted,

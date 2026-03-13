@@ -4,14 +4,14 @@ use crate::{
         lir::ir::{LirBoundaryOp, LirValue},
         native::{
             helper::meta::{
-                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryCopyMeta,
-                MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta, TableFillMeta,
-                TableGrowMeta, TableInitMeta,
+                CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta,
+                MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
             },
             ir::{
                 machine::{
-                    MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
-                    MachineTerminator, MachineValue,
+                MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
+                    MachineReg, MachineTerminator, MachineValue,
                 },
                 runtime::{MachineFrameRegion, MachineHelperSymbol},
             },
@@ -140,6 +140,57 @@ impl<'a> BlockLowerContext<'a> {
             results: results.into(),
         });
         self.emit_helper_backed_boundary(target, metadata)
+    }
+
+    pub(super) fn call_indirect_external_site(
+        &self,
+        func_idx_slot: FrameSlot,
+        args: FrameSpan,
+        results: FrameSpan,
+        sidecar: &mut SidecarBuilder,
+    ) -> crate::vm::native::ir::machine::MachineHelperCall {
+        let target = sidecar.extern_target(MachineHelperSymbol::CallIndirectExternal);
+        let metadata = sidecar.call_indirect_external_meta(CallIndirectExternalMeta {
+            func_idx_slot: func_idx_slot.0 as u32,
+            args: args.into(),
+            results: results.into(),
+        });
+        MachineHelperCall { target, metadata }
+    }
+
+    pub(super) fn copy_call_args_to_frame(
+        &mut self,
+        args: FrameSpan,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
+        let copy_reg = self.transient_reg(0)?;
+        if self.transient_in_use(0)? {
+            return Err(WasmError::internal(
+                "indirect local call requires a free transient register for argument copies"
+                    .into(),
+            ));
+        }
+
+        for offset in 0..args.count as usize {
+            let src_slot = args.start.advance(offset as u16);
+            let dst_slot = FrameSlot(offset as u16);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst: copy_reg,
+                    addr: self.frame_addr(src_slot)?,
+                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                    extension: crate::vm::native::ir::machine::MachineLoadExtension::None,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    addr: self.frame_addr_from(callee_frame_base, dst_slot)?,
+                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                    src: MachineValue::Reg(copy_reg),
+                },
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn lower_runtime(

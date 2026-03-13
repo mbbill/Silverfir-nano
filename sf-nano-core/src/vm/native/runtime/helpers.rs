@@ -14,9 +14,9 @@ use crate::{
         entities::{Caller, FunctionInst, MemInst, TableInst},
         native::{
             helper::meta::{
-                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryCopyMeta,
-                MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta, TableFillMeta,
-                TableGrowMeta, TableInitMeta,
+                CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta,
+                MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
             },
             ir::runtime::MachineHelperSymbol,
             runtime::context::NativeContext,
@@ -40,6 +40,7 @@ pub type NativeHelperEntry =
 pub fn resolve_helper_entry(symbol: MachineHelperSymbol) -> NativeHelperEntry {
     match symbol {
         MachineHelperSymbol::CallExternal => call_external_entry,
+        MachineHelperSymbol::CallIndirectExternal => call_indirect_external_entry,
         MachineHelperSymbol::MemoryGrow => memory_grow_entry,
         MachineHelperSymbol::MemoryFill => memory_fill_entry,
         MachineHelperSymbol::MemoryCopy => memory_copy_entry,
@@ -212,6 +213,14 @@ unsafe extern "C" fn memory_grow_entry(
     run_helper(ctx, frame, metadata, memory_grow_helper)
 }
 
+unsafe extern "C" fn call_indirect_external_entry(
+    ctx: *mut NativeContext,
+    frame: *mut u64,
+    metadata: *const u8,
+) -> u32 {
+    run_helper(ctx, frame, metadata, call_indirect_external_helper)
+}
+
 unsafe extern "C" fn memory_fill_entry(
     ctx: *mut NativeContext,
     frame: *mut u64,
@@ -289,6 +298,27 @@ fn call_external_helper(
     frame: *mut u64,
     meta: &CallExternalMeta,
 ) -> Result<(), WasmError> {
+    call_external_by_index(ctx, frame, meta.func_idx, meta.args, meta.results)
+}
+
+fn call_indirect_external_helper(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    meta: &CallIndirectExternalMeta,
+) -> Result<(), WasmError> {
+    let func_idx_slot = u16::try_from(meta.func_idx_slot)
+        .map_err(|_| internal_error("call_indirect external helper slot exceeds u16"))?;
+    let func_idx = unsafe { frame_read(frame, func_idx_slot) } as u32;
+    call_external_by_index(ctx, frame, func_idx, meta.args, meta.results)
+}
+
+fn call_external_by_index(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    func_idx: u32,
+    args_region: HelperFrameRegion,
+    results_region: HelperFrameRegion,
+) -> Result<(), WasmError> {
     let (func_type, callback) = {
         let store = ctx
             .store()
@@ -296,7 +326,7 @@ fn call_external_helper(
         let callee = store
             .module()
             .functions
-            .get(meta.func_idx as usize)
+            .get(func_idx as usize)
             .ok_or_else(|| internal_error("native helper referenced invalid function index"))?;
         match callee {
             FunctionInst::External {
@@ -312,12 +342,12 @@ fn call_external_helper(
     };
 
     require_region_slots(
-        meta.args,
+        args_region,
         func_type.params().len() as u16,
         "call_external args span does not match function arity",
     )?;
     require_region_slots(
-        meta.results,
+        results_region,
         func_type.results().len() as u16,
         "call_external result span does not match function arity",
     )?;
@@ -329,7 +359,7 @@ fn call_external_helper(
         .map(|(index, ty)| unsafe {
             region_read(
                 frame,
-                meta.args,
+                args_region,
                 index as u16,
                 "call_external arg slot is out of bounds",
             )
@@ -361,7 +391,7 @@ fn call_external_helper(
         unsafe {
             region_write(
                 frame,
-                meta.results,
+                results_region,
                 index as u16,
                 value_to_raw(value),
                 "call_external result slot is out of bounds",
@@ -975,6 +1005,63 @@ mod tests {
 
         let status = call_helper(
             MachineHelperSymbol::CallExternal,
+            &mut ctx,
+            &mut frame,
+            &meta,
+        );
+
+        assert_eq!(status, NativeHelperStatus::Ok as u32);
+        assert_eq!(frame[0], 12);
+        assert!(ctx.error.is_none());
+    }
+
+    #[test]
+    fn call_indirect_external_helper_reads_dynamic_target_slot() {
+        fn host_add(
+            _caller: &mut Caller,
+            args: &[Value],
+            results: &mut [Value],
+        ) -> Result<(), WasmError> {
+            let lhs = match args[0] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            let rhs = match args[1] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            results[0] = Value::I32(lhs + rhs);
+            Ok(())
+        }
+
+        let func_type = Rc::new(FunctionType::new(
+            vec![ValueType::I32, ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        module.functions.push(FunctionInst::External {
+            func_type,
+            callback: host_add as ExternalFn,
+        });
+        module
+            .memories
+            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        let (_store, mut ctx) = test_context(module);
+        let meta = CallIndirectExternalMeta {
+            func_idx_slot: 2,
+            args: HelperFrameRegion {
+                base_slot: 0,
+                slots: 2,
+            },
+            results: HelperFrameRegion {
+                base_slot: 0,
+                slots: 1,
+            },
+        };
+        let mut frame = [7, 5, 0];
+
+        let status = call_helper(
+            MachineHelperSymbol::CallIndirectExternal,
             &mut ctx,
             &mut frame,
             &meta,

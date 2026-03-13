@@ -901,6 +901,124 @@ fn lowers_memory_size_without_helper_boundary() {
 }
 
 #[test]
+fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
+    let frame = plan_frame_layout(0, 6, 4);
+    let call_base = frame.operand_slot(0);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallIndirect {
+                    type_idx: 3,
+                    table_idx: 0,
+                    index_slot: call_base.advance(2),
+                    args: crate::vm::plan::frame::FrameSpan::new(call_base, 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(call_base, 1),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("call_indirect lowering should succeed");
+
+    assert_eq!(lowered.module.externs.len(), 1);
+    assert_eq!(
+        lowered.module.externs[0].symbol,
+        MachineHelperSymbol::CallIndirectExternal
+    );
+
+    let program = &lowered.module.functions[0].program;
+    assert_eq!(program.blocks.len(), 10);
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[2].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::TableOutOfBounds
+        }
+    ));
+    assert!(matches!(
+        program.blocks[4].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::InvalidFunctionReference
+        }
+    ));
+    assert!(matches!(
+        program.blocks[6].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::IndirectCallTypeMismatch
+        }
+    ));
+    assert!(matches!(
+        program.blocks[7].terminator,
+        MachineTerminator::CallIndirect {
+            continuation: MachineBlockId(9),
+            ..
+        }
+    ));
+    let type_check_ops = &program.blocks[3].ops;
+    let type_check_scaled = match &type_check_ops[1].kind {
+        MachineInstKind::Move { dst, .. } => *dst,
+        other => panic!("expected scaled-index move in type-check block, got {other:?}"),
+    };
+    let type_check_base = match &type_check_ops[3].kind {
+        MachineInstKind::Load { dst, .. } => *dst,
+        other => panic!("expected function-view base load in type-check block, got {other:?}"),
+    };
+    assert_ne!(type_check_scaled, type_check_base);
+
+    let dispatch_ops = &program.blocks[5].ops;
+    let dispatch_scaled = match &dispatch_ops[1].kind {
+        MachineInstKind::Move { dst, .. } => *dst,
+        other => panic!("expected scaled-index move in dispatch block, got {other:?}"),
+    };
+    let dispatch_base = match &dispatch_ops[3].kind {
+        MachineInstKind::Load { dst, .. } => *dst,
+        other => panic!("expected function-view base load in dispatch block, got {other:?}"),
+    };
+    assert_ne!(dispatch_scaled, dispatch_base);
+    assert!(matches!(
+        program.blocks[8].ops.as_slice(),
+        [crate::vm::native::ir::machine::MachineInst {
+            kind: MachineInstKind::CallHelper(_)
+        }]
+    ));
+    assert!(matches!(
+        program.blocks[8].terminator,
+        MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+            target: MachineBlockId(9),
+            ..
+        })
+    ));
+    assert!(matches!(
+        program.blocks[9].terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::Unreachable
+        }
+    ));
+}
+
+#[test]
 fn lowers_global_get_and_set_without_helpers() {
     let frame = plan_frame_layout(0, 1, 2);
     let lir = LirProgram {

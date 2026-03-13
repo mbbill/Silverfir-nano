@@ -53,7 +53,7 @@ pub enum MachineTerminator {
         callee_frame_base: MachineReg,
         continuation: MachineBlockId,
     },
-    /// Indirect local call after the target entry has already been resolved by
+    /// Indirect local call after the target token has already been resolved by
     /// earlier machine-level code.
     CallIndirect {
         callee_entry: MachineValue,

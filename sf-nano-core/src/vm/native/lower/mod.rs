@@ -14,7 +14,7 @@ mod util;
 #[cfg(test)]
 mod tests;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use crate::{
     error::WasmError,
@@ -27,13 +27,18 @@ use crate::{
         },
         native::ir::{
             machine::{
-                MachineBlock, MachineBlockId, MachineConstData, MachineFuncId, MachineFunction,
-                MachineModule, MachineProgram, MachineReg, MachineTerminator,
+                MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
+                MachineConstData, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
+                MachineLoadExtension, MachineMemWidth, MachineModule, MachineProgram, MachineReg,
+                MachineTerminator, MachineTrapKind, MachineValue,
             },
             runtime::{
                 MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
                 MachineFunctionRuntime, MachineRuntimeContract,
             },
+        },
+        native::runtime::context::{
+            ctx_offset, function_kind, function_view_offset, NativeFunctionView,
         },
         plan::frame::FrameLayoutPlan,
     },
@@ -143,7 +148,7 @@ fn lower_function(
     let original_block_count = input.lir.blocks.len();
     let mut original_blocks = alloc::vec![None; original_block_count];
     let mut extra_blocks = Vec::new();
-    let mut next_extra_block = original_block_count as u32;
+    let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
 
     for block in &input.lir.blocks {
         let target = block.id;
@@ -168,8 +173,8 @@ fn lower_function(
                         op,
                         args,
                         results,
-                        MachineBlockId(next_extra_block + 1),
-                        MachineBlockId(next_extra_block),
+                        extra_block_ids.peek(1),
+                        extra_block_ids.peek(0),
                     )? {
                         lower.release_dead_values()?;
                         match lowered {
@@ -181,7 +186,7 @@ fn lower_function(
                                 terminator,
                                 continuation_ops,
                             } => {
-                                next_extra_block += 2;
+                                extra_block_ids.reserve(2);
                                 push_lowered_block(
                                     current_block,
                                     &mut original_blocks,
@@ -230,8 +235,7 @@ fn lower_function(
                         args,
                         results,
                     } => {
-                        let continuation = MachineBlockId(next_extra_block);
-                        next_extra_block += 1;
+                        let continuation = extra_block_ids.alloc();
                         let terminator =
                             lower.lower_call_internal(*callee, *args, *results, continuation)?;
                         push_lowered_block(
@@ -247,10 +251,219 @@ fn lower_function(
                         lower.begin_continuation_block()?;
                     }
                     LirBoundaryOp::CallIndirect { .. } => {
-                        return Err(WasmError::internal(
-                            "call_indirect lowering is not implemented yet in LIR -> MachineIR"
-                                .into(),
-                        ));
+                        let &LirBoundaryOp::CallIndirect {
+                            type_idx,
+                            table_idx,
+                            index_slot,
+                            args,
+                            results,
+                        } = boundary
+                        else {
+                            unreachable!("matched call_indirect boundary");
+                        };
+                        lower.ensure_no_live_values(
+                            "prepared LIR call_indirect reached native lowering with live transient SSA values; values must be published before the call",
+                        )?;
+                        // After the checked block resolves the table entry, this canonical frame
+                        // slot is reused to carry the resolved function index through the rest of
+                        // the indirect dispatch path.
+                        let func_idx_slot = index_slot;
+
+                        let checked = extra_block_ids.alloc();
+                        let trap_oob = extra_block_ids.alloc();
+                        let type_check = extra_block_ids.alloc();
+                        let trap_invalid_ref = extra_block_ids.alloc();
+                        let dispatch = extra_block_ids.alloc();
+                        let trap_type = extra_block_ids.alloc();
+                        let local_call = extra_block_ids.alloc();
+                        let external_call = extra_block_ids.alloc();
+                        let continuation = extra_block_ids.alloc();
+
+                        lower.emit_flush_dirty_cached_locals()?;
+                        emit_call_indirect_bounds_check_setup(
+                            &mut lower,
+                            table_idx,
+                            func_idx_slot,
+                        )?;
+                        push_lowered_block(
+                            current_block,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            current_params,
+                            lower.take_ops(),
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width:
+                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    kind: MachineCompareKind::Ge,
+                                    sign:
+                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
+                                    rhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                },
+                                then_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: trap_oob,
+                                    args: Vec::new(),
+                                },
+                                else_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: checked,
+                                    args: Vec::new(),
+                                },
+                            },
+                        )?;
+
+                        push_lowered_block(
+                            checked,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            build_call_indirect_checked_block(
+                                &lower,
+                                table_idx,
+                                func_idx_slot,
+                            )?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width:
+                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    kind: MachineCompareKind::Ge,
+                                    sign:
+                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(lower.transient_reg(2)?),
+                                    rhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                },
+                                then_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: trap_invalid_ref,
+                                    args: Vec::new(),
+                                },
+                                else_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: type_check,
+                                    args: Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            trap_oob,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            Vec::new(),
+                            MachineTerminator::Trap {
+                                kind: MachineTrapKind::TableOutOfBounds,
+                            },
+                        )?;
+                        push_lowered_block(
+                            type_check,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            build_call_indirect_type_check_block(&lower, func_idx_slot)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width:
+                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    kind: MachineCompareKind::Ne,
+                                    sign:
+                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    rhs: MachineValue::Imm64(type_idx as u64),
+                                },
+                                then_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: trap_type,
+                                    args: Vec::new(),
+                                },
+                                else_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: dispatch,
+                                    args: Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            trap_invalid_ref,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            Vec::new(),
+                            MachineTerminator::Trap {
+                                kind: MachineTrapKind::InvalidFunctionReference,
+                            },
+                        )?;
+                        push_lowered_block(
+                            dispatch,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            build_call_indirect_dispatch_block(&lower, func_idx_slot)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width:
+                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    kind: MachineCompareKind::Eq,
+                                    sign:
+                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    rhs: MachineValue::Imm64(function_kind::LOCAL as u64),
+                                },
+                                then_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: local_call,
+                                    args: Vec::new(),
+                                },
+                                else_edge: crate::vm::native::ir::machine::MachineEdge {
+                                    target: external_call,
+                                    args: Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            trap_type,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            Vec::new(),
+                            MachineTerminator::Trap {
+                                kind: MachineTrapKind::IndirectCallTypeMismatch,
+                            },
+                        )?;
+                        push_lowered_block(
+                            local_call,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            build_call_indirect_local_block(
+                                &mut lower,
+                                func_idx_slot,
+                                args,
+                            )?,
+                            MachineTerminator::CallIndirect {
+                                callee_entry: MachineValue::Reg(lower.transient_reg(1)?),
+                                callee_frame_base: lower.temp_reg(0)?,
+                                continuation,
+                            },
+                        )?;
+                        let helper_call =
+                            lower.call_indirect_external_site(
+                                func_idx_slot,
+                                args,
+                                results,
+                                sidecar,
+                            );
+                        push_lowered_block(
+                            external_call,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            Vec::new(),
+                            vec![MachineInst {
+                                kind: MachineInstKind::CallHelper(helper_call),
+                            }],
+                            MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+                                target: continuation,
+                                args: Vec::new(),
+                            }),
+                        )?;
+
+                        current_block = continuation;
+                        current_params = Vec::new();
+                        lower.begin_continuation_block()?;
                     }
                 },
                 _ => lower.lower_inst(inst)?,
@@ -372,4 +585,312 @@ fn target_param_regs(count: usize, regfile: &MachineRegFile) -> Result<Vec<Machi
         })?);
     }
     Ok(regs)
+}
+
+struct ExtraBlockAllocator {
+    next: u32,
+}
+
+impl ExtraBlockAllocator {
+    #[inline]
+    fn new(first_extra_block: u32) -> Self {
+        Self {
+            next: first_extra_block,
+        }
+    }
+
+    #[inline]
+    fn alloc(&mut self) -> MachineBlockId {
+        let id = MachineBlockId(self.next);
+        self.next += 1;
+        id
+    }
+
+    #[inline]
+    fn peek(&self, offset: u32) -> MachineBlockId {
+        MachineBlockId(self.next + offset)
+    }
+
+    #[inline]
+    fn reserve(&mut self, count: u32) {
+        self.next += count;
+    }
+}
+
+fn emit_call_indirect_bounds_check_setup(
+    lower: &mut BlockLowerContext<'_>,
+    table_idx: u32,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+) -> Result<(), WasmError> {
+    let index = lower.transient_reg(0)?;
+    let table_len = lower.transient_reg(1)?;
+    let scratch = lower.temp_reg(0)?;
+    lower.emit_machine_inst(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: index,
+            addr: lower.frame_addr(index_slot)?,
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    lower.emit_machine_inst(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: scratch,
+            addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    lower.emit_machine_inst(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: table_len,
+            addr: indexed_const_addr(
+                scratch,
+                table_idx,
+                core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
+                crate::vm::native::runtime::context::table_view_offset::ELEMENTS_LEN,
+            )?,
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    Ok(())
+}
+
+fn build_call_indirect_checked_block(
+    lower: &BlockLowerContext<'_>,
+    table_idx: u32,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+) -> Result<Vec<MachineInst>, WasmError> {
+    let index = lower.transient_reg(0)?;
+    let func_idx = lower.transient_reg(2)?;
+    let table_base = lower.temp_reg(0)?;
+    Ok(vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: index,
+                addr: lower.frame_addr(index_slot)?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: table_base,
+                addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: table_base,
+                addr: indexed_const_addr(
+                    table_base,
+                    table_idx,
+                    core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
+                    crate::vm::native::runtime::context::table_view_offset::ELEMENTS_BASE,
+                )?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
+                dst: index,
+                lhs: MachineValue::Reg(index),
+                rhs: MachineValue::Imm64(core::mem::size_of::<crate::vm::value::RefHandle>() as u64),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: table_base,
+                lhs: MachineValue::Reg(table_base),
+                rhs: MachineValue::Reg(index),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: func_idx,
+                addr: crate::vm::native::ir::machine::MachineAddr {
+                    base: table_base,
+                    offset: 0,
+                },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Store {
+                addr: lower.frame_addr(index_slot)?,
+                width: MachineMemWidth::U64,
+                src: MachineValue::Reg(func_idx),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: lower.transient_reg(1)?,
+                addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_LEN),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+    ])
+}
+
+fn build_call_indirect_type_check_block(
+    lower: &BlockLowerContext<'_>,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+) -> Result<Vec<MachineInst>, WasmError> {
+    let func_idx = lower.transient_reg(0)?;
+    let actual_type = lower.transient_reg(1)?;
+    let function_views = lower.temp_reg(0)?;
+    let scaled_index = lower.transient_reg(2)?;
+    Ok(dynamic_function_view_load(
+        lower,
+        index_slot,
+        func_idx,
+        function_views,
+        scaled_index,
+        function_view_offset::TYPE_IDX,
+        actual_type,
+    )?)
+}
+
+fn build_call_indirect_dispatch_block(
+    lower: &BlockLowerContext<'_>,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+) -> Result<Vec<MachineInst>, WasmError> {
+    let func_idx = lower.transient_reg(0)?;
+    let kind = lower.transient_reg(1)?;
+    let function_views = lower.temp_reg(0)?;
+    let scaled_index = lower.transient_reg(2)?;
+    dynamic_function_view_load(
+        lower,
+        index_slot,
+        func_idx,
+        function_views,
+        scaled_index,
+        function_view_offset::KIND,
+        kind,
+    )
+}
+
+fn build_call_indirect_local_block(
+    lower: &mut BlockLowerContext<'_>,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+    args: FrameSpan,
+) -> Result<Vec<MachineInst>, WasmError> {
+    let func_idx = lower.transient_reg(0)?;
+    let local_target = lower.transient_reg(1)?;
+    let function_views = lower.transient_reg(2)?;
+    let callee_frame_base = lower.temp_reg(0)?;
+    let index64 = lower.transient_reg(3)?;
+
+    let mut ops = dynamic_function_view_load(
+        lower,
+        index_slot,
+        func_idx,
+        function_views,
+        index64,
+        function_view_offset::LOCAL_TARGET,
+        local_target,
+    )?;
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntBinary {
+            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+            dst: callee_frame_base,
+            lhs: MachineValue::Reg(lower.frame_base_reg()),
+            rhs: MachineValue::Imm64(slot_offset_bytes(crate::vm::plan::frame::FrameSlot(
+                lower.current_runtime().total_frame_slots,
+            ))? as u64),
+        },
+    });
+    lower.emit_machine_ops(ops);
+    lower.copy_call_args_to_frame(args, callee_frame_base)?;
+    Ok(lower.take_ops())
+}
+
+fn dynamic_function_view_load(
+    lower: &BlockLowerContext<'_>,
+    index_slot: crate::vm::plan::frame::FrameSlot,
+    func_idx_dst: MachineReg,
+    base_reg: MachineReg,
+    scaled_index_reg: MachineReg,
+    field_offset: u32,
+    dst: MachineReg,
+) -> Result<Vec<MachineInst>, WasmError> {
+    Ok(vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: func_idx_dst,
+                addr: lower.frame_addr(index_slot)?,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Move {
+                dst: scaled_index_reg,
+                src: MachineValue::Reg(func_idx_dst),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
+                dst: scaled_index_reg,
+                lhs: MachineValue::Reg(scaled_index_reg),
+                rhs: MachineValue::Imm64(core::mem::size_of::<NativeFunctionView>() as u64),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst: base_reg,
+                addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: base_reg,
+                lhs: MachineValue::Reg(base_reg),
+                rhs: MachineValue::Reg(scaled_index_reg),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: crate::vm::native::ir::machine::MachineAddr {
+                    base: base_reg,
+                    offset: field_offset as i32,
+                },
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        },
+    ])
+}
+
+fn indexed_const_addr(
+    base: MachineReg,
+    index: u32,
+    stride: usize,
+    field_offset: u32,
+) -> Result<crate::vm::native::ir::machine::MachineAddr, WasmError> {
+    let scaled = (index as u64)
+        .checked_mul(stride as u64)
+        .and_then(|value| value.checked_add(field_offset as u64))
+        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
+    let offset = i32::try_from(scaled)
+        .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))?;
+    Ok(crate::vm::native::ir::machine::MachineAddr { base, offset })
 }

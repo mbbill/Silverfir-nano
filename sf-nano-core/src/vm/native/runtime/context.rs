@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use crate::{
     error::WasmError,
     vm::{
-        entities::{GlobalInst, ModuleInst},
+        entities::{FunctionInst, GlobalInst, ModuleInst},
         store::Store,
         value::RefHandle,
     },
@@ -40,6 +40,24 @@ pub struct NativeGlobalsView {
     pub len: usize,
 }
 
+pub mod function_kind {
+    pub const LOCAL: u32 = 0;
+    pub const EXTERNAL: u32 = 1;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeFunctionView {
+    pub kind: u32,
+    pub type_idx: u32,
+    /// Native-local target token for `MachineTerminator::CallIndirect`.
+    ///
+    /// In the current single-module lowering path this is the module function
+    /// index for local callees. The runtime/finalizer may later refine how
+    /// this token maps to a concrete entry target.
+    pub local_target: u32,
+}
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct NativeContext {
@@ -52,11 +70,14 @@ pub struct NativeContext {
     pub memory_views_len: usize,
     pub table_views_base: *const NativeTableView,
     pub table_views_len: usize,
+    pub function_views_base: *const NativeFunctionView,
+    pub function_views_len: usize,
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
+    function_views: Vec<NativeFunctionView>,
     #[cfg(feature = "function-trace")]
     pub trace_stack: std::vec::Vec<u32>,
 }
@@ -74,11 +95,14 @@ impl NativeContext {
             memory_views_len: 0,
             table_views_base: core::ptr::null(),
             table_views_len: 0,
+            function_views_base: core::ptr::null(),
+            function_views_len: 0,
             store,
             current_module: core::ptr::null(),
             error: None,
             memory_views: Vec::new(),
             table_views: Vec::new(),
+            function_views: Vec::new(),
             #[cfg(feature = "function-trace")]
             trace_stack: std::vec::Vec::new(),
         };
@@ -96,6 +120,7 @@ impl NativeContext {
         self.refresh_globals_view();
         self.refresh_memory_views();
         self.refresh_table_views();
+        self.refresh_function_views();
     }
 
     #[inline]
@@ -193,6 +218,52 @@ impl NativeContext {
     }
 
     #[inline]
+    pub fn refresh_function_views(&mut self) {
+        let Some(store) = self.store() else {
+            self.function_views.clear();
+            self.function_views_base = core::ptr::null();
+            self.function_views_len = 0;
+            return;
+        };
+
+        let module = store.module();
+        let function_views: Vec<_> = module
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(func_idx, func)| {
+                let (kind, local_target) = match func {
+                    FunctionInst::Local { .. } => (function_kind::LOCAL, func_idx as u32),
+                    FunctionInst::External { .. } => (function_kind::EXTERNAL, u32::MAX),
+                };
+                let type_idx = match func {
+                    FunctionInst::Local { type_index, .. } => *type_index,
+                    FunctionInst::External { func_type, .. } => module
+                        .types
+                        .as_slice()
+                        .iter()
+                        .position(|candidate| candidate.as_ref() == func_type.as_ref())
+                        .map(|index| index as u32)
+                        .unwrap_or(u32::MAX),
+                };
+                NativeFunctionView {
+                    kind,
+                    type_idx,
+                    local_target,
+                }
+            })
+            .collect();
+
+        self.function_views = function_views;
+        self.function_views_base = if self.function_views.is_empty() {
+            core::ptr::null()
+        } else {
+            self.function_views.as_ptr()
+        };
+        self.function_views_len = self.function_views.len();
+    }
+
+    #[inline]
     pub fn store(&self) -> Option<&Store> {
         unsafe { self.store.as_ref() }
     }
@@ -216,6 +287,10 @@ pub mod ctx_offset {
     pub const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
     pub const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
     pub const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
+    pub const FUNCTION_VIEWS_BASE: u32 =
+        core::mem::offset_of!(NativeContext, function_views_base) as u32;
+    pub const FUNCTION_VIEWS_LEN: u32 =
+        core::mem::offset_of!(NativeContext, function_views_len) as u32;
     pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
     pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
 }
@@ -239,4 +314,12 @@ pub mod globals_view_offset {
 
     pub const BASE: u32 = core::mem::offset_of!(NativeGlobalsView, base) as u32;
     pub const LEN: u32 = core::mem::offset_of!(NativeGlobalsView, len) as u32;
+}
+
+pub mod function_view_offset {
+    use super::NativeFunctionView;
+
+    pub const KIND: u32 = core::mem::offset_of!(NativeFunctionView, kind) as u32;
+    pub const TYPE_IDX: u32 = core::mem::offset_of!(NativeFunctionView, type_idx) as u32;
+    pub const LOCAL_TARGET: u32 = core::mem::offset_of!(NativeFunctionView, local_target) as u32;
 }

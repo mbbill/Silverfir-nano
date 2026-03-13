@@ -30,6 +30,14 @@ pub struct CallExternalMeta {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CallIndirectExternalMeta {
+    pub func_idx_slot: u32,
+    pub args: HelperFrameRegion,
+    pub results: HelperFrameRegion,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MemoryGrowMeta {
     pub mem_idx: u32,
     pub io: HelperFrameRegion,
