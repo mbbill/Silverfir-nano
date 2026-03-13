@@ -315,11 +315,9 @@ fn lower_function(
                             lower.take_ops(),
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width:
-                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Ge,
-                                    sign:
-                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(0)?),
                                     rhs: MachineValue::Reg(lower.transient_reg(1)?),
                                 },
@@ -339,18 +337,12 @@ fn lower_function(
                             &mut original_blocks,
                             &mut extra_blocks,
                             Vec::new(),
-                            build_call_indirect_checked_block(
-                                &lower,
-                                table_idx,
-                                func_idx_slot,
-                            )?,
+                            build_call_indirect_checked_block(&lower, table_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width:
-                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Ge,
-                                    sign:
-                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(2)?),
                                     rhs: MachineValue::Reg(lower.transient_reg(1)?),
                                 },
@@ -379,18 +371,12 @@ fn lower_function(
                             &mut original_blocks,
                             &mut extra_blocks,
                             Vec::new(),
-                            build_call_indirect_type_check_block(
-                                &lower,
-                                type_idx,
-                                func_idx_slot,
-                            )?,
+                            build_call_indirect_type_check_block(&lower, type_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width:
-                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Ne,
-                                    sign:
-                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(1)?),
                                     rhs: MachineValue::Reg(lower.transient_reg(3)?),
                                 },
@@ -422,11 +408,9 @@ fn lower_function(
                             build_call_indirect_dispatch_block(&lower, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width:
-                                        crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Eq,
-                                    sign:
-                                        crate::vm::native::ir::machine::MachineSign::Unsigned,
+                                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(1)?),
                                     rhs: MachineValue::Imm64(function_kind::LOCAL as u64),
                                 },
@@ -464,13 +448,12 @@ fn lower_function(
                                 continuation,
                             },
                         )?;
-                        let helper_call =
-                            lower.call_indirect_external_site(
-                                func_idx_slot,
-                                args,
-                                results,
-                                sidecar,
-                            );
+                        let helper_call = lower.call_indirect_external_site(
+                            func_idx_slot,
+                            args,
+                            results,
+                            sidecar,
+                        );
                         push_lowered_block(
                             external_call,
                             &mut original_blocks,
@@ -556,15 +539,15 @@ fn slot_offset_bytes(slot: crate::vm::plan::frame::FrameSlot) -> Result<i32, Was
 }
 
 fn derive_return_results(program: &LirProgram) -> Result<Option<MachineFrameRegion>, WasmError> {
-    let mut derived: Option<MachineFrameRegion> = None;
+    let mut derived: Option<Option<MachineFrameRegion>> = None;
     for block in &program.blocks {
         let LirTerminator::Return { results } = &block.terminator else {
             continue;
         };
         let region = results.map(frame_span_region);
         match derived {
-            None => derived = region,
-            Some(current) if region == Some(current) => {}
+            None => derived = Some(region),
+            Some(current) if current == region => {}
             Some(_) => {
                 return Err(WasmError::internal(
                     "prepared LIR uses inconsistent return result spans across blocks".into(),
@@ -572,7 +555,7 @@ fn derive_return_results(program: &LirProgram) -> Result<Option<MachineFrameRegi
             }
         }
     }
-    Ok(derived)
+    Ok(derived.unwrap_or(None))
 }
 
 #[inline]

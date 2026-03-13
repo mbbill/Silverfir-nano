@@ -230,6 +230,52 @@ fn rejects_inconsistent_return_result_spans() {
 }
 
 #[test]
+fn rejects_mixed_void_and_value_returns() {
+    let frame = plan_frame_layout(0, 4, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![
+            LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return { results: None },
+            },
+            LirBlock {
+                id: LirTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return {
+                    results: Some(crate::vm::plan::frame::FrameSpan::new(
+                        frame.operand_slot(0),
+                        1,
+                    )),
+                },
+            },
+        ],
+    };
+
+    let err = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect_err("mixed void and value returns should be rejected");
+
+    assert!(err.message().contains("inconsistent return result spans"));
+}
+
+#[test]
 fn lowers_branch_edge_bindings_into_machine_edge_args() {
     let lir = LirProgram {
         entry: LirTarget(0),
@@ -974,7 +1020,8 @@ fn lowers_memory_size_without_helper_boundary() {
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntBinary {
-            op: MachineIntBinaryOp::DivU,
+            op: MachineIntBinaryOp::ShrU,
+            rhs: MachineValue::Imm64(16),
             ..
         }
     ));
@@ -1342,6 +1389,21 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[0].ops[1].kind,
+        MachineInstKind::Convert {
+            op: crate::vm::native::ir::machine::MachineConvertOp::I64ExtendI32U,
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[0].ops[2].kind,
+        MachineInstKind::IntBinary {
+            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Add,
+            ..
+        }
     ));
     assert!(matches!(
         program.blocks[1].terminator,

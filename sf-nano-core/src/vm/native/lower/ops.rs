@@ -185,10 +185,10 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                op: crate::vm::native::ir::machine::MachineIntBinaryOp::DivU,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::ShrU,
                 dst,
                 lhs: MachineValue::Reg(dst),
-                rhs: MachineValue::Imm64(crate::constants::WASM_PAGE_SIZE as u64),
+                rhs: MachineValue::Imm64(crate::constants::WASM_PAGE_SIZE.trailing_zeros() as u64),
             },
         });
         Ok(())
@@ -670,19 +670,19 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<(), WasmError> {
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I32,
-                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
-                dst: addr32,
-                lhs: MachineValue::Reg(addr),
-                rhs: MachineValue::Imm64(offset as u64),
-            },
-        });
-        self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Convert {
                 op: MachineConvertOp::I64ExtendI32U,
                 dst: addr32,
-                src: MachineValue::Reg(addr32),
+                src: MachineValue::Reg(addr),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(addr32),
+                rhs: MachineValue::Imm64(offset as u64),
             },
         });
         Ok(())
@@ -1170,19 +1170,19 @@ fn emit_effective_addr_ops(
     addr32: crate::vm::native::ir::machine::MachineReg,
 ) {
     ops.push(MachineInst {
-        kind: MachineInstKind::IntBinary {
-            width: crate::vm::native::ir::machine::MachineIntWidth::I32,
-            op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
-            dst: addr32,
-            lhs: MachineValue::Reg(addr),
-            rhs: MachineValue::Imm64(offset as u64),
-        },
-    });
-    ops.push(MachineInst {
         kind: MachineInstKind::Convert {
             op: MachineConvertOp::I64ExtendI32U,
             dst: addr32,
-            src: MachineValue::Reg(addr32),
+            src: MachineValue::Reg(addr),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntBinary {
+            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+            dst: addr32,
+            lhs: MachineValue::Reg(addr32),
+            rhs: MachineValue::Imm64(offset as u64),
         },
     });
 }

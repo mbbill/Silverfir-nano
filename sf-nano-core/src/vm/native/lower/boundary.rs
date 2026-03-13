@@ -5,12 +5,12 @@ use crate::{
         native::{
             helper::meta::{
                 CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta,
-                MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta,
+                TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
             },
             ir::{
                 machine::{
-                MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
+                    MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
                     MachineReg, MachineTerminator, MachineValue,
                 },
                 runtime::{MachineFrameRegion, MachineHelperSymbol},
@@ -166,8 +166,7 @@ impl<'a> BlockLowerContext<'a> {
         let copy_reg = self.transient_reg(0)?;
         if self.transient_in_use(0)? {
             return Err(WasmError::internal(
-                "indirect local call requires a free transient register for argument copies"
-                    .into(),
+                "indirect local call requires a free transient register for argument copies".into(),
             ));
         }
 
