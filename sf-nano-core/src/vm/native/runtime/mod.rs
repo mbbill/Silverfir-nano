@@ -1,6 +1,10 @@
-use crate::{error::WasmError, vm::{entities::FunctionInst, stack::InterpreterStack, store::Store, value::Value}};
+use crate::{
+    error::WasmError,
+    vm::{entities::FunctionInst, stack::InterpreterStack, store::Store, value::Value},
+};
 
 pub mod context;
+pub mod helpers;
 
 pub fn eval(
     _func_inst: &FunctionInst,
