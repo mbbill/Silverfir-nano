@@ -17,7 +17,7 @@ fn main() {
         eprintln!("Silverfir-nano — WebAssembly interpreter");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--reference] [--dir <path>] <wasm-file> [args...]");
+        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu] [--dir <path>] <wasm-file> [args...]");
         #[cfg(all(feature = "profile", feature = "interp"))]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -40,7 +40,7 @@ fn main() {
     // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
     let mut backend_mode = BackendMode::Native;
-    let mut reference_backend = false;
+    let mut emulator_backend = false;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
@@ -66,8 +66,8 @@ fn main() {
                     );
                     process::exit(1);
                 });
-            } else if args[i] == "--reference" {
-                reference_backend = true;
+            } else if args[i] == "--emu" {
+                emulator_backend = true;
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -81,7 +81,7 @@ fn main() {
     }
 
     set_backend_mode(backend_mode);
-    if let Err(err) = set_reference_backend(reference_backend) {
+    if let Err(err) = set_reference_backend(emulator_backend) {
         eprintln!("Error: {}", err);
         process::exit(1);
     }

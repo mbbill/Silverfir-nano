@@ -32,9 +32,9 @@ struct Cli {
     #[structopt(long = "backend")]
     backend: Option<String>,
 
-    /// Use the debug-only native reference backend
-    #[structopt(long = "reference")]
-    reference: bool,
+    /// Use the debug-only native emulator backend
+    #[structopt(long = "emu")]
+    emu: bool,
 }
 
 fn main() {
@@ -50,7 +50,7 @@ fn main() {
         });
         set_backend_mode(mode);
     }
-    if let Err(err) = set_reference_backend(args.reference) {
+    if let Err(err) = set_reference_backend(args.emu) {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }
