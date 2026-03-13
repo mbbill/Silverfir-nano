@@ -800,3 +800,186 @@ This is the core design intention of the engine:
 - LIR is prepared, not arbitrary full SSA
 - backend stays simple and single-pass
 - no traditional optimizer or general register allocator is required
+
+## LIR To MachineIR Implementation Note
+
+This is the agreed design for the missing part between prepared LIR and MachineIR.
+
+There should be no new public IR between them.
+
+The missing piece is one internal lowering pipeline in `native/` that consumes:
+
+- prepared LIR
+- canonical frame layout
+- backend budgets
+- module/runtime metadata needed to expand memory/global/table semantics
+
+and produces:
+
+- `MachineModule`
+- `MachineRuntimeContract`
+
+Its job is two things at once:
+
+1. expand the remaining VM-flavored LIR operations into machine-shaped code
+2. do the trivial fixed-budget register assignment that the backend depends on
+
+`LirInstKind::Runtime` should stay SSA-shaped.
+
+Operations such as `memory.grow` and `table.grow` are still ordinary semantic stack operations at the LIR level: they consume values from the transient live set and may produce values back into it. The fact that native lowers them through a helper boundary is not LIR's concern. That transition from native ABI to Rust ABI belongs entirely to native-side lowering.
+
+So the split is:
+
+- LIR keeps `Runtime { op, args, results }`
+- native lowering decides when live transient values must be published before the helper boundary
+- native lowering uses planned `call_scratch_slots`
+- native lowering materializes helper metadata and scratch base
+- native lowering emits the actual helper-call bridge
+
+`MachineIR` return should be frame-based, not register-value-based.
+
+Before `Return`, prepared LIR should already have spilled or published all live SSA results into canonical result slots. Lowering should verify that there are no transient live SSA values left at return. Then machine return becomes a pure frame/call-link operation:
+
+- restore caller frame state
+- move return values by offset if required
+- restore continuation / caller state
+- jump
+
+So `MachineTerminator::Return` should not carry register values.
+
+The internal lowering state should own:
+
+- the fixed machine register partition
+- the current transient-value window mapping
+- the fixed local-cache slot to machine-register mapping
+- dirty/valid state for cached locals
+- helper const/extern sidecar builders
+
+The implementation should be split conceptually like this:
+
+1. `regfile`
+
+Defines the fixed machine register partition from backend config:
+
+- one runtime anchor reg
+- one frame anchor reg
+- `cached_locals` fixed local-cache regs
+- `tos_lanes` fixed transient regs
+- fixed temp regs
+
+2. `block lowering`
+
+Lowers one LIR block into one or more machine blocks.
+
+This is where local calls split a LIR block into:
+
+- a pre-call machine block
+- an explicit continuation block
+
+3. `transient window mapper`
+
+Keeps the current `LirValue -> MachineReg` mapping for the bounded live transient set.
+
+There is no global register allocation here. It is only the prepared transient window.
+
+4. `local cache manager`
+
+Takes `LirLocalCachePrefs` plus backend `cached_locals`, picks the top N canonical local slots, binds them to fixed cache regs, and tracks dirty state.
+
+The intended policy is:
+
+- cached local reads use the cache reg
+- cached local writes update the cache reg and mark it dirty
+- uncached locals use explicit frame loads/stores
+- before boundaries that may clobber cache regs, dirty cached locals are flushed
+- after such boundaries, cached locals are reloaded
+
+5. `semantic expander`
+
+Expands LIR leaf/runtime ops into machine ops:
+
+- integer/float ops become direct machine ops
+- compares/select become direct machine ops
+- constants/ref ops become moves/constants
+- memory/global/table ops become explicit address math, checks, loads/stores
+- true runtime boundaries become helper call sites with const metadata + scratch
+
+6. `call lowering`
+
+Handles:
+
+- direct local call
+- indirect local call
+- external/helper call
+- return
+- call-link setup/restore
+
+7. `sidecar builder`
+
+Builds:
+
+- `MachineConstData`
+- `MachineExternBinding`
+- final `MachineRuntimeContract`
+
+The important behavior for each case is:
+
+`ReadSlot` / `WriteSlot`
+
+- if the slot is a selected cached local, lowering uses the cache reg
+- otherwise it becomes an explicit `[frame + slot_offset]` load/store
+
+`Spill` / `Fill`
+
+- always explicit store/load to canonical operand-slot addresses
+
+`CallInternal`
+
+- flush dirty cached locals
+- compute callee frame base from caller frame extent and callee frame metadata
+- zero callee local prefix
+- write call-link into callee call scratch
+- emit `CallDirect`
+- continuation block reloads cached locals and continues
+
+`CallIndirect`
+
+- lower table lookup/null/type checks as ordinary machine ops
+- branch local targets to `CallIndirect`
+- branch external targets to a helper-call block
+- share one continuation block
+
+`CallExternal` and runtime helpers
+
+- spill any surviving transient values that must live across the helper boundary
+- flush dirty cached locals
+- materialize metadata const and scratch base
+- emit `CallHelper`
+- reload cached locals
+- continue
+
+The implementation order should be:
+
+1. fix only `MachineIR Return` so it becomes frame-based
+2. add the lowering scaffolding in `native/`
+3. implement straight-line lowering first:
+   - slot ops
+   - spill/fill
+   - constants
+   - integer/float ALU
+   - compare/select
+4. implement fixed local-cache mapping and dirty flush/reload
+5. implement CFG lowering:
+   - params/bindings to machine block params/edge args
+   - branch / br_table
+6. implement direct local call + return + continuation block splitting
+7. implement helper/external call lowering
+8. implement indirect call lowering
+9. implement the emulator on top of MachineIR
+10. only after that, wire ARM64 to consume MachineIR
+
+The intended model remains:
+
+- LIR owns program semantics plus prepared transient fit
+- native lowering owns ABI transitions, helper scratch use, and machine-level publication/reload around those transitions
+- MachineIR owns only machine concepts
