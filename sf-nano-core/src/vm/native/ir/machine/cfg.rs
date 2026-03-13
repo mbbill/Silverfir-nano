@@ -53,10 +53,17 @@ pub enum MachineTerminator {
         callee_frame_base: MachineReg,
         continuation: MachineBlockId,
     },
-    /// Indirect local call after the target token has already been resolved by
-    /// earlier machine-level code.
+    /// Indirect local call after earlier machine-level code has already
+    /// resolved and validated the local callee target.
+    ///
+    /// Unlike `CallDirect`, the remaining per-callee setup is dynamic:
+    /// execution below MachineIR may need runtime metadata for the resolved
+    /// target in order to finish any call-link/local-prefix handling before the
+    /// actual transfer. Lowering above MachineIR therefore resolves the local
+    /// callee target, computes the callee frame base, and publishes the
+    /// canonical argument slots needed by that later step.
     CallIndirect {
-        callee_entry: MachineValue,
+        callee_target: MachineValue,
         callee_frame_base: MachineReg,
         continuation: MachineBlockId,
     },

@@ -56,9 +56,9 @@ pub struct NativeFunctionView {
     pub type_canon: u32,
     /// Native-local target token for `MachineTerminator::CallIndirect`.
     ///
-    /// In the current single-module lowering path this is the module function
-    /// index for local callees. The runtime/finalizer may later refine how
-    /// this token maps to a concrete entry target.
+    /// The current lowering path keeps machine function ids aligned with the
+    /// module function index space, so local callees use that machine-call
+    /// target id directly here.
     pub local_target: u32,
 }
 

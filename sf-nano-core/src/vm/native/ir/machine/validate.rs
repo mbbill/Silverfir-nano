@@ -138,11 +138,11 @@ impl MachineProgram {
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::CallIndirect {
-                callee_entry,
+                callee_target,
                 callee_frame_base,
                 continuation,
             } => {
-                self.validate_value(*callee_entry)?;
+                self.validate_value(*callee_target)?;
                 self.validate_reg(*callee_frame_base)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }

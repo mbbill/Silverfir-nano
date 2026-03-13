@@ -299,6 +299,7 @@ fn lower_function(
                         let local_call = extra_block_ids.alloc();
                         let external_call = extra_block_ids.alloc();
                         let continuation = extra_block_ids.alloc();
+                        let local_call_target_param = lower.transient_reg(1)?;
 
                         lower.emit_flush_dirty_cached_locals()?;
                         emit_call_indirect_bounds_check_setup(
@@ -431,7 +432,7 @@ fn lower_function(
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: local_call,
-                                    args: Vec::new(),
+                                    args: vec![MachineValue::Reg(lower.transient_reg(3)?)],
                                 },
                                 else_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: external_call,
@@ -453,14 +454,10 @@ fn lower_function(
                             local_call,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
-                            build_call_indirect_local_block(
-                                &mut lower,
-                                func_idx_slot,
-                                args,
-                            )?,
+                            vec![local_call_target_param],
+                            build_call_indirect_local_block(&mut lower, args)?,
                             MachineTerminator::CallIndirect {
-                                callee_entry: MachineValue::Reg(lower.transient_reg(1)?),
+                                callee_target: MachineValue::Reg(local_call_target_param),
                                 callee_frame_base: lower.temp_reg(0)?,
                                 continuation,
                             },
@@ -802,6 +799,8 @@ fn build_call_indirect_type_check_block(
         function_views,
         scaled_index,
         function_view_offset::TYPE_CANON,
+        MachineMemWidth::U32,
+        MachineLoadExtension::ZeroExtend,
         actual_type,
     )?;
     ops.push(MachineInst {
@@ -836,38 +835,39 @@ fn build_call_indirect_dispatch_block(
     let kind = lower.transient_reg(1)?;
     let function_views = lower.temp_reg(0)?;
     let scaled_index = lower.transient_reg(2)?;
-    dynamic_function_view_load(
+    let local_target = lower.transient_reg(3)?;
+    let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
         func_idx,
         function_views,
         scaled_index,
         function_view_offset::KIND,
+        MachineMemWidth::U32,
+        MachineLoadExtension::ZeroExtend,
         kind,
-    )
+    )?;
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            dst: local_target,
+            addr: crate::vm::native::ir::machine::MachineAddr {
+                base: function_views,
+                offset: function_view_offset::LOCAL_TARGET as i32,
+            },
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+    });
+    Ok(ops)
 }
 
 fn build_call_indirect_local_block(
     lower: &mut BlockLowerContext<'_>,
-    index_slot: crate::vm::plan::frame::FrameSlot,
     args: FrameSpan,
 ) -> Result<Vec<MachineInst>, WasmError> {
-    let func_idx = lower.transient_reg(0)?;
-    let local_target = lower.transient_reg(1)?;
-    let function_views = lower.transient_reg(2)?;
     let callee_frame_base = lower.temp_reg(0)?;
-    let index64 = lower.transient_reg(3)?;
 
-    let mut ops = dynamic_function_view_load(
-        lower,
-        index_slot,
-        func_idx,
-        function_views,
-        index64,
-        function_view_offset::LOCAL_TARGET,
-        local_target,
-    )?;
-    ops.push(MachineInst {
+    let ops = vec![MachineInst {
         kind: MachineInstKind::IntBinary {
             width: crate::vm::native::ir::machine::MachineIntWidth::I64,
             op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
@@ -877,7 +877,11 @@ fn build_call_indirect_local_block(
                 lower.current_runtime().total_frame_slots,
             ))? as u64),
         },
-    });
+    }];
+    // By the time the local branch reaches this block, the dispatch path has
+    // already resolved and validated the local callee target above MachineIR.
+    // The remaining dynamic work below MachineIR is just the local-call
+    // transfer mechanics for that resolved target.
     lower.emit_machine_ops(ops);
     lower.copy_call_args_to_frame(args, callee_frame_base)?;
     Ok(lower.take_ops())
@@ -890,6 +894,8 @@ fn dynamic_function_view_load(
     base_reg: MachineReg,
     scaled_index_reg: MachineReg,
     field_offset: u32,
+    field_width: MachineMemWidth,
+    field_extension: MachineLoadExtension,
     dst: MachineReg,
 ) -> Result<Vec<MachineInst>, WasmError> {
     Ok(vec![
@@ -940,8 +946,8 @@ fn dynamic_function_view_load(
                     base: base_reg,
                     offset: field_offset as i32,
                 },
-                width: MachineMemWidth::U64,
-                extension: MachineLoadExtension::None,
+                width: field_width,
+                extension: field_extension,
             },
         },
     ])

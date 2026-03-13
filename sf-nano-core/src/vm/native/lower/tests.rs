@@ -1056,6 +1056,14 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             ..
         }
     ));
+    assert_eq!(program.blocks[7].params.len(), 1);
+    assert!(matches!(
+        program.blocks[7].ops[0].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Add,
+            ..
+        }
+    ));
     let type_check_ops = &program.blocks[3].ops;
     let type_check_scaled = match &type_check_ops[1].kind {
         MachineInstKind::Move { dst, .. } => *dst,
@@ -1074,6 +1082,14 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         type_canon_offset,
         crate::vm::native::runtime::context::ctx_offset::TYPE_CANON_BASE as i32
     );
+    assert!(matches!(
+        type_check_ops[5].kind,
+        MachineInstKind::Load {
+            width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+            extension: crate::vm::native::ir::machine::MachineLoadExtension::ZeroExtend,
+            ..
+        }
+    ));
     assert!(matches!(
         program.blocks[3].terminator,
         MachineTerminator::Branch {
@@ -1095,6 +1111,22 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         other => panic!("expected function-view base load in dispatch block, got {other:?}"),
     };
     assert_ne!(dispatch_scaled, dispatch_base);
+    assert!(matches!(
+        dispatch_ops[5].kind,
+        MachineInstKind::Load {
+            width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+            extension: crate::vm::native::ir::machine::MachineLoadExtension::ZeroExtend,
+            ..
+        }
+    ));
+    assert!(matches!(
+        dispatch_ops[6].kind,
+        MachineInstKind::Load {
+            width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+            extension: crate::vm::native::ir::machine::MachineLoadExtension::ZeroExtend,
+            ..
+        }
+    ));
     assert!(matches!(
         program.blocks[8].ops.as_slice(),
         [crate::vm::native::ir::machine::MachineInst {
