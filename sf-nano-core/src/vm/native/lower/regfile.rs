@@ -93,4 +93,3 @@ fn collect_regs(next: &mut u16, count: u8) -> Vec<MachineReg> {
     }
     regs
 }
-

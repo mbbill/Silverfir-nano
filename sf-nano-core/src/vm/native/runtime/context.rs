@@ -213,12 +213,9 @@ pub mod ctx_offset {
     pub const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
     pub const MEMORY_VIEWS_BASE: u32 =
         core::mem::offset_of!(NativeContext, memory_views_base) as u32;
-    pub const MEMORY_VIEWS_LEN: u32 =
-        core::mem::offset_of!(NativeContext, memory_views_len) as u32;
-    pub const TABLE_VIEWS_BASE: u32 =
-        core::mem::offset_of!(NativeContext, table_views_base) as u32;
-    pub const TABLE_VIEWS_LEN: u32 =
-        core::mem::offset_of!(NativeContext, table_views_len) as u32;
+    pub const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
+    pub const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
+    pub const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
     pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
     pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
 }

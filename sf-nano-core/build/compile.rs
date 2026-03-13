@@ -123,7 +123,6 @@ pub fn verify_preserve_none_abi() {
             );
         }
     }
-
 }
 
 /// Parse a `str xN, [...]` instruction and return the source register name.

@@ -251,7 +251,11 @@ pub(super) fn lower_call_indirect(
 }
 
 #[inline]
-pub(super) fn branch_payload(frame: FrameLayoutPlan, stack_drop: u32, arity: u16) -> Option<FrameSpan> {
+pub(super) fn branch_payload(
+    frame: FrameLayoutPlan,
+    stack_drop: u32,
+    arity: u16,
+) -> Option<FrameSpan> {
     if arity == 0 {
         None
     } else {
@@ -265,7 +269,11 @@ pub(super) fn call_results(frame: FrameLayoutPlan, results: u16) -> FrameSpan {
 }
 
 #[inline]
-fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> crate::vm::plan::frame::FrameSlot {
+fn call_base_slot(
+    frame: FrameLayoutPlan,
+    stack_height: u16,
+    consumed: u16,
+) -> crate::vm::plan::frame::FrameSlot {
     // Calls consume the current canonical top-of-stack window. The argument and
     // result spans therefore start at the stack position that will remain after
     // the consumed inputs are removed.
@@ -287,7 +295,10 @@ pub(super) fn lower_block_body_op(
 
     match &op.semantic.kind {
         SemanticOpKind::Primitive(kind)
-            if matches!(kind, crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable) =>
+            if matches!(
+                kind,
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
+            ) =>
         {
             Err(WasmError::internal(
                 "unreachable must end a prepared LIR block, not appear in the body".into(),
@@ -328,9 +339,7 @@ pub(super) fn lower_block_body_op(
             lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
             Ok(())
         }
-        SemanticOpKind::Block { .. }
-        | SemanticOpKind::Loop { .. }
-        | SemanticOpKind::End => Ok(()),
+        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
         SemanticOpKind::Else { .. } => Err(WasmError::internal(
             "else must end a prepared LIR block, not appear in the body".into(),
         )),

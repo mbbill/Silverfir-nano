@@ -1348,7 +1348,11 @@ mod tests {
             .functions()
             .iter()
             .enumerate()
-            .find(|(_, func)| func.export_names().iter().any(|name| name == "as-mixed-operands"))
+            .find(|(_, func)| {
+                func.export_names()
+                    .iter()
+                    .any(|name| name == "as-mixed-operands")
+            })
             .map(|(index, _)| index)
             .expect("exported function index");
         let instance = runner.instances.values_mut().next().expect("instance");

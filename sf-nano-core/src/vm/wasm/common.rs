@@ -17,7 +17,6 @@ impl SemanticIndex {
     pub const fn as_usize(self) -> usize {
         self.0 as usize
     }
-
 }
 
 /// Structured control-flow target in semantic space.
@@ -42,7 +41,7 @@ impl SemanticTarget {
 
     #[inline]
     pub const fn is_pending(self) -> bool {
-        self.0.0 == u32::MAX
+        self.0 .0 == u32::MAX
     }
 }
 

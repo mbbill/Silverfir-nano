@@ -2,7 +2,7 @@
 
 use crate::error::WasmError;
 
-use super::ir::{LirBlock, LirBinding, LirEdge, LirProgram, LirTerminator, LirValue};
+use super::ir::{LirBinding, LirBlock, LirEdge, LirProgram, LirTerminator, LirValue};
 
 #[cfg(any(debug_assertions, test))]
 pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
@@ -87,7 +87,11 @@ fn validate_params(params: &[LirValue], label: alloc::string::String) -> Result<
     Ok(())
 }
 
-fn validate_edge(program: &LirProgram, edge: &LirEdge, source_block: usize) -> Result<(), WasmError> {
+fn validate_edge(
+    program: &LirProgram,
+    edge: &LirEdge,
+    source_block: usize,
+) -> Result<(), WasmError> {
     let Some(target) = program.blocks.get(edge.target.as_usize()) else {
         return Err(WasmError::internal(alloc::format!(
             "LIR block {} has edge to out-of-range target {}",
@@ -154,11 +158,11 @@ fn validate_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
     use crate::vm::lir::{
         ir::{LirLocalCachePrefs, LirValue},
         target::LirTarget,
     };
+    use alloc::vec::Vec;
 
     #[test]
     fn rejects_missing_target_binding() {
@@ -170,10 +174,12 @@ mod tests {
                     id: LirTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: crate::vm::lir::ir::LirTerminator::Goto(crate::vm::lir::ir::LirEdge {
-                        target: LirTarget(1),
-                        bindings: Vec::new(),
-                    }),
+                    terminator: crate::vm::lir::ir::LirTerminator::Goto(
+                        crate::vm::lir::ir::LirEdge {
+                            target: LirTarget(1),
+                            bindings: Vec::new(),
+                        }
+                    ),
                 },
                 crate::vm::lir::ir::LirBlock {
                     id: LirTarget(1),
@@ -185,7 +191,9 @@ mod tests {
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error.message().contains("has 0 bindings, but target expects 1 params"));
+        assert!(error
+            .message()
+            .contains("has 0 bindings, but target expects 1 params"));
     }
 
     #[test]
@@ -199,19 +207,21 @@ mod tests {
                     id: LirTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: crate::vm::lir::ir::LirTerminator::Goto(crate::vm::lir::ir::LirEdge {
-                        target: LirTarget(1),
-                        bindings: alloc::vec![
-                            LirBinding {
-                                param: param0,
-                                value: LirValue(1),
-                            },
-                            LirBinding {
-                                param: param0,
-                                value: LirValue(2),
-                            },
-                        ],
-                    }),
+                    terminator: crate::vm::lir::ir::LirTerminator::Goto(
+                        crate::vm::lir::ir::LirEdge {
+                            target: LirTarget(1),
+                            bindings: alloc::vec![
+                                LirBinding {
+                                    param: param0,
+                                    value: LirValue(1),
+                                },
+                                LirBinding {
+                                    param: param0,
+                                    value: LirValue(2),
+                                },
+                            ],
+                        }
+                    ),
                 },
                 crate::vm::lir::ir::LirBlock {
                     id: LirTarget(1),

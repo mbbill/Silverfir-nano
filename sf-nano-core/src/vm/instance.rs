@@ -422,9 +422,8 @@ impl Instance {
             }
         }
 
-        let runtime_engine = runtime::active_runtime_engine().map_err(|err| {
-            WasmError::invalid(format!("runtime backend unavailable: {}", err))
-        })?;
+        let runtime_engine = runtime::active_runtime_engine()
+            .map_err(|err| WasmError::invalid(format!("runtime backend unavailable: {}", err)))?;
 
         #[cfg(feature = "interp")]
         if !runtime_engine.is_micro_jit() {
@@ -641,7 +640,9 @@ mod tests {
         }
     }
 
-    fn arm64_direct_rejection_reasons(program: &crate::vm::native::ir::NativeProgram) -> Vec<String> {
+    fn arm64_direct_rejection_reasons(
+        program: &crate::vm::native::ir::NativeProgram,
+    ) -> Vec<String> {
         let mut reasons = Vec::new();
         for block in &program.blocks {
             if block.entry_abi.tos_width > 4 {

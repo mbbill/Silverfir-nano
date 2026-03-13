@@ -4,11 +4,7 @@ use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
-    vm::{
-        lir::ir::LirTerminator,
-        plan::frame::FrameLayoutPlan,
-        wasm::semantic_ir::SemanticOpKind,
-    },
+    vm::{lir::ir::LirTerminator, plan::frame::FrameLayoutPlan, wasm::semantic_ir::SemanticOpKind},
 };
 
 use super::{
@@ -37,7 +33,10 @@ pub(super) fn lower_block_terminator(
 
     match &op.semantic.kind {
         SemanticOpKind::Primitive(kind)
-            if matches!(kind, crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable) =>
+            if matches!(
+                kind,
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable
+            ) =>
         {
             Ok(LirTerminator::TrapUnreachable)
         }
@@ -89,16 +88,14 @@ pub(super) fn lower_block_terminator(
                 entry_states,
             )
         }
-        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } => {
-            goto_next(
-                semantic_index,
-                semantic_len,
-                state,
-                semantic_to_block,
-                block_params,
-                entry_states,
-            )
-        }
+        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } => goto_next(
+            semantic_index,
+            semantic_len,
+            state,
+            semantic_to_block,
+            block_params,
+            entry_states,
+        ),
         SemanticOpKind::If { else_target, .. } => {
             let cond = state.pop_one()?;
             let then_edge = next_edge(
@@ -131,16 +128,14 @@ pub(super) fn lower_block_terminator(
             block_params,
             entry_states,
         )?)),
-        SemanticOpKind::End => {
-            goto_next(
-                semantic_index,
-                semantic_len,
-                state,
-                semantic_to_block,
-                block_params,
-                entry_states,
-            )
-        }
+        SemanticOpKind::End => goto_next(
+            semantic_index,
+            semantic_len,
+            state,
+            semantic_to_block,
+            block_params,
+            entry_states,
+        ),
         SemanticOpKind::Br {
             stack_drop,
             arity,

@@ -66,20 +66,26 @@ fn count_edge_uses(edge: &LirEdge, uses: &mut BTreeMap<LirValue, u32>) {
 pub(super) fn single_result(results: &[LirValue]) -> Result<LirValue, WasmError> {
     match results {
         [value] => Ok(*value),
-        _ => Err(WasmError::internal("machine lowering expected exactly one result".into())),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly one result".into(),
+        )),
     }
 }
 
 pub(super) fn single_arg(args: &[LirValue]) -> Result<LirValue, WasmError> {
     match args {
         [value] => Ok(*value),
-        _ => Err(WasmError::internal("machine lowering expected exactly one argument".into())),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly one argument".into(),
+        )),
     }
 }
 
 pub(super) fn two_args(args: &[LirValue]) -> Result<(LirValue, LirValue), WasmError> {
     match args {
         [lhs, rhs] => Ok((*lhs, *rhs)),
-        _ => Err(WasmError::internal("machine lowering expected exactly two arguments".into())),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly two arguments".into(),
+        )),
     }
 }

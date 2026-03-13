@@ -979,9 +979,10 @@ fn physical_slot(frame: FrameLayoutPlan, slot: FrameSlot) -> Result<u16, WasmErr
     if slot.0 < frame.operand_base {
         Ok(slot.0)
     } else {
-        let operand_base =
-            u16::try_from(frame_layout::operand_stack_base(frame.frame_prefix_size as usize))
-                .map_err(|_| WasmError::internal("operand stack base exceeds u16".into()))?;
+        let operand_base = u16::try_from(frame_layout::operand_stack_base(
+            frame.frame_prefix_size as usize,
+        ))
+        .map_err(|_| WasmError::internal("operand stack base exceeds u16".into()))?;
         operand_base
             .checked_add(slot.0 - frame.operand_base)
             .ok_or_else(|| WasmError::internal("physical interpreter slot exceeds u16".into()))

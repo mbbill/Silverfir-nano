@@ -247,10 +247,7 @@ mod imp {
             if index != 0 {
                 out.push(',');
             }
-            let ty = result_types
-                .get(index)
-                .copied()
-                .unwrap_or(ValueType::I64);
+            let ty = result_types.get(index).copied().unwrap_or(ValueType::I64);
             let _ = write!(&mut out, "{:016x}", canonicalize_raw(raw, ty));
         }
         out
@@ -340,9 +337,9 @@ mod imp {
             .iter()
             .enumerate()
             .find_map(|(idx, func)| match func {
-                FunctionInst::Local { spec: candidate, .. } if core::ptr::eq(candidate, spec) => {
-                    Some(idx as u32)
-                }
+                FunctionInst::Local {
+                    spec: candidate, ..
+                } if core::ptr::eq(candidate, spec) => Some(idx as u32),
                 _ => None,
             })
     }
@@ -361,7 +358,15 @@ mod imp {
         ctx.trace_stack.clear();
         ctx.trace_stack.push(func_idx);
         let store = ctx.store_mut();
-        record_event(Some("interpreter"), EventKind::Entry, func_idx, 0, &[], store, None);
+        record_event(
+            Some("interpreter"),
+            EventKind::Entry,
+            func_idx,
+            0,
+            &[],
+            store,
+            None,
+        );
     }
 
     #[cfg(feature = "interp")]
@@ -372,7 +377,15 @@ mod imp {
         let Some(func_idx) = find_func_idx_by_spec(store.module(), spec) else {
             return;
         };
-        record_event(Some("interpreter"), EventKind::Exit, func_idx, 0, results, store, None);
+        record_event(
+            Some("interpreter"),
+            EventKind::Exit,
+            func_idx,
+            0,
+            results,
+            store,
+            None,
+        );
     }
 
     #[cfg(feature = "interp")]
@@ -385,7 +398,15 @@ mod imp {
         };
         let depth = ctx.call_depth as u32;
         let store = ctx.store_mut();
-        record_event(None, EventKind::Trap, func_idx, depth, &[], store, Some(error));
+        record_event(
+            None,
+            EventKind::Trap,
+            func_idx,
+            depth,
+            &[],
+            store,
+            Some(error),
+        );
         ctx.trace_stack.clear();
     }
 
@@ -431,11 +452,7 @@ mod imp {
         record_event(None, EventKind::Exit, func_idx, depth, results, store, None);
     }
 
-    pub fn native_root_entry(
-        ctx: &mut NativeContext,
-        spec: &FunctionSpec,
-        backend: &'static str,
-    ) {
+    pub fn native_root_entry(ctx: &mut NativeContext, spec: &FunctionSpec, backend: &'static str) {
         if !enabled() {
             return;
         }
@@ -447,7 +464,15 @@ mod imp {
         };
         ctx.trace_stack.clear();
         ctx.trace_stack.push(func_idx);
-        record_event(Some(backend), EventKind::Entry, func_idx, 0, &[], store, None);
+        record_event(
+            Some(backend),
+            EventKind::Entry,
+            func_idx,
+            0,
+            &[],
+            store,
+            None,
+        );
     }
 
     pub fn native_root_exit(ctx: &mut NativeContext, spec: &FunctionSpec, results: &[u64]) {

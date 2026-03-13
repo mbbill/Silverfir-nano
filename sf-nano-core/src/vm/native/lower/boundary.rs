@@ -46,7 +46,8 @@ impl<'a> BlockLowerContext<'a> {
         }
         if args.count > callee_runtime.frame_prefix_slots {
             return Err(WasmError::internal(
-                "direct local call passes more arguments than fit in the callee local prefix".into(),
+                "direct local call passes more arguments than fit in the callee local prefix"
+                    .into(),
             ));
         }
         let callee_results = callee_runtime
@@ -55,7 +56,8 @@ impl<'a> BlockLowerContext<'a> {
             .unwrap_or(0);
         if callee_results != results.count {
             return Err(WasmError::internal(
-                "direct local call result span does not match the callee return-result contract".into(),
+                "direct local call result span does not match the callee return-result contract"
+                    .into(),
             ));
         }
 
@@ -75,9 +77,9 @@ impl<'a> BlockLowerContext<'a> {
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: callee_frame_base,
                 lhs: MachineValue::Reg(self.frame_base_reg()),
-                rhs: MachineValue::Imm64(
-                    slot_offset_bytes(FrameSlot(self.current_runtime().total_frame_slots))? as u64,
-                ),
+                rhs: MachineValue::Imm64(slot_offset_bytes(FrameSlot(
+                    self.current_runtime().total_frame_slots,
+                ))? as u64),
             },
         });
 
@@ -254,7 +256,9 @@ impl<'a> BlockLowerContext<'a> {
             ),
             LirBoundaryOp::DataDrop { data_idx } => (
                 sidecar.extern_target(H::DataDrop),
-                sidecar.data_drop_meta(DataDropMeta { data_idx: *data_idx }),
+                sidecar.data_drop_meta(DataDropMeta {
+                    data_idx: *data_idx,
+                }),
             ),
             LirBoundaryOp::TableInit {
                 elem_idx,
@@ -270,7 +274,9 @@ impl<'a> BlockLowerContext<'a> {
             ),
             LirBoundaryOp::ElemDrop { elem_idx } => (
                 sidecar.extern_target(H::ElemDrop),
-                sidecar.elem_drop_meta(ElemDropMeta { elem_idx: *elem_idx }),
+                sidecar.elem_drop_meta(ElemDropMeta {
+                    elem_idx: *elem_idx,
+                }),
             ),
             _ => {
                 return Err(WasmError::internal(
@@ -335,7 +341,8 @@ fn span_region_with_slots(
     if span.count != slots {
         return Err(WasmError::internal(alloc::format!(
             "{context} expected {} slots but got {}",
-            slots, span.count,
+            slots,
+            span.count,
         )));
     }
     Ok(span.into())

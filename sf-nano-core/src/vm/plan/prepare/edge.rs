@@ -140,7 +140,10 @@ pub(super) fn br_table_edge(
     )
 }
 
-fn bind_values(target_params: &[LirValue], values: &[LirValue]) -> Result<Vec<LirBinding>, WasmError> {
+fn bind_values(
+    target_params: &[LirValue],
+    values: &[LirValue],
+) -> Result<Vec<LirBinding>, WasmError> {
     if target_params.len() != values.len() {
         return Err(WasmError::internal(alloc::format!(
             "prepared LIR edge binding mismatch: target expects {} params but source provides {} values",

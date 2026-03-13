@@ -103,8 +103,7 @@ pub struct ElemDropMeta {
 
 #[inline]
 pub fn encode_record<T: Copy>(record: &T) -> (u32, Vec<u8>) {
-    let bytes = unsafe {
-        core::slice::from_raw_parts((record as *const T).cast::<u8>(), size_of::<T>())
-    };
+    let bytes =
+        unsafe { core::slice::from_raw_parts((record as *const T).cast::<u8>(), size_of::<T>()) };
     (align_of::<T>() as u32, bytes.to_vec())
 }

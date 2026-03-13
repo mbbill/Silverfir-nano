@@ -12,8 +12,8 @@ use crate::{
             frame::{FrameLayoutPlan, FrameSpan},
         },
         wasm::{
-            primitive_op::PrimitiveOpKind,
             primitive_op,
+            primitive_op::PrimitiveOpKind,
             semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
         },
     },
@@ -174,9 +174,7 @@ fn apply_semantic_effect(op: &SemanticOp, state: &mut PrepareState) {
             });
         }
         SemanticOpKind::If {
-            params,
-            results,
-            ..
+            params, results, ..
         } => {
             if !state.unreachable {
                 state.height = state.height.saturating_sub(1);
@@ -218,8 +216,12 @@ fn apply_semantic_effect(op: &SemanticOp, state: &mut PrepareState) {
             }
             state.unreachable = true;
         }
-        SemanticOpKind::CallExternal { params, results, .. }
-        | SemanticOpKind::CallInternal { params, results, .. } => {
+        SemanticOpKind::CallExternal {
+            params, results, ..
+        }
+        | SemanticOpKind::CallInternal {
+            params, results, ..
+        } => {
             if !state.unreachable {
                 state.height = state
                     .height
@@ -228,7 +230,9 @@ fn apply_semantic_effect(op: &SemanticOp, state: &mut PrepareState) {
                 state.spill_depth = state.height;
             }
         }
-        SemanticOpKind::CallIndirect { params, results, .. } => {
+        SemanticOpKind::CallIndirect {
+            params, results, ..
+        } => {
             if !state.unreachable {
                 state.height = state
                     .height
@@ -237,9 +241,7 @@ fn apply_semantic_effect(op: &SemanticOp, state: &mut PrepareState) {
                 state.spill_depth = state.height;
             }
         }
-        SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => {
+        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
             state.unreachable = true;
         }
     }

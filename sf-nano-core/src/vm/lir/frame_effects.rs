@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use super::{
     ir::{LirBoundaryOp, LirInstKind},
-    slot::{FrameSpan},
+    slot::FrameSpan,
 };
 
 pub fn reads_frame(kind: &LirInstKind) -> Vec<FrameSpan> {

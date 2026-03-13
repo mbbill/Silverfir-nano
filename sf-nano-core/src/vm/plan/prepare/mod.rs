@@ -22,16 +22,16 @@ use crate::{
     },
 };
 
-use super::{
-    analyze_local_cache_prefs,
-    config::PlanConfig,
-    frame::{plan_frame_layout, FrameLayoutPlan},
-};
 use self::{
     block::lower_block_range,
     cfg::{build_block_ranges, build_semantic_to_block_map, retain_reachable_blocks},
     state::{BlockState, EntryState, ValueAlloc},
     steps::prepare_semantic_ops,
+};
+use super::{
+    analyze_local_cache_prefs,
+    config::PlanConfig,
+    frame::{plan_frame_layout, FrameLayoutPlan},
 };
 
 /// Preparation input bundle.
@@ -83,7 +83,11 @@ pub fn prepare_function(
     let mut blocks = Vec::with_capacity(block_ranges.len());
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
-        let state = BlockState::from_entry(prepared.entry_states[semantic_range.start], &params, input.config.tos_lanes)?;
+        let state = BlockState::from_entry(
+            prepared.entry_states[semantic_range.start],
+            &params,
+            input.config.tos_lanes,
+        )?;
         let block = lower_block_range(
             semantic_range.clone(),
             state,
@@ -124,7 +128,10 @@ fn make_block_params(
 mod tests {
     use crate::vm::{
         lir::ir::{LirBoundaryOp, LirInstKind},
-        plan::{config::PlanConfig, prepare::{prepare_function, PrepareInput}},
+        plan::{
+            config::PlanConfig,
+            prepare::{prepare_function, PrepareInput},
+        },
         wasm::{
             primitive_op::PrimitiveOpKind,
             semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
@@ -168,14 +175,18 @@ mod tests {
         )
         .expect("memory.copy preparation should succeed");
 
-        assert!(prepared.lir.blocks.iter().any(|block| block.ops.iter().any(|inst| matches!(
-            inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
-                dst_mem_idx: 0,
-                src_mem_idx: 1,
-                ..
-            })
-        ))));
+        assert!(prepared
+            .lir
+            .blocks
+            .iter()
+            .any(|block| block.ops.iter().any(|inst| matches!(
+                inst.kind,
+                LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
+                    dst_mem_idx: 0,
+                    src_mem_idx: 1,
+                    ..
+                })
+            ))));
     }
 
     #[test]
@@ -196,7 +207,10 @@ mod tests {
                     kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableFill { imm0: 2, imm1: 0 }),
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableFill {
+                        imm0: 2,
+                        imm1: 0
+                    }),
                 },
                 SemanticOp {
                     kind: SemanticOpKind::ReturnVoid,
@@ -212,9 +226,13 @@ mod tests {
         )
         .expect("table.fill preparation should succeed");
 
-        assert!(prepared.lir.blocks.iter().any(|block| block.ops.iter().any(|inst| matches!(
-            inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::TableFill { table_idx: 2, .. })
-        ))));
+        assert!(prepared
+            .lir
+            .blocks
+            .iter()
+            .any(|block| block.ops.iter().any(|inst| matches!(
+                inst.kind,
+                LirInstKind::Boundary(LirBoundaryOp::TableFill { table_idx: 2, .. })
+            ))));
     }
 }

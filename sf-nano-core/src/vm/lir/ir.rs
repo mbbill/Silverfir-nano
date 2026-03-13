@@ -73,15 +73,9 @@ pub enum LirInstKind {
         results: Vec<LirValue>,
     },
     /// Read a canonical frame slot, usually a local slot.
-    LoadSlot {
-        slot: FrameSlot,
-        dst: LirValue,
-    },
+    LoadSlot { slot: FrameSlot, dst: LirValue },
     /// Write a canonical frame slot, usually a local slot.
-    StoreSlot {
-        slot: FrameSlot,
-        src: LirValue,
-    },
+    StoreSlot { slot: FrameSlot, src: LirValue },
     /// Slot-based call or runtime boundary.
     Boundary(LirBoundaryOp),
 }

@@ -164,11 +164,7 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_edge(
-        &self,
-        edge: &MachineEdge,
-        source_block: usize,
-    ) -> ValidateResult {
+    fn validate_edge(&self, edge: &MachineEdge, source_block: usize) -> ValidateResult {
         self.validate_block_id(edge.target, source_block, "edge target")?;
         let target = &self.blocks[edge.target.as_usize()];
         if edge.args.len() != target.params.len() {
