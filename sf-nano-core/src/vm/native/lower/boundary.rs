@@ -1,0 +1,294 @@
+use crate::{
+    error::WasmError,
+    vm::{
+        lir::ir::{LirBoundaryOp, LirValue},
+        native::{
+            helper::meta::{
+                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryGrowMeta,
+                MemoryInitMeta, TableGrowMeta, TableInitMeta,
+            },
+            ir::{
+                machine::{
+                    MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
+                    MachineTerminator, MachineValue,
+                },
+                runtime::{MachineFrameRegion, MachineHelperSymbol},
+            },
+        },
+        plan::frame::{FrameSlot, FrameSpan},
+    },
+};
+
+use super::{context::BlockLowerContext, sidecar::SidecarBuilder, slot_offset_bytes};
+
+impl<'a> BlockLowerContext<'a> {
+    pub(super) fn lower_call_internal(
+        &mut self,
+        callee: u32,
+        args: FrameSpan,
+        results: FrameSpan,
+        continuation: MachineBlockId,
+    ) -> Result<MachineTerminator, WasmError> {
+        self.ensure_no_live_values(
+            "prepared LIR call reached native lowering with live transient SSA values; values must be published before the call",
+        )?;
+
+        let callee_id = MachineFuncId(callee);
+        let callee_runtime = self.runtime_for_func(callee_id)?;
+        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
+            WasmError::internal("direct local call requires callee call scratch".into())
+        })?;
+        if call_scratch.slots < self.call_link_layout().slot_count {
+            return Err(WasmError::internal(
+                "callee call scratch is smaller than the machine call-link layout".into(),
+            ));
+        }
+        if args.count > callee_runtime.frame_prefix_slots {
+            return Err(WasmError::internal(
+                "direct local call passes more arguments than fit in the callee local prefix".into(),
+            ));
+        }
+        let callee_results = callee_runtime
+            .return_results
+            .map(|region| region.slots)
+            .unwrap_or(0);
+        if callee_results != results.count {
+            return Err(WasmError::internal(
+                "direct local call result span does not match the callee return-result contract".into(),
+            ));
+        }
+
+        self.emit_flush_dirty_cached_locals()?;
+
+        let callee_frame_base = self.temp_reg(0)?;
+        let copy_reg = self.transient_reg(0)?;
+        if self.transient_in_use(0)? {
+            return Err(WasmError::internal(
+                "direct local call requires a free transient register for argument copies".into(),
+            ));
+        }
+
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: callee_frame_base,
+                lhs: MachineValue::Reg(self.frame_base_reg()),
+                rhs: MachineValue::Imm64(
+                    slot_offset_bytes(FrameSlot(self.current_runtime().total_frame_slots))? as u64,
+                ),
+            },
+        });
+
+        for offset in 0..args.count as usize {
+            let src_slot = args.start.advance(offset as u16);
+            let dst_slot = FrameSlot(offset as u16);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    dst: copy_reg,
+                    addr: self.frame_addr(src_slot)?,
+                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                    extension: crate::vm::native::ir::machine::MachineLoadExtension::None,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    addr: self.frame_addr_from(callee_frame_base, dst_slot)?,
+                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                    src: MachineValue::Reg(copy_reg),
+                },
+            });
+        }
+
+        for slot in args.count..callee_runtime.frame_prefix_slots {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
+                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        }
+
+        self.store_call_link(callee_frame_base, call_scratch, continuation, results)?;
+
+        Ok(MachineTerminator::CallDirect {
+            callee: callee_id,
+            callee_frame_base,
+            continuation,
+        })
+    }
+
+    pub(super) fn lower_call_external(
+        &mut self,
+        func_idx: u32,
+        args: FrameSpan,
+        results: FrameSpan,
+        sidecar: &mut SidecarBuilder,
+    ) -> Result<(), WasmError> {
+        self.ensure_no_live_values(
+            "prepared LIR external call reached native lowering with live transient SSA values; values must be published before the call",
+        )?;
+
+        let target = sidecar.extern_target(MachineHelperSymbol::CallExternal);
+        let metadata = sidecar.call_external_meta(CallExternalMeta {
+            func_idx,
+            args: args.into(),
+            results: results.into(),
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_runtime(
+        &mut self,
+        boundary: &LirBoundaryOp,
+        sidecar: &mut SidecarBuilder,
+    ) -> Result<(), WasmError> {
+        self.ensure_no_live_values(
+            "prepared LIR runtime boundary reached native lowering with live transient SSA values; values must be published before the boundary",
+        )?;
+
+        let (target, metadata) = self.runtime_call_site(boundary, sidecar)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
+        });
+        Ok(())
+    }
+
+    fn runtime_call_site(
+        &self,
+        boundary: &LirBoundaryOp,
+        sidecar: &mut SidecarBuilder,
+    ) -> Result<
+        (
+            crate::vm::native::ir::machine::MachineExternId,
+            crate::vm::native::ir::machine::MachineConstId,
+        ),
+        WasmError,
+    > {
+        use MachineHelperSymbol as H;
+
+        let pair = match boundary {
+            LirBoundaryOp::MemoryGrow { mem_idx, io } => (
+                sidecar.extern_target(H::MemoryGrow),
+                sidecar.memory_grow_meta(MemoryGrowMeta {
+                    mem_idx: *mem_idx,
+                    io: (*io).into(),
+                }),
+            ),
+            LirBoundaryOp::TableGrow {
+                table_idx,
+                args,
+                results,
+            } => (
+                sidecar.extern_target(H::TableGrow),
+                sidecar.table_grow_meta(TableGrowMeta {
+                    table_idx: *table_idx,
+                    args: span_region_with_slots(*args, 2, "table.grow args")?,
+                    results: span_region_with_slots(*results, 1, "table.grow results")?,
+                }),
+            ),
+            LirBoundaryOp::MemoryInit {
+                data_idx,
+                mem_idx,
+                args,
+            } => (
+                sidecar.extern_target(H::MemoryInit),
+                sidecar.memory_init_meta(MemoryInitMeta {
+                    data_idx: *data_idx,
+                    mem_idx: *mem_idx,
+                    args: span_region_with_slots(*args, 3, "memory.init args")?,
+                }),
+            ),
+            LirBoundaryOp::DataDrop { data_idx } => (
+                sidecar.extern_target(H::DataDrop),
+                sidecar.data_drop_meta(DataDropMeta { data_idx: *data_idx }),
+            ),
+            LirBoundaryOp::TableInit {
+                elem_idx,
+                table_idx,
+                args,
+            } => (
+                sidecar.extern_target(H::TableInit),
+                sidecar.table_init_meta(TableInitMeta {
+                    elem_idx: *elem_idx,
+                    table_idx: *table_idx,
+                    args: span_region_with_slots(*args, 3, "table.init args")?,
+                }),
+            ),
+            LirBoundaryOp::ElemDrop { elem_idx } => (
+                sidecar.extern_target(H::ElemDrop),
+                sidecar.elem_drop_meta(ElemDropMeta { elem_idx: *elem_idx }),
+            ),
+            _ => {
+                return Err(WasmError::internal(
+                    "non-runtime boundary reached runtime helper lowering".into(),
+                ))
+            }
+        };
+        Ok(pair)
+    }
+
+    fn store_call_link(
+        &mut self,
+        callee_frame_base: crate::vm::native::ir::machine::MachineReg,
+        call_scratch: MachineFrameRegion,
+        continuation: MachineBlockId,
+        results: FrameSpan,
+    ) -> Result<(), WasmError> {
+        let caller_result_base = slot_offset_bytes(results.start)? as u64;
+        let call_link = self.call_link_layout();
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                addr: self.frame_region_addr(
+                    callee_frame_base,
+                    call_scratch,
+                    call_link.continuation_offset,
+                )?,
+                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                src: MachineValue::Imm64(continuation.0 as u64),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                addr: self.frame_region_addr(
+                    callee_frame_base,
+                    call_scratch,
+                    call_link.caller_frame_offset,
+                )?,
+                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                src: MachineValue::Reg(self.frame_base_reg()),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                addr: self.frame_region_addr(
+                    callee_frame_base,
+                    call_scratch,
+                    call_link.caller_result_base_offset,
+                )?,
+                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                src: MachineValue::Imm64(caller_result_base),
+            },
+        });
+        Ok(())
+    }
+}
+
+fn span_region_with_slots(
+    span: FrameSpan,
+    slots: u16,
+    context: &'static str,
+) -> Result<HelperFrameRegion, WasmError> {
+    if span.count != slots {
+        return Err(WasmError::internal(alloc::format!(
+            "{context} expected {} slots but got {}",
+            slots, span.count,
+        )));
+    }
+    Ok(span.into())
+}
+

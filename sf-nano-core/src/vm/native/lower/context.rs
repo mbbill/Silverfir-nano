@@ -6,17 +6,13 @@ use crate::{
     vm::{
         lir::{
             ir::{
-                LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs,
-                LirProgram, LirTerminator, LirValue,
+                LirBlock, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs, LirProgram,
+                LirTerminator, LirValue,
             },
             leaf::LirLeafOp,
             slot::FrameSlot,
         },
         native::{
-            helper::meta::{
-                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryGrowMeta,
-                MemoryInitMeta, TableGrowMeta, TableInitMeta,
-            },
             ir::machine::{
                 MachineAddr, MachineBlockId, MachineBranchCond, MachineEdge, MachineFuncId,
                 MachineInst, MachineInstKind, MachineTerminator, MachineTrapKind,
@@ -24,15 +20,17 @@ use crate::{
             },
             ir::runtime::{
                 MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime,
-                MachineHelperSymbol,
             },
             lower::{slot_offset_bytes, target_param_regs},
         },
-        plan::frame::{FrameLayoutPlan, FrameSpan},
+        plan::frame::FrameLayoutPlan,
     },
 };
 
-use super::{regfile::MachineRegFile, sidecar::SidecarBuilder};
+use super::{
+    regfile::MachineRegFile,
+    util::{compute_remaining_uses, single_arg, single_result, two_args},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CachedLocal {
@@ -236,290 +234,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_call_internal(
-        &mut self,
-        callee: u32,
-        args: FrameSpan,
-        results: FrameSpan,
-        continuation: MachineBlockId,
-    ) -> Result<MachineTerminator, WasmError> {
-        if !self.values.is_empty() {
-            return Err(WasmError::internal(
-                "prepared LIR call reached native lowering with live transient SSA values; values must be published before the call".into(),
-            ));
-        }
-
-        let callee_id = MachineFuncId(callee);
-        let callee_runtime = self.runtime_for_func(callee_id)?;
-        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("direct local call requires callee call scratch".into())
-        })?;
-        if call_scratch.slots < self.call_link.slot_count {
-            return Err(WasmError::internal(
-                "callee call scratch is smaller than the machine call-link layout".into(),
-            ));
-        }
-        if args.count > callee_runtime.frame_prefix_slots {
-            return Err(WasmError::internal(
-                "direct local call passes more arguments than fit in the callee local prefix".into(),
-            ));
-        }
-        let callee_results = callee_runtime
-            .return_results
-            .map(|region| region.slots)
-            .unwrap_or(0);
-        if callee_results != results.count {
-            return Err(WasmError::internal(
-                "direct local call result span does not match the callee return-result contract".into(),
-            ));
-        }
-
-        self.emit_flush_dirty_cached_locals()?;
-
-        let callee_frame_base = self
-            .regfile
-            .temp(0)
-            .ok_or_else(|| WasmError::internal("direct local call requires one temp register".into()))?;
-        let copy_reg = self
-            .regfile
-            .transient(0)
-            .ok_or_else(|| WasmError::internal("direct local call requires one transient register".into()))?;
-        if self.transient_owner.first().copied().flatten().is_some() {
-            return Err(WasmError::internal(
-                "direct local call requires a free transient register for argument copies".into(),
-            ));
-        }
-
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: super::super::ir::machine::MachineIntWidth::I64,
-                op: super::super::ir::machine::MachineIntBinaryOp::Add,
-                dst: callee_frame_base,
-                lhs: MachineValue::Reg(self.regfile.frame_base()),
-                rhs: MachineValue::Imm64(
-                    slot_offset_bytes(FrameSlot(self.runtime.total_frame_slots))? as u64,
-                ),
-            },
-        });
-
-        for offset in 0..args.count as usize {
-            let src_slot = args.start.advance(offset as u16);
-            let dst_slot = FrameSlot(offset as u16);
-            self.ops.push(MachineInst {
-                kind: MachineInstKind::Load {
-                    dst: copy_reg,
-                    addr: self.frame_addr(src_slot)?,
-                    width: MachineMemWidth::U64,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            self.ops.push(MachineInst {
-                kind: MachineInstKind::Store {
-                    addr: self.frame_addr_from(callee_frame_base, dst_slot)?,
-                    width: MachineMemWidth::U64,
-                    src: MachineValue::Reg(copy_reg),
-                },
-            });
-        }
-
-        for slot in args.count..callee_runtime.frame_prefix_slots {
-            self.ops.push(MachineInst {
-                kind: MachineInstKind::Store {
-                    addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
-                    width: MachineMemWidth::U64,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-        }
-
-        self.store_call_link(callee_frame_base, call_scratch, continuation, results)?;
-
-        Ok(MachineTerminator::CallDirect {
-            callee: callee_id,
-            callee_frame_base,
-            continuation,
-        })
-    }
-
-    pub(super) fn lower_call_external(
-        &mut self,
-        func_idx: u32,
-        args: FrameSpan,
-        results: FrameSpan,
-        sidecar: &mut SidecarBuilder,
-    ) -> Result<(), WasmError> {
-        if !self.values.is_empty() {
-            return Err(WasmError::internal(
-                "prepared LIR external call reached native lowering with live transient SSA values; values must be published before the call".into(),
-            ));
-        }
-
-        let target = sidecar.extern_target(MachineHelperSymbol::CallExternal);
-        let metadata = sidecar.call_external_meta(CallExternalMeta {
-            func_idx,
-            args: args.into(),
-            results: results.into(),
-        });
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::CallHelper(
-                crate::vm::native::ir::machine::MachineHelperCall { target, metadata },
-            ),
-        });
-        Ok(())
-    }
-
-    pub(super) fn lower_runtime(
-        &mut self,
-        boundary: &LirBoundaryOp,
-        sidecar: &mut SidecarBuilder,
-    ) -> Result<(), WasmError> {
-        if !self.values.is_empty() {
-            return Err(WasmError::internal(
-                "prepared LIR runtime boundary reached native lowering with live transient SSA values; values must be published before the boundary".into(),
-            ));
-        }
-
-        let (target, metadata) = self.runtime_call_site(boundary, sidecar)?;
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::CallHelper(
-                crate::vm::native::ir::machine::MachineHelperCall { target, metadata },
-            ),
-        });
-        Ok(())
-    }
-
-    fn lower_leaf(
-        &mut self,
-        op: &LirLeafOp,
-        args: &[LirValue],
-        results: &[LirValue],
-    ) -> Result<(), WasmError> {
-        use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-        let primitive = op.primitive();
-
-        match primitive {
-            P::Drop | P::Nop => {
-                for arg in args {
-                    let _ = self.use_value(*arg)?;
-                }
-                Ok(())
-            }
-            P::I32Const { value } => self.lower_const(results, *value as u64),
-            P::I64Const { value } => self.lower_const(results, *value),
-            P::F32Const { value } => self.lower_const(results, *value as u64),
-            P::F64Const { value } => self.lower_const(results, *value),
-            P::RefNull => self.lower_const(results, usize::MAX as u64),
-            P::RefFunc { func_idx } => self.lower_const(results, *func_idx as u64),
-            P::RefIsNull => self.lower_ref_is_null(args, results),
-            P::Select => self.lower_select(args, results),
-            primitive => {
-                if let Some((width, op)) = machine_int_binary(primitive) {
-                    return self.lower_int_binary(args, results, width, op);
-                }
-                if let Some((width, kind, sign)) = machine_int_compare(primitive) {
-                    return self.lower_int_compare(args, results, width, kind, sign);
-                }
-                if let Some((width, op)) = machine_int_unary(primitive) {
-                    return self.lower_int_unary(args, results, width, op);
-                }
-                if let Some((width, op)) = machine_float_binary(primitive) {
-                    return self.lower_float_binary(args, results, width, op);
-                }
-                if let Some((width, kind)) = machine_float_compare(primitive) {
-                    return self.lower_float_compare(args, results, width, kind);
-                }
-                if let Some((width, op)) = machine_float_unary(primitive) {
-                    return self.lower_float_unary(args, results, width, op);
-                }
-                if let Some(op) = machine_convert(primitive) {
-                    return self.lower_convert(args, results, op);
-                }
-
-                Err(WasmError::internal(alloc::format!(
-                    "primitive {:?} is not lowered to MachineIR yet",
-                    primitive
-                )))
-            }
-        }
-    }
-
-    fn runtime_call_site(
-        &self,
-        boundary: &LirBoundaryOp,
-        sidecar: &mut SidecarBuilder,
-    ) -> Result<(crate::vm::native::ir::machine::MachineExternId, crate::vm::native::ir::machine::MachineConstId), WasmError> {
-        use MachineHelperSymbol as H;
-
-        let pair = match boundary {
-            LirBoundaryOp::MemoryGrow { mem_idx, io } => {
-                (
-                    sidecar.extern_target(H::MemoryGrow),
-                    sidecar.memory_grow_meta(MemoryGrowMeta {
-                        mem_idx: *mem_idx,
-                        io: (*io).into(),
-                    }),
-                )
-            }
-            LirBoundaryOp::TableGrow {
-                table_idx,
-                args,
-                results,
-            } => {
-                (
-                    sidecar.extern_target(H::TableGrow),
-                    sidecar.table_grow_meta(TableGrowMeta {
-                        table_idx: *table_idx,
-                        args: span_region_with_slots(*args, 2, "table.grow args")?,
-                        results: span_region_with_slots(*results, 1, "table.grow results")?,
-                    }),
-                )
-            }
-            LirBoundaryOp::MemoryInit {
-                data_idx,
-                mem_idx,
-                args,
-            } => {
-                (
-                    sidecar.extern_target(H::MemoryInit),
-                    sidecar.memory_init_meta(MemoryInitMeta {
-                        data_idx: *data_idx,
-                        mem_idx: *mem_idx,
-                        args: span_region_with_slots(*args, 3, "memory.init args")?,
-                    }),
-                )
-            }
-            LirBoundaryOp::DataDrop { data_idx } => (
-                sidecar.extern_target(H::DataDrop),
-                sidecar.data_drop_meta(DataDropMeta { data_idx: *data_idx }),
-            ),
-            LirBoundaryOp::TableInit {
-                elem_idx,
-                table_idx,
-                args,
-            } => {
-                (
-                    sidecar.extern_target(H::TableInit),
-                    sidecar.table_init_meta(TableInitMeta {
-                        elem_idx: *elem_idx,
-                        table_idx: *table_idx,
-                        args: span_region_with_slots(*args, 3, "table.init args")?,
-                    }),
-                )
-            }
-            LirBoundaryOp::ElemDrop { elem_idx } => (
-                sidecar.extern_target(H::ElemDrop),
-                sidecar.elem_drop_meta(ElemDropMeta { elem_idx: *elem_idx }),
-            ),
-            _ => {
-                return Err(WasmError::internal(
-                    "non-runtime boundary reached runtime helper lowering".into(),
-                ))
-            }
-        };
-        Ok(pair)
-    }
-
-    fn lower_const(&mut self, results: &[LirValue], imm: u64) -> Result<(), WasmError> {
+    pub(super) fn lower_const(&mut self, results: &[LirValue], imm: u64) -> Result<(), WasmError> {
         let dst = single_result(results)?;
         let dst_reg = self.alloc_value(dst)?;
         self.ops.push(MachineInst {
@@ -531,7 +246,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_int_unary(
+    pub(super) fn lower_int_unary(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -551,7 +266,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_int_binary(
+    pub(super) fn lower_int_binary(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -573,7 +288,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_int_compare(
+    pub(super) fn lower_int_compare(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -598,7 +313,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_float_binary(
+    pub(super) fn lower_float_binary(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -621,7 +336,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_float_compare(
+    pub(super) fn lower_float_compare(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -644,7 +359,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_float_unary(
+    pub(super) fn lower_float_unary(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -664,7 +379,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_convert(
+    pub(super) fn lower_convert(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -682,7 +397,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_select(&mut self, args: &[LirValue], results: &[LirValue]) -> Result<(), WasmError> {
+    pub(super) fn lower_select(&mut self, args: &[LirValue], results: &[LirValue]) -> Result<(), WasmError> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
@@ -701,7 +416,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_ref_is_null(
+    pub(super) fn lower_ref_is_null(
         &mut self,
         args: &[LirValue],
         results: &[LirValue],
@@ -743,7 +458,7 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
+    pub(super) fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
             let reg = self.cached_locals[index].reg;
             let slot = self.cached_locals[index].slot;
@@ -760,7 +475,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn emit_flush_dirty_cached_locals(&mut self) -> Result<(), WasmError> {
+    pub(super) fn emit_flush_dirty_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
             if !self.cached_locals[index].dirty {
                 continue;
@@ -784,18 +499,22 @@ impl<'a> BlockLowerContext<'a> {
             .position(|cached| cached.slot == slot)
     }
 
-    fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
+    pub(super) fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
         self.frame_addr_from(self.regfile.frame_base(), slot)
     }
 
-    fn frame_addr_from(&self, base: MachineReg, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
+    pub(super) fn frame_addr_from(
+        &self,
+        base: MachineReg,
+        slot: FrameSlot,
+    ) -> Result<MachineAddr, WasmError> {
         Ok(MachineAddr {
             base,
             offset: slot_offset_bytes(slot)?,
         })
     }
 
-    fn frame_region_addr(
+    pub(super) fn frame_region_addr(
         &self,
         base: MachineReg,
         region: MachineFrameRegion,
@@ -808,58 +527,17 @@ impl<'a> BlockLowerContext<'a> {
         Ok(MachineAddr { base, offset })
     }
 
-    fn runtime_for_func(&self, func: MachineFuncId) -> Result<MachineFunctionRuntime, WasmError> {
+    pub(super) fn runtime_for_func(
+        &self,
+        func: MachineFuncId,
+    ) -> Result<MachineFunctionRuntime, WasmError> {
         self.all_runtime
             .get(func.0 as usize)
             .copied()
             .ok_or_else(|| WasmError::internal("machine runtime metadata missing for callee".into()))
     }
 
-    fn store_call_link(
-        &mut self,
-        callee_frame_base: MachineReg,
-        call_scratch: MachineFrameRegion,
-        continuation: MachineBlockId,
-        results: FrameSpan,
-    ) -> Result<(), WasmError> {
-        let caller_result_base = slot_offset_bytes(results.start)? as u64;
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::Store {
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    self.call_link.continuation_offset,
-                )?,
-                width: MachineMemWidth::U64,
-                src: MachineValue::Imm64(continuation.0 as u64),
-            },
-        });
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::Store {
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    self.call_link.caller_frame_offset,
-                )?,
-                width: MachineMemWidth::U64,
-                src: MachineValue::Reg(self.regfile.frame_base()),
-            },
-        });
-        self.ops.push(MachineInst {
-            kind: MachineInstKind::Store {
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    self.call_link.caller_result_base_offset,
-                )?,
-                width: MachineMemWidth::U64,
-                src: MachineValue::Imm64(caller_result_base),
-            },
-        });
-        Ok(())
-    }
-
-    fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    pub(super) fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
@@ -871,7 +549,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(reg)
     }
 
-    fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    pub(super) fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
         let reg = self.value_reg(value)?;
         if let Some(remaining) = self.remaining_uses.get_mut(&value) {
             *remaining = remaining.saturating_sub(1);
@@ -933,333 +611,48 @@ impl<'a> BlockLowerContext<'a> {
         *slot = value;
         Ok(())
     }
-}
 
-fn machine_int_binary(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineIntWidth,
-    super::super::ir::machine::MachineIntBinaryOp,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{MachineIntBinaryOp as Op, MachineIntWidth as W};
-
-    Some(match primitive {
-        P::I32Add => (W::I32, Op::Add),
-        P::I32Sub => (W::I32, Op::Sub),
-        P::I32Mul => (W::I32, Op::Mul),
-        P::I32DivS => (W::I32, Op::DivS),
-        P::I32DivU => (W::I32, Op::DivU),
-        P::I32RemS => (W::I32, Op::RemS),
-        P::I32RemU => (W::I32, Op::RemU),
-        P::I32And => (W::I32, Op::And),
-        P::I32Or => (W::I32, Op::Or),
-        P::I32Xor => (W::I32, Op::Xor),
-        P::I32Shl => (W::I32, Op::Shl),
-        P::I32ShrS => (W::I32, Op::ShrS),
-        P::I32ShrU => (W::I32, Op::ShrU),
-        P::I32Rotl => (W::I32, Op::Rotl),
-        P::I32Rotr => (W::I32, Op::Rotr),
-        P::I64Add => (W::I64, Op::Add),
-        P::I64Sub => (W::I64, Op::Sub),
-        P::I64Mul => (W::I64, Op::Mul),
-        P::I64DivS => (W::I64, Op::DivS),
-        P::I64DivU => (W::I64, Op::DivU),
-        P::I64RemS => (W::I64, Op::RemS),
-        P::I64RemU => (W::I64, Op::RemU),
-        P::I64And => (W::I64, Op::And),
-        P::I64Or => (W::I64, Op::Or),
-        P::I64Xor => (W::I64, Op::Xor),
-        P::I64Shl => (W::I64, Op::Shl),
-        P::I64ShrS => (W::I64, Op::ShrS),
-        P::I64ShrU => (W::I64, Op::ShrU),
-        P::I64Rotl => (W::I64, Op::Rotl),
-        P::I64Rotr => (W::I64, Op::Rotr),
-        _ => return None,
-    })
-}
-
-fn machine_int_compare(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineIntWidth,
-    super::super::ir::machine::MachineCompareKind,
-    super::super::ir::machine::MachineSign,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{
-        MachineCompareKind as K, MachineIntWidth as W, MachineSign as S,
-    };
-
-    Some(match primitive {
-        P::I32Eq => (W::I32, K::Eq, S::Unsigned),
-        P::I32Ne => (W::I32, K::Ne, S::Unsigned),
-        P::I32LtS => (W::I32, K::Lt, S::Signed),
-        P::I32LtU => (W::I32, K::Lt, S::Unsigned),
-        P::I32GtS => (W::I32, K::Gt, S::Signed),
-        P::I32GtU => (W::I32, K::Gt, S::Unsigned),
-        P::I32LeS => (W::I32, K::Le, S::Signed),
-        P::I32LeU => (W::I32, K::Le, S::Unsigned),
-        P::I32GeS => (W::I32, K::Ge, S::Signed),
-        P::I32GeU => (W::I32, K::Ge, S::Unsigned),
-        P::I64Eq => (W::I64, K::Eq, S::Unsigned),
-        P::I64Ne => (W::I64, K::Ne, S::Unsigned),
-        P::I64LtS => (W::I64, K::Lt, S::Signed),
-        P::I64LtU => (W::I64, K::Lt, S::Unsigned),
-        P::I64GtS => (W::I64, K::Gt, S::Signed),
-        P::I64GtU => (W::I64, K::Gt, S::Unsigned),
-        P::I64LeS => (W::I64, K::Le, S::Signed),
-        P::I64LeU => (W::I64, K::Le, S::Unsigned),
-        P::I64GeS => (W::I64, K::Ge, S::Signed),
-        P::I64GeU => (W::I64, K::Ge, S::Unsigned),
-        _ => return None,
-    })
-}
-
-fn machine_int_unary(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineIntWidth,
-    super::super::ir::machine::MachineIntUnaryOp,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{MachineIntUnaryOp as Op, MachineIntWidth as W};
-
-    Some(match primitive {
-        P::I32Eqz => (W::I32, Op::Eqz),
-        P::I32Clz => (W::I32, Op::Clz),
-        P::I32Ctz => (W::I32, Op::Ctz),
-        P::I32Popcnt => (W::I32, Op::Popcnt),
-        P::I64Eqz => (W::I64, Op::Eqz),
-        P::I64Clz => (W::I64, Op::Clz),
-        P::I64Ctz => (W::I64, Op::Ctz),
-        P::I64Popcnt => (W::I64, Op::Popcnt),
-        P::I32Extend8S => (W::I32, Op::Extend8S),
-        P::I32Extend16S => (W::I32, Op::Extend16S),
-        P::I64Extend8S => (W::I64, Op::Extend8S),
-        P::I64Extend16S => (W::I64, Op::Extend16S),
-        P::I64Extend32S => (W::I64, Op::Extend32S),
-        _ => return None,
-    })
-}
-
-fn machine_float_binary(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineFloatWidth,
-    super::super::ir::machine::MachineFloatBinaryOp,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{MachineFloatBinaryOp as Op, MachineFloatWidth as W};
-
-    Some(match primitive {
-        P::F32Add => (W::F32, Op::Add),
-        P::F32Sub => (W::F32, Op::Sub),
-        P::F32Mul => (W::F32, Op::Mul),
-        P::F32Div => (W::F32, Op::Div),
-        P::F32Min => (W::F32, Op::Min),
-        P::F32Max => (W::F32, Op::Max),
-        P::F32Copysign => (W::F32, Op::Copysign),
-        P::F64Add => (W::F64, Op::Add),
-        P::F64Sub => (W::F64, Op::Sub),
-        P::F64Mul => (W::F64, Op::Mul),
-        P::F64Div => (W::F64, Op::Div),
-        P::F64Min => (W::F64, Op::Min),
-        P::F64Max => (W::F64, Op::Max),
-        P::F64Copysign => (W::F64, Op::Copysign),
-        _ => return None,
-    })
-}
-
-fn machine_float_compare(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineFloatWidth,
-    super::super::ir::machine::MachineCompareKind,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{MachineCompareKind as K, MachineFloatWidth as W};
-
-    Some(match primitive {
-        P::F32Eq => (W::F32, K::Eq),
-        P::F32Ne => (W::F32, K::Ne),
-        P::F32Lt => (W::F32, K::Lt),
-        P::F32Gt => (W::F32, K::Gt),
-        P::F32Le => (W::F32, K::Le),
-        P::F32Ge => (W::F32, K::Ge),
-        P::F64Eq => (W::F64, K::Eq),
-        P::F64Ne => (W::F64, K::Ne),
-        P::F64Lt => (W::F64, K::Lt),
-        P::F64Gt => (W::F64, K::Gt),
-        P::F64Le => (W::F64, K::Le),
-        P::F64Ge => (W::F64, K::Ge),
-        _ => return None,
-    })
-}
-
-fn machine_float_unary(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<(
-    super::super::ir::machine::MachineFloatWidth,
-    super::super::ir::machine::MachineFloatUnaryOp,
-)> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::{MachineFloatUnaryOp as Op, MachineFloatWidth as W};
-
-    Some(match primitive {
-        P::F32Abs => (W::F32, Op::Abs),
-        P::F32Neg => (W::F32, Op::Neg),
-        P::F32Ceil => (W::F32, Op::Ceil),
-        P::F32Floor => (W::F32, Op::Floor),
-        P::F32Trunc => (W::F32, Op::Trunc),
-        P::F32Nearest => (W::F32, Op::Nearest),
-        P::F32Sqrt => (W::F32, Op::Sqrt),
-        P::F64Abs => (W::F64, Op::Abs),
-        P::F64Neg => (W::F64, Op::Neg),
-        P::F64Ceil => (W::F64, Op::Ceil),
-        P::F64Floor => (W::F64, Op::Floor),
-        P::F64Trunc => (W::F64, Op::Trunc),
-        P::F64Nearest => (W::F64, Op::Nearest),
-        P::F64Sqrt => (W::F64, Op::Sqrt),
-        _ => return None,
-    })
-}
-
-fn machine_convert(
-    primitive: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
-) -> Option<super::super::ir::machine::MachineConvertOp> {
-    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    use super::super::ir::machine::MachineConvertOp as Op;
-
-    Some(match primitive {
-        P::I32WrapI64 => Op::I32WrapI64,
-        P::I64ExtendI32S => Op::I64ExtendI32S,
-        P::I64ExtendI32U => Op::I64ExtendI32U,
-        P::I32TruncF32S => Op::I32TruncF32S,
-        P::I32TruncF32U => Op::I32TruncF32U,
-        P::I32TruncF64S => Op::I32TruncF64S,
-        P::I32TruncF64U => Op::I32TruncF64U,
-        P::I64TruncF32S => Op::I64TruncF32S,
-        P::I64TruncF32U => Op::I64TruncF32U,
-        P::I64TruncF64S => Op::I64TruncF64S,
-        P::I64TruncF64U => Op::I64TruncF64U,
-        P::I32TruncSatF32S => Op::I32TruncSatF32S,
-        P::I32TruncSatF32U => Op::I32TruncSatF32U,
-        P::I32TruncSatF64S => Op::I32TruncSatF64S,
-        P::I32TruncSatF64U => Op::I32TruncSatF64U,
-        P::I64TruncSatF32S => Op::I64TruncSatF32S,
-        P::I64TruncSatF32U => Op::I64TruncSatF32U,
-        P::I64TruncSatF64S => Op::I64TruncSatF64S,
-        P::I64TruncSatF64U => Op::I64TruncSatF64U,
-        P::F32ConvertI32S => Op::F32ConvertI32S,
-        P::F32ConvertI32U => Op::F32ConvertI32U,
-        P::F32ConvertI64S => Op::F32ConvertI64S,
-        P::F32ConvertI64U => Op::F32ConvertI64U,
-        P::F64ConvertI32S => Op::F64ConvertI32S,
-        P::F64ConvertI32U => Op::F64ConvertI32U,
-        P::F64ConvertI64S => Op::F64ConvertI64S,
-        P::F64ConvertI64U => Op::F64ConvertI64U,
-        P::F32DemoteF64 => Op::F32DemoteF64,
-        P::F64PromoteF32 => Op::F64PromoteF32,
-        P::I32ReinterpretF32 => Op::I32ReinterpretF32,
-        P::I64ReinterpretF64 => Op::I64ReinterpretF64,
-        P::F32ReinterpretI32 => Op::F32ReinterpretI32,
-        P::F64ReinterpretI64 => Op::F64ReinterpretI64,
-        _ => return None,
-    })
-}
-
-fn compute_remaining_uses(block: &LirBlock) -> alloc::collections::BTreeMap<LirValue, u32> {
-    use alloc::collections::BTreeMap;
-
-    let mut uses = BTreeMap::new();
-    for inst in &block.ops {
-        match &inst.kind {
-            LirInstKind::Value { args, .. } => {
-                for value in args {
-                    *uses.entry(*value).or_insert(0) += 1;
-                }
-            }
-            LirInstKind::StoreSlot { src, .. } => {
-                *uses.entry(*src).or_insert(0) += 1;
-            }
-            LirInstKind::LoadSlot { .. } => {}
-            LirInstKind::Boundary(LirBoundaryOp::MemoryGrow { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableGrow { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::MemoryInit { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::DataDrop { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableInit { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::ElemDrop { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallExternal { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallInternal { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallIndirect { .. }) => {}
+    pub(super) fn ensure_no_live_values(&self, message: &'static str) -> Result<(), WasmError> {
+        if self.values.is_empty() {
+            Ok(())
+        } else {
+            Err(WasmError::internal(message.into()))
         }
     }
 
-    match &block.terminator {
-        LirTerminator::Goto(edge) => count_edge_uses(edge, &mut uses),
-        LirTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } => {
-            *uses.entry(*cond).or_insert(0) += 1;
-            count_edge_uses(then_edge, &mut uses);
-            count_edge_uses(else_edge, &mut uses);
-        }
-        LirTerminator::BrTable { index, entries } => {
-            *uses.entry(*index).or_insert(0) += 1;
-            for edge in entries {
-                count_edge_uses(edge, &mut uses);
-            }
-        }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+    pub(super) fn current_runtime(&self) -> MachineFunctionRuntime {
+        self.runtime
     }
 
-    uses
-}
-
-fn count_edge_uses(
-    edge: &LirEdge,
-    uses: &mut alloc::collections::BTreeMap<LirValue, u32>,
-) {
-    for binding in &edge.bindings {
-        *uses.entry(binding.value).or_insert(0) += 1;
+    pub(super) fn call_link_layout(&self) -> MachineCallLinkLayout {
+        self.call_link
     }
-}
 
-fn span_region_with_slots(
-    span: FrameSpan,
-    slots: u16,
-    context: &'static str,
-) -> Result<HelperFrameRegion, WasmError> {
-    if span.count != slots {
-        return Err(WasmError::internal(alloc::format!(
-            "{context} expected {} slots but got {}",
-            slots,
-            span.count,
-        )));
+    pub(super) fn frame_base_reg(&self) -> MachineReg {
+        self.regfile.frame_base()
     }
-    Ok(span.into())
-}
 
-fn single_result(results: &[LirValue]) -> Result<LirValue, WasmError> {
-    match results {
-        [value] => Ok(*value),
-        _ => Err(WasmError::internal("machine lowering expected exactly one result".into())),
+    pub(super) fn temp_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
+        self.regfile
+            .temp(index)
+            .ok_or_else(|| WasmError::internal("native lowering requires one temp register".into()))
     }
-}
 
-fn single_arg(args: &[LirValue]) -> Result<LirValue, WasmError> {
-    match args {
-        [value] => Ok(*value),
-        _ => Err(WasmError::internal("machine lowering expected exactly one argument".into())),
+    pub(super) fn transient_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
+        self.regfile.transient(index).ok_or_else(|| {
+            WasmError::internal("native lowering requires one transient register".into())
+        })
     }
-}
 
-fn two_args(args: &[LirValue]) -> Result<(LirValue, LirValue), WasmError> {
-    match args {
-        [lhs, rhs] => Ok((*lhs, *rhs)),
-        _ => Err(WasmError::internal("machine lowering expected exactly two arguments".into())),
+    pub(super) fn transient_in_use(&self, index: usize) -> Result<bool, WasmError> {
+        self.transient_owner
+            .get(index)
+            .copied()
+            .map(|value| value.is_some())
+            .ok_or_else(|| WasmError::internal("transient register index is out of range".into()))
+    }
+
+    pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {
+        self.ops.push(inst);
     }
 }

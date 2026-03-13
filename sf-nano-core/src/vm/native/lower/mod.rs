@@ -4,9 +4,12 @@
 //! that consumes prepared LIR plus the shared frame contract and produces the
 //! final shared machine-facing IR.
 
+mod boundary;
 mod context;
+mod ops;
 mod regfile;
 mod sidecar;
+mod util;
 
 #[cfg(test)]
 mod tests;
