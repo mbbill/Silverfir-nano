@@ -50,7 +50,7 @@ pub struct FrameLayoutPlan {
     pub call_scratch: Option<FrameSpan>,
     pub operands: FrameSpan,
     /// Size of the callee-local frame prefix before native call scratch.
-    pub frame_size: u16,
+    pub frame_prefix_size: u16,
 }
 
 impl FrameLayoutPlan {
@@ -72,17 +72,20 @@ pub const fn plan_frame_layout(
     call_scratch_slots: u16,
 ) -> FrameLayoutPlan {
     let locals = FrameSpan::new(FrameSlot(0), local_count);
-    let frame_size = local_count;
+    let frame_prefix_size = local_count;
     let call_scratch = if call_scratch_slots == 0 {
         None
     } else {
-        Some(FrameSpan::new(FrameSlot(frame_size), call_scratch_slots))
+        Some(FrameSpan::new(
+            FrameSlot(frame_prefix_size),
+            call_scratch_slots,
+        ))
     };
-    let operand_base = frame_size + call_scratch_slots;
+    let operand_base = frame_prefix_size + call_scratch_slots;
     FrameLayoutPlan {
         locals,
         call_scratch,
         operands: FrameSpan::new(FrameSlot(operand_base), max_stack_height),
-        frame_size,
+        frame_prefix_size,
     }
 }

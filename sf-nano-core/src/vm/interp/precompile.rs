@@ -99,7 +99,7 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
             params_len as usize,
             locals_len as usize,
             results_len as usize,
-            bundle.planned.frame.frame_size as usize,
+            bundle.planned.frame.frame_prefix_size as usize,
             finalized.stack_slots_used,
         );
         spec.set_fast_code(finalized.code, cache);

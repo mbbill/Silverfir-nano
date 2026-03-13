@@ -614,7 +614,7 @@ fn invoke_local_callee(
         for (index, value) in args.iter().copied().enumerate() {
             *callee_fp.add(index) = value;
         }
-        let frame_prefix_slots = program.frame.frame_size as usize;
+        let frame_prefix_slots = program.frame.frame_prefix_size as usize;
         if frame_prefix_slots > params_len {
             core::ptr::write_bytes(
                 callee_fp.add(params_len),

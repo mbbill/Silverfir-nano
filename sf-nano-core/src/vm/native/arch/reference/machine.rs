@@ -918,7 +918,7 @@ impl<'a> ReferenceMachine<'a> {
                 params_len as u16,
                 params_len,
                 results_len,
-                unsafe { (&*program).frame.frame_size },
+                unsafe { (&*program).frame.frame_prefix_size },
                 &arg_values,
                 results,
             ),
@@ -1008,7 +1008,7 @@ impl<'a> ReferenceMachine<'a> {
                 "native call_local arity does not match callee function type".into(),
             ));
         }
-        if callee.frame.frame_size != callee_frame_size {
+        if callee.frame.frame_prefix_size != callee_frame_size {
             return Err(WasmError::internal(
                 "native call_local frame contract does not match callee".into(),
             ));

@@ -75,7 +75,7 @@ impl FinalLayout {
             .ok_or_else(|| WasmError::internal("interpreter move-temp slot exceeds u16".into()))?;
         let scratch_width = max_scratch_width(program);
         let stack_slots_used = core::cmp::max(
-            frame_layout::operand_stack_base(frame.frame_size as usize),
+            frame_layout::operand_stack_base(frame.frame_prefix_size as usize),
             usize::from(call_base) + scratch_width,
         );
 
@@ -490,7 +490,7 @@ impl<'a> Finalizer<'a> {
                     self.emit_copy(self.layout.value_home(*value)?, dst)?;
                 }
 
-                let frame_size = self.bundle.planned.frame.frame_size;
+                let frame_size = self.bundle.planned.frame.frame_prefix_size;
                 match values.len() {
                     0 => {
                         let (imm0, imm1, imm2) = encoding::return_void::encode(frame_size);
@@ -980,7 +980,7 @@ fn physical_slot(frame: FrameLayoutPlan, slot: FrameSlot) -> Result<u16, WasmErr
         Ok(slot.0)
     } else {
         let operand_base =
-            u16::try_from(frame_layout::operand_stack_base(frame.frame_size as usize))
+            u16::try_from(frame_layout::operand_stack_base(frame.frame_prefix_size as usize))
                 .map_err(|_| WasmError::internal("operand stack base exceeds u16".into()))?;
         operand_base
             .checked_add(slot.0 - frame.operand_base)
