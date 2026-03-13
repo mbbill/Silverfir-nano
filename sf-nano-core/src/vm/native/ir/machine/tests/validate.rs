@@ -26,7 +26,7 @@ fn rejects_edge_arity_mismatch() {
                 id: MachineBlockId(1),
                 params: alloc::vec![MachineReg(0)],
                 ops: Vec::new(),
-                terminator: MachineTerminator::Return { values: Vec::new() },
+                terminator: MachineTerminator::Return,
             },
         ],
     };
@@ -49,7 +49,7 @@ fn rejects_out_of_range_register() {
                     src: MachineValue::Imm64(0),
                 },
             }],
-            terminator: MachineTerminator::Return { values: Vec::new() },
+            terminator: MachineTerminator::Return,
         }],
     };
 
@@ -73,11 +73,10 @@ fn rejects_out_of_range_helper_metadata() {
                             crate::vm::native::ir::machine::MachineHelperCall {
                                 target: MachineExternId(0),
                                 metadata: MachineConstId(1),
-                                scratch: MachineReg(0),
                             },
                         ),
                     }],
-                    terminator: MachineTerminator::Return { values: Vec::new() },
+                    terminator: MachineTerminator::Return,
                 }],
             },
         }],

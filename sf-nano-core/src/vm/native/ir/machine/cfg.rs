@@ -60,9 +60,10 @@ pub enum MachineTerminator {
         callee_frame_base: MachineReg,
         continuation: MachineBlockId,
     },
-    Return {
-        values: Vec<MachineValue>,
-    },
+    /// Return using canonical frame result slots already prepared before the
+    /// terminator. The return itself performs only the call-link/frame
+    /// restoration transfer.
+    Return,
     Trap {
         kind: MachineTrapKind,
     },

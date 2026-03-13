@@ -1,8 +1,8 @@
 use super::types::{
-    MachineAddr, MachineConstId, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
-    MachineFloatWidth, MachineExternId, MachineIntBinaryOp, MachineIntUnaryOp,
-    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineValue,
-    MachineCompareKind, MachineSign,
+    MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
+    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIntBinaryOp,
+    MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+    MachineSign, MachineValue,
 };
 
 /// Helper call that falls through in the same function.
@@ -14,14 +14,10 @@ pub struct MachineHelperCall {
     /// Read-only sidecar metadata for this call site.
     ///
     /// The backend treats this as an opaque constant reference. Helper-specific
-    /// interpretation stays out of the ISA layer.
+    /// interpretation stays out of the ISA layer. Helpers operate on canonical
+    /// frame regions named by this metadata, so unrelated live machine values
+    /// remain live across the call in machine semantics.
     pub metadata: MachineConstId,
-    /// Register holding the base pointer of the writable native scratch area
-    /// for this helper call.
-    ///
-    /// Helper-specific inputs and outputs flow through explicit machine memory
-    /// accesses around the call, so the helper ABI itself stays uniform.
-    pub scratch: MachineReg,
 }
 
 /// One machine instruction.

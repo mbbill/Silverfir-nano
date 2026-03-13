@@ -104,9 +104,7 @@ impl MachineProgram {
                 self.validate_value(*on_false)?;
                 self.validate_value(*cond)?;
             }
-            MachineInstKind::CallHelper(call) => {
-                self.validate_reg(call.scratch)?;
-            }
+            MachineInstKind::CallHelper(_) => {}
         }
         Ok(())
     }
@@ -148,12 +146,7 @@ impl MachineProgram {
                 self.validate_reg(*callee_frame_base)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
-            MachineTerminator::Return { values } => {
-                for value in values {
-                    self.validate_value(*value)?;
-                }
-                Ok(())
-            }
+            MachineTerminator::Return => Ok(()),
             MachineTerminator::Trap { .. } => Ok(()),
         }
     }

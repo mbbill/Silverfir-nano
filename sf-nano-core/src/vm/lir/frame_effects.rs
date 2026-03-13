@@ -3,39 +3,55 @@
 use alloc::vec::Vec;
 
 use super::{
-    ir::LirInstKind,
+    ir::{LirBoundaryOp, LirInstKind},
     slot::{FrameSpan},
 };
 
 pub fn reads_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
     match kind {
-        LirInstKind::Leaf { .. }
-        | LirInstKind::Runtime { .. }
-        | LirInstKind::WriteSlot { .. }
-        | LirInstKind::Spill { .. } => Vec::new(),
-        LirInstKind::ReadSlot { slot, .. } | LirInstKind::Fill { slot, .. } => {
+        LirInstKind::Value { .. } | LirInstKind::StoreSlot { .. } => Vec::new(),
+        LirInstKind::LoadSlot { slot, .. } => {
             alloc::vec![FrameSpan::single(*slot)]
         }
-        LirInstKind::CallExternal { args, .. } | LirInstKind::CallInternal { args, .. } => {
-            alloc::vec![*args]
-        }
-        LirInstKind::CallIndirect {
-            index_slot, args, ..
-        } => alloc::vec![FrameSpan::single(*index_slot), *args],
+        LirInstKind::Boundary(boundary) => reads_boundary(boundary),
     }
 }
 
 pub fn writes_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
     match kind {
-        LirInstKind::Leaf { .. }
-        | LirInstKind::Runtime { .. }
-        | LirInstKind::ReadSlot { .. }
-        | LirInstKind::Fill { .. } => Vec::new(),
-        LirInstKind::WriteSlot { slot, .. } | LirInstKind::Spill { slot, .. } => {
+        LirInstKind::Value { .. } | LirInstKind::LoadSlot { .. } => Vec::new(),
+        LirInstKind::StoreSlot { slot, .. } => {
             alloc::vec![FrameSpan::single(*slot)]
         }
-        LirInstKind::CallExternal { results, .. }
-        | LirInstKind::CallInternal { results, .. }
-        | LirInstKind::CallIndirect { results, .. } => alloc::vec![*results],
+        LirInstKind::Boundary(boundary) => writes_boundary(boundary),
+    }
+}
+
+fn reads_boundary(kind: &LirBoundaryOp) -> Vec<FrameSpan> {
+    match kind {
+        LirBoundaryOp::MemoryGrow { io, .. } => alloc::vec![*io],
+        LirBoundaryOp::TableGrow { args, .. }
+        | LirBoundaryOp::MemoryInit { args, .. }
+        | LirBoundaryOp::TableInit { args, .. }
+        | LirBoundaryOp::CallExternal { args, .. }
+        | LirBoundaryOp::CallInternal { args, .. } => alloc::vec![*args],
+        LirBoundaryOp::DataDrop { .. } | LirBoundaryOp::ElemDrop { .. } => Vec::new(),
+        LirBoundaryOp::CallIndirect {
+            index_slot, args, ..
+        } => alloc::vec![FrameSpan::single(*index_slot), *args],
+    }
+}
+
+fn writes_boundary(kind: &LirBoundaryOp) -> Vec<FrameSpan> {
+    match kind {
+        LirBoundaryOp::MemoryGrow { io, .. } => alloc::vec![*io],
+        LirBoundaryOp::TableGrow { results, .. }
+        | LirBoundaryOp::CallExternal { results, .. }
+        | LirBoundaryOp::CallInternal { results, .. }
+        | LirBoundaryOp::CallIndirect { results, .. } => alloc::vec![*results],
+        LirBoundaryOp::MemoryInit { .. }
+        | LirBoundaryOp::DataDrop { .. }
+        | LirBoundaryOp::TableInit { .. }
+        | LirBoundaryOp::ElemDrop { .. } => Vec::new(),
     }
 }

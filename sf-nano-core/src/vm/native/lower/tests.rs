@@ -1,0 +1,542 @@
+use crate::vm::{
+    backend::BackendConfig,
+    lir::{
+        ir::{
+            LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind,
+            LirLocalCachePrefs, LirProgram, LirTerminator, LirValue,
+        },
+        leaf::LirLeafOp,
+        target::LirTarget,
+    },
+    native::{
+        ir::machine::{
+            MachineBlockId, MachineFunction, MachineInstKind, MachineIntBinaryOp, MachineModule,
+            MachineReg, MachineTerminator, MachineValue,
+        },
+        ir::runtime::MachineHelperSymbol,
+        lower::{lower_module, LowerFunctionInput, LowerModuleInput},
+    },
+    plan::frame::plan_frame_layout,
+    wasm::primitive_op::PrimitiveOpKind,
+};
+
+#[test]
+fn lowers_simple_slot_and_add_block() {
+    let frame = plan_frame_layout(1, 4, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                        args: alloc::vec![LirValue(0), LirValue(1)],
+                        results: alloc::vec![LirValue(2)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(2),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 1,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("lowering should succeed");
+
+    let MachineModule { functions, .. } = lowered.module;
+    let MachineFunction { program, .. } = &functions[0];
+    assert_eq!(lowered.runtime.call_link.slot_count, 3);
+    assert_eq!(lowered.runtime.functions.len(), 1);
+    assert_eq!(lowered.runtime.functions[0].frame_prefix_slots, 1);
+    assert_eq!(lowered.runtime.functions[0].total_frame_slots, frame.total_slots());
+    assert_eq!(
+        lowered.runtime.functions[0].call_scratch,
+        Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+            base_slot: frame.call_scratch.unwrap().start.0,
+            slots: frame.call_scratch.unwrap().count,
+        })
+    );
+    assert_eq!(lowered.runtime.functions[0].helper_scratch, None);
+    assert_eq!(lowered.runtime.functions[0].return_results, None);
+    assert_eq!(program.entry, MachineBlockId(0));
+    assert_eq!(program.blocks.len(), 1);
+    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
+    assert_eq!(program.blocks[0].ops.len(), 4);
+    assert!(matches!(program.blocks[0].ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        program.blocks[0].ops[1].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Imm64(1),
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[0].ops[2].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Add,
+            ..
+        }
+    ));
+    assert!(matches!(program.blocks[0].ops[3].kind, MachineInstKind::Store { .. }));
+}
+
+#[test]
+fn projects_return_results_and_helper_scratch_from_frame_plan() {
+    let frame = plan_frame_layout(2, 6, 6);
+    let result_span = crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return {
+                results: Some(result_span),
+            },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("lowering should succeed");
+
+    let runtime = &lowered.runtime;
+    assert_eq!(runtime.call_link.caller_result_base_offset, 16);
+    assert_eq!(
+        runtime.functions[0].helper_scratch,
+        Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+            base_slot: frame.call_scratch.unwrap().start.0 + runtime.call_link.slot_count,
+            slots: frame.call_scratch.unwrap().count - runtime.call_link.slot_count,
+        })
+    );
+    assert_eq!(
+        runtime.functions[0].return_results,
+        Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+            base_slot: result_span.start.0,
+            slots: result_span.count,
+        })
+    );
+}
+
+#[test]
+fn rejects_inconsistent_return_result_spans() {
+    let frame = plan_frame_layout(0, 4, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![
+            LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return {
+                    results: Some(crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1)),
+                },
+            },
+            LirBlock {
+                id: LirTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return {
+                    results: Some(crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(1), 1)),
+                },
+            },
+        ],
+    };
+
+    let err = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect_err("inconsistent return spans should be rejected");
+
+    assert!(err.message().contains("inconsistent return result spans"));
+}
+
+#[test]
+fn lowers_branch_edge_bindings_into_machine_edge_args() {
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![
+            LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![LirValue(0), LirValue(1)],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Goto(LirEdge {
+                    target: LirTarget(1),
+                    bindings: alloc::vec![
+                        LirBinding {
+                            param: LirValue(3),
+                            value: LirValue(1),
+                        },
+                        LirBinding {
+                            param: LirValue(2),
+                            value: LirValue(0),
+                        },
+                    ],
+                }),
+            },
+            LirBlock {
+                id: LirTarget(1),
+                params: alloc::vec![LirValue(2), LirValue(3)],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return { results: None },
+            },
+        ],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame: plan_frame_layout(0, 2, 2),
+            lir: &lir,
+        }],
+    })
+    .expect("lowering should succeed");
+
+    let term = &lowered.module.functions[0].program.blocks[0].terminator;
+    let MachineTerminator::Jump(edge) = term else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.target, MachineBlockId(1));
+    assert_eq!(edge.args.len(), 2);
+    assert_eq!(edge.args[0], MachineValue::Reg(MachineReg(2)));
+    assert_eq!(edge.args[1], MachineValue::Reg(MachineReg(3)));
+}
+
+#[test]
+fn lowers_cached_local_reads_and_writes_through_cache_regs() {
+    let frame = plan_frame_layout(1, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            preferred_slots: alloc::vec![frame.local_slot(0)],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 }).unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(1),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 1,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("lowering should succeed");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(matches!(ops[0].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(3),
+            src: MachineValue::Reg(MachineReg(2)),
+        }
+    ));
+    assert!(matches!(
+        ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Imm64(7),
+        }
+    ));
+    assert!(matches!(
+        ops[3].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(2),
+            src: MachineValue::Reg(MachineReg(4)),
+        }
+    ));
+}
+
+#[test]
+fn lowers_runtime_memory_grow_through_frame_metadata() {
+    let frame = plan_frame_layout(0, 1, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::MemoryGrow {
+                    mem_idx: 0,
+                    io: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("runtime helper lowering should succeed");
+
+    assert_eq!(lowered.module.externs.len(), 1);
+    assert_eq!(lowered.module.externs[0].symbol, MachineHelperSymbol::MemoryGrow);
+    assert_eq!(lowered.module.consts.len(), 1);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+}
+
+#[test]
+fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
+    let frame = plan_frame_layout(0, 2, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
+                    func_idx: 7,
+                    args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("external helper lowering should succeed");
+
+    assert_eq!(lowered.module.externs.len(), 1);
+    assert_eq!(lowered.module.externs[0].symbol, MachineHelperSymbol::CallExternal);
+    assert_eq!(lowered.module.consts.len(), 1);
+    assert!(lowered.runtime.functions[0].helper_scratch.is_none());
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+}
+
+#[test]
+fn lowers_direct_local_call_with_continuation_block() {
+    let caller_frame = plan_frame_layout(1, 4, 4);
+    let callee_frame = plan_frame_layout(3, 2, 4);
+
+    let caller = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                    callee: 1,
+                    args: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+    let callee = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    callee_frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(0),
+                frame: caller_frame,
+                lir: &caller,
+            },
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(1),
+                frame: callee_frame,
+                lir: &callee,
+            },
+        ],
+    })
+    .expect("direct local call lowering should succeed");
+
+    let caller_program = &lowered.module.functions[0].program;
+    assert_eq!(caller_program.blocks.len(), 2);
+    let call_block = &caller_program.blocks[0];
+    assert!(matches!(
+        call_block.terminator,
+        MachineTerminator::CallDirect {
+            callee: crate::vm::native::ir::machine::MachineFuncId(1),
+            callee_frame_base: MachineReg(6),
+            continuation: MachineBlockId(1),
+        }
+    ));
+    assert_eq!(call_block.ops.len(), 9);
+    assert!(matches!(
+        call_block.ops[0].kind,
+        MachineInstKind::IntBinary {
+            dst: MachineReg(6),
+            lhs: MachineValue::Reg(MachineReg(1)),
+            rhs: MachineValue::Imm64(_),
+            ..
+        }
+    ));
+    assert!(matches!(call_block.ops[1].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
+    assert!(matches!(call_block.ops[2].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(2)), .. }));
+    assert!(matches!(call_block.ops[3].kind, MachineInstKind::Load { dst: MachineReg(2), .. }));
+    assert!(matches!(call_block.ops[4].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(2)), .. }));
+    assert!(matches!(call_block.ops[5].kind, MachineInstKind::Store { src: MachineValue::Imm64(0), .. }));
+    assert!(matches!(call_block.ops[6].kind, MachineInstKind::Store { src: MachineValue::Imm64(1), .. }));
+    assert!(matches!(call_block.ops[7].kind, MachineInstKind::Store { src: MachineValue::Reg(MachineReg(1)), .. }));
+    assert!(matches!(
+        call_block.ops[8].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Imm64(40),
+            ..
+        }
+    ));
+
+    let continuation = &caller_program.blocks[1];
+    assert!(continuation.params.is_empty());
+    assert!(continuation.ops.is_empty());
+    assert!(matches!(
+        continuation.terminator,
+        MachineTerminator::Trap {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::Unreachable
+        }
+    ));
+}

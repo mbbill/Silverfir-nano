@@ -141,7 +141,7 @@ impl BlockState {
         self.ensure_live_fit("prefix fill")
     }
 
-    pub(super) fn finish_call(&mut self, consumed: u16, produced: u16) {
+    pub(super) fn finish_boundary(&mut self, consumed: u16, produced: u16) {
         self.stack_height = self
             .stack_height
             .saturating_sub(consumed)

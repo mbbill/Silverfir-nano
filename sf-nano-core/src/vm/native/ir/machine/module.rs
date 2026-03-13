@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 
-use super::cfg::MachineBlockId;
-use super::types::{MachineConstId, MachineFuncId};
+use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
 use crate::vm::native::ir::runtime::MachineExternBinding;
 
 /// One read-only sidecar constant record referenced from machine IR.

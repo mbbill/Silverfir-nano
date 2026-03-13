@@ -154,6 +154,7 @@ fn validate_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use crate::vm::lir::{
         ir::{LirLocalCachePrefs, LirValue},
         target::LirTarget,

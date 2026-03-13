@@ -4,12 +4,11 @@ use crate::{
     error::WasmError,
     vm::{
         lir::{
-            ir::{LirInst, LirInstKind},
+            ir::{LirBoundaryOp, LirInst, LirInstKind},
             leaf::LirLeafOp,
-            runtime::LirRuntimeOp,
         },
         plan::frame::{FrameLayoutPlan, FrameSpan},
-        wasm::{primitive_op, semantic_ir::SemanticOpKind},
+        wasm::{primitive_op, primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind},
     },
 };
 
@@ -29,7 +28,7 @@ pub(super) fn lower_prefix_actions(
                 let spilled = state.spill_prefix(frame.count)?;
                 for (offset, src) in spilled.into_iter().enumerate() {
                     state.ops.push(LirInst {
-                        kind: LirInstKind::Spill {
+                        kind: LirInstKind::StoreSlot {
                             slot: frame.start.advance(offset as u16),
                             src,
                         },
@@ -41,7 +40,7 @@ pub(super) fn lower_prefix_actions(
                 for offset in 0..frame.count as usize {
                     let dst = values.fresh();
                     state.ops.push(LirInst {
-                        kind: LirInstKind::Fill {
+                        kind: LirInstKind::LoadSlot {
                             slot: frame.start.advance(offset as u16),
                             dst,
                         },
@@ -64,22 +63,66 @@ pub(super) fn lower_primitive(
     let args = state.top_values(pop as usize)?;
     state.consume_top(pop as usize)?;
     let results = values.many(push as usize);
-    let kind = if let Some(op) = LirRuntimeOp::from_primitive(kind.clone()) {
-        LirInstKind::Runtime {
-            op,
-            args,
-            results: results.clone(),
-        }
-    } else {
-        LirInstKind::Leaf {
+    state.ops.push(LirInst {
+        kind: LirInstKind::Value {
             op: LirLeafOp::from_primitive(kind.clone())
                 .expect("non-runtime primitive must lower as a leaf op"),
             args,
             results: results.clone(),
+        },
+    });
+    state.push_results(results)
+}
+
+pub(super) fn lower_runtime_boundary_primitive(
+    kind: &PrimitiveOpKind,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+) -> Result<(), WasmError> {
+    if !state.live().is_empty() {
+        return Err(WasmError::internal(
+            "runtime boundary reached LIR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
+        ));
+    }
+    let (pop, push) = primitive_op::stack_effect(kind);
+    let boundary_base = call_base_slot(frame, state.height(), pop as u16);
+    let boundary = match kind {
+        PrimitiveOpKind::MemoryGrow { mem_idx } => LirBoundaryOp::MemoryGrow {
+            mem_idx: *mem_idx,
+            io: FrameSpan::new(boundary_base, 1),
+        },
+        PrimitiveOpKind::TableGrow { table_idx } => LirBoundaryOp::TableGrow {
+            table_idx: *table_idx,
+            args: FrameSpan::new(boundary_base, 2),
+            results: FrameSpan::new(boundary_base, 1),
+        },
+        PrimitiveOpKind::MemoryInit { imm0, imm1 } => LirBoundaryOp::MemoryInit {
+            data_idx: *imm0,
+            mem_idx: *imm1,
+            args: FrameSpan::new(boundary_base, 3),
+        },
+        PrimitiveOpKind::DataDrop { data_idx } => LirBoundaryOp::DataDrop {
+            data_idx: *data_idx,
+        },
+        PrimitiveOpKind::TableInit { imm0, imm1 } => LirBoundaryOp::TableInit {
+            elem_idx: *imm0,
+            table_idx: *imm1,
+            args: FrameSpan::new(boundary_base, 3),
+        },
+        PrimitiveOpKind::ElemDrop { elem_idx } => LirBoundaryOp::ElemDrop {
+            elem_idx: *elem_idx,
+        },
+        _ => {
+            return Err(WasmError::internal(
+                "non-runtime primitive reached runtime-boundary lowering".into(),
+            ))
         }
     };
-    state.ops.push(LirInst { kind });
-    state.push_results(results)
+    state.ops.push(LirInst {
+        kind: LirInstKind::Boundary(boundary),
+    });
+    state.finish_boundary(pop as u16, push as u16);
+    Ok(())
 }
 
 pub(super) fn lower_local_get(
@@ -90,7 +133,7 @@ pub(super) fn lower_local_get(
 ) -> Result<(), WasmError> {
     let dst = values.fresh();
     state.ops.push(LirInst {
-        kind: LirInstKind::ReadSlot {
+        kind: LirInstKind::LoadSlot {
             slot: frame.local_slot(local_idx),
             dst,
         },
@@ -105,7 +148,7 @@ pub(super) fn lower_local_set(
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     state.ops.push(LirInst {
-        kind: LirInstKind::WriteSlot {
+        kind: LirInstKind::StoreSlot {
             slot: frame.local_slot(local_idx),
             src,
         },
@@ -123,7 +166,7 @@ pub(super) fn lower_local_tee(
         .last()
         .ok_or_else(|| WasmError::internal("local.tee requires a live transient value".into()))?;
     state.ops.push(LirInst {
-        kind: LirInstKind::WriteSlot {
+        kind: LirInstKind::StoreSlot {
             slot: frame.local_slot(local_idx),
             src,
         },
@@ -140,13 +183,13 @@ pub(super) fn lower_call_external(
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(LirInst {
-        kind: LirInstKind::CallExternal {
+        kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
             func_idx,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-        },
+        }),
     });
-    state.finish_call(params, results);
+    state.finish_boundary(params, results);
 }
 
 pub(super) fn lower_call_internal(
@@ -158,13 +201,13 @@ pub(super) fn lower_call_internal(
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(LirInst {
-        kind: LirInstKind::CallInternal {
+        kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-        },
+        }),
     });
-    state.finish_call(params, results);
+    state.finish_boundary(params, results);
 }
 
 pub(super) fn lower_call_indirect(
@@ -178,15 +221,15 @@ pub(super) fn lower_call_indirect(
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
     state.ops.push(LirInst {
-        kind: LirInstKind::CallIndirect {
+        kind: LirInstKind::Boundary(LirBoundaryOp::CallIndirect {
             type_idx,
             table_idx,
             index_slot: call_base.advance(params),
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-        },
+        }),
     });
-    state.finish_call(consumed, results);
+    state.finish_boundary(consumed, results);
 }
 
 #[inline]
@@ -232,7 +275,13 @@ pub(super) fn lower_block_body_op(
                 "unreachable must end a prepared LIR block, not appear in the body".into(),
             ))
         }
-        SemanticOpKind::Primitive(kind) => lower_primitive(kind, state, values),
+        SemanticOpKind::Primitive(kind) => {
+            if crate::vm::lir::leaf::is_runtime_boundary_primitive(kind) {
+                lower_runtime_boundary_primitive(kind, state, frame)
+            } else {
+                lower_primitive(kind, state, values)
+            }
+        }
         SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values),
         SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame),
         SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame),

@@ -4,7 +4,7 @@ use super::super::machine::MachineExternId;
 ///
 /// The backend resolves this symbol to the real helper wrapper address for the
 /// active ISA/runtime implementation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MachineHelperSymbol {
     CallExternal,
     MemoryGrow,

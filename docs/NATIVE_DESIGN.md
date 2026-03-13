@@ -213,7 +213,7 @@ Each section states one rule and why it exists.
 
 ## Rule 33: Helpers Use One Uniform Logical ABI
 
-**Rule:** All helpers must share one logical call shape: `helper(runtime, metadata, scratch) -> status`. The machine IR must not allow per-helper calling conventions.
+**Rule:** All helpers must share one logical call shape: `helper(runtime, frame, metadata) -> status`. The machine IR must not allow per-helper calling conventions.
 
 **Reason:** Per-helper signatures create another hidden ABI surface that can drift out of sync with runtime code. A single logical helper shape keeps helper lowering mechanical and reviewable.
 
@@ -231,7 +231,7 @@ Each section states one rule and why it exists.
 
 ## Rule 36: Helper Metadata Is Read-Only And Helper Scratch Is Writable
 
-**Rule:** Helper-specific immutable data must live in read-only sidecar metadata. Helper-specific inputs and outputs must live in writable native scratch memory. These are different things and must not be conflated.
+**Rule:** Helper-specific immutable data must live in read-only sidecar metadata. If a helper needs a temporary writable work area, it must come from writable native frame memory. These are different things and must not be conflated.
 
 **Reason:** Read-only metadata belongs beside the code. Writable helper data must not live in Wasm memory, Wasm globals, or code metadata. Keeping the two separate makes the contract explicit and avoids hidden aliasing or lifetime problems.
 
@@ -243,9 +243,9 @@ Each section states one rule and why it exists.
 
 ## Rule 38: Helpers Return Only Status In ABI Registers
 
-**Rule:** Helper calls return only a status code in the helper ABI. Any helper-specific outputs must be written into writable scratch memory.
+**Rule:** Helper calls return only a status code in the helper ABI. Any helper-specific outputs must be written into frame regions designated by helper metadata.
 
-**Reason:** Multi-value helper returns complicate backend lowering and make the ABI harder to keep stable. A single status return keeps the ABI small and lets the machine IR treat helper inputs and outputs as ordinary memory traffic.
+**Reason:** Multi-value helper returns complicate backend lowering and make the ABI harder to keep stable. A single status return keeps the ABI small and lets the machine IR treat helper inputs and outputs as ordinary frame traffic.
 
 ## Rule 39: Call Indirect And Local Control Transfer Stay Native
 
@@ -289,11 +289,11 @@ Each section states one rule and why it exists.
 
 **Reason:** This stack discipline is what makes the engine fast without a traditional optimizer or lifetime-based register allocator. If LIR erases that structure into arbitrary full-stack SSA, the backend loses the main advantage of the design.
 
-## Rule 46: Locals Keep Canonical Slot Homes
+## Rule 46: LIR Slot Traffic Is Explicit And Canonical
 
-**Rule:** Local accesses in LIR use canonical frame-slot identity such as `ReadSlot` and `WriteSlot`. Hot-local caching must not change the canonical local slot layout.
+**Rule:** LIR must represent canonical slot traffic explicitly. Local accesses and prepared operand publication use explicit slot load/store operations, and those slot identities must remain stable.
 
-**Reason:** Calls, returns, and frame layout still rely on stable slot identity. Register-cached locals are mirrors of those canonical homes, not replacements for them.
+**Reason:** Calls, returns, and frame layout rely on stable slot identity. Register-cached locals are mirrors of those canonical homes, not replacements for them. The backend must see slot publication directly instead of reconstructing it from hidden stack state.
 
 ## Rule 47: Hot-Local Policy Travels As Metadata, Not As LIR Storage Kinds
 
@@ -301,17 +301,17 @@ Each section states one rule and why it exists.
 
 **Reason:** Backend configuration remains the source of truth for the local-cache budget. LIR only needs to say which canonical local slots are preferred. The final swap assignment is execution policy, not semantic storage.
 
-## Rule 48: True Runtime Boundaries Must Be Split Out In LIR
+## Rule 48: LIR Distinguishes Value Ops From Boundary Ops
 
-**Rule:** LIR must distinguish normal leaf operations from true runtime-boundary operations such as growth and segment lifecycle ops.
+**Rule:** LIR must separate pure value operations from boundary operations. Pure value operations consume and produce SSA values. Boundary operations consume and produce canonical frame spans.
 
-**Reason:** The layer between LIR and machine IR must not rediscover helper policy by pattern-matching arbitrary primitives. The runtime boundary needs to already be explicit in LIR.
+**Reason:** Native lowering must not reconstruct stack or frame publication policy on its own. If an operation crosses a call or runtime boundary, all slot traffic relevant to that boundary must already be explicit in LIR.
 
-## Rule 49: LIR Calls Stay Semantic But Respect Canonical Stack Layout
+## Rule 49: Frontend Must Spill All Live SSA Before Every Boundary
 
-**Rule:** Direct local calls, indirect calls, and external calls remain semantic LIR operations, but their argument and result publication still follows canonical stack and frame layout prepared above the backend.
+**Rule:** Before every boundary operation, the frontend must publish all live transient SSA values to canonical operand slots. Boundary operations must not carry SSA operands or results.
 
-**Reason:** Call-link layout and machine continuation structure belong below LIR, but stack-layout guarantees must already be stable by the time LIR is handed to the backend.
+**Reason:** This prevents backend stack reconstruction and keeps the native side mechanical. Once a boundary is reached, all inputs and outputs are expressed only through frame spans.
 
 ## Rule 50: Backend Register Assignment Must Stay Trivial
 
@@ -329,9 +329,9 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### Helper ABI
 
-**Decision:** The helper ABI is `helper(runtime, metadata, scratch) -> status`.
+**Decision:** The helper ABI is `helper(runtime, frame, metadata) -> status`.
 
-**Reason:** This keeps the register budget small, avoids helper-id dispatch, and avoids multi-value Rust ABI returns. It is a documented logical contract, not a separate code-level ABI type.
+**Reason:** This keeps the register budget small, avoids helper-id dispatch, avoids multi-value Rust ABI returns, and lets helpers operate directly on canonical frame regions instead of forcing every helper through a scratch-only marshalling path.
 
 ### External Targets
 
@@ -365,9 +365,9 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### Helper Scratch
 
-**Decision:** Helper scratch is writable native frame memory planned above machine IR.
+**Decision:** Helper scratch is optional writable native frame memory planned above machine IR. It is not part of the normal contract for the current helper set.
 
-**Reason:** Helper inputs and outputs need writable storage, but that storage must not come from Wasm memory, Wasm globals, or read-only code metadata.
+**Reason:** The current helper set reads and writes canonical frame spans directly through metadata, so helper scratch is not needed on the normal path. It remains only as an explicit escape hatch for a future helper that truly requires writable temporary native-frame storage. That work area must not come from Wasm memory, Wasm globals, or read-only code metadata.
 
 ### Helper Scope
 
@@ -401,7 +401,7 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### Prepared LIR Contract
 
-**Decision:** LIR is not arbitrary full SSA over the whole stack. It is a prepared IR where transient stack values are already bounded to the configured TOS window through explicit spill/fill against canonical operand slots.
+**Decision:** LIR is not arbitrary full SSA over the whole stack. It is a prepared IR where transient stack values are already bounded to the configured TOS window through explicit slot publication and reload against canonical operand slots.
 
 **Reason:** This is the contract that makes backend lowering easy. The backend can assume transient value fit instead of computing it.
 
@@ -427,7 +427,7 @@ It must not require a general-purpose lifetime-based register allocator.
 
 **Decision:** TOS-window fit and local-cache assumptions are validated during lowering against real backend configuration.
 
-**Reason:** This is where the engine catches missed frontend spill/fill preparation or invalid hot-local metadata. The backend should reject an invalid prepared program loudly instead of silently compensating for it.
+**Reason:** This is where the engine catches missed frontend slot publication/reload preparation or invalid hot-local metadata. The backend should reject an invalid prepared program loudly instead of silently compensating for it.
 
 ### Backend Simplicity
 
@@ -742,15 +742,15 @@ Prepared LIR conceptually looks like:
 
 ```text
 b0(params=[]):
-  v0 = ReadSlot(local_slot(0))
-  v1 = Leaf(I32Const 1)
-  v2 = Leaf(I32Add, [v0, v1])
-  WriteSlot(local_slot(0), v2)
+  v0 = LoadSlot(local_slot(0))
+  v1 = Value(I32Const 1)
+  v2 = Value(I32Add, [v0, v1])
+  StoreSlot(local_slot(0), v2)
 
-  v3 = ReadSlot(local_slot(4))
-  Spill(operand_slot(call_base), v3)
-  CallInternal g args=operand_span(call_base, 1) results=operand_span(call_base, 1)
-  Fill(operand_slot(call_base), v4)
+  v3 = LoadSlot(local_slot(4))
+  StoreSlot(operand_slot(call_base), v3)
+  Boundary(CallInternal g args=operand_span(call_base, 1) results=operand_span(call_base, 1))
+  v4 = LoadSlot(operand_slot(call_base))
   Return results=operand_span(0, 1)
 ```
 
@@ -770,11 +770,22 @@ The current intended LIR shape is:
   - block params are generic live-in SSA values
   - edges bind predecessor values to successor params explicitly
 - body ops:
-  - `Leaf`
-  - `Runtime`
-  - `ReadSlot` / `WriteSlot`
-  - `Spill` / `Fill`
-  - `CallExternal` / `CallInternal` / `CallIndirect` with canonical frame spans
+  - pure value ops:
+    - consume/produce `LirValue`
+  - slot/value moves:
+    - `LoadSlot`
+    - `StoreSlot`
+  - boundary ops:
+    - `MemoryGrow`
+    - `TableGrow`
+    - `MemoryInit`
+    - `DataDrop`
+    - `TableInit`
+    - `ElemDrop`
+    - `CallExternal`
+    - `CallInternal`
+    - `CallIndirect`
+    - every boundary op uses canonical frame spans only
 - terminators:
   - edges carry explicit param bindings
   - `Return` names canonical result span, not SSA values
@@ -785,6 +796,8 @@ The current intended validation split is:
 - lowering validates that every bounded transient live set fits the backend-configured `tos_lanes`
 - lowering validates that taken branch targets expect canonical frame payload, not live boundary SSA payload
 - lowering uses the backend-configured `cached_locals` budget to select the top preferred local slots
+
+Before every boundary op, prepared LIR must already have spilled all live transient SSA into canonical operand slots. Boundary ops therefore never carry SSA arguments or results.
 
 Then the LIR-to-MachineIR lowering does the simple backend work:
 
@@ -824,17 +837,17 @@ Its job is two things at once:
 1. expand the remaining VM-flavored LIR operations into machine-shaped code
 2. do the trivial fixed-budget register assignment that the backend depends on
 
-`LirInstKind::Runtime` should stay SSA-shaped.
+LIR boundary ops should be slot-based, not SSA-shaped.
 
-Operations such as `memory.grow` and `table.grow` are still ordinary semantic stack operations at the LIR level: they consume values from the transient live set and may produce values back into it. The fact that native lowers them through a helper boundary is not LIR's concern. That transition from native ABI to Rust ABI belongs entirely to native-side lowering.
+Operations such as `memory.grow`, `table.grow`, external calls, and local calls still differ semantically, but once they become LIR boundary ops they must all consume and produce canonical frame spans, not transient SSA values.
 
 So the split is:
 
-- LIR keeps `Runtime { op, args, results }`
-- native lowering decides when live transient values must be published before the helper boundary
-- native lowering uses planned `call_scratch_slots`
-- native lowering materializes helper metadata and scratch base
-- native lowering emits the actual helper-call bridge
+- LIR keeps pure value ops SSA-shaped
+- LIR uses explicit slot/value moves for canonical publication and reload
+- LIR boundary ops use only canonical frame spans
+- native lowering never reconstructs stack position or hidden frame publication
+- native lowering only bridges the machine ABI around already-explicit boundary frame spans
 
 `MachineIR` return should be frame-based, not register-value-based.
 
@@ -854,6 +867,21 @@ The internal lowering state should own:
 - the fixed local-cache slot to machine-register mapping
 - dirty/valid state for cached locals
 - helper const/extern sidecar builders
+
+`FrameLayoutPlan` remains the single source of truth for frame shape.
+
+LIR-to-machine lowering should project that plan exactly once into per-function
+machine runtime metadata such as:
+
+- frame prefix size
+- total frame extent
+- call scratch region
+  - optional helper scratch region
+- canonical return-result region
+
+After that projection, emulator and ISA backends must consume the derived
+machine runtime record rather than recomputing frame extents by adding locals,
+call scratch, operands, or future frame regions again.
 
 The implementation should be split conceptually like this:
 
@@ -902,7 +930,7 @@ Expands LIR leaf/runtime ops into machine ops:
 - compares/select become direct machine ops
 - constants/ref ops become moves/constants
 - memory/global/table ops become explicit address math, checks, loads/stores
-- true runtime boundaries become helper call sites with const metadata + scratch
+- true runtime boundaries become helper call sites with const metadata and frame-based helper spans
 
 6. `call lowering`
 
@@ -924,14 +952,14 @@ Builds:
 
 The important behavior for each case is:
 
-`ReadSlot` / `WriteSlot`
+`LoadSlot` / `StoreSlot`
 
 - if the slot is a selected cached local, lowering uses the cache reg
 - otherwise it becomes an explicit `[frame + slot_offset]` load/store
 
-`Spill` / `Fill`
+Prepared operand publication/reload
 
-- always explicit store/load to canonical operand-slot addresses
+- explicit `StoreSlot` / `LoadSlot` to canonical operand-slot addresses
 
 `CallInternal`
 
@@ -951,11 +979,8 @@ The important behavior for each case is:
 
 `CallExternal` and runtime helpers
 
-- spill any surviving transient values that must live across the helper boundary
-- flush dirty cached locals
-- materialize metadata const and scratch base
+- use frame-based helper metadata naming canonical input/output spans
 - emit `CallHelper`
-- reload cached locals
 - continue
 
 The implementation order should be:
@@ -964,7 +989,7 @@ The implementation order should be:
 2. add the lowering scaffolding in `native/`
 3. implement straight-line lowering first:
    - slot ops
-   - spill/fill
+   - slot publication/reload
    - constants
    - integer/float ALU
    - compare/select
@@ -981,5 +1006,5 @@ The implementation order should be:
 The intended model remains:
 
 - LIR owns program semantics plus prepared transient fit
-- native lowering owns ABI transitions, helper scratch use, and machine-level publication/reload around those transitions
+- native lowering owns ABI transitions, helper metadata construction, and machine-level lowering of already-explicit boundary spans
 - MachineIR owns only machine concepts

@@ -4,14 +4,13 @@
 //! pipeline:
 //! - canonical locals and deep stack values live in frame slots
 //! - only a bounded set of transient values stays live as SSA values
-//! - explicit spill/fill ops publish and reload transient values from operand
-//!   slots so the backend never needs general register allocation
+//! - explicit slot traffic publishes and reloads transient values through
+//!   operand slots so the backend never needs general register allocation
 
 use alloc::vec::Vec;
 
 use super::{
     leaf::LirLeafOp,
-    runtime::LirRuntimeOp,
     slot::{FrameSlot, FrameSpan},
     target::LirTarget,
 };
@@ -68,49 +67,63 @@ pub struct LirInst {
 /// Prepared frontend operation vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LirInstKind {
-    Leaf {
+    Value {
         op: LirLeafOp,
         args: Vec<LirValue>,
         results: Vec<LirValue>,
     },
-    Runtime {
-        op: LirRuntimeOp,
-        args: Vec<LirValue>,
-        results: Vec<LirValue>,
-    },
     /// Read a canonical frame slot, usually a local slot.
-    ReadSlot {
+    LoadSlot {
         slot: FrameSlot,
         dst: LirValue,
     },
     /// Write a canonical frame slot, usually a local slot.
-    WriteSlot {
+    StoreSlot {
         slot: FrameSlot,
         src: LirValue,
     },
-    /// Publish one transient live value into its canonical operand slot.
-    Spill {
-        slot: FrameSlot,
-        src: LirValue,
+    /// Slot-based call or runtime boundary.
+    Boundary(LirBoundaryOp),
+}
+
+/// Prepared slot-based boundary operations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LirBoundaryOp {
+    MemoryGrow {
+        mem_idx: u32,
+        io: FrameSpan,
     },
-    /// Reload one transient live value from its canonical operand slot.
-    Fill {
-        slot: FrameSlot,
-        dst: LirValue,
+    TableGrow {
+        table_idx: u32,
+        args: FrameSpan,
+        results: FrameSpan,
     },
-    /// Call using canonical frame spans for arguments and results.
+    MemoryInit {
+        data_idx: u32,
+        mem_idx: u32,
+        args: FrameSpan,
+    },
+    DataDrop {
+        data_idx: u32,
+    },
+    TableInit {
+        elem_idx: u32,
+        table_idx: u32,
+        args: FrameSpan,
+    },
+    ElemDrop {
+        elem_idx: u32,
+    },
     CallExternal {
         func_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
     },
-    /// Call using canonical frame spans for arguments and results.
     CallInternal {
         callee: u32,
         args: FrameSpan,
         results: FrameSpan,
     },
-    /// Indirect call using canonical frame spans plus an explicit spilled index.
     CallIndirect {
         type_idx: u32,
         table_idx: u32,

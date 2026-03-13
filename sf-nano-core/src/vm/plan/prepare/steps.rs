@@ -12,6 +12,7 @@ use crate::{
             frame::{FrameLayoutPlan, FrameSpan},
         },
         wasm::{
+            primitive_op::PrimitiveOpKind,
             primitive_op,
             semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
         },
@@ -103,14 +104,18 @@ fn plan_prefix(
 
     match &op.kind {
         SemanticOpKind::Primitive(kind) => {
-            if matches!(kind, primitive_op::PrimitiveOpKind::Unreachable) {
+            if matches!(kind, PrimitiveOpKind::Unreachable) {
                 return prefix;
             }
-            let (pop, push) = primitive_op::stack_effect(kind);
-            if pop == 0 && push > 0 {
-                spill_before_push(&mut prefix, state, frame, tos_lanes);
+            if crate::vm::lir::leaf::is_runtime_boundary_primitive(kind) {
+                spill_all(&mut prefix, state, frame);
+            } else {
+                let (pop, push) = primitive_op::stack_effect(kind);
+                if pop == 0 && push > 0 {
+                    spill_before_push(&mut prefix, state, frame, tos_lanes);
+                }
+                fill_for_operands(&mut prefix, state, frame, pop as u16);
             }
-            fill_for_operands(&mut prefix, state, frame, pop as u16);
         }
         SemanticOpKind::LocalGet { .. } => spill_before_push(&mut prefix, state, frame, tos_lanes),
         SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {

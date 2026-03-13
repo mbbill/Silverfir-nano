@@ -1,11 +1,9 @@
 //! LIR-local leaf-op vocabulary.
 //!
 //! This wraps `PrimitiveOpKind` but excludes operations that are designated as
-//! true runtime-boundary ops in `LirRuntimeOp`.
+//! true slot-based boundary ops in prepared LIR.
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
-
-use super::runtime::is_runtime_boundary_primitive;
 
 /// One local, non-runtime leaf op.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,4 +19,17 @@ impl LirLeafOp {
     pub fn primitive(&self) -> &PrimitiveOpKind {
         &self.0
     }
+}
+
+#[inline]
+pub fn is_runtime_boundary_primitive(kind: &PrimitiveOpKind) -> bool {
+    matches!(
+        kind,
+        PrimitiveOpKind::MemoryGrow { .. }
+            | PrimitiveOpKind::TableGrow { .. }
+            | PrimitiveOpKind::MemoryInit { .. }
+            | PrimitiveOpKind::DataDrop { .. }
+            | PrimitiveOpKind::TableInit { .. }
+            | PrimitiveOpKind::ElemDrop { .. }
+    )
 }

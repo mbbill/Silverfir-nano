@@ -63,6 +63,24 @@ impl FrameLayoutPlan {
     pub const fn operand_slot(self, idx: u16) -> FrameSlot {
         self.operands.start.advance(idx)
     }
+
+    #[inline]
+    pub const fn call_scratch_slots(self) -> u16 {
+        match self.call_scratch {
+            Some(span) => span.count,
+            None => 0,
+        }
+    }
+
+    #[inline]
+    pub const fn total_slots(self) -> u16 {
+        self.operands.end().0
+    }
+
+    #[inline]
+    pub const fn return_results(self, count: u16) -> FrameSpan {
+        FrameSpan::new(self.operand_slot(0), count)
+    }
 }
 
 #[inline]
