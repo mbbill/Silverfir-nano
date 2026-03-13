@@ -1,4 +1,4 @@
-#[cfg(feature = "profile")]
+#[cfg(all(feature = "profile", feature = "interp"))]
 mod discover_fusion;
 
 #[cfg(feature = "micro-jit")]
@@ -18,20 +18,20 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--reference] [--dir <path>] <wasm-file> [args...]");
-        #[cfg(feature = "profile")]
+        #[cfg(all(feature = "profile", feature = "interp"))]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
             eprintln!("  sf-nano-cli discover-fusion --help");
         }
         eprintln!();
         eprintln!("Run a WebAssembly module with WASI support.");
-        #[cfg(feature = "profile")]
+        #[cfg(all(feature = "profile", feature = "interp"))]
         eprintln!("Use 'discover-fusion' subcommand to profile and discover fusion patterns.");
         process::exit(1);
     }
 
     // Check for subcommands
-    #[cfg(feature = "profile")]
+    #[cfg(all(feature = "profile", feature = "interp"))]
     if args[1] == "discover-fusion" {
         discover_fusion::run_from_args(&args[2..]);
         return;

@@ -15,6 +15,7 @@ use crate::vm::entities::{
     DataInst, ElementInst, ExternalFn, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
+#[cfg(feature = "interp")]
 use crate::vm::interp::precompile;
 use crate::vm::runtime;
 use crate::vm::store::Store;
@@ -425,6 +426,7 @@ impl Instance {
             WasmError::invalid(format!("runtime backend unavailable: {}", err))
         })?;
 
+        #[cfg(feature = "interp")]
         if !runtime_engine.is_micro_jit() {
             precompile::precompile_module_two_pass(&store)?;
         }

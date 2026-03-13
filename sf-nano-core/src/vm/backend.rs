@@ -82,7 +82,7 @@ impl BackendMode {
                 {
                     return BackendKind::Native;
                 }
-                #[cfg(all(not(feature = "micro-jit"), feature = "fusion"))]
+                #[cfg(all(not(feature = "micro-jit"), feature = "interp", feature = "fusion"))]
                 {
                     return BackendKind::Fusion;
                 }
@@ -116,15 +116,28 @@ pub fn backend_mode() -> BackendMode {
 
 pub fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static str> {
     match mode {
-        BackendMode::Base => Ok(BackendKind::Base),
+        BackendMode::Base => {
+            #[cfg(feature = "interp")]
+            {
+                Ok(BackendKind::Base)
+            }
+            #[cfg(not(feature = "interp"))]
+            {
+                Err("interpreter backend not compiled in")
+            }
+        }
         BackendMode::Fusion => {
-            #[cfg(feature = "fusion")]
+            #[cfg(all(feature = "interp", feature = "fusion"))]
             {
                 Ok(BackendKind::Fusion)
             }
-            #[cfg(not(feature = "fusion"))]
+            #[cfg(all(feature = "interp", not(feature = "fusion")))]
             {
                 Err("fusion backend not compiled in")
+            }
+            #[cfg(not(feature = "interp"))]
+            {
+                Err("interpreter backend not compiled in")
             }
         }
         BackendMode::Native => {
@@ -142,9 +155,11 @@ pub fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static s
             {
                 return Ok(BackendKind::Native);
             }
-            // Keep `auto` on the proven base pipeline until fusion is brought
-            // back up on top of the refactored frontend/backend boundary.
-            Ok(BackendKind::Base)
+            #[cfg(feature = "interp")]
+            {
+                return Ok(BackendKind::Base);
+            }
+            Err("no execution backend compiled in")
         }
     }
 }

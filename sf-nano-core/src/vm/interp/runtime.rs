@@ -10,7 +10,7 @@ use crate::vm::debug::function_trace;
 use crate::vm::entities::{FunctionInst, MemInst, ModuleInst};
 use crate::vm::interp::context::Context;
 use crate::vm::interp::handlers::run_trampoline;
-use crate::vm::interp::stack::InterpreterStack;
+use crate::vm::stack::InterpreterStack;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 

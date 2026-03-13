@@ -53,6 +53,7 @@ mod imp {
     use crate::module::entities::FunctionSpec;
     use crate::value_type::ValueType;
     use crate::vm::entities::{FunctionInst, ModuleInst};
+    #[cfg(feature = "interp")]
     use crate::vm::interp::{context as interp_ctx, instruction::Instruction};
     use crate::vm::native::runtime::context::NativeContext;
     use crate::vm::store::Store;
@@ -317,6 +318,7 @@ mod imp {
         }
     }
 
+    #[cfg(feature = "interp")]
     fn find_func_idx_by_fast_entry(module: &ModuleInst, entry: *mut Instruction) -> Option<u32> {
         module
             .functions
@@ -345,6 +347,7 @@ mod imp {
             })
     }
 
+    #[cfg(feature = "interp")]
     pub fn fast_root_entry(ctx: &mut interp_ctx::Context, spec: &FunctionSpec) {
         if !enabled() {
             return;
@@ -361,6 +364,7 @@ mod imp {
         record_event(Some("interpreter"), EventKind::Entry, func_idx, 0, &[], store, None);
     }
 
+    #[cfg(feature = "interp")]
     pub fn fast_root_exit(store: &Store, spec: &FunctionSpec, results: &[u64]) {
         if !enabled() {
             return;
@@ -371,6 +375,7 @@ mod imp {
         record_event(Some("interpreter"), EventKind::Exit, func_idx, 0, results, store, None);
     }
 
+    #[cfg(feature = "interp")]
     pub fn fast_trap_current(ctx: &mut interp_ctx::Context, error: &WasmError) {
         if !enabled() {
             return;
@@ -384,6 +389,7 @@ mod imp {
         ctx.trace_stack.clear();
     }
 
+    #[cfg(feature = "interp")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn fast_function_trace_enter_entry(
         ctx: *mut interp_ctx::Context,
@@ -405,6 +411,7 @@ mod imp {
         record_event(None, EventKind::Entry, func_idx, depth, &[], store, None);
     }
 
+    #[cfg(feature = "interp")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn fast_function_trace_exit(
         ctx: *mut interp_ctx::Context,

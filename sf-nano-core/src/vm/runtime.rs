@@ -1,9 +1,12 @@
 use crate::error::WasmError;
 use crate::vm::backend::{active_backend_mode, resolve_backend_mode, BackendKind};
 use crate::vm::entities::FunctionInst;
+use crate::vm::stack::InterpreterStack;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 
+#[cfg(feature = "interp")]
+use crate::vm::interp;
 #[cfg(feature = "micro-jit")]
 use crate::vm::native;
 
@@ -67,7 +70,7 @@ pub fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],
-) -> Result<crate::vm::interp::stack::InterpreterStack, WasmError> {
+) -> Result<InterpreterStack, WasmError> {
     let engine = active_runtime_engine()
         .map_err(|err| WasmError::invalid(alloc::format!("runtime backend unavailable: {err}")))?;
 
@@ -78,5 +81,16 @@ pub fn eval(
         }
     }
 
-    crate::vm::interp::runtime::eval(func_inst, store, args)
+    #[cfg(feature = "interp")]
+    {
+        return interp::runtime::eval(func_inst, store, args);
+    }
+
+    #[cfg(not(feature = "interp"))]
+    {
+        let _ = (func_inst, store, args);
+        Err(WasmError::invalid(
+            "interpreter backend not compiled in".into(),
+        ))
+    }
 }

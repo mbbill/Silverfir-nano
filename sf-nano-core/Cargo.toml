@@ -15,6 +15,7 @@ paste = "1.0"
 default = ["micro-jit"]
 validate = []
 wasi = []
+interp = []
 fusion = []
 spectest = []
 profile = []

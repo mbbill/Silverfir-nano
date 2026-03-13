@@ -13,17 +13,19 @@ use std::{env, path::PathBuf};
 fn main() {
     check_llvm_version_compatibility();
 
-    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
-    let out_path = PathBuf::from(&out_dir);
+    if env::var_os("CARGO_FEATURE_INTERP").is_some() {
+        let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+        let out_path = PathBuf::from(&out_dir);
 
-    // Generate fast interpreter code from handlers.toml
-    fast_interp::generate(&out_path);
+        // Generate fast interpreter code from handlers.toml.
+        fast_interp::generate(&out_path);
 
-    // Verify preserve_none ABI (micro-jit only, aarch64 only)
-    compile::verify_preserve_none_abi();
+        // Verify preserve_none ABI for the interpreter trampoline.
+        compile::verify_preserve_none_abi();
 
-    // Compile fast interpreter C trampoline
-    compile::compile_fast_trampoline(&out_dir);
+        // Compile fast interpreter C trampoline.
+        compile::compile_fast_trampoline(&out_dir);
+    }
 }
 
 fn check_llvm_version_compatibility() {
