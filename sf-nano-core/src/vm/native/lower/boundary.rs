@@ -136,10 +136,7 @@ impl<'a> BlockLowerContext<'a> {
             args: args.into(),
             results: results.into(),
         });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
-        });
-        Ok(())
+        self.emit_helper_backed_boundary(target, metadata)
     }
 
     pub(super) fn lower_runtime(
@@ -152,9 +149,22 @@ impl<'a> BlockLowerContext<'a> {
         )?;
 
         let (target, metadata) = self.runtime_call_site(boundary, sidecar)?;
+        self.emit_helper_backed_boundary(target, metadata)
+    }
+
+    fn emit_helper_backed_boundary(
+        &mut self,
+        target: crate::vm::native::ir::machine::MachineExternId,
+        metadata: crate::vm::native::ir::machine::MachineConstId,
+    ) -> Result<(), WasmError> {
+        // Helper-backed boundaries are slot-based and may clobber cache regs,
+        // so cached locals must be synchronized through their canonical frame
+        // slots across the helper call.
+        self.emit_flush_dirty_cached_locals()?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
         });
+        self.emit_reload_cached_locals()?;
         Ok(())
     }
 
@@ -291,4 +301,3 @@ fn span_region_with_slots(
     }
     Ok(span.into())
 }
-

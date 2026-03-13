@@ -467,6 +467,145 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
 }
 
 #[test]
+fn flushes_and_reloads_cached_locals_around_call_external() {
+    let frame = plan_frame_layout(1, 2, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            preferred_slots: alloc::vec![frame.local_slot(0)],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
+                        func_idx: 7,
+                        args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                        results: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                    }),
+                },
+            ],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 1,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("external helper lowering should succeed with cached locals");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 6);
+    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Imm64(9),
+            ..
+        }
+    ));
+    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+}
+
+#[test]
+fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
+    let frame = plan_frame_layout(1, 2, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            preferred_slots: alloc::vec![frame.local_slot(0)],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 5 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Boundary(LirBoundaryOp::MemoryGrow {
+                        mem_idx: 0,
+                        io: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                    }),
+                },
+            ],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 1,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("runtime helper lowering should succeed with cached locals");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 6);
+    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Imm64(5),
+            ..
+        }
+    ));
+    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+}
+
+#[test]
 fn lowers_direct_local_call_with_continuation_block() {
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
