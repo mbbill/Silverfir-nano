@@ -1,5 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
+pub mod emulator;
+
 /// Active native backend implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeBackend {

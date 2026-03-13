@@ -4,6 +4,7 @@
 //! Old implementation artifacts stay under `native/bak/`.
 
 pub mod arch;
+pub mod build;
 pub mod code;
 pub mod code_buf;
 mod helper;

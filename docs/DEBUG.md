@@ -31,7 +31,7 @@ Run the native path:
 Run the debug-only native reference path:
 
 ```bash
-cargo run --bin sf-nano-cli -- --backend native --reference benchmarks/wasi/coremark/coremark.wasm
+cargo run --bin sf-nano-cli -- --backend native --emu benchmarks/wasi/coremark/coremark.wasm
 ```
 
 Run native spectest:
@@ -55,7 +55,7 @@ The CLI accepts:
 - `--backend fusion`
 - `--backend native`
 - `--backend auto`
-- `--reference` for the debug-only native reference backend
+- `--emu` for the debug-only native emulator backend
 
 Important current behavior:
 
@@ -70,7 +70,7 @@ Two details matter:
 
 1. The CLI default is `native`, not `auto`.
 2. In normal workspace builds, `sf-nano-core` enables `micro-jit` by default, so `native` is usually available without extra feature flags.
-3. `--reference` is only accepted in debug builds. Release builds reject it.
+3. `--emu` is only accepted in debug builds. Release builds reject it.
 
 ## Native vs Reference
 
@@ -85,7 +85,7 @@ Goal:
 Today that means:
 
 - on AArch64, normal `--backend native` execution uses the ARM64 backend
-- on non-AArch64, `native` is only available in debug builds through the reference backend
+- on non-AArch64, `native` is only available in debug builds through the emulator backend
 
 ### Reference backend
 
@@ -104,8 +104,8 @@ What it is not:
 How to enable it:
 
 ```bash
-cargo run --bin sf-nano-cli -- --backend native --reference path/to/module.wasm
-cargo run --bin sf-nano-spectest -- --backend native --reference
+cargo run --bin sf-nano-cli -- --backend native --emu path/to/module.wasm
+cargo run --bin sf-nano-spectest -- --backend native --emu
 ```
 
 If you need to reason about reference behavior, treat it as a debug-only native-validation backend.
@@ -159,7 +159,7 @@ Useful variants:
 ```bash
 cargo run --bin sf-nano-spectest -- --backend base
 cargo run --bin sf-nano-spectest -- --backend native if
-cargo run --bin sf-nano-spectest -- --backend native --reference if
+cargo run --bin sf-nano-spectest -- --backend native --emu if
 cargo run --bin sf-nano-spectest -- --backend native path/to/test.wast
 ```
 

@@ -1,0 +1,161 @@
+use alloc::{rc::Rc, vec::Vec};
+
+use crate::{
+    error::WasmError,
+    vm::{
+        backend::BackendConfig,
+        native::{
+            code::{CompiledNativeModule, NativeCode, NativeCodeCache},
+            ir::machine::MachineFuncId,
+            lower::{lower_module, LowerFunctionInput, LowerModuleInput},
+        },
+        plan::{config::PlanConfig, prepare::PrepareInput, prepare_function, PreparedFunction},
+        store::Store,
+        wasm::{context::CompileContext, decode},
+    },
+};
+
+#[inline]
+pub const fn native_backend_config() -> BackendConfig {
+    BackendConfig {
+        ctx_register_count: 1,
+        fp_register_count: 1,
+        tmp_register_count: 4,
+        hot_local_count: 3,
+        tos_register_count: 4,
+    }
+}
+
+#[inline]
+pub const fn native_plan_config() -> PlanConfig {
+    PlanConfig::from_backend_config(native_backend_config(), 3)
+}
+
+pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
+    let module = store.module();
+    let all_compiled = module
+        .functions
+        .iter()
+        .filter_map(|func| func.spec())
+        .all(|spec| spec.has_native_code());
+    if all_compiled {
+        return Ok(());
+    }
+
+    let mut lowered_inputs = Vec::new();
+    let mut prepared_functions = Vec::new();
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let params = spec.func_type().params().len() as u16;
+        let local_count = params.saturating_add(spec.locals().len() as u16);
+        let results = spec.func_type().results().len() as u16;
+        let semantic = decode::decode_to_semantic_ir(
+            spec.code(),
+            CompileContext::new(&module.types, store, module, params, local_count, results),
+        )
+        .map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "native decode failed for function {}: {}",
+                func_idx,
+                err
+            ))
+        })?;
+        let prepared =
+            prepare_function(PrepareInput { config: native_plan_config() }, &semantic).map_err(
+                |err| {
+                    WasmError::internal(alloc::format!(
+                        "native prepare failed for function {}: {}",
+                        func_idx,
+                        err
+                    ))
+                },
+            )?;
+        prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
+    }
+
+    for (id, prepared) in &prepared_functions {
+        lowered_inputs.push(LowerFunctionInput {
+            id: *id,
+            frame: prepared.frame,
+            lir: &prepared.lir,
+        });
+    }
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: native_backend_config(),
+        functions: &lowered_inputs,
+    })?;
+    let compiled = Rc::new(CompiledNativeModule::new(
+        native_backend_config(),
+        lowered.module,
+        lowered.runtime,
+    )?);
+
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        spec.set_native_code(
+            NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32)),
+            NativeCodeCache::compiled(),
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, rc::Rc, string::String, vec};
+
+    use super::ensure_module_compiled;
+    use crate::{
+        module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        vm::{
+            entities::{FunctionInst, ModuleInst},
+            store::Store,
+        },
+        value_type::ValueType,
+    };
+
+    #[test]
+    fn compiles_all_local_functions_once() {
+        let types = TypeContext::new(vec![
+            Rc::new(FunctionType::new(vec![], vec![])),
+            Rc::new(FunctionType::new(vec![ValueType::I32], vec![])),
+        ]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec0 =
+            FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
+        spec0.set_code((&[0x0b][..]).into());
+        let mut spec1 =
+            FunctionSpec::new(Rc::new(FunctionType::new(vec![ValueType::I32], vec![])), 1);
+        spec1.set_code((&[0x20, 0x00, 0x1a, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: spec0,
+            type_index: 0,
+        });
+        module.functions.push(FunctionInst::Local {
+            spec: spec1,
+            type_index: 1,
+        });
+        let store = Box::new(Store::new(module));
+
+        ensure_module_compiled(&store).expect("native compile should succeed");
+
+        let first = store.module().functions[0]
+            .spec()
+            .and_then(|spec| spec.get_native_code())
+            .expect("first native code");
+        let second = store.module().functions[1]
+            .spec()
+            .and_then(|spec| spec.get_native_code())
+            .expect("second native code");
+
+        assert!(Rc::ptr_eq(first.compiled_rc(), second.compiled_rc()));
+        assert_eq!(first.func_id().0, 0);
+        assert_eq!(second.func_id().0, 1);
+    }
+}

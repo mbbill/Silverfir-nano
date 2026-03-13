@@ -459,6 +459,8 @@ fn lower_function(
                             MachineTerminator::CallIndirect {
                                 callee_target: MachineValue::Reg(local_call_target_param),
                                 callee_frame_base: lower.temp_reg(0)?,
+                                arg_slots: args.count,
+                                caller_result_base: results.start.0,
                                 continuation,
                             },
                         )?;

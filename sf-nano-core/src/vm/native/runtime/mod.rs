@@ -1,17 +1,66 @@
 use crate::{
     error::WasmError,
-    vm::{entities::FunctionInst, stack::InterpreterStack, store::Store, value::Value},
+    vm::{
+        entities::{Caller, FunctionInst},
+        native::{arch, build},
+        stack::InterpreterStack,
+        store::Store,
+        value::Value,
+    },
 };
 
 pub mod context;
 pub mod helpers;
 
 pub fn eval(
-    _func_inst: &FunctionInst,
-    _store: &mut Store,
-    _args: &[Value],
+    func_inst: &FunctionInst,
+    store: &mut Store,
+    args: &[Value],
 ) -> Result<InterpreterStack, WasmError> {
-    Err(WasmError::invalid(
-        "native runtime execution is not wired to MachineIR yet".into(),
-    ))
+    match func_inst {
+        FunctionInst::External {
+            func_type,
+            callback,
+        } => {
+            if args.len() != func_type.params().len() {
+                return Err(WasmError::invalid(alloc::format!(
+                    "invalid argument count: got {}, expected {}",
+                    args.len(),
+                    func_type.params().len()
+                )));
+            }
+            let mut returns = alloc::vec![Value::default(); func_type.results().len()];
+            let mem_slice = if store.module().memories.is_empty() {
+                None
+            } else {
+                Some(store.memory_mut(0).data.as_mut_slice())
+            };
+            let mut caller = Caller::new(mem_slice);
+            callback(&mut caller, args, &mut returns)?;
+
+            let mut out = InterpreterStack::with_exact_capacity(returns.len());
+            for value in returns {
+                out.push(value.to_raw());
+            }
+            Ok(out)
+        }
+        FunctionInst::Local { spec, .. } => {
+            if !spec.has_native_code() {
+                build::ensure_module_compiled(store)?;
+            }
+            let code = spec.get_native_code().ok_or_else(|| {
+                WasmError::internal("native runtime is missing compiled machine code".into())
+            })?;
+            match arch::active_native_backend()
+                .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))? {
+                arch::NativeBackend::Arm64 => Err(WasmError::invalid(
+                    "arm64 native backend is not wired to MachineIR yet".into(),
+                )),
+                #[cfg(debug_assertions)]
+                arch::NativeBackend::Reference => {
+                    arch::emulator::eval(spec, code, store, args, arch::NativeBackend::Reference.as_str())
+                }
+            }
+        }
+    }
 }

@@ -141,6 +141,7 @@ impl MachineProgram {
                 callee_target,
                 callee_frame_base,
                 continuation,
+                ..
             } => {
                 self.validate_value(*callee_target)?;
                 self.validate_reg(*callee_frame_base)?;

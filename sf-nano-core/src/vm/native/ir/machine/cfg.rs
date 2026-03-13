@@ -61,10 +61,12 @@ pub enum MachineTerminator {
     /// target in order to finish any call-link/local-prefix handling before the
     /// actual transfer. Lowering above MachineIR therefore resolves the local
     /// callee target, computes the callee frame base, and publishes the
-    /// canonical argument slots needed by that later step.
+    /// canonical argument/result slot facts needed by that later step.
     CallIndirect {
         callee_target: MachineValue,
         callee_frame_base: MachineReg,
+        arg_slots: u16,
+        caller_result_base: u16,
         continuation: MachineBlockId,
     },
     /// Return using canonical frame result slots already prepared before the
