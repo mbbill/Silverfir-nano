@@ -30,7 +30,11 @@ pub fn writes_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
 fn reads_boundary(kind: &LirBoundaryOp) -> Vec<FrameSpan> {
     match kind {
         LirBoundaryOp::MemoryGrow { io, .. } => alloc::vec![*io],
-        LirBoundaryOp::TableGrow { args, .. }
+        LirBoundaryOp::MemoryFill { args, .. }
+        | LirBoundaryOp::MemoryCopy { args, .. }
+        | LirBoundaryOp::TableGrow { args, .. }
+        | LirBoundaryOp::TableFill { args, .. }
+        | LirBoundaryOp::TableCopy { args, .. }
         | LirBoundaryOp::MemoryInit { args, .. }
         | LirBoundaryOp::TableInit { args, .. }
         | LirBoundaryOp::CallExternal { args, .. }
@@ -49,7 +53,11 @@ fn writes_boundary(kind: &LirBoundaryOp) -> Vec<FrameSpan> {
         | LirBoundaryOp::CallExternal { results, .. }
         | LirBoundaryOp::CallInternal { results, .. }
         | LirBoundaryOp::CallIndirect { results, .. } => alloc::vec![*results],
-        LirBoundaryOp::MemoryInit { .. }
+        LirBoundaryOp::MemoryFill { .. }
+        | LirBoundaryOp::MemoryCopy { .. }
+        | LirBoundaryOp::TableFill { .. }
+        | LirBoundaryOp::TableCopy { .. }
+        | LirBoundaryOp::MemoryInit { .. }
         | LirBoundaryOp::DataDrop { .. }
         | LirBoundaryOp::TableInit { .. }
         | LirBoundaryOp::ElemDrop { .. } => Vec::new(),

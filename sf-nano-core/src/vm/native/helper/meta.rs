@@ -37,10 +37,40 @@ pub struct MemoryGrowMeta {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MemoryFillMeta {
+    pub mem_idx: u32,
+    pub args: HelperFrameRegion,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MemoryCopyMeta {
+    pub dst_mem_idx: u32,
+    pub src_mem_idx: u32,
+    pub args: HelperFrameRegion,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TableGrowMeta {
     pub table_idx: u32,
     pub args: HelperFrameRegion,
     pub results: HelperFrameRegion,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TableFillMeta {
+    pub table_idx: u32,
+    pub args: HelperFrameRegion,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TableCopyMeta {
+    pub dst_table_idx: u32,
+    pub src_table_idx: u32,
+    pub args: HelperFrameRegion,
 }
 
 #[repr(C)]

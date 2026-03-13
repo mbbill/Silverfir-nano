@@ -14,9 +14,9 @@ use crate::{
 use super::{
     edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     ops::{
-        branch_payload, lower_call_external, lower_call_indirect, lower_call_internal,
-        lower_local_get, lower_local_set, lower_local_tee, lower_prefix_actions, lower_primitive,
-        return_results,
+        branch_payload, lower_boundary_primitive, lower_call_external, lower_call_indirect,
+        lower_call_internal, lower_local_get, lower_local_set, lower_local_tee,
+        lower_prefix_actions, lower_primitive, return_results,
     },
     state::{BlockState, EntryState, ValueAlloc},
     steps::PreparedOp,
@@ -42,7 +42,11 @@ pub(super) fn lower_block_terminator(
             Ok(LirTerminator::TrapUnreachable)
         }
         SemanticOpKind::Primitive(kind) => {
-            lower_primitive(kind, state, values)?;
+            if crate::vm::lir::leaf::is_boundary_primitive(kind) {
+                lower_boundary_primitive(kind, state, frame)?;
+            } else {
+                lower_primitive(kind, state, values)?;
+            }
             goto_next(
                 semantic_index,
                 semantic_len,

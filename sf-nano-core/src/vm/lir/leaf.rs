@@ -12,7 +12,7 @@ pub struct LirLeafOp(PrimitiveOpKind);
 impl LirLeafOp {
     #[inline]
     pub fn from_primitive(kind: PrimitiveOpKind) -> Option<Self> {
-        (!is_runtime_boundary_primitive(&kind)).then_some(Self(kind))
+        (!is_boundary_primitive(&kind)).then_some(Self(kind))
     }
 
     #[inline]
@@ -22,11 +22,15 @@ impl LirLeafOp {
 }
 
 #[inline]
-pub fn is_runtime_boundary_primitive(kind: &PrimitiveOpKind) -> bool {
+pub fn is_boundary_primitive(kind: &PrimitiveOpKind) -> bool {
     matches!(
         kind,
         PrimitiveOpKind::MemoryGrow { .. }
+            | PrimitiveOpKind::MemoryFill { .. }
+            | PrimitiveOpKind::MemoryCopy { .. }
             | PrimitiveOpKind::TableGrow { .. }
+            | PrimitiveOpKind::TableFill { .. }
+            | PrimitiveOpKind::TableCopy { .. }
             | PrimitiveOpKind::MemoryInit { .. }
             | PrimitiveOpKind::DataDrop { .. }
             | PrimitiveOpKind::TableInit { .. }

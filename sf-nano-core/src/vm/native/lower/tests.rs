@@ -419,6 +419,99 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
 }
 
 #[test]
+fn lowers_memory_copy_through_frame_metadata() {
+    let frame = plan_frame_layout(0, 3, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
+                    dst_mem_idx: 0,
+                    src_mem_idx: 1,
+                    args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 3),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("memory.copy helper lowering should succeed");
+
+    assert_eq!(lowered.module.externs.len(), 1);
+    assert_eq!(
+        lowered.module.externs[0].symbol,
+        MachineHelperSymbol::MemoryCopy
+    );
+    assert_eq!(lowered.module.consts.len(), 1);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+}
+
+#[test]
+fn lowers_table_fill_through_frame_metadata() {
+    let frame = plan_frame_layout(0, 3, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::TableFill {
+                    table_idx: 2,
+                    args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 3),
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig {
+            ctx_register_count: 1,
+            fp_register_count: 1,
+            tmp_register_count: 1,
+            hot_local_count: 0,
+            tos_register_count: 4,
+        },
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect("table.fill helper lowering should succeed");
+
+    assert_eq!(lowered.module.externs.len(), 1);
+    assert_eq!(
+        lowered.module.externs[0].symbol,
+        MachineHelperSymbol::TableFill
+    );
+    assert_eq!(lowered.module.consts.len(), 1);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+}
+
+#[test]
 fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
     let lir = LirProgram {

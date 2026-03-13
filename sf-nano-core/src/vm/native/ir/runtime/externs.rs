@@ -8,7 +8,11 @@ use super::super::machine::MachineExternId;
 pub enum MachineHelperSymbol {
     CallExternal,
     MemoryGrow,
+    MemoryFill,
+    MemoryCopy,
     TableGrow,
+    TableFill,
+    TableCopy,
     MemoryInit,
     DataDrop,
     TableInit,

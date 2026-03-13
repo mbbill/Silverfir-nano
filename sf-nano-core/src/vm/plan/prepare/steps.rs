@@ -107,7 +107,7 @@ fn plan_prefix(
             if matches!(kind, PrimitiveOpKind::Unreachable) {
                 return prefix;
             }
-            if crate::vm::lir::leaf::is_runtime_boundary_primitive(kind) {
+            if crate::vm::lir::leaf::is_boundary_primitive(kind) {
                 spill_all(&mut prefix, state, frame);
             } else {
                 let (pop, push) = primitive_op::stack_effect(kind);

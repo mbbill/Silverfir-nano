@@ -119,3 +119,102 @@ fn make_block_params(
 ) -> alloc::vec::Vec<crate::vm::lir::ir::LirValue> {
     values.many(entry.live_value_count() as usize)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::vm::{
+        lir::ir::{LirBoundaryOp, LirInstKind},
+        plan::{config::PlanConfig, prepare::{prepare_function, PrepareInput}},
+        wasm::{
+            primitive_op::PrimitiveOpKind,
+            semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
+        },
+    };
+
+    #[test]
+    fn prepares_memory_copy_as_boundary_op() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryCopy {
+                        imm0: 0,
+                        imm1: 1,
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnVoid,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("memory.copy preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| block.ops.iter().any(|inst| matches!(
+            inst.kind,
+            LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
+                dst_mem_idx: 0,
+                src_mem_idx: 1,
+                ..
+            })
+        ))));
+    }
+
+    #[test]
+    fn prepares_table_fill_as_boundary_op() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::RefNull),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableFill { imm0: 2, imm1: 0 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnVoid,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("table.fill preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| block.ops.iter().any(|inst| matches!(
+            inst.kind,
+            LirInstKind::Boundary(LirBoundaryOp::TableFill { table_idx: 2, .. })
+        ))));
+    }
+}

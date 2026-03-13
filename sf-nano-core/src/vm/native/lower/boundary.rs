@@ -4,8 +4,9 @@ use crate::{
         lir::ir::{LirBoundaryOp, LirValue},
         native::{
             helper::meta::{
-                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryGrowMeta,
-                MemoryInitMeta, TableGrowMeta, TableInitMeta,
+                CallExternalMeta, DataDropMeta, ElemDropMeta, HelperFrameRegion, MemoryCopyMeta,
+                MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta, TableFillMeta,
+                TableGrowMeta, TableInitMeta,
             },
             ir::{
                 machine::{
@@ -189,6 +190,25 @@ impl<'a> BlockLowerContext<'a> {
                     io: (*io).into(),
                 }),
             ),
+            LirBoundaryOp::MemoryFill { mem_idx, args } => (
+                sidecar.extern_target(H::MemoryFill),
+                sidecar.memory_fill_meta(MemoryFillMeta {
+                    mem_idx: *mem_idx,
+                    args: span_region_with_slots(*args, 3, "memory.fill args")?,
+                }),
+            ),
+            LirBoundaryOp::MemoryCopy {
+                dst_mem_idx,
+                src_mem_idx,
+                args,
+            } => (
+                sidecar.extern_target(H::MemoryCopy),
+                sidecar.memory_copy_meta(MemoryCopyMeta {
+                    dst_mem_idx: *dst_mem_idx,
+                    src_mem_idx: *src_mem_idx,
+                    args: span_region_with_slots(*args, 3, "memory.copy args")?,
+                }),
+            ),
             LirBoundaryOp::TableGrow {
                 table_idx,
                 args,
@@ -199,6 +219,25 @@ impl<'a> BlockLowerContext<'a> {
                     table_idx: *table_idx,
                     args: span_region_with_slots(*args, 2, "table.grow args")?,
                     results: span_region_with_slots(*results, 1, "table.grow results")?,
+                }),
+            ),
+            LirBoundaryOp::TableFill { table_idx, args } => (
+                sidecar.extern_target(H::TableFill),
+                sidecar.table_fill_meta(TableFillMeta {
+                    table_idx: *table_idx,
+                    args: span_region_with_slots(*args, 3, "table.fill args")?,
+                }),
+            ),
+            LirBoundaryOp::TableCopy {
+                dst_table_idx,
+                src_table_idx,
+                args,
+            } => (
+                sidecar.extern_target(H::TableCopy),
+                sidecar.table_copy_meta(TableCopyMeta {
+                    dst_table_idx: *dst_table_idx,
+                    src_table_idx: *src_table_idx,
+                    args: span_region_with_slots(*args, 3, "table.copy args")?,
                 }),
             ),
             LirBoundaryOp::MemoryInit {

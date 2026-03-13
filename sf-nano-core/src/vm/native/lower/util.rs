@@ -19,7 +19,11 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
             }
             LirInstKind::LoadSlot { .. } => {}
             LirInstKind::Boundary(LirBoundaryOp::MemoryGrow { .. })
+            | LirInstKind::Boundary(LirBoundaryOp::MemoryFill { .. })
+            | LirInstKind::Boundary(LirBoundaryOp::MemoryCopy { .. })
             | LirInstKind::Boundary(LirBoundaryOp::TableGrow { .. })
+            | LirInstKind::Boundary(LirBoundaryOp::TableFill { .. })
+            | LirInstKind::Boundary(LirBoundaryOp::TableCopy { .. })
             | LirInstKind::Boundary(LirBoundaryOp::MemoryInit { .. })
             | LirInstKind::Boundary(LirBoundaryOp::DataDrop { .. })
             | LirInstKind::Boundary(LirBoundaryOp::TableInit { .. })

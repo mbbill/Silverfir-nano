@@ -207,7 +207,11 @@ fn lower_function(
                 }
                 LirInstKind::Boundary(boundary) => match boundary {
                     LirBoundaryOp::MemoryGrow { .. }
+                    | LirBoundaryOp::MemoryFill { .. }
+                    | LirBoundaryOp::MemoryCopy { .. }
                     | LirBoundaryOp::TableGrow { .. }
+                    | LirBoundaryOp::TableFill { .. }
+                    | LirBoundaryOp::TableCopy { .. }
                     | LirBoundaryOp::MemoryInit { .. }
                     | LirBoundaryOp::DataDrop { .. }
                     | LirBoundaryOp::TableInit { .. }

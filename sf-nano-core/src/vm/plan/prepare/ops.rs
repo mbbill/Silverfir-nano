@@ -66,7 +66,7 @@ pub(super) fn lower_primitive(
     state.ops.push(LirInst {
         kind: LirInstKind::Value {
             op: LirLeafOp::from_primitive(kind.clone())
-                .expect("non-runtime primitive must lower as a leaf op"),
+                .expect("non-boundary primitive must lower as a leaf op"),
             args,
             results: results.clone(),
         },
@@ -74,14 +74,14 @@ pub(super) fn lower_primitive(
     state.push_results(results)
 }
 
-pub(super) fn lower_runtime_boundary_primitive(
+pub(super) fn lower_boundary_primitive(
     kind: &PrimitiveOpKind,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
 ) -> Result<(), WasmError> {
     if !state.live().is_empty() {
         return Err(WasmError::internal(
-            "runtime boundary reached LIR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
+            "boundary primitive reached LIR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
         ));
     }
     let (pop, push) = primitive_op::stack_effect(kind);
@@ -91,10 +91,28 @@ pub(super) fn lower_runtime_boundary_primitive(
             mem_idx: *mem_idx,
             io: FrameSpan::new(boundary_base, 1),
         },
+        PrimitiveOpKind::MemoryFill { imm0, .. } => LirBoundaryOp::MemoryFill {
+            mem_idx: *imm0,
+            args: FrameSpan::new(boundary_base, 3),
+        },
+        PrimitiveOpKind::MemoryCopy { imm0, imm1 } => LirBoundaryOp::MemoryCopy {
+            dst_mem_idx: *imm0,
+            src_mem_idx: *imm1,
+            args: FrameSpan::new(boundary_base, 3),
+        },
         PrimitiveOpKind::TableGrow { table_idx } => LirBoundaryOp::TableGrow {
             table_idx: *table_idx,
             args: FrameSpan::new(boundary_base, 2),
             results: FrameSpan::new(boundary_base, 1),
+        },
+        PrimitiveOpKind::TableFill { imm0, .. } => LirBoundaryOp::TableFill {
+            table_idx: *imm0,
+            args: FrameSpan::new(boundary_base, 3),
+        },
+        PrimitiveOpKind::TableCopy { imm0, imm1 } => LirBoundaryOp::TableCopy {
+            dst_table_idx: *imm0,
+            src_table_idx: *imm1,
+            args: FrameSpan::new(boundary_base, 3),
         },
         PrimitiveOpKind::MemoryInit { imm0, imm1 } => LirBoundaryOp::MemoryInit {
             data_idx: *imm0,
@@ -114,7 +132,7 @@ pub(super) fn lower_runtime_boundary_primitive(
         },
         _ => {
             return Err(WasmError::internal(
-                "non-runtime primitive reached runtime-boundary lowering".into(),
+                "non-boundary primitive reached boundary lowering".into(),
             ))
         }
     };
@@ -276,8 +294,8 @@ pub(super) fn lower_block_body_op(
             ))
         }
         SemanticOpKind::Primitive(kind) => {
-            if crate::vm::lir::leaf::is_runtime_boundary_primitive(kind) {
-                lower_runtime_boundary_primitive(kind, state, frame)
+            if crate::vm::lir::leaf::is_boundary_primitive(kind) {
+                lower_boundary_primitive(kind, state, frame)
             } else {
                 lower_primitive(kind, state, values)
             }

@@ -93,10 +93,28 @@ pub enum LirBoundaryOp {
         mem_idx: u32,
         io: FrameSpan,
     },
+    MemoryFill {
+        mem_idx: u32,
+        args: FrameSpan,
+    },
+    MemoryCopy {
+        dst_mem_idx: u32,
+        src_mem_idx: u32,
+        args: FrameSpan,
+    },
     TableGrow {
         table_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
+    },
+    TableFill {
+        table_idx: u32,
+        args: FrameSpan,
+    },
+    TableCopy {
+        dst_table_idx: u32,
+        src_table_idx: u32,
+        args: FrameSpan,
     },
     MemoryInit {
         data_idx: u32,
