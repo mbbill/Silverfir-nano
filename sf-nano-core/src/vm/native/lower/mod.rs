@@ -54,6 +54,9 @@ pub struct LowerFunctionInput<'a> {
     pub id: MachineFuncId,
     pub frame: FrameLayoutPlan,
     pub lir: &'a LirProgram,
+    /// Declared result count from the function type signature.
+    /// Used as fallback when all return paths are unreachable.
+    pub result_count: u16,
 }
 
 /// One lowering request for a whole machine module.
@@ -144,7 +147,14 @@ fn lower_function_runtime(
             slots: span.count - link_slots,
         })
     });
-    let return_results = derive_return_results(input.lir)?;
+    let mut return_results = derive_return_results(input.lir)?;
+    // Fallback: if no Return terminators exist (all paths trap/unreachable),
+    // use the declared result count from the type signature so that callers
+    // see the correct contract.
+    if return_results.is_none() && input.result_count > 0 {
+        let result_span = input.frame.return_results(input.result_count);
+        return_results = Some(frame_span_region(result_span));
+    }
 
     Ok(MachineFunctionRuntime {
         id: input.id,

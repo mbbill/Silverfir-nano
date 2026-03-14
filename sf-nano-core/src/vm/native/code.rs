@@ -4,14 +4,21 @@ use crate::{
     error::WasmError,
     vm::{
         backend::BackendConfig,
-        native::ir::{
-            machine::{
-                MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
+        native::{
+            arch::NativeBackend,
+            ir::{
+                machine::{
+                    MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
+                },
+                runtime::MachineRuntimeContract,
             },
-            runtime::MachineRuntimeContract,
+            runtime::context::NativeContext,
         },
     },
 };
+
+pub type Arm64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+pub type Arm64CodePtr = *const u8;
 
 #[derive(Clone, Debug)]
 struct AlignedConstData {
@@ -48,6 +55,7 @@ impl AlignedConstData {
 
 #[derive(Debug)]
 pub struct CompiledNativeModule {
+    backend_kind: NativeBackend,
     backend: BackendConfig,
     module: MachineModule,
     runtime: MachineRuntimeContract,
@@ -56,6 +64,7 @@ pub struct CompiledNativeModule {
 
 impl CompiledNativeModule {
     pub fn new(
+        backend_kind: NativeBackend,
         backend: BackendConfig,
         module: MachineModule,
         runtime: MachineRuntimeContract,
@@ -65,6 +74,7 @@ impl CompiledNativeModule {
             aligned_consts.push(AlignedConstData::new(konst)?);
         }
         Ok(Self {
+            backend_kind,
             backend,
             module,
             runtime,
@@ -75,6 +85,11 @@ impl CompiledNativeModule {
     #[inline]
     pub const fn backend(&self) -> BackendConfig {
         self.backend
+    }
+
+    #[inline]
+    pub const fn backend_kind(&self) -> NativeBackend {
+        self.backend_kind
     }
 
     #[inline]
@@ -104,12 +119,30 @@ impl CompiledNativeModule {
 pub struct NativeCode {
     compiled: Rc<CompiledNativeModule>,
     func_id: MachineFuncId,
+    arm64_entry: Option<Arm64RootEntry>,
+    arm64_root_return: Option<Arm64CodePtr>,
 }
 
 impl NativeCode {
     #[inline]
     pub fn new(compiled: Rc<CompiledNativeModule>, func_id: MachineFuncId) -> Self {
-        Self { compiled, func_id }
+        Self {
+            compiled,
+            func_id,
+            arm64_entry: None,
+            arm64_root_return: None,
+        }
+    }
+
+    #[inline]
+    pub fn with_arm64_entry(
+        mut self,
+        entry: Option<Arm64RootEntry>,
+        root_return: Option<Arm64CodePtr>,
+    ) -> Self {
+        self.arm64_entry = entry;
+        self.arm64_root_return = root_return;
+        self
     }
 
     #[inline]
@@ -125,6 +158,16 @@ impl NativeCode {
     #[inline]
     pub fn compiled_rc(&self) -> &Rc<CompiledNativeModule> {
         &self.compiled
+    }
+
+    #[inline]
+    pub const fn arm64_entry(&self) -> Option<Arm64RootEntry> {
+        self.arm64_entry
+    }
+
+    #[inline]
+    pub const fn arm64_root_return(&self) -> Option<Arm64CodePtr> {
+        self.arm64_root_return
     }
 
     #[inline]

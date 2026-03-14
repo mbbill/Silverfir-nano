@@ -891,9 +891,22 @@ Defines the fixed machine register partition from backend config:
 
 - one runtime anchor reg
 - one frame anchor reg
+- fixed `mem0_base` / `mem0_size` view regs
 - `cached_locals` fixed local-cache regs
 - `tos_lanes` fixed transient regs
-- fixed temp regs
+
+The fixed machine roles (`ctx`, `fp`, and any pinned runtime-view regs such as
+`mem0_base` / `mem0_size`) are ABI facts, not tuning knobs.
+
+The backend-configured budgets above them should stay minimal and meaningful:
+
+- `cached_locals` controls how many canonical local slots stay resident in
+  fixed cache regs
+- `tos_lanes` controls the prepared transient live window budget
+
+When safe, lowering may temporarily borrow transient lanes or cached-local regs
+for internal helper work. That reuse is an implementation detail, not a new ABI
+class.
 
 2. `block lowering`
 
@@ -1008,3 +1021,47 @@ The intended model remains:
 - LIR owns program semantics plus prepared transient fit
 - native lowering owns ABI transitions, helper metadata construction, and machine-level lowering of already-explicit boundary spans
 - MachineIR owns only machine concepts
+
+## Optimization Backlog
+
+With the current MachineIR path and emulator in place, the main remaining
+shared-code optimizations are:
+
+1. Compare-branch fusion
+
+- when a compare result is consumed only by a branch terminator, lowering should
+  emit `MachineBranchCond::IntCompare` / `FloatCompare` directly instead of
+  materializing a boolean register first
+- this keeps the shared IR closer to the eventual ISA branch form and removes
+  redundant boolean traffic in branch-heavy code
+
+2. Pinned globals base
+
+- `mem0_base` / `mem0_size` are already worth pinning because memory0 is the
+  hottest runtime view
+- `globals_base` is the next likely candidate: `global.get/set` currently still
+  reload the globals view base from `ctx` on each access
+- this should follow the same contract as the memory0 cache regs:
+  - `ctx` remains the source of truth
+  - local native calls keep the pinned view live
+  - helper-backed boundaries reload it after return
+
+3. Small MachineIR peephole cleanup
+
+- the current design intentionally avoids traditional optimization passes, but a
+  tiny structural cleanup after lowering is still worthwhile
+- the intended scope is mechanical only:
+  - remove self-moves
+  - collapse trivial move chains
+  - prune obvious redundant edge copies
+- this should stay a local cleanup pass, not grow into a general optimizer
+
+4. Helper-specific pinned-view reload elision
+
+- the safe default is to reload pinned runtime-view regs after every
+  helper-backed boundary
+- later, if profiling shows it matters, helper metadata can record whether a
+  helper may change memory or global views and allow reloads to be skipped when
+  sound
+- this is a second-step optimization and should not complicate the initial
+  helper ABI rules

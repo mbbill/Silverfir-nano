@@ -1,0 +1,46 @@
+
+    1. materialize_u64 always emits 4 instructions (16 bytes)
+
+    fn materialize_u64_into(text: &mut Arm64TextEmitter, dst: Arm64Reg, value: u64) {
+        text.emit_u32(enc::movz_64(dst, (value & 0xffff) as u16, 0));
+        text.emit_u32(enc::movk_64(dst, ((value >> 16) & 0xffff) as u16, 16));
+        text.emit_u32(enc::movk_64(dst, ((value >> 32) & 0xffff) as u16, 32));
+        text.emit_u32(enc::movk_64(dst, ((value >> 48) & 0xffff) as u16, 48));
+    }
+
+    Even for small constants like 0, 1, 3, or 8, it emits all 4 instructions. Most constants in practice are small — this could be 1 instruction (movz) for values < 65536, 2 for values < 2^32, etc. This
+    bloats code size significantly and wastes icache.
+
+    2. Jump table index shift uses materialize_u64 + lslv instead of lsl immediate
+
+    In emit_jump_table and emit_call_indirect, shifting by a constant (3 or 5) is done by materializing the shift amount into a register (4 instructions!) then using a variable shift. ARM64 has lsl with
+    immediate operands (via ubfm/lsl #imm) which is a single instruction.
+
+    3. Edge stubs are always emitted, even for trivial edges
+
+    Every branch target goes through an edge stub, even when the edge has zero parameters (no parallel moves needed). This means every branch takes an extra unconditional jump through the stub. Direct jumps
+    to the target block would eliminate this overhead.
+
+    4. Literal pool loads for direct calls and continuations
+
+    ldr_lit_64 + 8-byte literal pool entries are used for every continuation address and call target. This pollutes the icache with data interleaved in the code stream. A dedicated literal pool at the end of
+     the function (or per-block) would be more cache-friendly.
+
+    5. emit_call_helper materializes function pointer every time
+
+    Each helper call materializes the full 64-bit helper address (4 instructions). If the same helper is called multiple times in a function, there's no reuse.
+
+    6. emit_zero_dynamic_callee_prefix uses a byte-at-a-time loop
+
+    The zeroing loop stores one 8-byte slot per iteration with a branch. Using stp xzr, xzr (store pair) would zero 16 bytes per iteration, halving the loop count. For known-small ranges, unrolled stores
+    would be even better.
+
+    7. Stack overflow check on every direct call
+
+    The stack overflow check loads stack_end from the context struct on every call. In a tight recursive function this adds ~4 instructions per call. The stack end doesn't change — it could be kept in a
+    dedicated register (though register pressure is a concern).
+
+    The materialize_u64 issue is by far the most impactful — it's called everywhere (constants, shifts, trap codes, addresses) and inflates code size by roughly 3x for small values, which directly hurts
+    icache utilization.
+
+ 

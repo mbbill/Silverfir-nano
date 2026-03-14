@@ -21,8 +21,9 @@ pub const fn native_plan_config(backend: crate::vm::backend::BackendConfig) -> P
 }
 
 pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
-    let backend = arch::active_backend_config()
+    let active_backend = arch::active_native_backend()
         .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
+    let backend = arch::compile_backend_config(active_backend);
     let module = store.module();
     let all_compiled = module
         .functions
@@ -30,7 +31,10 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .filter_map(|func| func.spec())
         .all(|spec| {
             spec.get_native_code()
-                .map(|code| code.compiled().backend() == backend)
+                .map(|code| {
+                    code.compiled().backend_kind() == active_backend
+                        && code.compiled().backend() == backend
+                })
                 .unwrap_or(false)
         });
     if all_compiled {
@@ -75,11 +79,18 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
     }
 
-    for (id, prepared) in &prepared_functions {
+    for (func_idx, (id, prepared)) in prepared_functions.iter().enumerate() {
+        let result_count = module
+            .functions
+            .get(id.0 as usize)
+            .and_then(|f| f.spec())
+            .map(|s| s.func_type().results().len() as u16)
+            .unwrap_or(0);
         lowered_inputs.push(LowerFunctionInput {
             id: *id,
             frame: prepared.frame,
             lir: &prepared.lir,
+            result_count,
         });
     }
 
@@ -88,17 +99,31 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         functions: &lowered_inputs,
     })?;
     let compiled = Rc::new(CompiledNativeModule::new(
+        active_backend,
         backend,
         lowered.module,
         lowered.runtime,
     )?);
+    let arm64_entries = match active_backend {
+        arch::NativeBackend::Arm64 => {
+            Some(arch::arm64::compile::compile_module(module, &compiled)?)
+        }
+        #[cfg(debug_assertions)]
+        arch::NativeBackend::Reference => None,
+    };
 
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
             continue;
         };
+        let arm64_entry = arm64_entries
+            .as_ref()
+            .and_then(|entries| entries.get(func_idx).copied().flatten());
         spec.set_native_code(
-            NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32)),
+            NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32)).with_arm64_entry(
+                arm64_entry.map(|entry| entry.entry),
+                arm64_entry.map(|entry| entry.root_return),
+            ),
             NativeCodeCache::compiled(),
         );
     }

@@ -68,6 +68,7 @@ fn lowers_simple_slot_and_add_block() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("lowering should succeed");
@@ -173,6 +174,7 @@ fn lowers_select_with_wasm_operand_order() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("select lowering should succeed");
@@ -216,6 +218,7 @@ fn native_backend_requires_at_least_one_lir_lane() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect_err("zero-lane native backend should be rejected");
@@ -246,6 +249,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("lowering should succeed");
@@ -306,6 +310,7 @@ fn rejects_inconsistent_return_result_spans() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect_err("inconsistent return spans should be rejected");
@@ -346,6 +351,7 @@ fn rejects_mixed_void_and_value_returns() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect_err("mixed void and value returns should be rejected");
@@ -392,6 +398,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("lowering should succeed");
@@ -449,6 +456,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("lowering should succeed");
@@ -509,6 +517,7 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("runtime helper lowering should succeed");
@@ -552,6 +561,7 @@ fn lowers_memory_copy_through_frame_metadata() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("memory.copy helper lowering should succeed");
@@ -594,6 +604,7 @@ fn lowers_table_fill_through_frame_metadata() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("table.fill helper lowering should succeed");
@@ -637,6 +648,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("external helper lowering should succeed");
@@ -699,6 +711,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("external helper lowering should succeed with cached locals");
@@ -764,6 +777,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("runtime helper lowering should succeed with cached locals");
@@ -833,11 +847,13 @@ fn lowers_direct_local_call_with_continuation_block() {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
                 frame: caller_frame,
                 lir: &caller,
+                result_count: 0,
             },
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(1),
                 frame: callee_frame,
                 lir: &callee,
+                result_count: 0,
             },
         ],
     })
@@ -1012,11 +1028,13 @@ fn flushes_cached_local_before_second_direct_call() {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
                 frame: caller_frame,
                 lir: &caller,
+                result_count: 0,
             },
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(1),
                 frame: callee_frame,
                 lir: &callee,
+                result_count: 0,
             },
         ],
     })
@@ -1126,6 +1144,7 @@ fn preserves_cached_locals_across_block_edges() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("block-edge cache preservation lowering should succeed");
@@ -1219,11 +1238,13 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
                 frame: caller_frame,
                 lir: &caller,
+                result_count: 0,
             },
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(2),
                 frame: callee_frame,
                 lir: &callee,
+                result_count: 0,
             },
         ],
     })
@@ -1273,6 +1294,7 @@ fn lowers_memory_size_without_helper_boundary() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("memory.size should lower directly");
@@ -1320,6 +1342,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("call_indirect lowering should succeed");
@@ -1498,6 +1521,7 @@ fn lowers_global_get_and_set_without_helpers() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("global get/set should lower directly");
@@ -1554,6 +1578,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("table.get should lower with an explicit trap split");
@@ -1620,6 +1645,7 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
             lir: &lir,
+            result_count: 0,
         }],
     })
     .expect("i32.load should lower with an explicit trap split");

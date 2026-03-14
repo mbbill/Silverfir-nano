@@ -75,6 +75,38 @@ struct Emulator<'a> {
     call_stack: Vec<SavedCaller>,
 }
 
+pub(crate) fn eval_root_with_context(
+    compiled: &CompiledNativeModule,
+    func_id: crate::vm::native::ir::machine::MachineFuncId,
+    ctx: &mut NativeContext,
+    fp: *mut u64,
+) -> Result<(), WasmError> {
+    let program = compiled.function(func_id).ok_or_else(|| {
+        WasmError::internal("native entry function is missing machine code".into())
+    })?;
+    let ctx_ptr = (ctx as *const NativeContext) as u64;
+    let mem0_base = ctx.mem0_base as u64;
+    let mem0_size = ctx.mem0_size;
+    Emulator {
+        ctx,
+        compiled,
+        root_frame: fp,
+        func_id,
+        block_id: program.program.entry,
+        fp,
+        regs: init_entry_regs(
+            compiled,
+            program.program.reg_count,
+            ctx_ptr,
+            fp as u64,
+            mem0_base,
+            mem0_size,
+        ),
+        call_stack: Vec::new(),
+    }
+    .run()
+}
+
 pub fn eval(
     spec: &FunctionSpec,
     code: &NativeCode,
@@ -100,9 +132,6 @@ pub fn eval(
         .ok_or_else(|| {
             WasmError::internal("native entry function is missing runtime metadata".into())
         })?;
-    let program = compiled.function(func_id).ok_or_else(|| {
-        WasmError::internal("native entry function is missing machine code".into())
-    })?;
 
     let mut stack = vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
@@ -129,27 +158,7 @@ pub fn eval(
         function_trace::native_root_entry(&mut ctx, spec, backend);
     }
 
-    let ctx_ptr = (&ctx as *const NativeContext) as u64;
-    let mem0_base = ctx.mem0_base as u64;
-    let mem0_size = ctx.mem0_size;
-    let result = Emulator {
-        ctx: &mut ctx,
-        compiled,
-        root_frame: stack_base,
-        func_id,
-        block_id: program.program.entry,
-        fp: stack_base,
-        regs: init_entry_regs(
-            compiled,
-            program.program.reg_count,
-            ctx_ptr,
-            stack_base as u64,
-            mem0_base,
-            mem0_size,
-        ),
-        call_stack: Vec::new(),
-    }
-    .run();
+    let result = eval_root_with_context(compiled, func_id, &mut ctx, stack_base);
 
     if let Err(ref error) = result {
         #[cfg(feature = "function-trace")]
@@ -771,7 +780,7 @@ fn init_entry_regs(
     regs
 }
 
-fn ensure_stack_capacity(
+pub(crate) fn ensure_stack_capacity(
     fp: *mut u64,
     stack_end: *mut u64,
     total_frame_slots: u16,
