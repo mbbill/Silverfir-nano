@@ -1,15 +1,16 @@
 use alloc::vec::Vec;
 
 use crate::vm::native::ir::machine::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineEdge, MachineInst, MachineInstKind,
-    MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg, MachineTerminator,
-    MachineValue,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
+    MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
+    MachineTerminator, MachineValue,
 };
 
 #[test]
 fn copy_propagates_transient_moves_into_ops_and_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 9,
         reg_count: 9,
         blocks: alloc::vec![
             MachineBlock {
@@ -38,7 +39,7 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineReg(7)],
+                params: alloc::vec![MachineBlockParam::gp(MachineReg(7))],
                 ops: Vec::new(),
                 terminator: MachineTerminator::Return,
             },
@@ -66,6 +67,7 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
 fn keeps_cached_local_writes_but_rewrites_their_sources() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 8,
         reg_count: 8,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -122,6 +124,7 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
 fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 8,
         reg_count: 8,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -182,6 +185,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
 fn forwards_non_adjacent_u64_store_load_pairs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 9,
         reg_count: 9,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -260,9 +264,68 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
 }
 
 #[test]
+fn forwards_fp_spill_reload_into_gp_move() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 11,
+        reg_count: 12,
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(11)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(11)),
+        }
+    ));
+}
+
+#[test]
 fn does_not_forward_when_stored_source_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 8,
         reg_count: 8,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -320,6 +383,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
 fn does_not_forward_across_overlapping_store() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 8,
         reg_count: 8,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -381,6 +445,7 @@ fn does_not_forward_across_overlapping_store() {
 fn reuses_identical_loads_when_memory_stays_unchanged() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 10,
         reg_count: 10,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -450,9 +515,59 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
 }
 
 #[test]
+fn reuses_identical_loads_from_fp_into_gp_move() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 11,
+        reg_count: 12,
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        dst: MachineReg(11),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 80,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 80,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(11)),
+        }
+    ));
+}
+
+#[test]
 fn does_not_reuse_load_after_loaded_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 9,
         reg_count: 9,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -511,6 +626,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
 fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 8,
         reg_count: 8,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),

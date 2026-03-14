@@ -27,10 +27,11 @@ use crate::{
         },
         native::ir::{
             machine::{
-                MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
-                MachineConstData, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
-                MachineLoadExtension, MachineMemWidth, MachineModule, MachineProgram, MachineReg,
-                MachineTerminator, MachineTrapKind, MachineValue,
+                MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
+                MachineCompareKind, MachineConstData, MachineFuncId, MachineFunction,
+                MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth,
+                MachineModule, MachineProgram, MachineReg, MachineTerminator, MachineTrapKind,
+                MachineValue,
             },
             runtime::{
                 MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
@@ -195,7 +196,12 @@ fn lower_function(
             target == input.lir.entry,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
-        let mut current_params = lower.machine_params().to_vec();
+        let mut current_params = lower
+            .machine_params()
+            .iter()
+            .copied()
+            .map(MachineBlockParam::gp)
+            .collect::<Vec<_>>();
 
         for inst in &block.ops {
             match &inst.kind {
@@ -219,7 +225,7 @@ fn lower_function(
                                 continuation_ops,
                             } => {
                                 let continuation_params =
-                                    lower.split_continuation_params(&continuation_ops);
+                                    lower.split_continuation_params(&continuation_ops, &terminator);
                                 lower.release_dead_values()?;
                                 attach_continuation_args(
                                     &mut terminator,
@@ -457,7 +463,7 @@ fn lower_function(
                             local_call,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            vec![local_call_target_param],
+                            vec![MachineBlockParam::gp(local_call_target_param)],
                             build_call_indirect_local_block(&mut lower, args)?,
                             MachineTerminator::CallIndirect {
                                 callee_target: MachineValue::Reg(local_call_target_param),
@@ -520,6 +526,7 @@ fn lower_function(
 
     let program = MachineProgram {
         entry: MachineBlockId(input.lir.entry.as_u32()),
+        first_fp_reg: regfile.first_fp_reg(),
         reg_count: regfile.reg_count(),
         blocks,
     };
@@ -536,6 +543,7 @@ fn stub_machine_function(id: MachineFuncId, reg_count: u16) -> MachineFunction {
         id,
         program: MachineProgram {
             entry: MachineBlockId(0),
+            first_fp_reg: reg_count,
             reg_count,
             blocks: vec![MachineBlock {
                 id: MachineBlockId(0),
@@ -589,7 +597,7 @@ fn push_lowered_block(
     id: MachineBlockId,
     original_blocks: &mut [Option<MachineBlock>],
     continuation_blocks: &mut Vec<MachineBlock>,
-    params: Vec<MachineReg>,
+    params: Vec<MachineBlockParam>,
     ops: Vec<crate::vm::native::ir::machine::MachineInst>,
     terminator: MachineTerminator,
 ) -> Result<(), WasmError> {
@@ -623,12 +631,11 @@ fn push_lowered_block(
 fn attach_continuation_args(
     terminator: &mut MachineTerminator,
     continuation: MachineBlockId,
-    params: &[MachineReg],
+    params: &[MachineBlockParam],
 ) -> Result<(), WasmError> {
     let args = params
         .iter()
-        .copied()
-        .map(MachineValue::Reg)
+        .map(|param| MachineValue::Reg(param.reg))
         .collect::<Vec<_>>();
     let attached = match terminator {
         MachineTerminator::Jump(edge) => attach_edge_args(edge, continuation, args),

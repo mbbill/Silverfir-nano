@@ -6,9 +6,9 @@ use crate::{
         entities::global_offset,
         lir::{ir::LirValue, leaf::LirLeafOp},
         native::ir::machine::{
-            MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineInst,
-            MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineTerminator,
-            MachineTrapKind, MachineValue,
+            MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp,
+            MachineFloatWidth, MachineInst, MachineInstKind, MachineLoadExtension,
+            MachineMemWidth, MachineTerminator, MachineTrapKind, MachineValue,
         },
         native::runtime::context::{
             ctx_offset, globals_view_offset, memory_view_offset, table_view_offset,
@@ -360,10 +360,26 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
+        let fp_load_usable = spec.float_width.is_some()
+            && (spec.memidx != 0
+                || self.dead_value_reg(addr_value).is_some()
+                || self.borrow_free_transients(1).is_ok());
+        let dst = if let Some(width) = spec.float_width.filter(|_| fp_load_usable) {
+            self.alloc_float_value(single_result(results)?, width)?
+        } else {
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?
+        };
         let access_bytes = spec.access_bytes();
         let (continuation_ops, terminator) = if spec.memidx == 0 {
-            let addr32 = dst;
+            let addr32 = if self.is_fp_reg(dst) {
+                if let Some(addr32) = self.dead_value_reg(addr_value) {
+                    addr32
+                } else {
+                    self.borrow_free_transients(1)?[0]
+                }
+            } else {
+                dst
+            };
             (
                 self.lower_mem0_load_continuation(
                     addr32,
@@ -427,9 +443,11 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.use_value(src_value)?;
         let access_bytes = spec.access_bytes();
         let (continuation_ops, terminator) = if spec.memidx == 0 {
-            let addr32 = self
-                .dead_value_reg(addr_value)
-                .unwrap_or(self.borrow_free_transients(1)?[0]);
+            let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
+                addr32
+            } else {
+                self.borrow_free_transients(1)?[0]
+            };
             (
                 self.lower_mem0_store_continuation(addr32, access_bytes, src, spec.width)?,
                 self.lower_mem0_bounds_check(
@@ -641,7 +659,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::IntBinary {
                 width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
-                dst,
+                dst: addr32,
                 lhs: MachineValue::Reg(self.mem0_base_reg()),
                 rhs: MachineValue::Reg(addr32),
             },
@@ -650,7 +668,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst,
                 addr: crate::vm::native::ir::machine::MachineAddr {
-                    base: dst,
+                    base: addr32,
                     offset: 0,
                 },
                 width,
@@ -1164,6 +1182,7 @@ struct MemoryLoadSpec {
     offset: u32,
     width: MachineMemWidth,
     extension: MachineLoadExtension,
+    float_width: Option<MachineFloatWidth>,
 }
 
 impl MemoryLoadSpec {
@@ -1196,84 +1215,98 @@ fn machine_load(primitive: &PrimitiveOpKind) -> Option<MemoryLoadSpec> {
             offset: *offset,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         P::I64Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U64,
             extension: MachineLoadExtension::None,
+            float_width: None,
         },
         P::F32Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: Some(MachineFloatWidth::F32),
         },
         P::F64Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U64,
             extension: MachineLoadExtension::None,
+            float_width: Some(MachineFloatWidth::F64),
         },
         P::I32Load8S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::SignExtend,
+            float_width: None,
         },
         P::I32Load8U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         P::I32Load16S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::SignExtend,
+            float_width: None,
         },
         P::I32Load16U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         P::I64Load8S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::SignExtend,
+            float_width: None,
         },
         P::I64Load8U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         P::I64Load16S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::SignExtend,
+            float_width: None,
         },
         P::I64Load16U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         P::I64Load32S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::SignExtend,
+            float_width: None,
         },
         P::I64Load32U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
+            float_width: None,
         },
         _ => return None,
     })

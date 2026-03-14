@@ -40,26 +40,26 @@ struct TrackedLoad {
 /// folding — fixed and cached-local registers must not be disturbed.
 pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     for block in &mut program.blocks {
-        fold_constants(block, first_transient);
-        copy_propagate(block, program.reg_count, first_transient);
-        forward_stored_values(block);
-        reuse_loaded_values(block);
-        fold_constants(block, first_transient);
-        copy_propagate(block, program.reg_count, first_transient);
+        fold_constants(block, first_transient, program.first_fp_reg);
+        copy_propagate(block, program.reg_count, first_transient, program.first_fp_reg);
+        forward_stored_values(block, program.first_fp_reg);
+        reuse_loaded_values(block, program.first_fp_reg);
+        fold_constants(block, first_transient, program.first_fp_reg);
+        copy_propagate(block, program.reg_count, first_transient, program.first_fp_reg);
     }
 }
 
 /// Fold `move rX <- imm; op ... rX ...` into `op ... imm ...` when rX is
 /// a transient register (single-use SSA value). Cached-local and fixed
 /// registers are never folded — they persist across the block.
-fn fold_constants(block: &mut MachineBlock, first_transient: u16) {
+fn fold_constants(block: &mut MachineBlock, first_transient: u16, first_fp_reg: u16) {
     let mut i = 0;
     while i + 1 < block.ops.len() {
         let (dst, imm) = match &block.ops[i].kind {
             MachineInstKind::Move {
                 dst,
                 src: MachineValue::Imm64(imm),
-            } if dst.0 >= first_transient => (*dst, *imm),
+            } if dst.0 >= first_transient && dst.0 < first_fp_reg => (*dst, *imm),
             _ => {
                 i += 1;
                 continue;
@@ -92,7 +92,7 @@ fn fold_constants(block: &mut MachineBlock, first_transient: u16) {
 /// Forward exact `store.u64` values into later exact `load.u64` instructions
 /// within a block when no intervening instruction can change the address or
 /// the stored source value.
-fn forward_stored_values(block: &mut MachineBlock) {
+fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
     let mut tracked = Vec::<TrackedStore>::new();
     let mut rewritten = Vec::with_capacity(block.ops.len());
 
@@ -114,7 +114,7 @@ fn forward_stored_values(block: &mut MachineBlock) {
                 {
                     if matches!(src, MachineValue::Reg(src_reg) if src_reg == *dst) {
                         keep_inst = false;
-                    } else {
+                    } else if move_rewrite_supported(*dst, src, first_fp_reg) {
                         inst.kind = MachineInstKind::Move { dst: *dst, src };
                     }
                 }
@@ -149,7 +149,7 @@ fn forward_stored_values(block: &mut MachineBlock) {
 
 /// Reuse an earlier exact load result for a later identical load when no
 /// intervening store, helper call, or register redefinition can invalidate it.
-fn reuse_loaded_values(block: &mut MachineBlock) {
+fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
     let mut tracked = Vec::<TrackedLoad>::new();
     let mut rewritten = Vec::with_capacity(block.ops.len());
 
@@ -177,7 +177,7 @@ fn reuse_loaded_values(block: &mut MachineBlock) {
                 {
                     if src_reg == *dst {
                         keep_inst = false;
-                    } else {
+                    } else if reg_move_rewrite_supported(*dst, src_reg, first_fp_reg) {
                         rewrite_load = Some((*dst, src_reg));
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
@@ -227,7 +227,12 @@ fn reuse_loaded_values(block: &mut MachineBlock) {
 /// Track transient register aliases within a block and rewrite later uses to
 /// the original source register. Cached-local and fixed-register writes are
 /// preserved, but their sources are still canonicalized.
-fn copy_propagate(block: &mut MachineBlock, reg_count: u16, first_transient: u16) {
+fn copy_propagate(
+    block: &mut MachineBlock,
+    reg_count: u16,
+    first_transient: u16,
+    first_fp_reg: u16,
+) {
     let original_ops = core::mem::take(&mut block.ops);
     let mut aliases = vec![None; reg_count as usize];
     let mut rewritten = Vec::with_capacity(original_ops.len());
@@ -258,6 +263,7 @@ fn copy_propagate(block: &mut MachineBlock, reg_count: u16, first_transient: u16
                     continue;
                 }
                 if dst.0 >= first_transient
+                    && same_reg_bank(*dst, *src, first_fp_reg)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
                     aliases[dst.0 as usize] = Some(*src);
@@ -610,6 +616,23 @@ fn kill_alias(aliases: &mut [Option<MachineReg>], reg: MachineReg) {
 fn clear_aliases(aliases: &mut [Option<MachineReg>]) {
     for alias in aliases.iter_mut() {
         *alias = None;
+    }
+}
+
+fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, first_fp_reg: u16) -> bool {
+    (lhs.0 >= first_fp_reg) == (rhs.0 >= first_fp_reg)
+}
+
+fn reg_move_rewrite_supported(dst: MachineReg, src: MachineReg, first_fp_reg: u16) -> bool {
+    let dst_is_fp = dst.0 >= first_fp_reg;
+    let src_is_fp = src.0 >= first_fp_reg;
+    !dst_is_fp || src_is_fp
+}
+
+fn move_rewrite_supported(dst: MachineReg, src: MachineValue, first_fp_reg: u16) -> bool {
+    match src {
+        MachineValue::Reg(src_reg) => reg_move_rewrite_supported(dst, src_reg, first_fp_reg),
+        MachineValue::Imm64(_) => dst.0 < first_fp_reg,
     }
 }
 

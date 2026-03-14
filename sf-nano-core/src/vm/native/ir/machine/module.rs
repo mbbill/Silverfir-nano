@@ -15,8 +15,22 @@ pub struct MachineConstData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachineProgram {
     pub entry: MachineBlockId,
+    /// Registers `[first_fp_reg, reg_count)` belong to the FP-only transient bank.
+    pub first_fp_reg: u16,
     pub reg_count: u16,
     pub blocks: Vec<super::cfg::MachineBlock>,
+}
+
+impl MachineProgram {
+    #[inline]
+    pub fn is_fp_reg(&self, reg: super::MachineReg) -> bool {
+        reg.0 >= self.first_fp_reg && reg.0 < self.reg_count
+    }
+
+    #[inline]
+    pub fn is_gp_reg(&self, reg: super::MachineReg) -> bool {
+        reg.0 < self.first_fp_reg
+    }
 }
 
 /// One machine function inside a machine module.
@@ -50,4 +64,3 @@ impl MachineModule {
         }
     }
 }
-

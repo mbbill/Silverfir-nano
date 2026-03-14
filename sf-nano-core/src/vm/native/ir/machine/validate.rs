@@ -1,6 +1,6 @@
 use crate::error::WasmError;
 
-use super::cfg::{MachineBranchCond, MachineEdge, MachineTerminator};
+use super::cfg::{MachineBlockParam, MachineBranchCond, MachineEdge, MachineTerminator};
 use super::inst::{MachineInst, MachineInstKind};
 use super::module::{MachineModule, MachineProgram};
 use super::types::{
@@ -39,7 +39,7 @@ impl MachineProgram {
                 )));
             }
             for param in &block.params {
-                self.validate_reg(*param)?;
+                self.validate_param(*param)?;
             }
             for inst in &block.ops {
                 self.validate_inst(inst)?;
@@ -53,6 +53,25 @@ impl MachineProgram {
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
     pub fn validate(&self) -> Result<(), WasmError> {
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_param(&self, param: MachineBlockParam) -> ValidateResult {
+        self.validate_reg(param.reg)?;
+        if self.is_fp_reg(param.reg) {
+            if param.float_width.is_none() {
+                return Err(WasmError::internal(alloc::format!(
+                    "machine FP block param {} is missing its float width",
+                    param.reg.0,
+                )));
+            }
+        } else if param.float_width.is_some() {
+            return Err(WasmError::internal(alloc::format!(
+                "machine GP block param {} must not declare an FP width",
+                param.reg.0,
+            )));
+        }
         Ok(())
     }
 
@@ -220,6 +239,13 @@ impl MachineProgram {
             return Err(WasmError::internal(alloc::format!(
                 "machine register {} exceeds declared register count {}",
                 reg.0,
+                self.reg_count,
+            )));
+        }
+        if self.first_fp_reg > self.reg_count {
+            return Err(WasmError::internal(alloc::format!(
+                "machine first_fp_reg {} exceeds declared register count {}",
+                self.first_fp_reg,
                 self.reg_count,
             )));
         }

@@ -12,8 +12,8 @@ use crate::vm::{
     },
     native::{
         ir::machine::{
-            MachineBlockId, MachineFunction, MachineInstKind, MachineIntBinaryOp, MachineModule,
-            MachineReg, MachineTerminator, MachineValue,
+            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind,
+            MachineIntBinaryOp, MachineModule, MachineReg, MachineTerminator, MachineValue,
         },
         ir::runtime::MachineHelperSymbol,
         lower::{lower_module, LowerFunctionInput, LowerModuleInput},
@@ -1824,14 +1824,19 @@ fn threads_live_transients_through_split_continuation_params() {
     let expected_args = continuation
         .params
         .iter()
-        .copied()
-        .map(MachineValue::Reg)
+        .map(|param| MachineValue::Reg(param.reg))
         .collect::<Vec<_>>();
 
     assert_eq!(else_edge.target, continuation.id);
     assert_eq!(else_edge.args, expected_args);
-    assert!(continuation.params.contains(&MachineReg(5)));
-    assert!(continuation.params.contains(&MachineReg(6)));
+    assert!(continuation
+        .params
+        .iter()
+        .any(|param| param.reg == MachineReg(5)));
+    assert!(continuation
+        .params
+        .iter()
+        .any(|param| param.reg == MachineReg(6)));
     assert!(matches!(
         continuation.ops[0].kind,
         MachineInstKind::IntBinary {
@@ -1841,4 +1846,93 @@ fn threads_live_transients_through_split_continuation_params() {
             ..
         }
     ));
+}
+
+#[test]
+fn threads_live_float_transients_through_split_continuation_params() {
+    let frame = plan_frame_layout(0, 0, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Const {
+                            value: 0x3f800000,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Abs).unwrap(),
+                        args: alloc::vec![LirValue(1)],
+                        results: alloc::vec![LirValue(2)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Store {
+                            offset: 4,
+                            memidx: 1,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0), LirValue(2)],
+                        results: alloc::vec![],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("split continuation should preserve FP transient widths");
+
+    let program = &lowered.module.functions[0].program;
+    let MachineTerminator::Branch { else_edge, .. } = &program.blocks[0].terminator else {
+        panic!("expected split branch terminator");
+    };
+    let continuation = program
+        .blocks
+        .iter()
+        .find(|block| block.id == else_edge.target)
+        .expect("continuation block");
+    let fp_param = continuation
+        .params
+        .iter()
+        .find(|param| param.reg.0 >= program.first_fp_reg)
+        .expect("continuation should carry an FP transient");
+
+    assert_eq!(fp_param.float_width, Some(MachineFloatWidth::F32));
+    assert!(continuation.ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                src: MachineValue::Reg(reg),
+                ..
+            } if reg == fp_param.reg
+        )
+    }));
 }

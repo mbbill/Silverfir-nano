@@ -386,7 +386,10 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
             block
                 .params
                 .iter()
-                .map(|r| format!("r{}", r.0))
+                .map(|param| match param.float_width {
+                    Some(width) => format!("r{}:{width:?}", param.reg.0),
+                    None => format!("r{}", param.reg.0),
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         );

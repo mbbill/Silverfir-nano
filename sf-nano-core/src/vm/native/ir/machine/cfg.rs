@@ -6,6 +6,32 @@ use super::types::{
     MachineReg, MachineSign, MachineTrapKind, MachineValue,
 };
 
+/// One explicit machine block parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineBlockParam {
+    pub reg: MachineReg,
+    /// FP params must declare the lane width carried in the physical FP reg.
+    pub float_width: Option<MachineFloatWidth>,
+}
+
+impl MachineBlockParam {
+    #[inline]
+    pub const fn gp(reg: MachineReg) -> Self {
+        Self {
+            reg,
+            float_width: None,
+        }
+    }
+
+    #[inline]
+    pub const fn fp(reg: MachineReg, width: MachineFloatWidth) -> Self {
+        Self {
+            reg,
+            float_width: Some(width),
+        }
+    }
+}
+
 /// One explicit edge into another block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachineEdge {
@@ -84,7 +110,7 @@ pub struct MachineBlock {
     pub id: MachineBlockId,
     /// Block parameters are generic registers. Incoming values are supplied by
     /// the predecessor edge, the root public shim, or a local-call boundary.
-    pub params: Vec<MachineReg>,
+    pub params: Vec<MachineBlockParam>,
     pub ops: Vec<MachineInst>,
     pub terminator: MachineTerminator,
 }

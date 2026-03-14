@@ -130,8 +130,12 @@ fn ldst_unsigned_offset(size: u32, opc: u32, rt: Arm64Reg, rn: Arm64Reg, imm12: 
     (size << 30) | (0b111_0_01 << 24) | (opc << 22) | (imm12 << 10) | (rn.idx() << 5) | rt.idx()
 }
 
-fn ldst_register_offset(base: u32, rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    base | (rm.idx() << 16) | (rn.idx() << 5) | rt.idx()
+fn ldst_register_offset(base: u32, rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    base | ((scaled as u32) << 12) | (rm.idx() << 16) | (rn.idx() << 5) | rt.idx()
+}
+
+fn fp_ldst_register_offset(base: u32, rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    base | ((scaled as u32) << 12) | (rm.idx() << 16) | (rn.idx() << 5) | rt
 }
 
 fn load_store_pair(base: u32, rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {
@@ -342,7 +346,11 @@ pub fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
 }
 
 pub fn ldr_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0xf860_6800, rt, rn, rm)
+    ldst_register_offset(0xf860_6800, rt, rn, rm, false)
+}
+
+pub fn ldr_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xf860_6800, rt, rn, rm, true)
 }
 
 pub fn str_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
@@ -350,43 +358,107 @@ pub fn str_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
 }
 
 pub fn ldr_reg_32(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0xb860_6800, rt, rn, rm)
+    ldst_register_offset(0xb860_6800, rt, rn, rm, false)
+}
+
+pub fn ldr_reg_32_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb860_6800, rt, rn, rm, true)
 }
 
 pub fn ldrb_reg(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x3860_6800, rt, rn, rm)
+    ldst_register_offset(0x3860_6800, rt, rn, rm, false)
 }
 
 pub fn ldrh_reg(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x7860_6800, rt, rn, rm)
+    ldst_register_offset(0x7860_6800, rt, rn, rm, false)
+}
+
+pub fn ldrh_reg_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x7860_6800, rt, rn, rm, true)
 }
 
 pub fn ldrsw_reg(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0xb8a0_6800, rt, rn, rm)
+    ldst_register_offset(0xb8a0_6800, rt, rn, rm, false)
+}
+
+pub fn ldrsw_reg_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb8a0_6800, rt, rn, rm, true)
 }
 
 pub fn ldrsb_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x38a0_6800, rt, rn, rm)
+    ldst_register_offset(0x38a0_6800, rt, rn, rm, false)
 }
 
 pub fn ldrsh_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x78a0_6800, rt, rn, rm)
+    ldst_register_offset(0x78a0_6800, rt, rn, rm, false)
+}
+
+pub fn ldrsh_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x78a0_6800, rt, rn, rm, true)
 }
 
 pub fn str_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0xf820_6800, rt, rn, rm)
+    ldst_register_offset(0xf820_6800, rt, rn, rm, false)
+}
+
+pub fn str_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xf820_6800, rt, rn, rm, true)
 }
 
 pub fn str_reg_32(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0xb820_6800, rt, rn, rm)
+    ldst_register_offset(0xb820_6800, rt, rn, rm, false)
+}
+
+pub fn str_reg_32_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb820_6800, rt, rn, rm, true)
 }
 
 pub fn strb_reg(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x3820_6800, rt, rn, rm)
+    ldst_register_offset(0x3820_6800, rt, rn, rm, false)
 }
 
 pub fn strh_reg(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    ldst_register_offset(0x7820_6800, rt, rn, rm)
+    ldst_register_offset(0x7820_6800, rt, rn, rm, false)
+}
+
+pub fn strh_reg_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x7820_6800, rt, rn, rm, true)
+}
+
+pub fn ldr_s(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0xbd40_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+}
+
+pub fn ldr_d(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0xfd40_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+}
+
+pub fn str_s(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0xbd00_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+}
+
+pub fn str_d(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0xfd00_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+}
+
+pub fn ldr_s_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    fp_ldst_register_offset(0xbc60_6800, rt, rn, rm, scaled)
+}
+
+pub fn ldr_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    fp_ldst_register_offset(0xfc60_6800, rt, rn, rm, scaled)
+}
+
+pub fn str_s_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    fp_ldst_register_offset(0xbc20_6800, rt, rn, rm, scaled)
+}
+
+pub fn str_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    fp_ldst_register_offset(0xfc20_6800, rt, rn, rm, scaled)
 }
 
 pub fn stp_64(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {

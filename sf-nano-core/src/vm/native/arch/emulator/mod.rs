@@ -409,7 +409,7 @@ impl<'a> Emulator<'a> {
             values.push(self.read_value(*value)?);
         }
         for (param, value) in target_params.into_iter().zip(values.into_iter()) {
-            self.write_reg(param, value)?;
+            self.write_reg(param.reg, value)?;
         }
         self.block_id = edge.target;
         Ok(())

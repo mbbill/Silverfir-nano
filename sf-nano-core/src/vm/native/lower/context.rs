@@ -14,9 +14,10 @@ use crate::{
         },
         native::{
             ir::machine::{
-                MachineAddr, MachineBlockId, MachineBranchCond, MachineEdge, MachineFuncId,
-                MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
-                MachineTerminator, MachineTrapKind, MachineValue,
+                MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineEdge,
+                MachineFloatWidth, MachineFuncId, MachineInst, MachineInstKind,
+                MachineLoadExtension, MachineMemWidth, MachineReg, MachineTerminator,
+                MachineTrapKind, MachineValue,
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
@@ -43,6 +44,12 @@ struct ValueLocation {
     reg: MachineReg,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TransientState {
+    value: Option<LirValue>,
+    float_width: Option<MachineFloatWidth>,
+}
+
 pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     frame: FrameLayoutPlan,
@@ -56,7 +63,7 @@ pub(super) struct BlockLowerContext<'a> {
     cached_locals: Vec<CachedLocal>,
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<LirValue, u32>,
-    transient_owner: Vec<Option<LirValue>>,
+    transient_state: Vec<TransientState>,
 }
 
 impl<'a> BlockLowerContext<'a> {
@@ -93,13 +100,16 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals,
             values: Vec::new(),
             remaining_uses: compute_remaining_uses(block),
-            transient_owner: alloc::vec![None; regfile.transient_count()],
+            transient_state: alloc::vec![
+                TransientState::default();
+                regfile.transient_count() + regfile.fp_transient_count()
+            ],
         };
 
         let machine_params = lower.machine_params.clone();
         for (param, reg) in block.params.iter().copied().zip(machine_params.into_iter()) {
             lower.values.push(ValueLocation { value: param, reg });
-            lower.mark_transient(reg, Some(param))?;
+            lower.set_transient(reg, Some(param), None)?;
         }
         lower.release_dead_values()?;
 
@@ -320,8 +330,11 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_value, rhs_value) = two_args(args)?;
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
-        let dst =
-            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
+        let dst = self.alloc_float_value_reusing_dead_inputs(
+            single_result(results)?,
+            &[lhs_value, rhs_value],
+            width,
+        )?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatBinary {
                 width,
@@ -367,7 +380,8 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+        let dst =
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &[src_value], width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
@@ -387,7 +401,11 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+        let dst = if let Some(width) = convert_result_float_width(op) {
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &[src_value], width)?
+        } else {
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?
+        };
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Convert {
                 op,
@@ -573,17 +591,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
-        if let Some(reg) = self.try_value_reg(value) {
-            return Ok(reg);
-        }
-        let reg = self.first_free_transient().ok_or_else(|| {
-            WasmError::internal(
-                "prepared LIR exceeded transient register budget during native lowering".into(),
-            )
-        })?;
-        self.values.push(ValueLocation { value, reg });
-        self.mark_transient(reg, Some(value))?;
-        Ok(reg)
+        self.alloc_value_in_bank(value, None)
     }
 
     pub(super) fn alloc_value_reusing_dead_inputs(
@@ -591,27 +599,24 @@ impl<'a> BlockLowerContext<'a> {
         value: LirValue,
         candidates: &[LirValue],
     ) -> Result<MachineReg, WasmError> {
-        if let Some(reg) = self.try_value_reg(value) {
-            return Ok(reg);
-        }
+        self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, None)
+    }
 
-        for candidate in candidates {
-            if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
-                continue;
-            }
-            if let Some(index) = self
-                .values
-                .iter()
-                .position(|entry| entry.value == *candidate)
-            {
-                let reg = self.values[index].reg;
-                self.values[index].value = value;
-                self.mark_transient(reg, Some(value))?;
-                return Ok(reg);
-            }
-        }
+    pub(super) fn alloc_float_value(
+        &mut self,
+        value: LirValue,
+        width: MachineFloatWidth,
+    ) -> Result<MachineReg, WasmError> {
+        self.alloc_value_in_bank(value, Some(width))
+    }
 
-        self.alloc_value(value)
+    pub(super) fn alloc_float_value_reusing_dead_inputs(
+        &mut self,
+        value: LirValue,
+        candidates: &[LirValue],
+        width: MachineFloatWidth,
+    ) -> Result<MachineReg, WasmError> {
+        self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, Some(width))
     }
 
     pub(super) fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
@@ -630,7 +635,7 @@ impl<'a> BlockLowerContext<'a> {
             if remaining == 0 {
                 let reg = self.values[index].reg;
                 self.values.swap_remove(index);
-                self.mark_transient(reg, None)?;
+                self.clear_transient(reg)?;
             } else {
                 index += 1;
             }
@@ -641,31 +646,54 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn split_continuation_params(
         &self,
         continuation_ops: &[MachineInst],
-    ) -> Vec<MachineReg> {
+        continuation_term: &MachineTerminator,
+    ) -> Vec<MachineBlockParam> {
         let mut params = Vec::new();
+        let all_defined = continuation_ops
+            .iter()
+            .filter_map(|inst| inst_defined_reg(&inst.kind))
+            .filter(|reg| self.is_transient_reg(*reg))
+            .collect::<Vec<_>>();
 
         for entry in &self.values {
             let remaining = self.remaining_uses.get(&entry.value).copied().unwrap_or(0);
-            if remaining != 0 && self.is_transient_reg(entry.reg) {
-                push_unique_reg(&mut params, entry.reg);
+            if remaining != 0
+                && self.is_transient_reg(entry.reg)
+                && !all_defined.contains(&entry.reg)
+            {
+                push_unique_param(
+                    &mut params,
+                    machine_block_param(entry.reg, self.float_width_for_reg(entry.reg)),
+                );
             }
         }
 
-        let mut defined = Vec::new();
+        let mut defined_so_far = Vec::new();
         for inst in continuation_ops {
             visit_inst_source_regs(&inst.kind, |reg| {
-                if self.is_transient_reg(reg) && !defined.contains(&reg) {
-                    push_unique_reg(&mut params, reg);
+                if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
+                    push_unique_param(
+                        &mut params,
+                        machine_block_param(reg, self.float_width_for_reg(reg)),
+                    );
                 }
             });
             if let Some(dst) = inst_defined_reg(&inst.kind) {
-                if self.is_transient_reg(dst) && !defined.contains(&dst) {
-                    defined.push(dst);
+                if self.is_transient_reg(dst) && !defined_so_far.contains(&dst) {
+                    defined_so_far.push(dst);
                 }
             }
         }
+        visit_term_source_regs(continuation_term, |reg| {
+            if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
+                push_unique_param(
+                    &mut params,
+                    machine_block_param(reg, self.float_width_for_reg(reg)),
+                );
+            }
+        });
 
-        params.sort_by_key(|reg| reg.0);
+        params.sort_by_key(|param| param.reg.0);
         params
     }
 
@@ -692,47 +720,136 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    fn first_free_transient(&self) -> Option<MachineReg> {
-        for index in 0..self.transient_owner.len() {
-            if self.transient_owner[index].is_none() {
-                return self.regfile.transient(index);
+    fn alloc_value_in_bank(
+        &mut self,
+        value: LirValue,
+        float_width: Option<MachineFloatWidth>,
+    ) -> Result<MachineReg, WasmError> {
+        if let Some(reg) = self.try_value_reg(value) {
+            return Ok(reg);
+        }
+        let Some(reg) = self.first_free_transient(float_width) else {
+            if float_width.is_some() {
+                return self.alloc_value_in_bank(value, None);
+            }
+            return Err(WasmError::internal(
+                "prepared LIR exceeded transient register budget during native lowering".into(),
+            ));
+        };
+        self.values.push(ValueLocation { value, reg });
+        self.set_transient(reg, Some(value), float_width)?;
+        Ok(reg)
+    }
+
+    fn alloc_value_in_bank_reusing_dead_inputs(
+        &mut self,
+        value: LirValue,
+        candidates: &[LirValue],
+        float_width: Option<MachineFloatWidth>,
+    ) -> Result<MachineReg, WasmError> {
+        if let Some(reg) = self.try_value_reg(value) {
+            return Ok(reg);
+        }
+
+        for candidate in candidates {
+            if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            if let Some(index) = self
+                .values
+                .iter()
+                .position(|entry| entry.value == *candidate && self.is_fp_reg(entry.reg) == float_width.is_some())
+            {
+                let reg = self.values[index].reg;
+                self.values[index].value = value;
+                self.set_transient(reg, Some(value), float_width)?;
+                return Ok(reg);
+            }
+        }
+
+        if float_width.is_some() && self.first_free_transient(float_width).is_none() {
+            return self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, None);
+        }
+
+        self.alloc_value_in_bank(value, float_width)
+    }
+
+    fn first_free_transient(&self, float_width: Option<MachineFloatWidth>) -> Option<MachineReg> {
+        let start = if float_width.is_some() {
+            self.regfile.transient_count()
+        } else {
+            0
+        };
+        let count = if float_width.is_some() {
+            self.regfile.fp_transient_count()
+        } else {
+            self.regfile.transient_count()
+        };
+        for index in start..start + count {
+            if self.transient_state[index].value.is_none() {
+                return if float_width.is_some() {
+                    self.regfile.fp_transient(index - start)
+                } else {
+                    self.regfile.transient(index - start)
+                };
             }
         }
         None
     }
 
-    fn mark_transient(
+    fn set_transient(
         &mut self,
         reg: MachineReg,
         value: Option<LirValue>,
+        float_width: Option<MachineFloatWidth>,
     ) -> Result<(), WasmError> {
-        let index = reg
-            .0
-            .checked_sub(
-                self.regfile
-                    .transient(0)
-                    .ok_or_else(|| {
-                        WasmError::internal("native lowering has no transient registers".into())
-                    })?
-                    .0,
-            )
-            .ok_or_else(|| {
-                WasmError::internal("machine register is not in transient partition".into())
-            })? as usize;
-        let slot = self.transient_owner.get_mut(index).ok_or_else(|| {
+        let index = self.transient_index(reg)?;
+        let slot = self.transient_state.get_mut(index).ok_or_else(|| {
             WasmError::internal("transient register index is out of range".into())
         })?;
-        *slot = value;
+        *slot = TransientState { value, float_width };
         Ok(())
     }
 
+    fn clear_transient(&mut self, reg: MachineReg) -> Result<(), WasmError> {
+        self.set_transient(reg, None, None)
+    }
+
     fn is_transient_reg(&self, reg: MachineReg) -> bool {
-        let Some(first) = self.regfile.transient(0) else {
-            return false;
-        };
-        let start = first.0;
-        let end = start + self.transient_owner.len() as u16;
-        reg.0 >= start && reg.0 < end
+        self.transient_index(reg).is_ok()
+    }
+
+    pub(super) fn is_fp_reg(&self, reg: MachineReg) -> bool {
+        reg.0 >= self.regfile.first_fp_reg() && reg.0 < self.regfile.reg_count()
+    }
+
+    fn transient_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
+        if let Some(first) = self.regfile.transient(0) {
+            let start = first.0;
+            let end = start + self.regfile.transient_count() as u16;
+            if reg.0 >= start && reg.0 < end {
+                return Ok((reg.0 - start) as usize);
+            }
+        }
+
+        if let Some(first) = self.regfile.fp_transient(0) {
+            let start = first.0;
+            let end = start + self.regfile.fp_transient_count() as u16;
+            if reg.0 >= start && reg.0 < end {
+                return Ok(
+                    self.regfile.transient_count() + (reg.0 - start) as usize,
+                );
+            }
+        }
+
+        Err(WasmError::internal(
+            "machine register is not in transient partition".into(),
+        ))
+    }
+
+    fn float_width_for_reg(&self, reg: MachineReg) -> Option<MachineFloatWidth> {
+        let index = self.transient_index(reg).ok()?;
+        self.transient_state.get(index)?.float_width
     }
 
     pub(super) fn ensure_no_live_values(&self, message: &'static str) -> Result<(), WasmError> {
@@ -783,10 +900,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn transient_in_use(&self, index: usize) -> Result<bool, WasmError> {
-        self.transient_owner
+        self.transient_state
             .get(index)
-            .copied()
-            .map(|value| value.is_some())
+            .map(|state| state.value.is_some())
             .ok_or_else(|| WasmError::internal("transient register index is out of range".into()))
     }
 
@@ -795,8 +911,8 @@ impl<'a> BlockLowerContext<'a> {
         count: usize,
     ) -> Result<Vec<MachineReg>, WasmError> {
         let mut regs = Vec::with_capacity(count);
-        for index in 0..self.transient_owner.len() {
-            if self.transient_owner[index].is_none() {
+        for index in 0..self.regfile.transient_count() {
+            if self.transient_state[index].value.is_none() {
                 regs.push(self.regfile.transient(index).ok_or_else(|| {
                     WasmError::internal("free transient register index is out of range".into())
                 })?);
@@ -822,9 +938,16 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
-fn push_unique_reg(regs: &mut Vec<MachineReg>, reg: MachineReg) {
-    if !regs.contains(&reg) {
-        regs.push(reg);
+fn machine_block_param(reg: MachineReg, float_width: Option<MachineFloatWidth>) -> MachineBlockParam {
+    match float_width {
+        Some(width) => MachineBlockParam::fp(reg, width),
+        None => MachineBlockParam::gp(reg),
+    }
+}
+
+fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {
+    if !params.iter().any(|candidate| candidate.reg == param.reg) {
+        params.push(param);
     }
 }
 
@@ -881,4 +1004,76 @@ fn visit_value_reg(value: &MachineValue, visit: &mut impl FnMut(MachineReg)) {
     if let MachineValue::Reg(reg) = value {
         visit(*reg);
     }
+}
+
+fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(MachineReg)) {
+    match term {
+        MachineTerminator::Jump(edge) => visit_edge_regs(edge, &mut visit),
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            visit_branch_cond_regs(cond, &mut visit);
+            visit_edge_regs(then_edge, &mut visit);
+            visit_edge_regs(else_edge, &mut visit);
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            visit_value_reg(index, &mut visit);
+            for edge in entries {
+                visit_edge_regs(edge, &mut visit);
+            }
+        }
+        MachineTerminator::CallDirect {
+            callee_frame_base, ..
+        } => visit(*callee_frame_base),
+        MachineTerminator::CallIndirect {
+            callee_target,
+            callee_frame_base,
+            ..
+        } => {
+            visit_value_reg(callee_target, &mut visit);
+            visit(*callee_frame_base);
+        }
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+    }
+}
+
+fn visit_branch_cond_regs(cond: &MachineBranchCond, visit: &mut impl FnMut(MachineReg)) {
+    match cond {
+        MachineBranchCond::Value(value) => visit_value_reg(value, visit),
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            visit_value_reg(lhs, visit);
+            visit_value_reg(rhs, visit);
+        }
+    }
+}
+
+fn visit_edge_regs(edge: &MachineEdge, visit: &mut impl FnMut(MachineReg)) {
+    for arg in &edge.args {
+        visit_value_reg(arg, visit);
+    }
+}
+
+fn convert_result_float_width(
+    op: super::super::ir::machine::MachineConvertOp,
+) -> Option<MachineFloatWidth> {
+    use super::super::ir::machine::MachineConvertOp as Op;
+
+    Some(match op {
+        Op::F32ConvertI32S
+        | Op::F32ConvertI32U
+        | Op::F32ConvertI64S
+        | Op::F32ConvertI64U
+        | Op::F32DemoteF64
+        | Op::F32ReinterpretI32 => MachineFloatWidth::F32,
+        Op::F64ConvertI32S
+        | Op::F64ConvertI32U
+        | Op::F64ConvertI64S
+        | Op::F64ConvertI64U
+        | Op::F64PromoteF32
+        | Op::F64ReinterpretI64 => MachineFloatWidth::F64,
+        _ => return None,
+    })
 }

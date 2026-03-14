@@ -1,9 +1,9 @@
 use alloc::vec::Vec;
 
 use crate::vm::native::ir::machine::{
-    MachineBlock, MachineBlockId, MachineConstData, MachineConstId, MachineEdge, MachineExternId,
-    MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram, MachineReg,
-    MachineTerminator, MachineValue,
+    MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId,
+    MachineEdge, MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule,
+    MachineProgram, MachineReg, MachineTerminator, MachineValue,
 };
 use crate::vm::native::ir::runtime::{MachineExternBinding, MachineHelperSymbol};
 
@@ -11,6 +11,7 @@ use crate::vm::native::ir::runtime::{MachineExternBinding, MachineHelperSymbol};
 fn rejects_edge_arity_mismatch() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 2,
         reg_count: 2,
         blocks: alloc::vec![
             MachineBlock {
@@ -24,7 +25,7 @@ fn rejects_edge_arity_mismatch() {
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineReg(0)],
+                params: alloc::vec![MachineBlockParam::gp(MachineReg(0))],
                 ops: Vec::new(),
                 terminator: MachineTerminator::Return,
             },
@@ -39,6 +40,7 @@ fn rejects_edge_arity_mismatch() {
 fn rejects_out_of_range_register() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
+        first_fp_reg: 1,
         reg_count: 1,
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -64,6 +66,7 @@ fn rejects_out_of_range_helper_metadata() {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             program: MachineProgram {
                 entry: MachineBlockId(0),
+                first_fp_reg: 2,
                 reg_count: 2,
                 blocks: alloc::vec![MachineBlock {
                     id: MachineBlockId(0),
