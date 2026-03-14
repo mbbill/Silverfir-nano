@@ -207,16 +207,25 @@ fn lower_function(
                         extra_block_ids.peek(1),
                         extra_block_ids.peek(0),
                     )? {
-                        lower.release_dead_values()?;
                         match lowered {
-                            LeafLowering::InPlace => {}
+                            LeafLowering::InPlace => {
+                                lower.release_dead_values()?;
+                            }
                             LeafLowering::Split {
                                 continuation,
                                 trap,
                                 trap_kind,
-                                terminator,
+                                mut terminator,
                                 continuation_ops,
                             } => {
+                                let continuation_params =
+                                    lower.split_continuation_params(&continuation_ops);
+                                lower.release_dead_values()?;
+                                attach_continuation_args(
+                                    &mut terminator,
+                                    continuation,
+                                    &continuation_params,
+                                )?;
                                 extra_block_ids.reserve(2);
                                 push_lowered_block(
                                     current_block,
@@ -233,7 +242,7 @@ fn lower_function(
                                     terminator: MachineTerminator::Trap { kind: trap_kind },
                                 });
                                 current_block = continuation;
-                                current_params = Vec::new();
+                                current_params = continuation_params;
                                 lower.emit_machine_ops(continuation_ops);
                             }
                         }
@@ -609,6 +618,60 @@ fn push_lowered_block(
         continuation_blocks.push(block);
     }
     Ok(())
+}
+
+fn attach_continuation_args(
+    terminator: &mut MachineTerminator,
+    continuation: MachineBlockId,
+    params: &[MachineReg],
+) -> Result<(), WasmError> {
+    let args = params
+        .iter()
+        .copied()
+        .map(MachineValue::Reg)
+        .collect::<Vec<_>>();
+    let attached = match terminator {
+        MachineTerminator::Jump(edge) => attach_edge_args(edge, continuation, args),
+        MachineTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            let then_args = args.clone();
+            attach_edge_args(then_edge, continuation, then_args)
+                | attach_edge_args(else_edge, continuation, args)
+        }
+        MachineTerminator::JumpTable { entries, .. } => {
+            let mut attached = false;
+            for edge in entries {
+                attached |= attach_edge_args(edge, continuation, args.clone());
+            }
+            attached
+        }
+        MachineTerminator::CallDirect { .. }
+        | MachineTerminator::CallIndirect { .. }
+        | MachineTerminator::Return
+        | MachineTerminator::Trap { .. } => false,
+    };
+    if attached {
+        Ok(())
+    } else {
+        Err(WasmError::internal(
+            "split continuation terminator does not branch to the continuation block".into(),
+        ))
+    }
+}
+
+fn attach_edge_args(
+    edge: &mut crate::vm::native::ir::machine::MachineEdge,
+    continuation: MachineBlockId,
+    args: Vec<MachineValue>,
+) -> bool {
+    if edge.target != continuation {
+        return false;
+    }
+    edge.args = args;
+    true
 }
 
 #[inline]

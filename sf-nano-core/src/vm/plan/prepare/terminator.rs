@@ -500,6 +500,34 @@ pub(super) fn maybe_publish_live_window_for_targets(
     }
 }
 
+pub(super) fn canonicalize_live_window_for_target(
+    target: SemanticTarget,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    entry_states: &[EntryState],
+) -> Result<(), WasmError> {
+    let target_entry = *entry_states
+        .get(target.index().as_usize())
+        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+    if target_entry.stack_height != state.height() || target_entry.spill_depth <= state.spill_depth()
+    {
+        return Ok(());
+    }
+
+    let publish_count = target_entry.spill_depth.saturating_sub(state.spill_depth());
+    let base_slot = frame.operand_slot(state.spill_depth());
+    let spilled = state.spill_prefix(publish_count)?;
+    for (offset, value) in spilled.into_iter().enumerate() {
+        state.ops.push(LirInst {
+            kind: LirInstKind::StoreSlot {
+                slot: base_slot.advance(offset as u16),
+                src: value,
+            },
+        });
+    }
+    Ok(())
+}
+
 fn target_expects_canonical_payload(
     target: SemanticTarget,
     stack_drop: u32,

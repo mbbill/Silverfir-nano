@@ -804,6 +804,55 @@ mod tests {
     }
 
     #[test]
+    fn prepares_block_result_used_as_select_operand_after_end() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Select),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("block result select preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Return { .. }
+        )));
+    }
+
+    #[test]
     fn debug_prepares_nested_br_table_value_index_shape() {
         let semantic = SemanticProgram {
             params: 1,

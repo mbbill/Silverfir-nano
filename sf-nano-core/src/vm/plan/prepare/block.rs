@@ -19,7 +19,10 @@ use super::{
     ops::lower_block_body_op,
     state::{BlockState, EntryState, ValueAlloc},
     steps::PreparedOp,
-    terminator::{fallthrough_target, lower_block_terminator, maybe_publish_live_window_for_targets},
+    terminator::{
+        canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator,
+        maybe_publish_live_window_for_targets,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -52,7 +55,7 @@ pub(super) fn lower_block_range(
         // it's the last op in a block.
         if matches!(prepared[semantic_index].semantic.kind, SemanticOpKind::End) {
             let target = fallthrough_target(semantic_index, prepared.len())?;
-            maybe_publish_live_window_for_targets(&[target], &mut state, frame, entry_states);
+            canonicalize_live_window_for_target(target, &mut state, frame, entry_states)?;
         }
         lower_block_body_op(&prepared[semantic_index], &mut state, frame, values)?;
         state.validate_live_fit("block body")?;

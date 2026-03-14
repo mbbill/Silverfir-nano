@@ -638,6 +638,37 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn split_continuation_params(
+        &self,
+        continuation_ops: &[MachineInst],
+    ) -> Vec<MachineReg> {
+        let mut params = Vec::new();
+
+        for entry in &self.values {
+            let remaining = self.remaining_uses.get(&entry.value).copied().unwrap_or(0);
+            if remaining != 0 && self.is_transient_reg(entry.reg) {
+                push_unique_reg(&mut params, entry.reg);
+            }
+        }
+
+        let mut defined = Vec::new();
+        for inst in continuation_ops {
+            visit_inst_source_regs(&inst.kind, |reg| {
+                if self.is_transient_reg(reg) && !defined.contains(&reg) {
+                    push_unique_reg(&mut params, reg);
+                }
+            });
+            if let Some(dst) = inst_defined_reg(&inst.kind) {
+                if self.is_transient_reg(dst) && !defined.contains(&dst) {
+                    defined.push(dst);
+                }
+            }
+        }
+
+        params.sort_by_key(|reg| reg.0);
+        params
+    }
+
     fn try_value_reg(&self, value: LirValue) -> Option<MachineReg> {
         self.values
             .iter()
@@ -693,6 +724,15 @@ impl<'a> BlockLowerContext<'a> {
         })?;
         *slot = value;
         Ok(())
+    }
+
+    fn is_transient_reg(&self, reg: MachineReg) -> bool {
+        let Some(first) = self.regfile.transient(0) else {
+            return false;
+        };
+        let start = first.0;
+        let end = start + self.transient_owner.len() as u16;
+        reg.0 >= start && reg.0 < end
     }
 
     pub(super) fn ensure_no_live_values(&self, message: &'static str) -> Result<(), WasmError> {
@@ -779,5 +819,66 @@ impl<'a> BlockLowerContext<'a> {
         I: IntoIterator<Item = MachineInst>,
     {
         self.ops.extend(insts);
+    }
+}
+
+fn push_unique_reg(regs: &mut Vec<MachineReg>, reg: MachineReg) {
+    if !regs.contains(&reg) {
+        regs.push(reg);
+    }
+}
+
+fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
+    match kind {
+        MachineInstKind::Move { dst, .. }
+        | MachineInstKind::Lea { dst, .. }
+        | MachineInstKind::Load { dst, .. }
+        | MachineInstKind::IntUnary { dst, .. }
+        | MachineInstKind::IntBinary { dst, .. }
+        | MachineInstKind::IntCompare { dst, .. }
+        | MachineInstKind::FloatUnary { dst, .. }
+        | MachineInstKind::FloatBinary { dst, .. }
+        | MachineInstKind::FloatCompare { dst, .. }
+        | MachineInstKind::Convert { dst, .. }
+        | MachineInstKind::Select { dst, .. } => Some(*dst),
+        MachineInstKind::Store { .. } | MachineInstKind::CallHelper(_) => None,
+    }
+}
+
+fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineReg)) {
+    match kind {
+        MachineInstKind::Move { src, .. } => visit_value_reg(src, &mut visit),
+        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => visit(addr.base),
+        MachineInstKind::Store { addr, src, .. } => {
+            visit(addr.base);
+            visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::IntUnary { src, .. }
+        | MachineInstKind::FloatUnary { src, .. }
+        | MachineInstKind::Convert { src, .. } => visit_value_reg(src, &mut visit),
+        MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntCompare { lhs, rhs, .. }
+        | MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::Select {
+            on_true,
+            on_false,
+            cond,
+            ..
+        } => {
+            visit_value_reg(on_true, &mut visit);
+            visit_value_reg(on_false, &mut visit);
+            visit_value_reg(cond, &mut visit);
+        }
+        MachineInstKind::CallHelper(_) => {}
+    }
+}
+
+fn visit_value_reg(value: &MachineValue, visit: &mut impl FnMut(MachineReg)) {
+    if let MachineValue::Reg(reg) = value {
+        visit(*reg);
     }
 }

@@ -46,6 +46,17 @@ fn logical_shifted_reg(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm
         | rd.idx()
 }
 
+fn logical_imm(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
+    (sf << 31)
+        | (opc << 29)
+        | (0b100100 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn.idx() << 5)
+        | rd.idx()
+}
+
 fn madd(sf: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, ra: Arm64Reg) -> u32 {
     (sf << 31)
         | (0b00_11011_000 << 21)
@@ -95,6 +106,17 @@ fn move_wide(sf: u32, opc: u32, rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
 fn sbfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
     (sf << 31)
         | (0b00 << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn.idx() << 5)
+        | rd.idx()
+}
+
+fn ubfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
+    (sf << 31)
+        | (0b10 << 29)
         | (0b100110 << 23)
         | (n << 22)
         | (immr << 16)
@@ -165,6 +187,22 @@ pub fn eor_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     logical_shifted_reg(1, 0b10, 0, rd, rn, rm)
 }
 
+pub fn orn_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(0, 0b01, 1, rd, rn, rm)
+}
+
+pub fn orn_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(1, 0b01, 1, rd, rn, rm)
+}
+
+pub fn mvn_32(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
+    orn_reg_32(rd, Arm64Reg::Xzr, rm)
+}
+
+pub fn mvn_64(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
+    orn_reg_64(rd, Arm64Reg::Xzr, rm)
+}
+
 pub fn lslv_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     shift_var(0, 0b00, rd, rn, rm)
 }
@@ -193,8 +231,16 @@ pub fn add_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     add_sub_imm(1, 0, 0, rd, rn, imm12)
 }
 
+pub fn add_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    add_sub_imm(0, 0, 0, rd, rn, imm12)
+}
+
 pub fn sub_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     add_sub_imm(1, 1, 0, rd, rn, imm12)
+}
+
+pub fn sub_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    add_sub_imm(0, 1, 0, rd, rn, imm12)
 }
 
 pub fn cmp_reg_32(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -259,6 +305,36 @@ pub fn sxth_64(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
 
 pub fn sxtw(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
     sbfm(1, 1, rd, rn, 0, 31)
+}
+
+pub fn lsl_imm_32(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 32);
+    ubfm(0, 0, rd, rn, (32 - shift) & 31, 31 - shift)
+}
+
+pub fn lsl_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 64);
+    ubfm(1, 1, rd, rn, (64 - shift) & 63, 63 - shift)
+}
+
+pub fn lsr_imm_32(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 32);
+    ubfm(0, 0, rd, rn, shift, 31)
+}
+
+pub fn lsr_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 64);
+    ubfm(1, 1, rd, rn, shift, 63)
+}
+
+pub fn asr_imm_32(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 32);
+    sbfm(0, 0, rd, rn, shift, 31)
+}
+
+pub fn asr_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    debug_assert!(shift < 64);
+    sbfm(1, 1, rd, rn, shift, 63)
 }
 
 pub fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
@@ -457,6 +533,104 @@ pub fn movz_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
 
 pub fn movk_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
     move_wide(0, 0b11, rd, imm16, shift)
+}
+
+fn low_mask(bits: u32) -> u64 {
+    if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
+fn ror_pattern(value: u64, rot: u32, width: u32) -> u64 {
+    let mask = low_mask(width);
+    let value = value & mask;
+    let rot = rot % width;
+    if rot == 0 {
+        value
+    } else {
+        ((value >> rot) | (value << (width - rot))) & mask
+    }
+}
+
+fn repeat_pattern(pattern: u64, elem_bits: u32, width: u32) -> u64 {
+    let pattern = pattern & low_mask(elem_bits);
+    let mut repeated = 0u64;
+    let mut shift = 0u32;
+    while shift < width {
+        repeated |= pattern << shift;
+        shift += elem_bits;
+    }
+    repeated & low_mask(width)
+}
+
+fn encode_logical_immediate(value: u64, width: u32) -> Option<(u32, u32, u32)> {
+    debug_assert!(width == 32 || width == 64);
+
+    let value = value & low_mask(width);
+    if value == 0 || value == low_mask(width) {
+        return None;
+    }
+
+    for elem_bits in [2u32, 4, 8, 16, 32, 64] {
+        if elem_bits > width {
+            break;
+        }
+        if width % elem_bits != 0 {
+            continue;
+        }
+
+        let pattern = value & low_mask(elem_bits);
+        if repeat_pattern(pattern, elem_bits, width) != value {
+            continue;
+        }
+
+        for ones in 1..elem_bits {
+            let base = low_mask(ones);
+            for rot in 0..elem_bits {
+                if ror_pattern(base, rot, elem_bits) != pattern {
+                    continue;
+                }
+                let n = u32::from(width == 64 && elem_bits == 64);
+                let immr = rot;
+                let imms = (((elem_bits << 1).wrapping_neg()) | (ones - 1)) & 0x3f;
+                return Some((n, immr, imms));
+            }
+        }
+    }
+
+    None
+}
+
+pub fn and_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm: u32) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
+    Some(logical_imm(0, 0b00, n, rd, rn, immr, imms))
+}
+
+pub fn and_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
+    Some(logical_imm(1, 0b00, n, rd, rn, immr, imms))
+}
+
+pub fn orr_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm: u32) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
+    Some(logical_imm(0, 0b01, n, rd, rn, immr, imms))
+}
+
+pub fn orr_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
+    Some(logical_imm(1, 0b01, n, rd, rn, immr, imms))
+}
+
+pub fn eor_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm: u32) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
+    Some(logical_imm(0, 0b10, n, rd, rn, immr, imms))
+}
+
+pub fn eor_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
+    Some(logical_imm(1, 0b10, n, rd, rn, immr, imms))
 }
 
 // --- Floating-point instructions ---

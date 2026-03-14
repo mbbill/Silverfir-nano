@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::vm::{
     backend::BackendConfig,
     lir::{
@@ -1687,5 +1689,156 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
     assert!(matches!(
         program.blocks[2].terminator,
         MachineTerminator::Return
+    ));
+}
+
+#[test]
+fn omits_zero_offset_add_in_bounds_check_setup() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                            offset: 0,
+                            memidx: 1,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("offset-zero load should lower without a no-op add");
+
+    let setup_ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(!setup_ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::IntBinary {
+                op: MachineIntBinaryOp::Add,
+                rhs: MachineValue::Imm64(0),
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn threads_live_transients_through_split_continuation_params() {
+    let frame = plan_frame_layout(1, 2, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 3 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                            offset: 4,
+                            memidx: 1,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![LirValue(2)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                        args: alloc::vec![LirValue(1), LirValue(2)],
+                        results: alloc::vec![LirValue(3)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(3),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("split continuation params should be threaded explicitly");
+
+    let program = &lowered.module.functions[0].program;
+    let MachineTerminator::Branch { else_edge, .. } = &program.blocks[0].terminator else {
+        panic!("expected split branch terminator");
+    };
+    let continuation = &program.blocks[2];
+    let expected_args = continuation
+        .params
+        .iter()
+        .copied()
+        .map(MachineValue::Reg)
+        .collect::<Vec<_>>();
+
+    assert_eq!(else_edge.target, continuation.id);
+    assert_eq!(else_edge.args, expected_args);
+    assert!(continuation.params.contains(&MachineReg(5)));
+    assert!(continuation.params.contains(&MachineReg(6)));
+    assert!(matches!(
+        continuation.ops[0].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Sub,
+            dst: MachineReg(6),
+            lhs: MachineValue::Reg(MachineReg(6)),
+            ..
+        }
     ));
 }

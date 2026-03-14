@@ -854,15 +854,17 @@ impl<'a> BlockLowerContext<'a> {
                 src: MachineValue::Reg(addr),
             },
         });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
-                dst: addr32,
-                lhs: MachineValue::Reg(addr32),
-                rhs: MachineValue::Imm64(offset as u64),
-            },
-        });
+        if offset != 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(offset as u64),
+                },
+            });
+        }
         Ok(())
     }
 

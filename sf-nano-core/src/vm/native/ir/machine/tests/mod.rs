@@ -1,1 +1,2 @@
+mod peephole;
 mod validate;
