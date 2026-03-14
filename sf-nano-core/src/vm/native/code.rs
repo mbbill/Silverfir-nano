@@ -5,7 +5,9 @@ use crate::{
     vm::{
         backend::BackendConfig,
         native::ir::{
-            machine::{MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule},
+            machine::{
+                MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
+            },
             runtime::MachineRuntimeContract,
         },
     },
@@ -92,7 +94,9 @@ impl CompiledNativeModule {
 
     #[inline]
     pub fn const_ptr(&self, id: MachineConstId) -> Option<*const u8> {
-        self.aligned_consts.get(id.0 as usize).map(AlignedConstData::as_ptr)
+        self.aligned_consts
+            .get(id.0 as usize)
+            .map(AlignedConstData::as_ptr)
     }
 }
 

@@ -16,8 +16,8 @@ pub enum BackendKind {
 /// Planning-time backend configuration.
 ///
 /// This carries only the flexible register budget that the backend chooses to
-/// spend above the fixed machine ABI roles (`ctx`, `fp`, and fixed scratch
-/// regs).
+/// spend above the fixed machine ABI roles (`ctx`, `fp`, and the pinned mem0
+/// view regs).
 ///
 /// Different layers consume different subsets of this budget:
 /// - planning/LIR shapes the live transient window from `lir_lane_count`

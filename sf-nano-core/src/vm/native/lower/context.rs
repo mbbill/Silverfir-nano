@@ -20,6 +20,7 @@ use crate::{
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
+            runtime::context::ctx_offset,
         },
         plan::frame::FrameLayoutPlan,
     },
@@ -499,6 +500,25 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_reload_mem0_cache_regs(&mut self) {
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: self.regfile.mem0_base(),
+                addr: self.runtime_addr(ctx_offset::MEM0_BASE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: self.regfile.mem0_size(),
+                addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+    }
+
     fn cached_local_index(&self, slot: FrameSlot) -> Option<usize> {
         self.cached_locals
             .iter()
@@ -625,6 +645,13 @@ impl<'a> BlockLowerContext<'a> {
             .map(|entry| entry.reg)
     }
 
+    pub(super) fn dead_value_reg(&self, value: LirValue) -> Option<MachineReg> {
+        if self.remaining_uses.get(&value).copied().unwrap_or(0) != 0 {
+            return None;
+        }
+        self.try_value_reg(value)
+    }
+
     fn value_reg(&self, value: LirValue) -> Result<MachineReg, WasmError> {
         self.try_value_reg(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
@@ -693,9 +720,20 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn temp_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
-        self.regfile
-            .temp(index)
-            .ok_or_else(|| WasmError::internal("native lowering requires one temp register".into()))
+        self.borrow_free_transients(index + 1)?
+            .get(index)
+            .copied()
+            .ok_or_else(|| {
+                WasmError::internal("native lowering requires one free transient register".into())
+            })
+    }
+
+    pub(super) fn mem0_base_reg(&self) -> MachineReg {
+        self.regfile.mem0_base()
+    }
+
+    pub(super) fn mem0_size_reg(&self) -> MachineReg {
+        self.regfile.mem0_size()
     }
 
     pub(super) fn transient_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
@@ -710,6 +748,26 @@ impl<'a> BlockLowerContext<'a> {
             .copied()
             .map(|value| value.is_some())
             .ok_or_else(|| WasmError::internal("transient register index is out of range".into()))
+    }
+
+    pub(super) fn borrow_free_transients(
+        &self,
+        count: usize,
+    ) -> Result<Vec<MachineReg>, WasmError> {
+        let mut regs = Vec::with_capacity(count);
+        for index in 0..self.transient_owner.len() {
+            if self.transient_owner[index].is_none() {
+                regs.push(self.regfile.transient(index).ok_or_else(|| {
+                    WasmError::internal("free transient register index is out of range".into())
+                })?);
+                if regs.len() == count {
+                    return Ok(regs);
+                }
+            }
+        }
+        Err(WasmError::internal(alloc::format!(
+            "native lowering requires {count} free transient registers"
+        )))
     }
 
     pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {

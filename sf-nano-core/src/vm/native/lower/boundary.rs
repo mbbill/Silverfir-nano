@@ -63,13 +63,9 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_all_cached_locals()?;
 
-        let callee_frame_base = self.temp_reg(0)?;
-        let copy_reg = self.transient_reg(0)?;
-        if self.transient_in_use(0)? {
-            return Err(WasmError::internal(
-                "direct local call requires a free transient register for argument copies".into(),
-            ));
-        }
+        let scratch = self.borrow_free_transients(2)?;
+        let copy_reg = scratch[0];
+        let callee_frame_base = scratch[1];
 
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
@@ -163,12 +159,9 @@ impl<'a> BlockLowerContext<'a> {
         args: FrameSpan,
         callee_frame_base: MachineReg,
     ) -> Result<(), WasmError> {
-        let copy_reg = self.transient_reg(0)?;
-        if self.transient_in_use(0)? {
-            return Err(WasmError::internal(
-                "indirect local call requires a free transient register for argument copies".into(),
-            ));
-        }
+        // Indirect local-call blocks carry the resolved callee target in the
+        // first transient lane, so argument copies must not clobber it.
+        let copy_reg = self.transient_reg(2)?;
 
         for offset in 0..args.count as usize {
             let src_slot = args.start.advance(offset as u16);
@@ -217,6 +210,7 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
         });
+        self.emit_reload_mem0_cache_regs();
         self.emit_reload_cached_locals()?;
         Ok(())
     }

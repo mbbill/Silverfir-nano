@@ -23,6 +23,7 @@ use crate::{
                     MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
                     MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
                     MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+                    MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
                 },
                 runtime::MachineFrameRegion,
             },
@@ -129,6 +130,8 @@ pub fn eval(
     }
 
     let ctx_ptr = (&ctx as *const NativeContext) as u64;
+    let mem0_base = ctx.mem0_base as u64;
+    let mem0_size = ctx.mem0_size;
     let result = Emulator {
         ctx: &mut ctx,
         compiled,
@@ -141,6 +144,8 @@ pub fn eval(
             program.program.reg_count,
             ctx_ptr,
             stack_base as u64,
+            mem0_base,
+            mem0_size,
         ),
         call_stack: Vec::new(),
     }
@@ -460,6 +465,8 @@ impl<'a> Emulator<'a> {
             callee_function.program.reg_count,
             self.ctx as *const NativeContext as u64,
             callee_fp as u64,
+            self.ctx.mem0_base as u64,
+            self.ctx.mem0_size,
         );
         self.ctx.call_depth = self.ctx.call_depth.saturating_add(1);
         #[cfg(feature = "function-trace")]
@@ -600,6 +607,8 @@ impl<'a> Emulator<'a> {
         }
         self.regs[MACHINE_CTX_REG.0 as usize] = self.ctx as *const NativeContext as u64;
         self.regs[MACHINE_FP_REG.0 as usize] = self.fp as u64;
+        self.regs[MACHINE_MEM0_BASE_REG.0 as usize] = self.ctx.mem0_base as u64;
+        self.regs[MACHINE_MEM0_SIZE_REG.0 as usize] = self.ctx.mem0_size;
         Ok(())
     }
 
@@ -736,10 +745,12 @@ impl<'a> Emulator<'a> {
 }
 
 fn init_entry_regs(
-    compiled: &CompiledNativeModule,
+    _compiled: &CompiledNativeModule,
     reg_count: u16,
     ctx_ptr: u64,
     fp: u64,
+    mem0_base: u64,
+    mem0_size: u64,
 ) -> Vec<u64> {
     let mut regs = vec![0; reg_count as usize];
     if !regs.is_empty() {
@@ -748,6 +759,14 @@ fn init_entry_regs(
     let frame_base = MACHINE_FP_REG.0 as usize;
     if frame_base < regs.len() {
         regs[frame_base] = fp;
+    }
+    let mem0_base_slot = MACHINE_MEM0_BASE_REG.0 as usize;
+    if mem0_base_slot < regs.len() {
+        regs[mem0_base_slot] = mem0_base;
+    }
+    let mem0_size_slot = MACHINE_MEM0_SIZE_REG.0 as usize;
+    if mem0_size_slot < regs.len() {
+        regs[mem0_size_slot] = mem0_size;
     }
     regs
 }

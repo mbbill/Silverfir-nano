@@ -151,15 +151,13 @@ impl<'a> BlockLowerContext<'a> {
         let dst = self.alloc_value(single_result(results)?)?;
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
+                kind: MachineInstKind::Move {
                     dst,
-                    addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
-                    width: MachineMemWidth::U64,
-                    extension: MachineLoadExtension::None,
+                    src: MachineValue::Reg(self.mem0_size_reg()),
                 },
             });
         } else {
-            let temp = self.temp_reg(0)?;
+            let temp = self.borrow_free_transients(1)?[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
                     dst: temp,
@@ -196,7 +194,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
         let dst = self.alloc_value(single_result(results)?)?;
-        let base = self.temp_reg(0)?;
+        let base = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 dst: base,
@@ -223,7 +221,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
         let src = self.use_value(single_arg(args)?)?;
-        let base = self.temp_reg(0)?;
+        let base = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 dst: base,
@@ -249,7 +247,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_table_size(&mut self, table_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
         let dst = self.alloc_value(single_result(results)?)?;
-        let table_views = self.temp_reg(0)?;
+        let table_views = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 dst: table_views,
@@ -284,8 +282,8 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<LeafLowering, WasmError> {
         let index = self.use_value(single_arg(args)?)?;
         let dst = self.alloc_value(single_result(results)?)?;
-        let index64 = self.temp_reg(0)?;
-        let table_len = self.temp_reg(1)?;
+        let index64 = dst;
+        let table_len = self.borrow_free_transients(1)?[0];
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,
             index,
@@ -321,8 +319,12 @@ impl<'a> BlockLowerContext<'a> {
         let (index_value, src_value) = two_args(args)?;
         let index = self.use_value(index_value)?;
         let src = self.use_value(src_value)?;
-        let index64 = self.temp_reg(0)?;
-        let table_len = self.temp_reg(1)?;
+        let (index64, table_len) = if let Some(index64) = self.dead_value_reg(index_value) {
+            (index64, self.borrow_free_transients(1)?[0])
+        } else {
+            let scratch = self.borrow_free_transients(2)?;
+            (scratch[0], scratch[1])
+        };
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,
             index,
@@ -359,26 +361,51 @@ impl<'a> BlockLowerContext<'a> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
-        let addr32 = self.temp_reg(0)?;
-        let scratch = self.temp_reg(1)?;
-        let continuation_ops = self.lower_memory_continuation(
-            spec.memidx,
-            addr32,
-            scratch,
-            spec.access_bytes(),
-            Some((dst, spec.width, spec.extension)),
-            None,
-        )?;
-        let terminator = self.lower_memory_bounds_check(
-            spec.memidx,
-            spec.offset,
-            spec.access_bytes(),
-            addr,
-            addr32,
-            scratch,
-            continuation,
-            trap,
-        )?;
+        let access_bytes = spec.access_bytes();
+        let (continuation_ops, terminator) = if spec.memidx == 0 {
+            let addr32 = dst;
+            (
+                self.lower_mem0_load_continuation(
+                    addr32,
+                    access_bytes,
+                    dst,
+                    spec.width,
+                    spec.extension,
+                )?,
+                self.lower_mem0_bounds_check(
+                    spec.offset,
+                    access_bytes,
+                    addr,
+                    addr32,
+                    continuation,
+                    trap,
+                )?,
+            )
+        } else {
+            let scratch = self.borrow_free_transients(2)?;
+            let addr32 = scratch[0];
+            let memory_view = scratch[1];
+            (
+                self.lower_memory_continuation(
+                    spec.memidx,
+                    addr32,
+                    memory_view,
+                    access_bytes,
+                    Some((dst, spec.width, spec.extension)),
+                    None,
+                )?,
+                self.lower_memory_bounds_check(
+                    spec.memidx,
+                    spec.offset,
+                    access_bytes,
+                    addr,
+                    addr32,
+                    memory_view,
+                    continuation,
+                    trap,
+                )?,
+            )
+        };
         Ok(LeafLowering::Split {
             continuation,
             trap,
@@ -398,26 +425,47 @@ impl<'a> BlockLowerContext<'a> {
         let (addr_value, src_value) = two_args(args)?;
         let addr = self.use_value(addr_value)?;
         let src = self.use_value(src_value)?;
-        let addr32 = self.temp_reg(0)?;
-        let scratch = self.temp_reg(1)?;
-        let continuation_ops = self.lower_memory_continuation(
-            spec.memidx,
-            addr32,
-            scratch,
-            spec.access_bytes(),
-            None,
-            Some((src, spec.width)),
-        )?;
-        let terminator = self.lower_memory_bounds_check(
-            spec.memidx,
-            spec.offset,
-            spec.access_bytes(),
-            addr,
-            addr32,
-            scratch,
-            continuation,
-            trap,
-        )?;
+        let access_bytes = spec.access_bytes();
+        let (continuation_ops, terminator) = if spec.memidx == 0 {
+            let addr32 = self
+                .dead_value_reg(addr_value)
+                .unwrap_or(self.borrow_free_transients(1)?[0]);
+            (
+                self.lower_mem0_store_continuation(addr32, access_bytes, src, spec.width)?,
+                self.lower_mem0_bounds_check(
+                    spec.offset,
+                    access_bytes,
+                    addr,
+                    addr32,
+                    continuation,
+                    trap,
+                )?,
+            )
+        } else {
+            let scratch = self.borrow_free_transients(2)?;
+            let addr32 = scratch[0];
+            let memory_view = scratch[1];
+            (
+                self.lower_memory_continuation(
+                    spec.memidx,
+                    addr32,
+                    memory_view,
+                    access_bytes,
+                    None,
+                    Some((src, spec.width)),
+                )?,
+                self.lower_memory_bounds_check(
+                    spec.memidx,
+                    spec.offset,
+                    access_bytes,
+                    addr,
+                    addr32,
+                    memory_view,
+                    continuation,
+                    trap,
+                )?,
+            )
+        };
         Ok(LeafLowering::Split {
             continuation,
             trap,
@@ -456,6 +504,44 @@ impl<'a> BlockLowerContext<'a> {
                 sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                 lhs: MachineValue::Reg(addr32),
                 rhs: MachineValue::Reg(scratch),
+            },
+            then_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: trap,
+                args: Vec::new(),
+            },
+            else_edge: crate::vm::native::ir::machine::MachineEdge {
+                target: continuation,
+                args: Vec::new(),
+            },
+        })
+    }
+
+    fn lower_mem0_bounds_check(
+        &mut self,
+        offset: u32,
+        access_bytes: u32,
+        addr: crate::vm::native::ir::machine::MachineReg,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        continuation: MachineBlockId,
+        trap: MachineBlockId,
+    ) -> Result<MachineTerminator, WasmError> {
+        self.emit_effective_addr(offset, addr, addr32)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(addr32),
+                rhs: MachineValue::Imm64(access_bytes as u64),
+            },
+        });
+        Ok(MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                kind: MachineCompareKind::Gt,
+                sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                lhs: MachineValue::Reg(addr32),
+                rhs: MachineValue::Reg(self.mem0_size_reg()),
             },
             then_edge: crate::vm::native::ir::machine::MachineEdge {
                 target: trap,
@@ -528,6 +614,90 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
+        Ok(ops)
+    }
+
+    fn lower_mem0_load_continuation(
+        &self,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        dst: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst,
+                lhs: MachineValue::Reg(self.mem0_base_reg()),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                dst,
+                addr: crate::vm::native::ir::machine::MachineAddr {
+                    base: dst,
+                    offset: 0,
+                },
+                width,
+                extension,
+            },
+        });
+        Ok(ops)
+    }
+
+    fn lower_mem0_store_continuation(
+        &self,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        src: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(self.mem0_base_reg()),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Store {
+                addr: crate::vm::native::ir::machine::MachineAddr {
+                    base: addr32,
+                    offset: 0,
+                },
+                width,
+                src: MachineValue::Reg(src),
+            },
+        });
         Ok(ops)
     }
 
@@ -703,11 +873,9 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         if memidx == 0 {
             self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
+                kind: MachineInstKind::Move {
                     dst,
-                    addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
-                    width: MachineMemWidth::U64,
-                    extension: MachineLoadExtension::None,
+                    src: MachineValue::Reg(self.mem0_size_reg()),
                 },
             });
             return Ok(());
@@ -1203,14 +1371,9 @@ fn emit_memory_base_load_ops(
 ) -> Result<(), WasmError> {
     if memidx == 0 {
         ops.push(MachineInst {
-            kind: MachineInstKind::Load {
+            kind: MachineInstKind::Move {
                 dst,
-                addr: crate::vm::native::ir::machine::MachineAddr {
-                    base: runtime_base,
-                    offset: ctx_offset::MEM0_BASE as i32,
-                },
-                width: MachineMemWidth::U64,
-                extension: MachineLoadExtension::None,
+                src: MachineValue::Reg(crate::vm::native::ir::machine::MACHINE_MEM0_BASE_REG),
             },
         });
         return Ok(());

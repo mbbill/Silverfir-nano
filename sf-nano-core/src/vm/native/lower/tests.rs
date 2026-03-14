@@ -520,8 +520,10 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
     );
     assert_eq!(lowered.module.consts.len(), 1);
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 1);
+    assert_eq!(ops.len(), 3);
     assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -561,8 +563,10 @@ fn lowers_memory_copy_through_frame_metadata() {
     );
     assert_eq!(lowered.module.consts.len(), 1);
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 1);
+    assert_eq!(ops.len(), 3);
     assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -601,8 +605,10 @@ fn lowers_table_fill_through_frame_metadata() {
     );
     assert_eq!(lowered.module.consts.len(), 1);
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 1);
+    assert_eq!(ops.len(), 3);
     assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -643,8 +649,10 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     assert_eq!(lowered.module.consts.len(), 1);
     assert!(lowered.runtime.functions[0].helper_scratch.is_none());
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 1);
+    assert_eq!(ops.len(), 3);
     assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -696,7 +704,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     .expect("external helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 6);
+    assert_eq!(ops.len(), 8);
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
     assert!(matches!(
         ops[1].kind,
@@ -709,6 +717,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -759,7 +769,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     .expect("runtime helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 6);
+    assert_eq!(ops.len(), 8);
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
     assert!(matches!(
         ops[1].kind,
@@ -772,6 +782,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -834,30 +846,31 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller_program = &lowered.module.functions[0].program;
     assert_eq!(caller_program.blocks.len(), 2);
     let call_block = &caller_program.blocks[0];
-    assert!(matches!(
-        call_block.terminator,
+    let callee_frame_base = match call_block.terminator {
         MachineTerminator::CallDirect {
-            callee: crate::vm::native::ir::machine::MachineFuncId(1),
-            callee_frame_base: MachineReg(2),
-            continuation: MachineBlockId(1),
+            callee,
+            callee_frame_base,
+            continuation,
+        } => {
+            assert_eq!(callee, crate::vm::native::ir::machine::MachineFuncId(1));
+            assert_eq!(continuation, MachineBlockId(1));
+            callee_frame_base
         }
-    ));
-    assert_eq!(call_block.ops.len(), 9);
+        ref other => panic!("expected direct call terminator, got {other:?}"),
+    };
     assert!(matches!(
         call_block.ops[0].kind,
         MachineInstKind::IntBinary {
-            dst: MachineReg(2),
+            dst,
             lhs: MachineValue::Reg(MachineReg(1)),
             rhs: MachineValue::Imm64(_),
             ..
-        }
+        } if dst == callee_frame_base
     ));
+    assert_eq!(call_block.ops.len(), 9);
     assert!(matches!(
         call_block.ops[1].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
+        MachineInstKind::Load { .. }
     ));
     assert!(matches!(
         call_block.ops[2].kind,
@@ -1255,7 +1268,7 @@ fn lowers_memory_size_without_helper_boundary() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 2),
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1480,7 +1493,7 @@ fn lowers_global_get_and_set_without_helpers() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 2),
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1536,7 +1549,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 2),
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1602,7 +1615,7 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 2),
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,

@@ -5,18 +5,18 @@ use crate::{
     vm::{
         backend::BackendConfig,
         native::ir::machine::{
-            machine_scratch_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG,
+            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
 
 /// Fixed machine-register partition used by lowering.
 ///
-/// `ctx`, `fp`, and two scratch regs are fixed MachineIR roles. The remaining
-/// cache and lane partitions are a logical ownership model chosen for lowering;
-/// they may be reused for other temporary purposes when the owning values are
-/// proven dead.
+/// `ctx`, `fp`, and the pinned `mem0` view regs are fixed MachineIR roles.
+/// The remaining cache and lane partitions are a logical ownership model chosen
+/// for lowering; they may be reused for other temporary purposes when the
+/// owning values are proven dead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
     local_cache: Vec<MachineReg>,
@@ -54,6 +54,16 @@ impl MachineRegFile {
     }
 
     #[inline]
+    pub(super) const fn mem0_base(&self) -> MachineReg {
+        MACHINE_MEM0_BASE_REG
+    }
+
+    #[inline]
+    pub(super) const fn mem0_size(&self) -> MachineReg {
+        MACHINE_MEM0_SIZE_REG
+    }
+
+    #[inline]
     pub(super) fn local_cache(&self, index: usize) -> Option<MachineReg> {
         self.local_cache.get(index).copied()
     }
@@ -63,12 +73,6 @@ impl MachineRegFile {
         self.transient.get(index).copied()
     }
 
-    #[inline]
-    pub(super) fn temp(&self, index: usize) -> Option<MachineReg> {
-        machine_scratch_reg(index)
-    }
-
-    #[inline]
     pub(super) fn transient_count(&self) -> usize {
         self.transient.len()
     }
