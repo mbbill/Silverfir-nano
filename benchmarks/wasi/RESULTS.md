@@ -4,22 +4,22 @@ Run with `run_tests.py` on macOS (Apple M4).
 
 ## Results
 
-| Benchmark             | Silverfir (micro-jit) |    wasm3 |    Winch | Cranelift | SF/wasm3 | SF/Winch |  SF/CL |
-|-----------------------|----------------------:|---------:|---------:|----------:|---------:|---------:|-------:|
-| CoreMark (score)      |            **16,053** |    4,224 |    8,660 |    14,669 |    3.59x |   175.0% | 103.3% |
-| SHA-256 (MB/s)        |            **132.16** |    28.51 |   112.61 |    249.26 |    4.64x |   117.4% |  53.0% |
-| bzip2 (MB/s)          |             **10.90** |     3.13 |     8.46 |     19.41 |    3.48x |   128.8% |  56.2% |
-| LZ4 compress (MB/s)   |            **563.02** |   193.93 |   445.66 |    736.45 |    2.28x |    99.1% |  60.0% |
-| LZ4 decompress (MB/s) |          **1,301.11** |   379.04 | 1,074.52 |  3,455.15 |    3.43x |   121.1% |  37.7% |
-| mandelbrot (ms)       |            **2,823**  |    4,234 |    2,166 |       855 |    1.50x |    76.7% |  30.3% |
-| c-ray (ms)            |            **1,914**  |    5,163 |    1,543 |       412 |    2.70x |    80.6% |  21.5% |
-| STREAM Copy (MB/s)    |           **16,142**  |    3,165 |   14,536 |    44,124 |    5.10x |   111.0% |  36.6% |
-| STREAM Scale (MB/s)   |           **20,200**  |    4,122 |   26,958 |    49,692 |    4.90x |    74.9% |  40.6% |
-| STREAM Add (MB/s)     |           **24,189**  |    4,403 |   26,236 |    48,398 |    5.49x |    92.2% |  50.0% |
-| STREAM Triad (MB/s)   |           **22,010**  |    4,215 |   28,149 |    47,864 |    5.22x |    78.2% |  46.0% |
-| lua/fib38 (s)         |              **5.88** |    26.63 |    17.46 |     12.18 |    4.53x |   296.9% | 207.1% |
-| lua/sunfish (score)   |            **2,941**  |      772 |    1,657 |     2,896 |    3.20x |   149.3% |  85.4% |
-| lua/json_bench (score)|            **8,942**  |    1,600 |    5,506 |     9,616 |    4.46x |   129.7% |  74.3% |
+| Benchmark             | Silverfir (micro-jit) |    wasm3 |    Winch | Cranelift |       V8 |  SF/CL |  SF/V8 |
+|-----------------------|----------------------:|---------:|---------:|----------:|---------:|-------:|-------:|
+| CoreMark (score)      |            **20,269** |    4,224 |    8,660 |    14,669 |   38,996 | 138.2% |  52.0% |
+| SHA-256 (MB/s)        |            **170.82** |    28.51 |   112.61 |    249.26 |   205.02 |  68.5% |  83.3% |
+| bzip2 (MB/s)          |             **11.11** |     3.13 |     8.46 |     19.41 |    19.78 |  57.2% |  56.2% |
+| LZ4 compress (MB/s)   |            **563.02** |   193.93 |   445.66 |    736.45 |   684.00 |  76.4% |  82.3% |
+| LZ4 decompress (MB/s) |          **1,609.56** |   379.04 | 1,074.52 |  3,455.15 | 2,889.57 |  46.6% |  55.7% |
+| mandelbrot (ms)       |             **2,823** |    4,234 |    2,166 |       855 |    2,073 |  30.3% |  73.4% |
+| c-ray (ms)            |             **8,685** |   25,058 |    7,747 |     2,055 |    1,999 |  23.7% |  23.0% |
+| STREAM Copy (MB/s)    |            **17,168** |    3,165 |   14,536 |    44,124 |   42,105 |  38.9% |  40.8% |
+| STREAM Scale (MB/s)   |            **24,867** |    4,122 |   26,958 |    49,692 |   19,048 |  50.0% | 130.5% |
+| STREAM Add (MB/s)     |            **28,514** |    4,403 |   26,236 |    48,398 |   30,000 |  58.9% |  95.0% |
+| STREAM Triad (MB/s)   |            **24,855** |    4,215 |   28,149 |    47,864 |   29,630 |  51.9% |  83.9% |
+| lua/fib38 (s)         |             **3.877** |    26.63 |    17.46 |     12.18 |     3.20 | 314.2% |  82.5% |
+| lua/sunfish (score)   |             **3,422** |      772 |    1,657 |     2,896 |    9,795 | 118.2% |  34.9% |
+| lua/json_bench (score)|            **10,828** |    1,600 |    5,506 |     9,616 |   24,536 | 112.6% |  44.1% |
 
 ## Notes
 
@@ -27,9 +27,10 @@ Run with `run_tests.py` on macOS (Apple M4).
 - wasm3: `build-release/wasm3` 79d412ea5fcf92f0efe658d52827a0e0a96ff442
 - Winch: wasmtime (`-C compiler=winch`, single-pass baseline JIT)
 - Cranelift: wasmtime (`-C compiler=cranelift`, optimizing JIT)
+- V8: Chrome browser via `bench.html` (V8 TurboFan optimizing JIT)
 - Higher is better for score/MB/s metrics; lower is better for ms/s metrics
 - **Bold** = best interpreter result
-- SF beats wasm3 on all 14 benchmarks (1.5–5.5x)
-- SF beats Winch on 9 of 14: CoreMark (175%), SHA-256 (117%), bzip2 (129%), LZ4 decompress (121%), STREAM Copy (111%), Lua fib (297%), Lua sunfish (149%), Lua json (130%), LZ4 compress (~99%)
-- SF beats Cranelift on CoreMark (103.3%) and Lua fib (207.1%)
-- SF reaches 85% of Cranelift on Lua sunfish, 74% on Lua json
+- c-ray: 4000x4000 resolution
+- SF beats Cranelift on CoreMark (138%), Lua fib (314%), Lua sunfish (118%), Lua json (113%)
+- SF beats V8 on STREAM Scale (131%)
+- SF reaches 82–83% of V8 on SHA-256, LZ4 compress, Lua fib, STREAM Triad
