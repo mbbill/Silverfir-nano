@@ -17,10 +17,18 @@ pub(super) fn build_block_ranges(semantic: &SemanticProgram) -> Vec<core::ops::R
     leaders[len] = true;
 
     for (index, op) in semantic.ops.iter().enumerate() {
-        for target in semantic_successors(index, semantic.ops.len(), op) {
-            let target_index = target.index().as_usize();
-            if target_index < len {
-                leaders[target_index] = true;
+        let successors = semantic_successors(index, semantic.ops.len(), op);
+        // An op with exactly one successor that is index+1 is a plain
+        // fallthrough — no leader needed. Everything else (branches,
+        // multi-successor ops) marks real targets as leaders.
+        let is_plain_fallthrough = successors.len() == 1
+            && successors[0].index().as_usize() == index + 1;
+        if !is_plain_fallthrough {
+            for target in &successors {
+                let target_index = target.index().as_usize();
+                if target_index < len {
+                    leaders[target_index] = true;
+                }
             }
         }
 
