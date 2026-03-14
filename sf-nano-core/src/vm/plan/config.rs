@@ -27,6 +27,10 @@ impl PlanConfig {
 
     #[inline]
     pub const fn from_backend_config(value: BackendConfig, call_scratch_slots: u16) -> Self {
-        Self::new(value.hot_local_count, value.lir_lane_count, call_scratch_slots)
+        Self::new(
+            value.hot_local_count,
+            value.lir_lane_count,
+            call_scratch_slots,
+        )
     }
 }

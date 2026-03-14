@@ -76,10 +76,7 @@ impl<'a> BlockLowerContext<'a> {
             let Some(reg) = regfile.local_cache(index) else {
                 break;
             };
-            cached_locals.push(CachedLocal {
-                slot,
-                reg,
-            });
+            cached_locals.push(CachedLocal { slot, reg });
         }
 
         let mut lower = Self {
@@ -582,7 +579,11 @@ impl<'a> BlockLowerContext<'a> {
             if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
                 continue;
             }
-            if let Some(index) = self.values.iter().position(|entry| entry.value == *candidate) {
+            if let Some(index) = self
+                .values
+                .iter()
+                .position(|entry| entry.value == *candidate)
+            {
                 let reg = self.values[index].reg;
                 self.values[index].value = value;
                 self.mark_transient(reg, Some(value))?;

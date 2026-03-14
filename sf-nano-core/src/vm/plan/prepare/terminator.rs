@@ -137,7 +137,10 @@ pub(super) fn lower_block_terminator(
         SemanticOpKind::If { else_target, .. } => {
             let cond = state.pop_one()?;
             maybe_publish_live_window_for_targets(
-                &[fallthrough_target(semantic_index, semantic_len)?, *else_target],
+                &[
+                    fallthrough_target(semantic_index, semantic_len)?,
+                    *else_target,
+                ],
                 state,
                 frame,
                 entry_states,
@@ -226,16 +229,19 @@ pub(super) fn lower_block_terminator(
                 let payload = state.top_values(*arity as usize).map_err(|err| {
                     WasmError::internal(alloc::format!(
                         "taken br_if could not bind {} payload values for synthetic then block: {}",
-                        arity, err
+                        arity,
+                        err
                     ))
                 })?;
-                let then_block_id =
-                    crate::vm::lir::target::LirTarget((original_block_count + extra_blocks_len) as u32);
+                let then_block_id = crate::vm::lir::target::LirTarget(
+                    (original_block_count + extra_blocks_len) as u32,
+                );
                 let then_params = values.many(*arity as usize);
                 let payload_span = branch_payload(frame, state.height(), *stack_drop, *arity)
                     .ok_or_else(|| {
                         WasmError::internal(
-                            "taken br_if with nonzero arity must produce a branch payload span".into(),
+                            "taken br_if with nonzero arity must produce a branch payload span"
+                                .into(),
                         )
                     })?;
                 let target_block = *semantic_to_block
@@ -246,7 +252,8 @@ pub(super) fn lower_block_terminator(
                     .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
                 if !target_params.is_empty() {
                     return Err(WasmError::internal(
-                        "synthetic br_if then bridge requires a canonical-only branch target".into(),
+                        "synthetic br_if then bridge requires a canonical-only branch target"
+                            .into(),
                     ));
                 }
                 let mut then_ops = Vec::with_capacity(*arity as usize);
@@ -347,7 +354,10 @@ pub(super) fn lower_block_terminator(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(LoweredTerminator::new(LirTerminator::BrTable { index, entries }))
+            Ok(LoweredTerminator::new(LirTerminator::BrTable {
+                index,
+                entries,
+            }))
         }
         SemanticOpKind::CallExternal {
             func_idx,
@@ -413,7 +423,9 @@ pub(super) fn lower_block_terminator(
                 entry_states,
             )?))
         }
-        SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(LirTerminator::Return { results: None })),
+        SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(LirTerminator::Return {
+            results: None,
+        })),
         SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(LirTerminator::Return {
             results: {
                 canonicalize_return_results(state, frame, values, 1);
@@ -443,7 +455,10 @@ impl LoweredTerminator {
     }
 }
 
-fn fallthrough_target(semantic_index: usize, semantic_len: usize) -> Result<SemanticTarget, WasmError> {
+fn fallthrough_target(
+    semantic_index: usize,
+    semantic_len: usize,
+) -> Result<SemanticTarget, WasmError> {
     let next = semantic_index
         .checked_add(1)
         .filter(|next| *next < semantic_len)
@@ -492,7 +507,9 @@ fn target_expects_canonical_payload(
     entry_states: &[EntryState],
 ) -> Result<bool, WasmError> {
     let Some(entry) = entry_states.get(target.index().as_usize()) else {
-        return Err(WasmError::invalid("taken branch target out of range".into()));
+        return Err(WasmError::invalid(
+            "taken branch target out of range".into(),
+        ));
     };
     Ok(entry.live_value_count() == 0
         && entry.stack_height == state.height().saturating_sub(stack_drop as u16))

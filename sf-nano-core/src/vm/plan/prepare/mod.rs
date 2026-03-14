@@ -656,7 +656,12 @@ mod tests {
             .lir
             .blocks
             .iter()
-            .find(|block| matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Branch { .. }))
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    crate::vm::lir::ir::LirTerminator::Branch { .. }
+                )
+            })
             .expect("if block");
         let store_count = if_block
             .ops

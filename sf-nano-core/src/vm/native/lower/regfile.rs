@@ -12,6 +12,11 @@ use crate::{
 };
 
 /// Fixed machine-register partition used by lowering.
+///
+/// `ctx`, `fp`, and two scratch regs are fixed MachineIR roles. The remaining
+/// cache and lane partitions are a logical ownership model chosen for lowering;
+/// they may be reused for other temporary purposes when the owning values are
+/// proven dead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
     local_cache: Vec<MachineReg>,

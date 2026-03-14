@@ -63,13 +63,7 @@ fn lowers_simple_slot_and_add_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -174,13 +168,7 @@ fn lowers_select_with_wasm_operand_order() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 3),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -209,6 +197,33 @@ fn lowers_select_with_wasm_operand_order() {
 }
 
 #[test]
+fn native_backend_requires_at_least_one_lir_lane() {
+    let frame = plan_frame_layout(0, 0, 0);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return { results: None },
+        }],
+    };
+
+    let err = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 0),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+        }],
+    })
+    .expect_err("zero-lane native backend should be rejected");
+
+    assert!(alloc::format!("{err}").contains("at least one LIR lane register"));
+}
+
+#[test]
 fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let frame = plan_frame_layout(2, 6, 6);
     let result_span = crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 2);
@@ -226,13 +241,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -292,13 +301,7 @@ fn rejects_inconsistent_return_result_spans() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -338,13 +341,7 @@ fn rejects_mixed_void_and_value_returns() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -390,13 +387,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
@@ -411,8 +402,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
     };
     assert_eq!(edge.target, MachineBlockId(1));
     assert_eq!(edge.args.len(), 2);
-    assert_eq!(edge.args[0], MachineValue::Reg(MachineReg(2)));
-    assert_eq!(edge.args[1], MachineValue::Reg(MachineReg(3)));
+    assert_eq!(edge.args[0], MachineValue::Reg(MachineReg(4)));
+    assert_eq!(edge.args[1], MachineValue::Reg(MachineReg(5)));
 }
 
 #[test]
@@ -453,13 +444,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -472,29 +457,29 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Load {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
-            dst: MachineReg(3),
-            src: MachineValue::Reg(MachineReg(2)),
+            dst: MachineReg(5),
+            src: MachineValue::Reg(MachineReg(4)),
         }
     ));
     assert!(matches!(
         ops[2].kind,
         MachineInstKind::Move {
-            dst: MachineReg(4),
+            dst: MachineReg(6),
             src: MachineValue::Imm64(7),
         }
     ));
     assert!(matches!(
         ops[3].kind,
         MachineInstKind::Move {
-            dst: MachineReg(2),
-            src: MachineValue::Reg(MachineReg(4)),
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(6)),
         }
     ));
 }
@@ -519,13 +504,7 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -566,13 +545,7 @@ fn lowers_memory_copy_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -612,13 +585,7 @@ fn lowers_table_fill_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -659,13 +626,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -725,13 +686,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -794,13 +749,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -866,13 +815,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -895,7 +838,7 @@ fn lowers_direct_local_call_with_continuation_block() {
         call_block.terminator,
         MachineTerminator::CallDirect {
             callee: crate::vm::native::ir::machine::MachineFuncId(1),
-            callee_frame_base: MachineReg(6),
+            callee_frame_base: MachineReg(2),
             continuation: MachineBlockId(1),
         }
     ));
@@ -903,7 +846,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert!(matches!(
         call_block.ops[0].kind,
         MachineInstKind::IntBinary {
-            dst: MachineReg(6),
+            dst: MachineReg(2),
             lhs: MachineValue::Reg(MachineReg(1)),
             rhs: MachineValue::Imm64(_),
             ..
@@ -912,28 +855,28 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert!(matches!(
         call_block.ops[1].kind,
         MachineInstKind::Load {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
     assert!(matches!(
         call_block.ops[2].kind,
         MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(2)),
+            src: MachineValue::Reg(MachineReg(4)),
             ..
         }
     ));
     assert!(matches!(
         call_block.ops[3].kind,
         MachineInstKind::Load {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
     assert!(matches!(
         call_block.ops[4].kind,
         MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(2)),
+            src: MachineValue::Reg(MachineReg(4)),
             ..
         }
     ));
@@ -1050,13 +993,7 @@ fn flushes_cached_local_before_second_direct_call() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1079,7 +1016,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert!(matches!(
         second_call_block.ops[0].kind,
         MachineInstKind::Load {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
@@ -1090,7 +1027,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert!(matches!(
         second_call_block.ops[2].kind,
         MachineInstKind::Move {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
@@ -1101,7 +1038,7 @@ fn flushes_cached_local_before_second_direct_call() {
                 base: MachineReg(1),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(2)),
+            src: MachineValue::Reg(MachineReg(4)),
             ..
         }
     ));
@@ -1171,13 +1108,7 @@ fn preserves_cached_locals_across_block_edges() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 1,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(1, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1190,7 +1121,7 @@ fn preserves_cached_locals_across_block_edges() {
     assert!(matches!(
         program.blocks[0].ops[0].kind,
         MachineInstKind::Load {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
@@ -1204,7 +1135,7 @@ fn preserves_cached_locals_across_block_edges() {
     assert!(matches!(
         program.blocks[0].ops[2].kind,
         MachineInstKind::Move {
-            dst: MachineReg(2),
+            dst: MachineReg(4),
             ..
         }
     ));
@@ -1215,15 +1146,15 @@ fn preserves_cached_locals_across_block_edges() {
     assert!(matches!(
         program.blocks[1].ops[0].kind,
         MachineInstKind::Move {
-            dst: MachineReg(3),
-            src: MachineValue::Reg(MachineReg(2)),
+            dst: MachineReg(5),
+            src: MachineValue::Reg(MachineReg(4)),
         }
     ));
     assert!(matches!(
         program.blocks[1].ops[1].kind,
         MachineInstKind::Move {
-            dst: MachineReg(2),
-            src: MachineValue::Reg(MachineReg(3)),
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
         }
     ));
 }
@@ -1269,13 +1200,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1330,13 +1255,7 @@ fn lowers_memory_size_without_helper_boundary() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 2,
-        },
+        backend: BackendConfig::new(0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1383,13 +1302,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 4,
-        },
+        backend: BackendConfig::new(0, 4),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1567,13 +1480,7 @@ fn lowers_global_get_and_set_without_helpers() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 1,
-            hot_local_count: 0,
-            tos_register_count: 2,
-        },
+        backend: BackendConfig::new(0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1629,13 +1536,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 2,
-            hot_local_count: 0,
-            tos_register_count: 2,
-        },
+        backend: BackendConfig::new(0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1701,13 +1602,7 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig {
-            ctx_register_count: 1,
-            fp_register_count: 1,
-            tmp_register_count: 2,
-            hot_local_count: 0,
-            tos_register_count: 2,
-        },
+        backend: BackendConfig::new(0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,

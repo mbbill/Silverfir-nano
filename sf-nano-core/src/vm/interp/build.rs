@@ -41,13 +41,7 @@ pub const fn normalize_interpreter_backend(_requested: BackendKind) -> BackendKi
 
 #[inline]
 pub const fn interpreter_backend_config() -> BackendConfig {
-    BackendConfig {
-        ctx_register_count: 1,
-        fp_register_count: 1,
-        tmp_register_count: 0, // not needed for the interpreter.
-        hot_local_count: 3,
-        tos_register_count: 4,
-    }
+    BackendConfig::new(3, 4)
 }
 
 #[inline]
