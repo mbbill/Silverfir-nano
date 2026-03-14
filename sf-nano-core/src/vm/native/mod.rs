@@ -9,7 +9,9 @@ pub mod code;
 pub mod code_buf;
 mod helper;
 pub mod ir;
+pub mod ir_dump;
 pub mod lower;
+pub mod profiler;
 pub mod runtime;
 
 /// Minimal native stats surface kept for CLI/debug compatibility while the new

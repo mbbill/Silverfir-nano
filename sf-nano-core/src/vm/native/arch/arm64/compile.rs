@@ -136,6 +136,7 @@ struct Arm64FunctionInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct CompiledArm64Entry {
     pub entry: Arm64RootEntry,
+    pub text_len: usize,
     pub root_return: Arm64CodePtr,
 }
 
@@ -249,14 +250,31 @@ pub fn compile_module(
     let written_start = executable.len();
     let mut entries = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
-        let offset = executable.emit_bytes(&artifact.text.finish());
+        let text_bytes = artifact.text.finish();
+        let text_len = text_bytes.len();
+        let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<Arm64RootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        entries.push(Some(CompiledArm64Entry { entry, root_return }));
+        entries.push(Some(CompiledArm64Entry { entry, root_return, text_len }));
     }
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
+
+    // Record JIT symbols for profiling tools (samply-for-ai, perf)
+    let module_name = &module.name;
+    for (func_idx, entry) in entries.iter().enumerate() {
+        if let Some(entry) = entry {
+            let code_start = entry.entry as *const u8;
+            if entry.text_len > 0 {
+                let code_bytes =
+                    unsafe { core::slice::from_raw_parts(code_start, entry.text_len) };
+                let symbol = alloc::format!("jit::{}::func{}", module_name, func_idx);
+                crate::vm::native::profiler::record_function(code_start, code_bytes, &symbol);
+            }
+        }
+    }
+
     Ok(entries)
 }
 

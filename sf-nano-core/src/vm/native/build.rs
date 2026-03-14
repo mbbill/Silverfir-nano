@@ -6,6 +6,7 @@ use crate::{
         native::{
             arch,
             code::{CompiledNativeModule, NativeCode, NativeCodeCache},
+            ir_dump,
             ir::machine::MachineFuncId,
             lower::{lower_module, LowerFunctionInput, LowerModuleInput},
         },
@@ -98,6 +99,16 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         backend,
         functions: &lowered_inputs,
     })?;
+
+    // Collect LIR for dump before moving lowered data
+    let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions
+        .iter()
+        .map(|(id, prepared)| ir_dump::DumpFunctionLir {
+            func_idx: id.0,
+            lir: &prepared.lir,
+        })
+        .collect();
+
     let compiled = Rc::new(CompiledNativeModule::new(
         active_backend,
         backend,
@@ -111,6 +122,36 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         #[cfg(debug_assertions)]
         arch::NativeBackend::Reference => None,
     };
+
+    // Write dump if SF_NATIVE_DUMP_DIR is set
+    if ir_dump::dump_enabled() {
+        let code_slices: Vec<(u32, &[u8])> = arm64_entries
+            .as_ref()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, entry)| {
+                        entry.map(|e| {
+                            let ptr = e.entry as *const u8;
+                            let len = e.text_len;
+                            (idx as u32, unsafe {
+                                core::slice::from_raw_parts(ptr, len)
+                            })
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let _ = ir_dump::write_module_dump(
+            &module.name,
+            module.functions.len(),
+            &dump_lir_inputs,
+            compiled.module(),
+            compiled.runtime(),
+            &code_slices,
+        );
+    }
 
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
