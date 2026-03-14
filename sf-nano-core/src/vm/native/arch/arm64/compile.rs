@@ -2608,6 +2608,86 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "aarch64")]
+    fn executes_store_imm64_directly() {
+        // Test: Store { src: Imm64(42) } without a preceding move.
+        // This is the pattern produced by constant folding.
+        let function = MachineFunction {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            program: crate::vm::native::ir::machine::MachineProgram {
+                entry: MachineBlockId(0),
+                reg_count: 7,
+                blocks: vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: vec![],
+                    ops: vec![MachineInst {
+                        kind: MachineInstKind::Store {
+                            addr: crate::vm::native::ir::machine::MachineAddr {
+                                base: crate::vm::native::ir::machine::MACHINE_FP_REG,
+                                offset: 0,
+                            },
+                            width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                            src: MachineValue::Imm64(42),
+                        },
+                    }],
+                    terminator: MachineTerminator::Return,
+                }],
+            },
+        };
+        let compiled = CompiledNativeModule::new(
+            crate::vm::native::arch::NativeBackend::Arm64,
+            crate::vm::backend::BackendConfig::new(3, 4),
+            MachineModule {
+                functions: vec![function],
+                consts: vec![],
+                externs: vec![],
+            },
+            MachineRuntimeContract {
+                call_link: crate::vm::native::ir::runtime::MachineCallLinkLayout {
+                    slot_count: 3,
+                    continuation_offset: 0,
+                    caller_frame_offset: 8,
+                    caller_result_base_offset: 16,
+                },
+                functions: vec![MachineFunctionRuntime {
+                    id: crate::vm::native::ir::machine::MachineFuncId(0),
+                    frame_prefix_slots: 0,
+                    total_frame_slots: 4,
+                    call_scratch: Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+                        base_slot: 1,
+                        slots: 3,
+                    }),
+                    helper_scratch: None,
+                    return_results: Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+                        base_slot: 0,
+                        slots: 1,
+                    }),
+                }],
+            },
+        )
+        .expect("compiled module");
+
+        let module = ModuleInst::new(
+            String::from("m"),
+            TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
+        );
+        let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
+        let entry = entries[0].clone().expect("entry");
+
+        let mut stack = [0u64; 4];
+        let mut store = Box::new(Store::new(module));
+        let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
+        let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
+        ctx.call_depth = 1;
+        stack[1] = entry.root_return as u64;
+        stack[2] = stack.as_mut_ptr() as u64;
+        stack[3] = 0;
+        let status = unsafe { (entry.entry)(&mut ctx, stack.as_mut_ptr()) };
+        assert_eq!(status, 0);
+        assert_eq!(stack[0], 42, "Store with Imm64(42) should write 42 to fp[0]");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
     fn executes_empty_root_function_with_unsupported_neighbor_stub() {
         let supported = MachineFunction {
             id: crate::vm::native::ir::machine::MachineFuncId(0),

@@ -95,10 +95,12 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         });
     }
 
-    let lowered = lower_module(LowerModuleInput {
+    let mut lowered = lower_module(LowerModuleInput {
         backend,
         functions: &lowered_inputs,
     })?;
+    let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT + backend.hot_local_count as u16;
+    lowered.module.optimize(first_transient);
 
     // Collect LIR for dump before moving lowered data
     let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions

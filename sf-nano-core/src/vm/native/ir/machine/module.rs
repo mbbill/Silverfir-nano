@@ -38,3 +38,16 @@ pub struct MachineModule {
     pub externs: Vec<MachineExternBinding>,
 }
 
+impl MachineModule {
+    /// Run ISA-agnostic optimization passes on all functions.
+    ///
+    /// `first_transient` is the register index where transient (SSA-like)
+    /// registers start. Registers below this are fixed or cached-local and
+    /// must not be disturbed by peephole optimizations.
+    pub fn optimize(&mut self, first_transient: u16) {
+        for func in &mut self.functions {
+            super::peephole::optimize(&mut func.program, first_transient);
+        }
+    }
+}
+
