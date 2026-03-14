@@ -237,7 +237,17 @@ impl<'a> Emulator<'a> {
                         return Ok(());
                     }
                 }
-                MachineTerminator::Trap { kind } => return Err(trap_from_kind(kind)),
+                MachineTerminator::Trap { kind } => {
+                    #[cfg(debug_assertions)]
+                    {
+                        extern crate std;
+                        std::eprintln!(
+                            "[emu trap] func={} block=b{} kind={:?}",
+                            self.func_id.0, self.block_id.0, kind
+                        );
+                    }
+                    return Err(trap_from_kind(kind));
+                }
             }
         }
     }
