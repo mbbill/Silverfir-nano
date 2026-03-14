@@ -34,10 +34,18 @@ use std::{
     path::PathBuf,
 };
 
+use crate::vm::native::arch::arm64::compile::DebugRegion;
+
 /// Per-function LIR data for the dump.
 pub struct DumpFunctionLir<'a> {
     pub func_idx: u32,
     pub lir: &'a LirProgram,
+}
+
+/// Per-function debug regions from compilation.
+pub struct DumpFunctionRegions {
+    pub func_idx: u32,
+    pub regions: Vec<DebugRegion>,
 }
 
 pub fn dump_enabled() -> bool {
@@ -55,6 +63,7 @@ pub fn dump_enabled() -> bool {
 /// Write the full native dump (native_index.txt + native_code.bin).
 ///
 /// `code_slices` contains `(func_idx, code_bytes)` for each compiled function.
+/// `debug_regions_by_func` provides per-block code region metadata.
 pub fn write_module_dump(
     module_name: &str,
     function_count: usize,
@@ -62,19 +71,20 @@ pub fn write_module_dump(
     machine_module: &MachineModule,
     runtime: &MachineRuntimeContract,
     code_slices: &[(u32, &[u8])],
+    debug_regions_by_func: &[DumpFunctionRegions],
 ) -> Result<(), WasmError> {
     #[cfg(any(feature = "std", feature = "wasi", test))]
     {
         if !dump_enabled() {
             return Ok(());
         }
-        write_dump_impl(module_name, function_count, lir_inputs, machine_module, runtime, code_slices)
+        write_dump_impl(module_name, function_count, lir_inputs, machine_module, runtime, code_slices, debug_regions_by_func)
             .map_err(|err| WasmError::internal(format!("failed to write native dump: {err}")))
     }
 
     #[cfg(not(any(feature = "std", feature = "wasi", test)))]
     {
-        let _ = (module_name, function_count, lir_inputs, machine_module, runtime, code_slices);
+        let _ = (module_name, function_count, lir_inputs, machine_module, runtime, code_slices, debug_regions_by_func);
         Ok(())
     }
 }
@@ -87,6 +97,7 @@ fn write_dump_impl(
     machine_module: &MachineModule,
     runtime: &MachineRuntimeContract,
     code_slices: &[(u32, &[u8])],
+    debug_regions_by_func: &[DumpFunctionRegions],
 ) -> Result<(), std::io::Error> {
     let root = env::var_os("SF_NATIVE_DUMP_DIR")
         .map(PathBuf::from)
@@ -110,14 +121,27 @@ fn write_dump_impl(
     let _ = writeln!(index, "function_count={function_count}");
     let _ = writeln!(index);
 
-    // Regions table
+    // Regions table (per-block granularity)
     let _ = writeln!(index, "[regions]");
+    let regions_by_func: alloc::collections::BTreeMap<u32, &[DebugRegion]> =
+        debug_regions_by_func.iter().map(|d| (d.func_idx, d.regions.as_slice())).collect();
     for (func_idx, file_off, len) in &code_offsets {
-        let _ = writeln!(
-            index,
-            "symbol=jit::{module_name}::func{func_idx}\tfunc={func_idx}\tfile_off=0x{file_off:08x}\tfile_end=0x{:08x}\tcode_size={len}",
-            file_off + *len as u64,
-        );
+        if let Some(regions) = regions_by_func.get(func_idx) {
+            for region in *regions {
+                let region_file_off = file_off + region.offset as u64;
+                let _ = writeln!(
+                    index,
+                    "symbol=jit::{module_name}::func{func_idx}::{}\tfunc={func_idx}\tregion={}\tfile_off=0x{region_file_off:08x}\tfile_end=0x{:08x}\tcode_size={}",
+                    region.label, region.label, region_file_off + region.len as u64, region.len,
+                );
+            }
+        } else {
+            let _ = writeln!(
+                index,
+                "symbol=jit::{module_name}::func{func_idx}\tfunc={func_idx}\tfile_off=0x{file_off:08x}\tfile_end=0x{:08x}\tcode_size={len}",
+                file_off + *len as u64,
+            );
+        }
     }
     let _ = writeln!(index);
 

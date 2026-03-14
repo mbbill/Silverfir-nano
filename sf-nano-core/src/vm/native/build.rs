@@ -132,12 +132,27 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, entry)| {
-                        entry.map(|e| {
+                        entry.as_ref().map(|e| {
                             let ptr = e.entry as *const u8;
                             let len = e.text_len;
                             (idx as u32, unsafe {
                                 core::slice::from_raw_parts(ptr, len)
                             })
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = arm64_entries
+            .as_ref()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, entry)| {
+                        entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
+                            func_idx: idx as u32,
+                            regions: e.debug_regions.clone(),
                         })
                     })
                     .collect()
@@ -150,6 +165,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             compiled.module(),
             compiled.runtime(),
             &code_slices,
+            &dump_regions,
         );
     }
 
@@ -159,7 +175,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         };
         let arm64_entry = arm64_entries
             .as_ref()
-            .and_then(|entries| entries.get(func_idx).copied().flatten());
+            .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
         spec.set_native_code(
             NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32)).with_arm64_entry(
                 arm64_entry.map(|entry| entry.entry),

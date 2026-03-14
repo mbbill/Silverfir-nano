@@ -113,6 +113,17 @@ struct DirectCallPatch {
     callee: crate::vm::native::ir::machine::MachineFuncId,
 }
 
+/// One debug region within a compiled function (for profiler symbols).
+#[derive(Clone, Debug)]
+pub struct DebugRegion {
+    /// Byte offset within the function text.
+    pub offset: usize,
+    /// Byte length of this region.
+    pub len: usize,
+    /// Human-readable label (e.g. "b0", "edge_3", "prologue", "return_ok").
+    pub label: alloc::string::String,
+}
+
 #[derive(Debug)]
 struct FunctionArtifact {
     text: Arm64TextEmitter,
@@ -122,6 +133,8 @@ struct FunctionArtifact {
     root_return_offset: usize,
     /// Offset of the internal entry point (after prologue), for local calls.
     internal_entry_offset: usize,
+    /// Per-block/region debug map for profiler symbols.
+    debug_regions: Vec<DebugRegion>,
 }
 
 #[repr(C)]
@@ -133,10 +146,11 @@ struct Arm64FunctionInfo {
     call_scratch_base_slot: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CompiledArm64Entry {
     pub entry: Arm64RootEntry,
     pub text_len: usize,
+    pub debug_regions: Vec<DebugRegion>,
     pub root_return: Arm64CodePtr,
 }
 
@@ -252,25 +266,36 @@ pub fn compile_module(
     for artifact in artifacts {
         let text_bytes = artifact.text.finish();
         let text_len = text_bytes.len();
+        let debug_regions = artifact.debug_regions;
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<Arm64RootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        entries.push(Some(CompiledArm64Entry { entry, root_return, text_len }));
+        entries.push(Some(CompiledArm64Entry { entry, root_return, text_len, debug_regions }));
     }
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
 
-    // Record JIT symbols for profiling tools (samply-for-ai, perf)
+    // Record per-block JIT symbols for profiling tools (samply-for-ai, perf)
     let module_name = &module.name;
     for (func_idx, entry) in entries.iter().enumerate() {
         if let Some(entry) = entry {
-            let code_start = entry.entry as *const u8;
-            if entry.text_len > 0 {
-                let code_bytes =
-                    unsafe { core::slice::from_raw_parts(code_start, entry.text_len) };
-                let symbol = alloc::format!("jit::{}::func{}", module_name, func_idx);
-                crate::vm::native::profiler::record_function(code_start, code_bytes, &symbol);
+            let func_base = entry.entry as *const u8;
+            for region in &entry.debug_regions {
+                if region.len > 0 {
+                    let region_start = unsafe { func_base.add(region.offset) };
+                    let code_bytes =
+                        unsafe { core::slice::from_raw_parts(region_start, region.len) };
+                    let symbol = alloc::format!(
+                        "jit::{}::func{}::{}",
+                        module_name, func_idx, region.label
+                    );
+                    crate::vm::native::profiler::record_function(
+                        region_start,
+                        code_bytes,
+                        &symbol,
+                    );
+                }
             }
         }
     }
@@ -305,21 +330,46 @@ fn compile_function(
     }
 
     let mut compiler = FunctionCompiler::new(compiled, function);
+    let mut debug_regions = Vec::new();
+
+    let prologue_start = compiler.text.len();
     compiler.emit_prologue();
     let internal_entry_offset = compiler.text.len();
+    debug_regions.push(DebugRegion {
+        offset: prologue_start,
+        len: internal_entry_offset - prologue_start,
+        label: alloc::format!("prologue"),
+    });
 
     for block in &function.program.blocks {
         let label = compiler.block_label(block.id)?;
         compiler.bind_label(label);
+        let block_start = compiler.text.len();
         compiler.emit_block(block)?;
+        let block_end = compiler.text.len();
+        debug_regions.push(DebugRegion {
+            offset: block_start,
+            len: block_end - block_start,
+            label: alloc::format!("b{}", block.id.0),
+        });
     }
 
+    let edge_start = compiler.text.len();
     for edge in compiler.edge_stubs.clone() {
         compiler.bind_label(edge.label);
         compiler.emit_parallel_moves(&edge.params, &edge.args)?;
         compiler.emit_branch_to_block(edge.target)?;
     }
+    let edge_end = compiler.text.len();
+    if edge_end > edge_start {
+        debug_regions.push(DebugRegion {
+            offset: edge_start,
+            len: edge_end - edge_start,
+            label: alloc::format!("edges"),
+        });
+    }
 
+    let tail_start = compiler.text.len();
     compiler.bind_label(compiler.return_ok_label);
     compiler.materialize_u64(Arm64Reg::X0, 0);
     compiler.emit_epilogue();
@@ -338,6 +388,14 @@ fn compile_function(
     for (label, kind) in deferred {
         compiler.bind_label(label);
         compiler.emit_trap(kind);
+    }
+    let tail_end = compiler.text.len();
+    if tail_end > tail_start {
+        debug_regions.push(DebugRegion {
+            offset: tail_start,
+            len: tail_end - tail_start,
+            label: alloc::format!("tail"),
+        });
     }
 
     compiler.patch_fixups()?;
@@ -368,6 +426,7 @@ fn compile_function(
         function_table_patches: compiler.function_table_patches,
         root_return_offset,
         internal_entry_offset,
+        debug_regions,
     })
 }
 
@@ -398,6 +457,7 @@ fn compile_unsupported_stub(
         function_table_patches: Vec::new(),
         root_return_offset: 0,
         internal_entry_offset: 0, // stub uses root entry
+        debug_regions: Vec::new(),
     }
 }
 
@@ -2500,7 +2560,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[0].expect("entry");
+        let entry = entries[0].clone().expect("entry");
 
         let mut stack = [0u64; 4];
         let mut store = Box::new(Store::new(module));
@@ -2599,7 +2659,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[0].expect("entry");
+        let entry = entries[0].clone().expect("entry");
 
         let mut stack = [0u64; 3];
         let mut store = Box::new(Store::new(module));
@@ -2689,7 +2749,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[0].expect("entry");
+        let entry = entries[0].clone().expect("entry");
 
         let mut stack = [0u64; 3];
         let mut store = Box::new(Store::new(module));
@@ -2801,7 +2861,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[1].expect("entry");
+        let entry = entries[1].clone().expect("entry");
 
         let mut stack = [0u64; 4];
         let mut store = Box::new(Store::new(module));
@@ -2919,7 +2979,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[0].expect("entry");
+        let entry = entries[0].clone().expect("entry");
 
         let mut stack = [0u64; 3];
         let mut store = Box::new(Store::new(module));
@@ -3032,7 +3092,7 @@ mod tests {
             TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
         );
         let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
-        let entry = entries[0].expect("entry");
+        let entry = entries[0].clone().expect("entry");
 
         let mut stack = [0u64; 3];
         let mut store = Box::new(Store::new(module));
