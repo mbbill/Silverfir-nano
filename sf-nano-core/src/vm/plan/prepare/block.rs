@@ -13,11 +13,13 @@ use crate::{
     },
 };
 
+use crate::vm::wasm::semantic_ir::SemanticOpKind;
+
 use super::{
     ops::lower_block_body_op,
     state::{BlockState, EntryState, ValueAlloc},
     steps::PreparedOp,
-    terminator::lower_block_terminator,
+    terminator::{fallthrough_target, lower_block_terminator, maybe_publish_live_window_for_targets},
 };
 
 #[derive(Clone, Debug)]
@@ -45,6 +47,13 @@ pub(super) fn lower_block_range(
         .ok_or_else(|| WasmError::internal("LIR block cannot be empty".into()))?;
 
     for semantic_index in semantic_range.start..last_index {
+        // End ops in the body need their publication logic — the same
+        // reconciliation that lower_block_terminator does for End when
+        // it's the last op in a block.
+        if matches!(prepared[semantic_index].semantic.kind, SemanticOpKind::End) {
+            let target = fallthrough_target(semantic_index, prepared.len())?;
+            maybe_publish_live_window_for_targets(&[target], &mut state, frame, entry_states);
+        }
         lower_block_body_op(&prepared[semantic_index], &mut state, frame, values)?;
         state.validate_live_fit("block body")?;
     }

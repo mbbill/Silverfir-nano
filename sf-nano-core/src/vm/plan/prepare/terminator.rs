@@ -455,7 +455,7 @@ impl LoweredTerminator {
     }
 }
 
-fn fallthrough_target(
+pub(super) fn fallthrough_target(
     semantic_index: usize,
     semantic_len: usize,
 ) -> Result<SemanticTarget, WasmError> {
@@ -466,7 +466,7 @@ fn fallthrough_target(
     Ok(SemanticTarget::new(next))
 }
 
-fn maybe_publish_live_window_for_targets(
+pub(super) fn maybe_publish_live_window_for_targets(
     targets: &[SemanticTarget],
     state: &mut BlockState,
     frame: FrameLayoutPlan,

@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn splits_end_after_empty_if_into_its_own_block() {
+    fn merges_end_into_enclosing_block_for_empty_if() {
         let semantic = SemanticProgram {
             params: 1,
             results: 0,
@@ -394,12 +394,10 @@ mod tests {
         )
         .expect("empty-if preparation should succeed");
 
-        assert!(prepared
-            .lir
-            .blocks
-            .iter()
-            .filter(|block| block.ops.is_empty())
-            .any(|block| matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Goto(_))));
+        // End is no longer split into its own block — it merges with the
+        // following code. Two empty-if sequences + return = 3 blocks
+        // (entry, End+LocalGet+If, End+ReturnVoid).
+        assert_eq!(prepared.lir.blocks.len(), 3);
     }
 
     #[test]
@@ -793,14 +791,13 @@ mod tests {
 
         assert!(
             prepared.lir.blocks.iter().any(|block| {
-                matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Goto(_))
-                    && block.ops.iter().any(|inst| {
-                        matches!(
-                            inst.kind,
-                            LirInstKind::StoreSlot { slot, .. }
-                                if slot == prepared.frame.operand_slot(0)
-                        )
-                    })
+                block.ops.iter().any(|inst| {
+                    matches!(
+                        inst.kind,
+                        LirInstKind::StoreSlot { slot, .. }
+                            if slot == prepared.frame.operand_slot(0)
+                    )
+                })
             }),
             "fallthrough from a block result must publish the older stack prefix to canonical slots before entering a mixed spill/live successor"
         );
