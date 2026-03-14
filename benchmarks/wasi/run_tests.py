@@ -61,7 +61,7 @@ TESTS = [
     {
         "name": "c-ray/c-ray.wasm",
         "cwd": os.path.join(SCRIPT_DIR, "c-ray"),
-        "args": ["c-ray.wasm", "-s", "1800x1800"],
+        "args": ["c-ray.wasm", "-s", "4000x4000"],
         "stdin": os.path.join(SCRIPT_DIR, "c-ray", "scene"),
         "pattern": r"Rendering took:\s*(.+\))",
         "source": "stderr",

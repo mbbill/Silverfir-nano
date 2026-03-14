@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>WASI Benchmarks</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 1100px; margin: 40px auto; padding: 0 20px; color: #222; }
+h1 { margin-bottom: 8px; }
+.note { color: #666; font-size: 14px; margin-bottom: 20px; }
+.note code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+.controls { margin-bottom: 20px; }
+button { padding: 8px 18px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; }
+button:hover { background: #f5f5f5; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+button.primary:hover { background: #1d4ed8; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #e5e5e5; }
+th { font-weight: 600; background: #fafafa; }
+td:nth-child(2) { width: 90px; }
+td:nth-child(4) { width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
+.status { font-size: 13px; font-weight: 600; }
+.pending { color: #888; }
+.running { color: #d97706; }
+.pass { color: #16a34a; }
+.fail { color: #dc2626; }
+.result { font-family: monospace; font-size: 13px; }
+#log { margin-top: 20px; }
+#log details { margin-bottom: 8px; }
+#log summary { cursor: pointer; font-size: 13px; color: #666; }
+#log pre { background: #f5f5f5; padding: 10px; border-radius: 4px; font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>WASI Benchmarks</h1>
+<p class="note">Serve this directory: <code>cd benchmarks/wasi && python3 -m http.server 8080</code> then open <code>http://localhost:8080/bench.html</code></p>
+
+<div class="controls">
+  <button class="primary" id="btn-all" onclick="runAll()">Run All</button>
+</div>
+
+<table>
+  <thead><tr><th>Benchmark</th><th>Status</th><th>Result</th><th>Time</th><th></th></tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div id="log"></div>
+
+<script>
+const BENCHMARKS = [
+  { name:'CoreMark', wasm:'coremark/coremark.wasm', args:['coremark.wasm'],
+    extract:(o,e)=>{ const m=o.match(/CoreMark 1\.0 :\s*(\S+)/); return m?m[1]+' iter/s':null; }},
+  { name:'SHA-256', wasm:'sha256/sha256.wasm', args:['sha256.wasm'],
+    extract:(o)=>{ const m=o.match(/sha256: throughput = (\S+ MB\/s)/); return m?m[1]:null; }},
+  { name:'bzip2', wasm:'bzip2/bzip2.wasm', args:['bzip2.wasm'],
+    extract:(o)=>{ const m=o.match(/bzip2: throughput = (\S+ MB\/s)/); return m?m[1]:null; }},
+  { name:'LZ4', wasm:'lz4/lz4.wasm', args:['lz4.wasm'],
+    extract:(o)=>{ const c=o.match(/lz4 compress: throughput = (\S+ MB\/s)/);
+      const d=o.match(/lz4 decompress: throughput = (\S+ MB\/s)/);
+      const p=[]; if(c)p.push('C:'+c[1]); if(d)p.push('D:'+d[1]); return p.join(' ')||null; }},
+  { name:'mandelbrot', wasm:'mandelbrot/mandel.wasm', args:['mandel.wasm','128','6e6'],
+    extract:(o,e)=>{ const m=e.match(/Elapsed time:\s*(.+)/); return m?m[1]:null; }},
+  { name:'c-ray', wasm:'c-ray/c-ray.wasm', args:['c-ray.wasm','-s','4000x4000'],
+    stdin:'c-ray/scene',
+    extract:(o,e)=>{ const m=e.match(/Rendering took:\s*(.+\))/); return m?m[1]:null; }},
+  { name:'STREAM', wasm:'stream/stream.wasm', args:['stream.wasm'],
+    extract:(o)=>{ const ms=[...o.matchAll(/(Copy|Scale|Add|Triad):\s+(\S+)/g)];
+      return ms.length?ms.map(m=>m[1]+':'+m[2]).join(' '):null; }},
+  { name:'Lua fib(38)', wasm:'lua/lua.wasm', args:['lua.wasm','fib.lua'],
+    files:{'fib.lua':'lua/fib.lua'},
+    extract:(o)=>{ const m=o.match(/fib\(\d+\) = (\d+)/); return m?'= '+m[1]:null; }, wallClock:true},
+  { name:'Lua sunfish', wasm:'lua/lua.wasm', args:['lua.wasm','sunfish.lua'],
+    files:{'sunfish.lua':'lua/sunfish.lua'},
+    extract:(o)=>{ const m=o.match(/Score:\s+(\S+)/); return m?m[1]+' nodes/s':null; }, wallClock:true},
+  { name:'Lua json_bench', wasm:'lua/lua.wasm', args:['lua.wasm','json_bench.lua'],
+    files:{'json_bench.lua':'lua/json_bench.lua'},
+    extract:(o)=>{ const m=o.match(/Throughput:\s+(\S+ KB\/s)/); return m?m[1]:null; }, wallClock:true},
+];
+
+const baseUrl = new URL('.', location.href).href;
+let running = false;
+
+// Build table
+const tbody = document.getElementById('tbody');
+BENCHMARKS.forEach((b, i) => {
+  const tr = document.createElement('tr'); tr.id = 'row-'+i;
+  tr.innerHTML = `<td>${b.name}</td><td><span class="status pending" id="st-${i}">pending</span></td>` +
+    `<td class="result" id="res-${i}">-</td><td id="time-${i}">-</td>` +
+    `<td><button id="btn-${i}" onclick="runOne(${i})">Run</button></td>`;
+  tbody.appendChild(tr);
+});
+
+// Worker code
+const WORKER_SRC = `
+'use strict';
+class WasiExit { constructor(c){this.code=c;} }
+
+class Wasi {
+  constructor(args,stdinData,files){
+    this.args=args||[]; this.out=[]; this.err=[]; this.mem=null;
+    this.sin=stdinData||new Uint8Array(0); this.sinPos=0;
+    this.vfs=new Map(); this.fds=new Map(); this.nfd=4;
+    if(files) for(const[n,d]of Object.entries(files)) this.vfs.set(n,d);
+  }
+  setMem(m){this.mem=m;}
+  stdout(){return this.out.join('');}
+  stderr(){return this.err.join('');}
+  dv(){return new DataView(this.mem.buffer);}
+  u8(){return new Uint8Array(this.mem.buffer);}
+  rs(p,l){return new TextDecoder().decode(this.u8().subarray(p,p+l));}
+
+  get imports(){
+    const w=this, enc=new TextEncoder();
+    const api={
+      args_sizes_get(ap,bp){
+        const v=w.dv(); v.setUint32(ap,w.args.length,true);
+        let s=0; for(const a of w.args) s+=enc.encode(a).length+1;
+        v.setUint32(bp,s,true); return 0;
+      },
+      args_get(ap,bp){
+        const v=w.dv(),m=w.u8(); let o=bp;
+        for(let i=0;i<w.args.length;i++){
+          v.setUint32(ap+i*4,o,true);
+          const b=enc.encode(w.args[i]); m.set(b,o); m[o+b.length]=0; o+=b.length+1;
+        } return 0;
+      },
+      environ_sizes_get(a,b){ w.dv().setUint32(a,0,true); w.dv().setUint32(b,0,true); return 0; },
+      environ_get(){ return 0; },
+      clock_time_get(id,prec,tp){
+        const ns = id===0 ? BigInt(Date.now())*1000000n : BigInt(Math.round(performance.now()*1e6));
+        w.dv().setBigUint64(tp,ns,true); return 0;
+      },
+      fd_write(fd,iovs,iovl,nwp){
+        const v=w.dv(),m=w.u8(); let t=0;
+        for(let i=0;i<iovl;i++){
+          const p=v.getUint32(iovs+i*8,true), l=v.getUint32(iovs+i*8+4,true);
+          const s=new TextDecoder().decode(m.subarray(p,p+l));
+          if(fd===1)w.out.push(s); else if(fd===2)w.err.push(s); t+=l;
+        } v.setUint32(nwp,t,true); return 0;
+      },
+      fd_read(fd,iovs,iovl,nrp){
+        const v=w.dv(),m=w.u8(); let t=0;
+        if(fd===0){
+          for(let i=0;i<iovl;i++){
+            const p=v.getUint32(iovs+i*8,true),l=v.getUint32(iovs+i*8+4,true);
+            const a=Math.min(l,w.sin.length-w.sinPos);
+            if(a>0){m.set(w.sin.subarray(w.sinPos,w.sinPos+a),p);w.sinPos+=a;t+=a;}
+          }
+        } else {
+          const f=w.fds.get(fd);
+          if(!f){v.setUint32(nrp,0,true);return 8;}
+          for(let i=0;i<iovl;i++){
+            const p=v.getUint32(iovs+i*8,true),l=v.getUint32(iovs+i*8+4,true);
+            const a=Math.min(l,f.data.length-f.off);
+            if(a>0){m.set(f.data.subarray(f.off,f.off+a),p);f.off+=a;t+=a;}
+          }
+        }
+        v.setUint32(nrp,t,true); return 0;
+      },
+      fd_close(fd){ w.fds.delete(fd); return 0; },
+      fd_seek(fd,off,wh,np){
+        const f=w.fds.get(fd); if(!f)return 8;
+        if(wh===0)f.off=Number(off); else if(wh===1)f.off+=Number(off); else f.off=f.data.length+Number(off);
+        w.dv().setBigUint64(np,BigInt(f.off),true); return 0;
+      },
+      fd_fdstat_get(fd,buf){
+        const v=w.dv(),m=w.u8(); for(let i=0;i<24;i++)m[buf+i]=0;
+        v.setUint8(buf,fd<=2?2:fd===3?3:4);
+        v.setBigUint64(buf+8,0xFFFFFFFFFFFFFFFFn,true);
+        v.setBigUint64(buf+16,0xFFFFFFFFFFFFFFFFn,true); return 0;
+      },
+      fd_prestat_get(fd,buf){
+        if(fd===3){w.dv().setUint8(buf,0);w.dv().setUint32(buf+4,1,true);return 0;} return 8;
+      },
+      fd_prestat_dir_name(fd,pp,pl){ if(fd===3){w.u8()[pp]=46;return 0;} return 8; },
+      path_open(dfd,df,pp,pl,of,rb,ri,ff,fdp){
+        let name=w.rs(pp,pl).replace(/^\\.\\//,'');
+        const d=w.vfs.get(name); if(!d)return 44;
+        const fd=w.nfd++; w.fds.set(fd,{data:d,off:0});
+        w.dv().setUint32(fdp,fd,true); return 0;
+      },
+      proc_exit(c){ throw new WasiExit(c); },
+      random_get(b,l){ crypto.getRandomValues(w.u8().subarray(b,b+l)); return 0; },
+      sched_yield(){return 0;},
+      poll_oneoff(a,b,n,np){ w.dv().setUint32(np,n,true); return 0; },
+      fd_filestat_get(fd,buf){
+        const m=w.u8(); for(let i=0;i<64;i++)m[buf+i]=0;
+        const f=w.fds.get(fd);
+        if(f){w.dv().setUint8(buf+16,4);w.dv().setBigUint64(buf+32,BigInt(f.data.length),true);}
+        return 0;
+      },
+      fd_advise(){return 0;}, fd_allocate(){return 0;}, fd_datasync(){return 0;}, fd_sync(){return 0;},
+      fd_tell(){return 52;}, fd_pread(){return 52;}, fd_pwrite(){return 52;},
+      fd_readdir(){return 52;}, fd_renumber(){return 52;},
+      fd_fdstat_set_flags(){return 52;}, fd_filestat_set_size(){return 52;}, fd_filestat_set_times(){return 52;},
+      path_create_directory(){return 52;}, path_filestat_get(){return 52;}, path_filestat_set_times(){return 52;},
+      path_link(){return 52;}, path_readlink(){return 52;}, path_remove_directory(){return 52;},
+      path_rename(){return 52;}, path_symlink(){return 52;}, path_unlink_file(){return 52;},
+      proc_raise(){return 52;}, clock_res_get(){return 52;},
+      sock_accept(){return 52;}, sock_recv(){return 52;}, sock_send(){return 52;}, sock_shutdown(){return 52;},
+    };
+    return { wasi_snapshot_preview1:api, wasi_unstable:api };
+  }
+}
+
+self.onmessage = async function(e){
+  const {benchmark,baseUrl}=e.data;
+  try {
+    const resp=await fetch(new URL(benchmark.wasm,baseUrl));
+    if(!resp.ok) throw new Error('fetch failed: '+benchmark.wasm);
+    const bytes=await resp.arrayBuffer();
+    let stdinData=null;
+    if(benchmark.stdin){
+      const r=await fetch(new URL(benchmark.stdin,baseUrl));
+      stdinData=new Uint8Array(await r.arrayBuffer());
+    }
+    let files=null;
+    if(benchmark.files){
+      files={};
+      for(const[n,p]of Object.entries(benchmark.files)){
+        const r=await fetch(new URL(p,baseUrl));
+        files[n]=new Uint8Array(await r.arrayBuffer());
+      }
+    }
+    const wasi=new Wasi(benchmark.args,stdinData,files);
+    const {instance}=await WebAssembly.instantiate(bytes,wasi.imports);
+    wasi.setMem(instance.exports.memory);
+    const t0=performance.now();
+    let exitCode=0;
+    try { instance.exports._start(); }
+    catch(err){ if(err instanceof WasiExit) exitCode=err.code; else throw err; }
+    const elapsed=performance.now()-t0;
+    self.postMessage({type:'result',name:benchmark.name,stdout:wasi.stdout(),stderr:wasi.stderr(),elapsed,exitCode});
+  } catch(err){
+    self.postMessage({type:'error',name:benchmark.name,error:err.message||String(err)});
+  }
+};
+`;
+
+function createWorker() {
+  const blob = new Blob([WORKER_SRC], {type:'application/javascript'});
+  return new Worker(URL.createObjectURL(blob));
+}
+
+function runBenchmark(idx) {
+  return new Promise((resolve) => {
+    const b = BENCHMARKS[idx];
+    const st = document.getElementById('st-'+idx);
+    const res = document.getElementById('res-'+idx);
+    const tm = document.getElementById('time-'+idx);
+    st.className = 'status running'; st.textContent = 'running';
+    res.textContent = '...'; tm.textContent = '...';
+
+    const worker = createWorker();
+    worker.onmessage = (e) => {
+      worker.terminate();
+      if (e.data.type === 'result') {
+        const {stdout, stderr, elapsed, exitCode} = e.data;
+        const metric = b.extract(stdout, stderr);
+        if (exitCode !== 0 && !metric) {
+          st.className = 'status fail'; st.textContent = 'FAIL';
+          res.textContent = 'exit code ' + exitCode;
+        } else {
+          st.className = 'status pass'; st.textContent = 'PASS';
+          res.textContent = metric || (b.wallClock ? (elapsed/1000).toFixed(2)+'s' : 'ok');
+        }
+        tm.textContent = (elapsed/1000).toFixed(1)+'s';
+        addLog(b.name, stdout, stderr);
+      } else {
+        st.className = 'status fail'; st.textContent = 'ERROR';
+        res.textContent = e.data.error;
+        tm.textContent = '-';
+      }
+      resolve();
+    };
+    worker.onerror = (e) => {
+      worker.terminate();
+      st.className = 'status fail'; st.textContent = 'ERROR';
+      res.textContent = e.message; tm.textContent = '-';
+      resolve();
+    };
+    const {extract, wallClock, ...wb} = b;
+    worker.postMessage({benchmark: wb, baseUrl});
+  });
+}
+
+async function runOne(idx) {
+  if (running) return;
+  running = true; setButtons(true);
+  await runBenchmark(idx);
+  running = false; setButtons(false);
+}
+
+async function runAll() {
+  if (running) return;
+  running = true; setButtons(true);
+  for (let i = 0; i < BENCHMARKS.length; i++) {
+    await runBenchmark(i);
+  }
+  running = false; setButtons(false);
+}
+
+function setButtons(disabled) {
+  document.getElementById('btn-all').disabled = disabled;
+  BENCHMARKS.forEach((_, i) => { document.getElementById('btn-'+i).disabled = disabled; });
+}
+
+function addLog(name, stdout, stderr) {
+  const log = document.getElementById('log');
+  const d = document.createElement('details');
+  const s = document.createElement('summary');
+  s.textContent = name + ' output';
+  d.appendChild(s);
+  if (stdout.trim()) { const p = document.createElement('pre'); p.textContent = stdout.slice(0, 4000); d.appendChild(p); }
+  if (stderr.trim()) { const p = document.createElement('pre'); p.textContent = 'stderr:\n' + stderr.slice(0, 2000); d.appendChild(p); }
+  log.appendChild(d);
+}
+</script>
+</body>
+</html>
