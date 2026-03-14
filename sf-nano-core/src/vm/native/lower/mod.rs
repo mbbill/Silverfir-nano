@@ -299,9 +299,9 @@ fn lower_function(
                         let local_call = extra_block_ids.alloc();
                         let external_call = extra_block_ids.alloc();
                         let continuation = extra_block_ids.alloc();
-                        let local_call_target_param = lower.transient_reg(1)?;
+                        let local_call_target_param = lower.transient_reg(0)?;
 
-                        lower.emit_flush_dirty_cached_locals()?;
+                        lower.emit_save_all_cached_locals()?;
                         emit_call_indirect_bounds_check_setup(
                             &mut lower,
                             table_idx,
@@ -319,7 +319,7 @@ fn lower_function(
                                     kind: MachineCompareKind::Ge,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(0)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    rhs: MachineValue::Reg(lower.temp_reg(1)?),
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: trap_oob,
@@ -343,8 +343,8 @@ fn lower_function(
                                     width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Ge,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(2)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    lhs: MachineValue::Reg(lower.temp_reg(1)?),
+                                    rhs: MachineValue::Reg(lower.temp_reg(0)?),
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: trap_invalid_ref,
@@ -377,8 +377,8 @@ fn lower_function(
                                     width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Ne,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(1)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(3)?),
+                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
+                                    rhs: MachineValue::Reg(lower.temp_reg(1)?),
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: trap_type,
@@ -411,12 +411,12 @@ fn lower_function(
                                     width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                                     kind: MachineCompareKind::Eq,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
                                     rhs: MachineValue::Imm64(function_kind::LOCAL as u64),
                                 },
                                 then_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: local_call,
-                                    args: vec![MachineValue::Reg(lower.transient_reg(3)?)],
+                                    args: vec![MachineValue::Reg(lower.temp_reg(1)?)],
                                 },
                                 else_edge: crate::vm::native::ir::machine::MachineEdge {
                                     target: external_call,
@@ -648,8 +648,8 @@ fn emit_call_indirect_bounds_check_setup(
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<(), WasmError> {
     let index = lower.transient_reg(0)?;
-    let table_len = lower.transient_reg(1)?;
-    let scratch = lower.temp_reg(0)?;
+    let table_views = lower.temp_reg(0)?;
+    let table_len = lower.temp_reg(1)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
             dst: index,
@@ -660,7 +660,7 @@ fn emit_call_indirect_bounds_check_setup(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            dst: scratch,
+            dst: table_views,
             addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
             width: MachineMemWidth::U64,
             extension: MachineLoadExtension::None,
@@ -670,7 +670,7 @@ fn emit_call_indirect_bounds_check_setup(
         kind: MachineInstKind::Load {
             dst: table_len,
             addr: indexed_const_addr(
-                scratch,
+                table_views,
                 table_idx,
                 core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
                 crate::vm::native::runtime::context::table_view_offset::ELEMENTS_LEN,
@@ -688,8 +688,8 @@ fn build_call_indirect_checked_block(
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let index = lower.transient_reg(0)?;
-    let func_idx = lower.transient_reg(2)?;
     let table_base = lower.temp_reg(0)?;
+    let func_idx = lower.temp_reg(1)?;
     Ok(vec![
         MachineInst {
             kind: MachineInstKind::Load {
@@ -758,7 +758,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                dst: lower.transient_reg(1)?,
+                dst: table_base,
                 addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_LEN),
                 width: MachineMemWidth::U64,
                 extension: MachineLoadExtension::None,
@@ -772,15 +772,14 @@ fn build_call_indirect_type_check_block(
     expected_type_idx: u32,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
-    let func_idx = lower.transient_reg(0)?;
-    let actual_type = lower.transient_reg(1)?;
+    let actual_type = lower.transient_reg(0)?;
     let function_views = lower.temp_reg(0)?;
-    let scaled_index = lower.transient_reg(2)?;
-    let expected_type = lower.transient_reg(3)?;
+    let scaled_index = lower.temp_reg(1)?;
+    let expected_type = lower.temp_reg(1)?;
     let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
-        func_idx,
+        scaled_index,
         function_views,
         scaled_index,
         function_view_offset::TYPE_CANON,
@@ -816,15 +815,14 @@ fn build_call_indirect_dispatch_block(
     lower: &BlockLowerContext<'_>,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
-    let func_idx = lower.transient_reg(0)?;
-    let kind = lower.transient_reg(1)?;
+    let kind = lower.transient_reg(0)?;
     let function_views = lower.temp_reg(0)?;
-    let scaled_index = lower.transient_reg(2)?;
-    let local_target = lower.transient_reg(3)?;
+    let scaled_index = lower.temp_reg(1)?;
+    let local_target = lower.temp_reg(1)?;
     let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
-        func_idx,
+        scaled_index,
         function_views,
         scaled_index,
         function_view_offset::KIND,

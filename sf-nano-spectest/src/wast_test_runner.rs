@@ -1232,6 +1232,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
 mod tests {
     use super::*;
     use sf_nano_core::module::Module;
+    use sf_nano_core::set_reference_backend;
     use sf_nano_core::vm::backend::{set_backend_mode, BackendMode};
     use sf_nano_core::vm::entities::FunctionInst;
     use sf_nano_core::vm::value::Value;
@@ -1310,6 +1311,75 @@ mod tests {
     }
 
     #[test]
+    fn native_regress_repeated_local_calls_and_aliasing() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (memory 1 1)
+              (func $malloc (param $size i32) (result i32)
+                (i32.const 16)
+              )
+              (func (export "malloc") (param i32) (result i32)
+                (call $malloc (local.get 0))
+              )
+              (func (export "two_calls_second") (result i32)
+                (local $x i32)
+                (local $y i32)
+                (local.set $x (call $malloc (i32.const 4)))
+                (local.set $y (call $malloc (i32.const 4)))
+                (local.get $y)
+              )
+              (func (export "two_calls_diff") (result i32)
+                (local $x i32)
+                (local $y i32)
+                (local.set $x (call $malloc (i32.const 4)))
+                (local.set $y (call $malloc (i32.const 4)))
+                (i32.sub (local.get $y) (local.get $x))
+              )
+              (func (export "store_y_load_x") (result i32)
+                (local $x i32)
+                (local $y i32)
+                (local.set $x (call $malloc (i32.const 4)))
+                (local.set $y (call $malloc (i32.const 4)))
+                (i32.store (local.get $x) (i32.const 42))
+                (i32.store (local.get $y) (i32.const 43))
+                (i32.load (local.get $x))
+              )
+            )
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let malloc = instance
+            .invoke("malloc", &[Value::I32(4)])
+            .expect("invoke malloc");
+        assert_eq!(malloc, vec![Value::I32(16)]);
+
+        let second = instance
+            .invoke("two_calls_second", &[])
+            .expect("invoke two_calls_second");
+        assert_eq!(second, vec![Value::I32(16)]);
+
+        let diff = instance
+            .invoke("two_calls_diff", &[])
+            .expect("invoke two_calls_diff");
+        assert_eq!(diff, vec![Value::I32(0)]);
+
+        let alias = instance
+            .invoke("store_y_load_x", &[])
+            .expect("invoke store_y_load_x");
+        assert_eq!(alias, vec![Value::I32(43)]);
+    }
+
+    #[test]
     fn spectest_if_wast_passes() {
         match run_wast_fixture("if.wast") {
             TestResult::Pass => {}
@@ -1364,11 +1434,30 @@ mod tests {
         match &instance.store().module().functions[func_index] {
             FunctionInst::Local { spec, .. } => {
                 assert!(
-                    spec.native_cache().internal_entry().is_some(),
-                    "expected direct ARM64 internal entry for as-mixed-operands"
+                    spec.has_native_code(),
+                    "expected native code to be compiled for as-mixed-operands"
                 );
             }
             FunctionInst::External { .. } => panic!("expected local export"),
         }
+    }
+
+    #[test]
+    fn native_if_params_id_break_uses_emulator_join_payload() {
+        set_reference_backend(true).expect("enable emulator backend");
+        let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
+        let instance = runner.instances.values_mut().next().expect("instance");
+
+        let ret_false = instance
+            .invoke("params-id-break", &[Value::I32(0)])
+            .expect("invoke export");
+        assert_eq!(ret_false, vec![Value::I32(3)]);
+
+        let ret_true = instance
+            .invoke("params-id-break", &[Value::I32(1)])
+            .expect("invoke export");
+        assert_eq!(ret_true, vec![Value::I32(3)]);
+
+        set_reference_backend(false).expect("restore default backend");
     }
 }

@@ -60,7 +60,14 @@ pub(super) fn lower_primitive(
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
-    let args = state.top_values(pop as usize)?;
+    let args = state.top_values(pop as usize).map_err(|err| {
+        WasmError::internal(alloc::format!(
+            "prepared primitive {:?} could not read {} live operands: {}",
+            kind,
+            pop,
+            err
+        ))
+    })?;
     state.consume_top(pop as usize)?;
     let results = values.many(push as usize);
     state.ops.push(LirInst {
@@ -115,16 +122,16 @@ pub(super) fn lower_boundary_primitive(
             args: FrameSpan::new(boundary_base, 3),
         },
         PrimitiveOpKind::MemoryInit { imm0, imm1 } => LirBoundaryOp::MemoryInit {
-            data_idx: *imm0,
-            mem_idx: *imm1,
+            data_idx: *imm1,
+            mem_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
         PrimitiveOpKind::DataDrop { data_idx } => LirBoundaryOp::DataDrop {
             data_idx: *data_idx,
         },
         PrimitiveOpKind::TableInit { imm0, imm1 } => LirBoundaryOp::TableInit {
-            elem_idx: *imm0,
-            table_idx: *imm1,
+            elem_idx: *imm1,
+            table_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
         PrimitiveOpKind::ElemDrop { elem_idx } => LirBoundaryOp::ElemDrop {
@@ -253,13 +260,17 @@ pub(super) fn lower_call_indirect(
 #[inline]
 pub(super) fn branch_payload(
     frame: FrameLayoutPlan,
+    current_height: u16,
     stack_drop: u32,
     arity: u16,
 ) -> Option<FrameSpan> {
     if arity == 0 {
         None
     } else {
-        Some(FrameSpan::new(frame.operand_slot(stack_drop as u16), arity))
+        let base = current_height
+            .saturating_sub(stack_drop as u16)
+            .saturating_sub(arity);
+        Some(FrameSpan::new(frame.operand_slot(base), arity))
     }
 }
 

@@ -3,8 +3,8 @@ use alloc::{rc::Rc, vec::Vec};
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig,
         native::{
+            arch,
             code::{CompiledNativeModule, NativeCode, NativeCodeCache},
             ir::machine::MachineFuncId,
             lower::{lower_module, LowerFunctionInput, LowerModuleInput},
@@ -16,28 +16,23 @@ use crate::{
 };
 
 #[inline]
-pub const fn native_backend_config() -> BackendConfig {
-    BackendConfig {
-        ctx_register_count: 1,
-        fp_register_count: 1,
-        tmp_register_count: 4,
-        hot_local_count: 3,
-        tos_register_count: 4,
-    }
-}
-
-#[inline]
-pub const fn native_plan_config() -> PlanConfig {
-    PlanConfig::from_backend_config(native_backend_config(), 3)
+pub const fn native_plan_config(backend: crate::vm::backend::BackendConfig) -> PlanConfig {
+    PlanConfig::from_backend_config(backend, 3)
 }
 
 pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
+    let backend = arch::active_backend_config()
+        .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
     let module = store.module();
     let all_compiled = module
         .functions
         .iter()
         .filter_map(|func| func.spec())
-        .all(|spec| spec.has_native_code());
+        .all(|spec| {
+            spec.get_native_code()
+                .map(|code| code.compiled().backend() == backend)
+                .unwrap_or(false)
+        });
     if all_compiled {
         return Ok(());
     }
@@ -63,11 +58,16 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             ))
         })?;
         let prepared =
-            prepare_function(PrepareInput { config: native_plan_config() }, &semantic).map_err(
+            prepare_function(PrepareInput { config: native_plan_config(backend) }, &semantic).map_err(
                 |err| {
                     WasmError::internal(alloc::format!(
-                        "native prepare failed for function {}: {}",
+                        "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
                         func_idx,
+                        spec.type_index(),
+                        params,
+                        results,
+                        semantic.max_stack_height,
+                        semantic.ops.len(),
                         err
                     ))
                 },
@@ -84,11 +84,11 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     let lowered = lower_module(LowerModuleInput {
-        backend: native_backend_config(),
+        backend,
         functions: &lowered_inputs,
     })?;
     let compiled = Rc::new(CompiledNativeModule::new(
-        native_backend_config(),
+        backend,
         lowered.module,
         lowered.runtime,
     )?);
@@ -113,11 +113,11 @@ mod tests {
     use super::ensure_module_compiled;
     use crate::{
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        value_type::ValueType,
         vm::{
             entities::{FunctionInst, ModuleInst},
             store::Store,
         },
-        value_type::ValueType,
     };
 
     #[test]
@@ -127,8 +127,7 @@ mod tests {
             Rc::new(FunctionType::new(vec![ValueType::I32], vec![])),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
-        let mut spec0 =
-            FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
+        let mut spec0 = FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
         spec0.set_code((&[0x0b][..]).into());
         let mut spec1 =
             FunctionSpec::new(Rc::new(FunctionType::new(vec![ValueType::I32], vec![])), 1);

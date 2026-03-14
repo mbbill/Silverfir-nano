@@ -91,25 +91,48 @@ pub(super) fn edge_to_target(
 
     let bindings = match mapping {
         EdgeMapping::Identity => {
-            let live_values = state.top_values(target_entry.live_value_count() as usize)?;
+            let live_values = state
+                .top_values(target_entry.live_value_count() as usize)
+                .map_err(|err| {
+                    WasmError::internal(alloc::format!(
+                        "prepared LIR edge b? -> semantic op {} could not bind {} live values: {}",
+                        target.index().as_usize(),
+                        target_entry.live_value_count(),
+                        err
+                    ))
+                })?;
             bind_values(target_params, &live_values)?
         }
         EdgeMapping::TakenBranch { payload, .. } => {
-            if target_entry.live_value_count() != 0 {
-                return Err(WasmError::internal(alloc::format!(
-                    "taken branch to semantic op {} must enter with canonical frame payload only, but target expects {} live params (payload_slots={})",
-                    target.index().as_usize(),
-                    target_entry.live_value_count(),
-                    payload.map_or(0, |span| span.count),
-                )));
+            if target_entry.live_value_count() == 0 {
+                if !target_params.is_empty() {
+                    return Err(WasmError::internal(alloc::format!(
+                        "taken branch to semantic op {} expects no live values but target block still requires {} params",
+                        target.index().as_usize(),
+                        target_params.len(),
+                    )));
+                }
+                Vec::new()
+            } else {
+                let live_needed = target_entry.live_value_count() as usize;
+                let live_values = state.top_values(live_needed).map_err(|err| {
+                    WasmError::internal(alloc::format!(
+                        "taken branch to semantic op {} could not bind {} live payload values: {}",
+                        target.index().as_usize(),
+                        live_needed,
+                        err
+                    ))
+                })?;
+                if payload.map(|span| span.count).unwrap_or(0) != live_needed as u16 {
+                    return Err(WasmError::internal(alloc::format!(
+                        "taken branch to semantic op {} has payload width {} but target expects {} live params",
+                        target.index().as_usize(),
+                        payload.map_or(0, |span| span.count),
+                        live_needed,
+                    )));
+                }
+                bind_values(target_params, &live_values)?
             }
-            if !target_params.is_empty() {
-                return Err(WasmError::internal(alloc::format!(
-                    "taken branch to semantic op {} must not require live params when payload is canonical frame state",
-                    target.index().as_usize(),
-                )));
-            }
-            Vec::new()
         }
     };
 

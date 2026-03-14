@@ -45,21 +45,32 @@ pub fn eval(
             Ok(out)
         }
         FunctionInst::Local { spec, .. } => {
-            if !spec.has_native_code() {
+            let active_backend = arch::active_native_backend().map_err(|err| {
+                WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
+            })?;
+            let active_config = arch::compile_backend_config(active_backend);
+            let needs_compile = spec
+                .get_native_code()
+                .map(|code| code.compiled().backend() != active_config)
+                .unwrap_or(true);
+            if needs_compile {
                 build::ensure_module_compiled(store)?;
             }
             let code = spec.get_native_code().ok_or_else(|| {
                 WasmError::internal("native runtime is missing compiled machine code".into())
             })?;
-            match arch::active_native_backend()
-                .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))? {
+            match active_backend {
                 arch::NativeBackend::Arm64 => Err(WasmError::invalid(
                     "arm64 native backend is not wired to MachineIR yet".into(),
                 )),
                 #[cfg(debug_assertions)]
-                arch::NativeBackend::Reference => {
-                    arch::emulator::eval(spec, code, store, args, arch::NativeBackend::Reference.as_str())
-                }
+                arch::NativeBackend::Reference => arch::emulator::eval(
+                    spec,
+                    code,
+                    store,
+                    args,
+                    arch::NativeBackend::Reference.as_str(),
+                ),
             }
         }
     }

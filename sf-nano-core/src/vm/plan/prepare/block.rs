@@ -6,7 +6,7 @@ use crate::{
     error::WasmError,
     vm::{
         lir::{
-            ir::{LirInst, LirTerminator},
+            ir::{LirBlock, LirInst, LirTerminator},
             target::LirTarget,
         },
         plan::frame::FrameLayoutPlan,
@@ -24,6 +24,7 @@ use super::{
 pub(super) struct LoweredBlock {
     pub(super) ops: Vec<LirInst>,
     pub(super) terminator: LirTerminator,
+    pub(super) extra_blocks: Vec<LirBlock>,
 }
 
 pub(super) fn lower_block_range(
@@ -35,6 +36,8 @@ pub(super) fn lower_block_range(
     block_params: &[Vec<crate::vm::lir::ir::LirValue>],
     entry_states: &[EntryState],
     values: &mut ValueAlloc,
+    original_block_count: usize,
+    extra_blocks_len: usize,
 ) -> Result<LoweredBlock, WasmError> {
     let last_index = semantic_range
         .end
@@ -56,11 +59,14 @@ pub(super) fn lower_block_range(
         block_params,
         entry_states,
         values,
+        original_block_count,
+        extra_blocks_len,
     )?;
     state.validate_live_fit("block terminator")?;
 
     Ok(LoweredBlock {
         ops: state.ops,
-        terminator,
+        terminator: terminator.terminator,
+        extra_blocks: terminator.extra_blocks,
     })
 }

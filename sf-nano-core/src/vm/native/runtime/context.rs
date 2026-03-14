@@ -381,12 +381,12 @@ mod tests {
     use super::*;
     use crate::{
         module::{type_context::TypeContext, type_defs::FunctionType},
+        value_type::ValueType,
         vm::{
             entities::{Caller, ModuleInst},
             store::Store,
             value::Value,
         },
-        value_type::ValueType,
     };
 
     fn external_noop(
@@ -399,12 +399,18 @@ mod tests {
 
     #[test]
     fn refresh_function_views_canonicalizes_equivalent_type_indices() {
-        let duplicated_sig = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64]));
+        let duplicated_sig = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I64],
+        ));
         let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::Local {
             spec: crate::module::entities::FunctionSpec::new(
-                Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64])),
+                Rc::new(FunctionType::new(
+                    vec![ValueType::I32],
+                    vec![ValueType::I64],
+                )),
                 1,
             ),
             type_index: 1,
@@ -413,7 +419,8 @@ mod tests {
         let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
 
         assert_eq!(ctx.type_canon_len, 2);
-        let type_canon = unsafe { core::slice::from_raw_parts(ctx.type_canon_base, ctx.type_canon_len) };
+        let type_canon =
+            unsafe { core::slice::from_raw_parts(ctx.type_canon_base, ctx.type_canon_len) };
         assert_eq!(type_canon, &[0, 0]);
         assert_eq!(ctx.function_views_len, 1);
         let view = unsafe { &*ctx.function_views_base };
@@ -422,11 +429,17 @@ mod tests {
 
     #[test]
     fn refresh_function_views_canonicalizes_equivalent_external_signatures() {
-        let duplicated_sig = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64]));
+        let duplicated_sig = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I64],
+        ));
         let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::External {
-            func_type: Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I64])),
+            func_type: Rc::new(FunctionType::new(
+                vec![ValueType::I32],
+                vec![ValueType::I64],
+            )),
             callback: external_noop,
         });
         let mut store = Box::new(Store::new(module));

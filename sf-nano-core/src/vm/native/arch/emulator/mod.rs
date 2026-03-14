@@ -4,6 +4,8 @@
 //! backend under `arch/` rather than part of `native/runtime`, because its job
 //! is to execute finalized MachineIR the same way a real ISA backend will.
 
+pub mod config;
+
 use alloc::{vec, vec::Vec};
 
 use crate::{
@@ -20,6 +22,7 @@ use crate::{
                     MachineHelperCall, MachineInst, MachineInstKind, MachineIntBinaryOp,
                     MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
                     MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
+                    MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
                 },
                 runtime::MachineFrameRegion,
             },
@@ -28,7 +31,9 @@ use crate::{
                 helpers::{resolve_helper_entry, NativeHelperStatus},
             },
         },
-        raw_value::{as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64},
+        raw_value::{
+            as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64,
+        },
         stack::InterpreterStack,
         store::Store,
         value::Value,
@@ -91,10 +96,12 @@ pub fn eval(
         .runtime()
         .functions
         .get(func_id.0 as usize)
-        .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata".into()))?;
-    let program = compiled
-        .function(func_id)
-        .ok_or_else(|| WasmError::internal("native entry function is missing machine code".into()))?;
+        .ok_or_else(|| {
+            WasmError::internal("native entry function is missing runtime metadata".into())
+        })?;
+    let program = compiled.function(func_id).ok_or_else(|| {
+        WasmError::internal("native entry function is missing machine code".into())
+    })?;
 
     let mut stack = vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
@@ -129,7 +136,12 @@ pub fn eval(
         func_id,
         block_id: program.program.entry,
         fp: stack_base,
-        regs: init_entry_regs(compiled, program.program.reg_count, ctx_ptr, stack_base as u64),
+        regs: init_entry_regs(
+            compiled,
+            program.program.reg_count,
+            ctx_ptr,
+            stack_base as u64,
+        ),
         call_stack: Vec::new(),
     }
     .run();
@@ -178,9 +190,12 @@ impl<'a> Emulator<'a> {
                 }
                 MachineTerminator::JumpTable { index, entries } => {
                     let index = self.read_value(index)? as usize;
-                    let edge = entries.get(index).or_else(|| entries.last()).ok_or_else(|| {
-                        WasmError::internal("machine jump table has no entries".into())
-                    })?;
+                    let edge = entries
+                        .get(index)
+                        .or_else(|| entries.last())
+                        .ok_or_else(|| {
+                            WasmError::internal("machine jump table has no entries".into())
+                        })?;
                     self.jump_to_edge(edge)?;
                 }
                 MachineTerminator::CallDirect {
@@ -235,7 +250,12 @@ impl<'a> Emulator<'a> {
                 let value = self.read_value(*src)?;
                 self.store(*addr, *width, value)?;
             }
-            MachineInstKind::IntUnary { width, op, dst, src } => {
+            MachineInstKind::IntUnary {
+                width,
+                op,
+                dst,
+                src,
+            } => {
                 self.write_reg(*dst, eval_int_unary(*width, *op, self.read_value(*src)?)?)?;
             }
             MachineInstKind::IntBinary {
@@ -267,7 +287,12 @@ impl<'a> Emulator<'a> {
                 );
                 self.write_reg(*dst, value)?;
             }
-            MachineInstKind::FloatUnary { width, op, dst, src } => {
+            MachineInstKind::FloatUnary {
+                width,
+                op,
+                dst,
+                src,
+            } => {
                 self.write_reg(*dst, eval_float_unary(*width, *op, self.read_value(*src)?)?)?;
             }
             MachineInstKind::FloatBinary {
@@ -291,7 +316,12 @@ impl<'a> Emulator<'a> {
             } => {
                 self.write_reg(
                     *dst,
-                    eval_float_compare(*width, *kind, self.read_value(*lhs)?, self.read_value(*rhs)?),
+                    eval_float_compare(
+                        *width,
+                        *kind,
+                        self.read_value(*lhs)?,
+                        self.read_value(*rhs)?,
+                    ),
                 )?;
             }
             MachineInstKind::Convert { op, dst, src } => {
@@ -361,7 +391,11 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
-    fn enter_direct_call(&mut self, callee: crate::vm::native::ir::machine::MachineFuncId, callee_frame_base: MachineReg) -> Result<(), WasmError> {
+    fn enter_direct_call(
+        &mut self,
+        callee: crate::vm::native::ir::machine::MachineFuncId,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
         let callee_fp = self.read_reg(callee_frame_base)? as *mut u64;
         self.enter_callee(callee, callee_fp)
     }
@@ -374,7 +408,8 @@ impl<'a> Emulator<'a> {
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        let callee = crate::vm::native::ir::machine::MachineFuncId(self.read_value(callee_target)? as u32);
+        let callee =
+            crate::vm::native::ir::machine::MachineFuncId(self.read_value(callee_target)? as u32);
         let callee_runtime = self.runtime_for(callee)?;
         if arg_slots > callee_runtime.frame_prefix_slots {
             return Err(WasmError::internal(
@@ -390,12 +425,7 @@ impl<'a> Emulator<'a> {
         let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("indirect local call requires callee call scratch".into())
         })?;
-        self.write_call_link(
-            callee_fp,
-            call_scratch,
-            continuation,
-            caller_result_base,
-        )?;
+        self.write_call_link(callee_fp, call_scratch, continuation, caller_result_base)?;
         self.enter_callee(callee, callee_fp)
     }
 
@@ -404,11 +434,16 @@ impl<'a> Emulator<'a> {
         callee: crate::vm::native::ir::machine::MachineFuncId,
         callee_fp: *mut u64,
     ) -> Result<(), WasmError> {
-        let callee_function = self.compiled.function(callee).ok_or_else(|| {
-            WasmError::internal("machine local callee is out of range".into())
-        })?;
+        let callee_function = self
+            .compiled
+            .function(callee)
+            .ok_or_else(|| WasmError::internal("machine local callee is out of range".into()))?;
         let callee_runtime = self.runtime_for(callee)?;
-        ensure_stack_capacity(callee_fp, self.ctx.stack_end, callee_runtime.total_frame_slots)?;
+        ensure_stack_capacity(
+            callee_fp,
+            self.ctx.stack_end,
+            callee_runtime.total_frame_slots,
+        )?;
         if self.ctx.call_depth >= MAX_CALL_STACK_DEPTH as u64 {
             return Err(WasmError::exhaustion("call stack exhausted".into()));
         }
@@ -439,22 +474,29 @@ impl<'a> Emulator<'a> {
             let call_scratch = current_runtime.call_scratch.ok_or_else(|| {
                 WasmError::internal("machine local return requires call scratch".into())
             })?;
-            let continuation = MachineBlockId(
-                self.read_call_link(self.fp, call_scratch, self.compiled.runtime().call_link.continuation_offset)?
-                    as u32,
-            );
-            let caller_fp = self
-                .read_call_link(
-                    self.fp,
-                    call_scratch,
-                    self.compiled.runtime().call_link.caller_frame_offset,
-                )? as *mut u64;
+            let continuation = MachineBlockId(self.read_call_link(
+                self.fp,
+                call_scratch,
+                self.compiled.runtime().call_link.continuation_offset,
+            )? as u32);
+            let caller_fp = self.read_call_link(
+                self.fp,
+                call_scratch,
+                self.compiled.runtime().call_link.caller_frame_offset,
+            )? as *mut u64;
             let caller_result_base_bytes = self.read_call_link(
                 self.fp,
                 call_scratch,
                 self.compiled.runtime().call_link.caller_result_base_offset,
             )? as usize;
-            self.copy_results(results, self.fp, caller_fp.cast::<u8>().wrapping_add(caller_result_base_bytes).cast::<u64>())?;
+            self.copy_results(
+                results,
+                self.fp,
+                caller_fp
+                    .cast::<u8>()
+                    .wrapping_add(caller_result_base_bytes)
+                    .cast::<u64>(),
+            )?;
             self.ctx.call_depth = self.ctx.call_depth.saturating_sub(1);
             #[cfg(feature = "function-trace")]
             {
@@ -504,17 +546,27 @@ impl<'a> Emulator<'a> {
                 sign,
                 lhs,
                 rhs,
-            } => Ok(eval_int_compare(width, kind, sign, self.read_value(lhs)?, self.read_value(rhs)?) != 0),
+            } => Ok(eval_int_compare(
+                width,
+                kind,
+                sign,
+                self.read_value(lhs)?,
+                self.read_value(rhs)?,
+            ) != 0),
             MachineBranchCond::FloatCompare {
                 width,
                 kind,
                 lhs,
                 rhs,
-            } => Ok(eval_float_compare(width, kind, self.read_value(lhs)?, self.read_value(rhs)?) != 0),
+            } => Ok(
+                eval_float_compare(width, kind, self.read_value(lhs)?, self.read_value(rhs)?) != 0,
+            ),
         }
     }
 
-    fn current_program(&self) -> Result<&crate::vm::native::ir::machine::MachineProgram, WasmError> {
+    fn current_program(
+        &self,
+    ) -> Result<&crate::vm::native::ir::machine::MachineProgram, WasmError> {
         Ok(&self
             .compiled
             .function(self.func_id)
@@ -541,14 +593,13 @@ impl<'a> Emulator<'a> {
     }
 
     fn init_reserved_regs(&mut self) -> Result<(), WasmError> {
-        let backend = self.compiled.backend();
-        if self.regs.len() < (backend.ctx_register_count + backend.fp_register_count) as usize {
+        if self.regs.len() < MACHINE_FIXED_REG_COUNT as usize {
             return Err(WasmError::internal(
                 "machine register file is smaller than reserved native ABI registers".into(),
             ));
         }
-        self.regs[0] = self.ctx as *const NativeContext as u64;
-        self.regs[backend.ctx_register_count as usize] = self.fp as u64;
+        self.regs[MACHINE_CTX_REG.0 as usize] = self.ctx as *const NativeContext as u64;
+        self.regs[MACHINE_FP_REG.0 as usize] = self.fp as u64;
         Ok(())
     }
 
@@ -597,7 +648,9 @@ impl<'a> Emulator<'a> {
             }
         };
         Ok(match (width, extension) {
-            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => (raw as u8 as i8 as i64) as u64,
+            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
+                (raw as u8 as i8 as i64) as u64
+            }
             (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
                 (raw as u16 as i16 as i64) as u64
             }
@@ -611,20 +664,19 @@ impl<'a> Emulator<'a> {
         })
     }
 
-    fn store(&self, addr: MachineAddr, width: MachineMemWidth, value: u64) -> Result<(), WasmError> {
+    fn store(
+        &self,
+        addr: MachineAddr,
+        width: MachineMemWidth,
+        value: u64,
+    ) -> Result<(), WasmError> {
         let ptr = self.addr_value(addr) as *mut u8;
         unsafe {
             match width {
                 MachineMemWidth::U8 => core::ptr::write_unaligned(ptr.cast::<u8>(), value as u8),
-                MachineMemWidth::U16 => {
-                    core::ptr::write_unaligned(ptr.cast::<u16>(), value as u16)
-                }
-                MachineMemWidth::U32 => {
-                    core::ptr::write_unaligned(ptr.cast::<u32>(), value as u32)
-                }
-                MachineMemWidth::U64 => {
-                    core::ptr::write_unaligned(ptr.cast::<u64>(), value)
-                }
+                MachineMemWidth::U16 => core::ptr::write_unaligned(ptr.cast::<u16>(), value as u16),
+                MachineMemWidth::U32 => core::ptr::write_unaligned(ptr.cast::<u32>(), value as u32),
+                MachineMemWidth::U64 => core::ptr::write_unaligned(ptr.cast::<u64>(), value),
             }
         }
         Ok(())
@@ -690,19 +742,23 @@ fn init_entry_regs(
     fp: u64,
 ) -> Vec<u64> {
     let mut regs = vec![0; reg_count as usize];
-    let backend = compiled.backend();
     if !regs.is_empty() {
-        regs[0] = ctx_ptr;
+        regs[MACHINE_CTX_REG.0 as usize] = ctx_ptr;
     }
-    let frame_base = backend.ctx_register_count as usize;
+    let frame_base = MACHINE_FP_REG.0 as usize;
     if frame_base < regs.len() {
         regs[frame_base] = fp;
     }
     regs
 }
 
-fn ensure_stack_capacity(fp: *mut u64, stack_end: *mut u64, total_frame_slots: u16) -> Result<(), WasmError> {
-    let end = (fp as usize).saturating_add(total_frame_slots as usize * core::mem::size_of::<u64>());
+fn ensure_stack_capacity(
+    fp: *mut u64,
+    stack_end: *mut u64,
+    total_frame_slots: u16,
+) -> Result<(), WasmError> {
+    let end =
+        (fp as usize).saturating_add(total_frame_slots as usize * core::mem::size_of::<u64>());
     if end > stack_end as usize {
         return Err(WasmError::exhaustion("stack overflow".into()));
     }
@@ -717,15 +773,15 @@ fn frame_region_addr(
     let base = (region.base_slot as usize)
         .checked_mul(core::mem::size_of::<u64>())
         .ok_or_else(|| WasmError::internal("frame region offset overflow".into()))?;
-    Ok((fp as *mut u8).wrapping_add(base).wrapping_offset(offset as isize))
+    Ok((fp as *mut u8)
+        .wrapping_add(base)
+        .wrapping_offset(offset as isize))
 }
 
 fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
     match kind {
         MachineTrapKind::Unreachable => WasmError::trap("unreachable executed".into()),
-        MachineTrapKind::MemoryOutOfBounds => {
-            WasmError::trap("out of bounds memory access".into())
-        }
+        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access".into()),
         MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access".into()),
         MachineTrapKind::InvalidFunctionReference => {
             WasmError::trap("invalid function reference".into())
@@ -733,19 +789,19 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         MachineTrapKind::IndirectCallTypeMismatch => {
             WasmError::trap("indirect call type mismatch".into())
         }
-        MachineTrapKind::IntegerDivideByZero => {
-            WasmError::trap("integer divide by zero".into())
-        }
+        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::CallStackExhausted => {
-            WasmError::exhaustion("call stack exhausted".into())
-        }
+        MachineTrapKind::CallStackExhausted => WasmError::exhaustion("call stack exhausted".into()),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
     }
 }
 
-fn eval_int_unary(width: MachineIntWidth, op: MachineIntUnaryOp, src: u64) -> Result<u64, WasmError> {
+fn eval_int_unary(
+    width: MachineIntWidth,
+    op: MachineIntUnaryOp,
+    src: u64,
+) -> Result<u64, WasmError> {
     Ok(match (width, op) {
         (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => u64::from((src as u32 == 0) as u32),
         (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => u64::from((src == 0) as u32),
@@ -755,17 +811,15 @@ fn eval_int_unary(width: MachineIntWidth, op: MachineIntUnaryOp, src: u64) -> Re
         (MachineIntWidth::I64, MachineIntUnaryOp::Ctz) => u64::from(src.trailing_zeros()),
         (MachineIntWidth::I32, MachineIntUnaryOp::Popcnt) => u64::from((src as u32).count_ones()),
         (MachineIntWidth::I64, MachineIntUnaryOp::Popcnt) => u64::from(src.count_ones()),
-        (MachineIntWidth::I32, MachineIntUnaryOp::Extend8S) => u64::from((src as u8 as i8 as i32) as u32),
+        (MachineIntWidth::I32, MachineIntUnaryOp::Extend8S) => {
+            u64::from((src as u8 as i8 as i32) as u32)
+        }
         (MachineIntWidth::I32, MachineIntUnaryOp::Extend16S) => {
             u64::from((src as u16 as i16 as i32) as u32)
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Extend8S) => (src as u8 as i8 as i64) as u64,
-        (MachineIntWidth::I64, MachineIntUnaryOp::Extend16S) => {
-            (src as u16 as i16 as i64) as u64
-        }
-        (MachineIntWidth::I64, MachineIntUnaryOp::Extend32S) => {
-            (src as u32 as i32 as i64) as u64
-        }
+        (MachineIntWidth::I64, MachineIntUnaryOp::Extend16S) => (src as u16 as i16 as i64) as u64,
+        (MachineIntWidth::I64, MachineIntUnaryOp::Extend32S) => (src as u32 as i32 as i64) as u64,
         _ => {
             return Err(WasmError::internal(
                 "machine integer unary op is invalid for its width".into(),
@@ -883,15 +937,23 @@ fn eval_int_compare(
     rhs: u64,
 ) -> u64 {
     let result = match (width, sign) {
-        (MachineIntWidth::I32, MachineSign::Signed) => compare_i64(kind, lhs as u32 as i32 as i64, rhs as u32 as i32 as i64),
-        (MachineIntWidth::I32, MachineSign::Unsigned) => compare_u64(kind, u64::from(lhs as u32), u64::from(rhs as u32)),
+        (MachineIntWidth::I32, MachineSign::Signed) => {
+            compare_i64(kind, lhs as u32 as i32 as i64, rhs as u32 as i32 as i64)
+        }
+        (MachineIntWidth::I32, MachineSign::Unsigned) => {
+            compare_u64(kind, u64::from(lhs as u32), u64::from(rhs as u32))
+        }
         (MachineIntWidth::I64, MachineSign::Signed) => compare_i64(kind, lhs as i64, rhs as i64),
         (MachineIntWidth::I64, MachineSign::Unsigned) => compare_u64(kind, lhs, rhs),
     };
     u64::from(result as u32)
 }
 
-fn eval_float_unary(width: MachineFloatWidth, op: MachineFloatUnaryOp, src: u64) -> Result<u64, WasmError> {
+fn eval_float_unary(
+    width: MachineFloatWidth,
+    op: MachineFloatUnaryOp,
+    src: u64,
+) -> Result<u64, WasmError> {
     Ok(match width {
         MachineFloatWidth::F32 => {
             let value = as_f32(src);
@@ -1096,7 +1158,11 @@ fn wasm_f32_max_bits(left_bits: u32, right_bits: u32) -> u64 {
         return from_f32(f32::NAN);
     }
     if left == right {
-        return u64::from(if left_bits == 0 || right_bits == 0 { 0 } else { left_bits });
+        return u64::from(if left_bits == 0 || right_bits == 0 {
+            0
+        } else {
+            left_bits
+        });
     }
     u64::from(if left > right { left_bits } else { right_bits })
 }
@@ -1115,7 +1181,11 @@ fn wasm_f64_min_bits(left_bits: u64, right_bits: u64) -> u64 {
             left_bits
         };
     }
-    if left < right { left_bits } else { right_bits }
+    if left < right {
+        left_bits
+    } else {
+        right_bits
+    }
 }
 
 fn wasm_f64_max_bits(left_bits: u64, right_bits: u64) -> u64 {
@@ -1125,9 +1195,17 @@ fn wasm_f64_max_bits(left_bits: u64, right_bits: u64) -> u64 {
         return from_f64(f64::NAN);
     }
     if left == right {
-        return if left_bits == 0 || right_bits == 0 { 0 } else { left_bits };
+        return if left_bits == 0 || right_bits == 0 {
+            0
+        } else {
+            left_bits
+        };
     }
-    if left > right { left_bits } else { right_bits }
+    if left > right {
+        left_bits
+    } else {
+        right_bits
+    }
 }
 
 fn wasm_f32_nearest_bits(bits: u32) -> u64 {
@@ -1360,17 +1438,14 @@ mod tests {
     use crate::{
         error::WasmError,
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        value_type::ValueType,
         vm::{
-            native::{
-                arch::set_reference_backend,
-                build::ensure_module_compiled,
-            },
             entities::{Caller, FunctionInst, ModuleInst},
+            native::{arch::set_reference_backend, build::ensure_module_compiled},
             runtime,
             store::Store,
             value::Value,
         },
-        value_type::ValueType,
     };
 
     fn host_double(
@@ -1386,7 +1461,10 @@ mod tests {
     fn evaluates_native_machine_module_with_helper_external_call() {
         set_reference_backend(true).expect("reference backend");
 
-        let ty = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32]));
+        let ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+        ));
         let types = TypeContext::new(vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::External {
@@ -1408,8 +1486,8 @@ mod tests {
             panic!("expected local function");
         };
         let code = spec.get_native_code().expect("native code");
-        let results = eval(spec, code, &mut store, &[Value::I32(21)], "reference")
-            .expect("native eval");
+        let results =
+            eval(spec, code, &mut store, &[Value::I32(21)], "reference").expect("native eval");
         assert_eq!(results.peek_at_index(0), Value::I32(42).to_raw());
     }
 
@@ -1417,7 +1495,10 @@ mod tests {
     fn runtime_eval_uses_emulator_backend() {
         set_reference_backend(true).expect("reference backend");
 
-        let ty = Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32]));
+        let ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+        ));
         let types = TypeContext::new(vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
@@ -1432,5 +1513,55 @@ mod tests {
 
         let results = runtime::eval(func_ref, &mut store, &[Value::I32(4)]).expect("runtime eval");
         assert_eq!(results.peek_at_index(0), Value::I32(5).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_preserves_first_local_call_result_across_second_local_call() {
+        set_reference_backend(true).expect("reference backend");
+
+        let malloc_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let diff_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&malloc_ty), Rc::clone(&diff_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut malloc_spec = FunctionSpec::new(Rc::clone(&malloc_ty), 0);
+        malloc_spec.set_code((&[0x41, 0x10, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: malloc_spec,
+            type_index: 0,
+        });
+
+        let mut diff_spec = FunctionSpec::new(Rc::clone(&diff_ty), 1);
+        diff_spec.set_locals(vec![ValueType::I32, ValueType::I32]);
+        diff_spec.set_code(
+            (&[
+                0x41, 0x04, // i32.const 4
+                0x10, 0x00, // call 0
+                0x21, 0x00, // local.set 0
+                0x41, 0x04, // i32.const 4
+                0x10, 0x00, // call 0
+                0x21, 0x01, // local.set 1
+                0x20, 0x01, // local.get 1
+                0x20, 0x00, // local.get 0
+                0x6b, // i32.sub
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: diff_spec,
+            type_index: 1,
+        });
+
+        let mut store = Store::new(module);
+        ensure_module_compiled(&store).expect("native compile");
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[]).expect("runtime eval");
+        assert_eq!(results.peek_at_index(0), Value::I32(0).to_raw());
     }
 }

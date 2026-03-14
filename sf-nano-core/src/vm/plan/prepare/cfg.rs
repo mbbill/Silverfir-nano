@@ -151,6 +151,7 @@ fn splits_after(kind: &SemanticOpKind) -> bool {
         kind,
         SemanticOpKind::If { .. }
             | SemanticOpKind::Else { .. }
+            | SemanticOpKind::End
             | SemanticOpKind::Br { .. }
             | SemanticOpKind::BrIf { .. }
             | SemanticOpKind::BrTable { .. }

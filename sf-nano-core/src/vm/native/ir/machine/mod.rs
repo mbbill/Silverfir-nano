@@ -18,6 +18,7 @@
 mod cfg;
 mod inst;
 mod module;
+mod regs;
 mod types;
 mod validate;
 
@@ -27,4 +28,5 @@ mod tests;
 pub use cfg::*;
 pub use inst::*;
 pub use module::*;
+pub use regs::*;
 pub use types::*;

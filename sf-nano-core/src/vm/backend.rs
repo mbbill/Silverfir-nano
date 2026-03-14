@@ -15,21 +15,33 @@ pub enum BackendKind {
 
 /// Planning-time backend configuration.
 ///
-/// Shared shape for backend-specific register budgets.
-/// The values themselves must be chosen by the backend implementation.
+/// This carries only the flexible register budget that the backend chooses to
+/// spend above the fixed machine ABI roles (`ctx`, `fp`, and fixed scratch
+/// regs).
 ///
 /// Different layers consume different subsets of this budget:
-/// - planning/LIR shape around TOS lanes and hot locals
-/// - native lowering later consumes temps plus reserved VM roles like ctx/fp
+/// - planning/LIR shapes the live transient window from `lir_lane_count`
+/// - native lowering maps `hot_local_count` onto cache regs and may reuse lane
+///   regs for lowering-only scratch when no live LIR values own them
+/// - backends may also repurpose cache or lane regs for other temporary work
+///   when they can prove the owning values are not live
 ///
-/// It is *not* the place to leak runtime stack-state into codegen.
+/// It is *not* the place to describe fixed machine roles or runtime stack
+/// state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackendConfig {
-    pub ctx_register_count: u8,
-    pub fp_register_count: u8,
-    pub tmp_register_count: u8,
     pub hot_local_count: u8,
-    pub tos_register_count: u8,
+    pub lir_lane_count: u8,
+}
+
+impl BackendConfig {
+    #[inline]
+    pub const fn new(hot_local_count: u8, lir_lane_count: u8) -> Self {
+        Self {
+            hot_local_count,
+            lir_lane_count,
+        }
+    }
 }
 
 impl BackendKind {

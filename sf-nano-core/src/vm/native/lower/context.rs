@@ -34,7 +34,6 @@ use super::{
 struct CachedLocal {
     slot: FrameSlot,
     reg: MachineReg,
-    dirty: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,7 +79,6 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
-                dirty: false,
             });
         }
 
@@ -206,7 +204,6 @@ impl<'a> BlockLowerContext<'a> {
                             src: MachineValue::Reg(src_reg),
                         },
                     });
-                    self.cached_locals[cached_index].dirty = true;
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
@@ -251,8 +248,9 @@ impl<'a> BlockLowerContext<'a> {
         width: super::super::ir::machine::MachineIntWidth,
         op: super::super::ir::machine::MachineIntUnaryOp,
     ) -> Result<(), WasmError> {
-        let src = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let src_value = single_arg(args)?;
+        let src = self.use_value(src_value)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntUnary {
                 width,
@@ -271,9 +269,11 @@ impl<'a> BlockLowerContext<'a> {
         width: super::super::ir::machine::MachineIntWidth,
         op: super::super::ir::machine::MachineIntBinaryOp,
     ) -> Result<(), WasmError> {
-        let lhs = self.use_value(two_args(args)?.0)?;
-        let rhs = self.use_value(two_args(args)?.1)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let (lhs_value, rhs_value) = two_args(args)?;
+        let lhs = self.use_value(lhs_value)?;
+        let rhs = self.use_value(rhs_value)?;
+        let dst =
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width,
@@ -297,7 +297,8 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_value, rhs_value) = two_args(args)?;
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst =
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width,
@@ -321,7 +322,8 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_value, rhs_value) = two_args(args)?;
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst =
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatBinary {
                 width,
@@ -344,7 +346,8 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_value, rhs_value) = two_args(args)?;
         let lhs = self.use_value(lhs_value)?;
         let rhs = self.use_value(rhs_value)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst =
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatCompare {
                 width,
@@ -364,8 +367,9 @@ impl<'a> BlockLowerContext<'a> {
         width: super::super::ir::machine::MachineFloatWidth,
         op: super::super::ir::machine::MachineFloatUnaryOp,
     ) -> Result<(), WasmError> {
-        let src = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let src_value = single_arg(args)?;
+        let src = self.use_value(src_value)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
@@ -383,8 +387,9 @@ impl<'a> BlockLowerContext<'a> {
         results: &[LirValue],
         op: super::super::ir::machine::MachineConvertOp,
     ) -> Result<(), WasmError> {
-        let src = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let src_value = single_arg(args)?;
+        let src = self.use_value(src_value)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Convert {
                 op,
@@ -403,10 +408,10 @@ impl<'a> BlockLowerContext<'a> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
-        let on_false = self.use_value(args[0])?;
-        let on_true = self.use_value(args[1])?;
+        let on_true = self.use_value(args[0])?;
+        let on_false = self.use_value(args[1])?;
         let cond = self.use_value(args[2])?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, args)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {
                 dst,
@@ -423,8 +428,9 @@ impl<'a> BlockLowerContext<'a> {
         args: &[LirValue],
         results: &[LirValue],
     ) -> Result<(), WasmError> {
-        let src = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let src_value = single_arg(args)?;
+        let src = self.use_value(src_value)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width: super::super::ir::machine::MachineIntWidth::I64,
@@ -478,16 +484,12 @@ impl<'a> BlockLowerContext<'a> {
                     extension: MachineLoadExtension::None,
                 },
             });
-            self.cached_locals[index].dirty = false;
         }
         Ok(())
     }
 
-    pub(super) fn emit_flush_dirty_cached_locals(&mut self) -> Result<(), WasmError> {
+    pub(super) fn emit_save_all_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
-            if !self.cached_locals[index].dirty {
-                continue;
-            }
             let cached = self.cached_locals[index];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
@@ -496,7 +498,6 @@ impl<'a> BlockLowerContext<'a> {
                     src: MachineValue::Reg(cached.reg),
                 },
             });
-            self.cached_locals[index].dirty = false;
         }
         Ok(())
     }
@@ -566,6 +567,30 @@ impl<'a> BlockLowerContext<'a> {
         self.values.push(ValueLocation { value, reg });
         self.mark_transient(reg, Some(value))?;
         Ok(reg)
+    }
+
+    pub(super) fn alloc_value_reusing_dead_inputs(
+        &mut self,
+        value: LirValue,
+        candidates: &[LirValue],
+    ) -> Result<MachineReg, WasmError> {
+        if let Some(reg) = self.try_value_reg(value) {
+            return Ok(reg);
+        }
+
+        for candidate in candidates {
+            if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            if let Some(index) = self.values.iter().position(|entry| entry.value == *candidate) {
+                let reg = self.values[index].reg;
+                self.values[index].value = value;
+                self.mark_transient(reg, Some(value))?;
+                return Ok(reg);
+            }
+        }
+
+        self.alloc_value(value)
     }
 
     pub(super) fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {

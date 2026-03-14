@@ -80,13 +80,15 @@ pub fn prepare_function(
         .map(|range| make_block_params(prepared.entry_states[range.start], &mut values))
         .collect::<Vec<_>>();
 
+    let original_block_count = block_ranges.len();
     let mut blocks = Vec::with_capacity(block_ranges.len());
+    let mut extra_blocks = Vec::new();
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
             prepared.entry_states[semantic_range.start],
             &params,
-            input.config.tos_lanes,
+            input.config.lir_lanes,
         )?;
         let block = lower_block_range(
             semantic_range.clone(),
@@ -97,6 +99,8 @@ pub fn prepare_function(
             &block_params,
             &prepared.entry_states,
             &mut values,
+            original_block_count,
+            extra_blocks.len(),
         )?;
         blocks.push(LirBlock {
             id: LirTarget(block_index as u32),
@@ -104,7 +108,9 @@ pub fn prepare_function(
             ops: block.ops,
             terminator: block.terminator,
         });
+        extra_blocks.extend(block.extra_blocks);
     }
+    blocks.extend(extra_blocks);
 
     let lir = LirProgram {
         entry: semantic_to_block[0],
@@ -126,6 +132,8 @@ fn make_block_params(
 
 #[cfg(test)]
 mod tests {
+    use std::eprintln;
+
     use crate::vm::{
         lir::ir::{LirBoundaryOp, LirInstKind},
         plan::{
@@ -234,5 +242,803 @@ mod tests {
                 inst.kind,
                 LirInstKind::Boundary(LirBoundaryOp::TableFill { table_idx: 2, .. })
             ))));
+    }
+
+    #[test]
+    fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryInit {
+                        imm0: 4,
+                        imm1: 7,
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnVoid,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("memory.init preparation should succeed");
+
+        assert!(prepared
+            .lir
+            .blocks
+            .iter()
+            .any(|block| block.ops.iter().any(|inst| matches!(
+                inst.kind,
+                LirInstKind::Boundary(LirBoundaryOp::MemoryInit {
+                    data_idx: 7,
+                    mem_idx: 4,
+                    ..
+                })
+            ))));
+    }
+
+    #[test]
+    fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableInit {
+                        imm0: 5,
+                        imm1: 8,
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnVoid,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("table.init preparation should succeed");
+
+        assert!(prepared
+            .lir
+            .blocks
+            .iter()
+            .any(|block| block.ops.iter().any(|inst| matches!(
+                inst.kind,
+                LirInstKind::Boundary(LirBoundaryOp::TableInit {
+                    elem_idx: 8,
+                    table_idx: 5,
+                    ..
+                })
+            ))));
+    }
+
+    #[test]
+    fn splits_end_after_empty_if_into_its_own_block() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 0,
+            local_count: 1,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 0,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(2),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 0,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnVoid,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("empty-if preparation should succeed");
+
+        assert!(prepared
+            .lir
+            .blocks
+            .iter()
+            .filter(|block| block.ops.is_empty())
+            .any(|block| matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Goto(_))));
+    }
+
+    #[test]
+    fn prepares_result_if_without_transient_underflow() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(4),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 7 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(6),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 8 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("result-if preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Return { .. }
+        )));
+    }
+
+    #[test]
+    fn prepares_br_if_with_block_result_payload() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 0 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::BrIf {
+                        stack_drop: 0,
+                        arity: 1,
+                        target: crate::vm::wasm::common::SemanticTarget::new(11),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("br_if block-result preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Branch { .. }
+        )));
+        let final_return = prepared
+            .lir
+            .blocks
+            .iter()
+            .find_map(|block| match block.terminator {
+                crate::vm::lir::ir::LirTerminator::Return {
+                    results: Some(span),
+                } => Some(span),
+                _ => None,
+            })
+            .expect("final return span");
+        assert_eq!(final_return.start, prepared.frame.operand_slot(0));
+        assert_eq!(final_return.count, 1);
+    }
+
+    #[test]
+    fn prepares_if_with_block_param_and_result() {
+        let semantic = SemanticProgram {
+            params: 3,
+            results: 1,
+            local_count: 3,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::CallInternal {
+                        callee: 0,
+                        params: 2,
+                        results: 2,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 1,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: u64::MAX }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("if param/result preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Return { .. }
+        )));
+    }
+
+    #[test]
+    fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 2,
+                        results: 2,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Br {
+                        stack_drop: 0,
+                        arity: 2,
+                        target: crate::vm::wasm::common::SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("if param passthrough break preparation should succeed");
+
+        let if_block = prepared
+            .lir
+            .blocks
+            .iter()
+            .find(|block| matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Branch { .. }))
+            .expect("if block");
+        let store_count = if_block
+            .ops
+            .iter()
+            .filter(|inst| matches!(inst.kind, LirInstKind::StoreSlot { .. }))
+            .count();
+
+        assert!(
+            store_count >= 2,
+            "if join should publish live block values into canonical frame slots before branching to a canonical-only end block"
+        );
+    }
+
+    #[test]
+    fn prepares_unreachable_if_condition_without_phantom_result_growth() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 0 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::BrTable {
+                        entries: alloc::vec![crate::vm::wasm::common::BrTableEntry {
+                            target: crate::vm::wasm::common::SemanticTarget::new(9),
+                            stack_drop: 0,
+                            arity: 1,
+                        }],
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 0 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(8),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("unreachable folded-if preparation should succeed");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Return { .. }
+        )));
+    }
+
+    #[test]
+    fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Select),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("block-result fallthrough preparation should succeed");
+
+        assert!(
+            prepared.lir.blocks.iter().any(|block| {
+                matches!(block.terminator, crate::vm::lir::ir::LirTerminator::Goto(_))
+                    && block.ops.iter().any(|inst| {
+                        matches!(
+                            inst.kind,
+                            LirInstKind::StoreSlot { slot, .. }
+                                if slot == prepared.frame.operand_slot(0)
+                        )
+                    })
+            }),
+            "fallthrough from a block result must publish the older stack prefix to canonical slots before entering a mixed spill/live successor"
+        );
+    }
+
+    #[test]
+    fn debug_prepares_nested_br_table_value_index_shape() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 4,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 4 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 8 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::BrIf {
+                        stack_drop: 1,
+                        arity: 1,
+                        target: crate::vm::wasm::common::SemanticTarget::new(14),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::BrTable {
+                        entries: alloc::vec![
+                            crate::vm::wasm::common::BrTableEntry {
+                                target: crate::vm::wasm::common::SemanticTarget::new(14),
+                                stack_drop: 0,
+                                arity: 1,
+                            },
+                            crate::vm::wasm::common::BrTableEntry {
+                                target: crate::vm::wasm::common::SemanticTarget::new(14),
+                                stack_drop: 0,
+                                arity: 1,
+                            },
+                        ],
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 16 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("nested br_table index preparation should succeed");
+
+        eprintln!("{:#?}", prepared.lir);
+    }
+
+    #[test]
+    fn debug_prepares_break_br_table_nested_num_shape() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Block {
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 50 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::BrTable {
+                        entries: alloc::vec![
+                            crate::vm::wasm::common::BrTableEntry {
+                                target: crate::vm::wasm::common::SemanticTarget::new(5),
+                                stack_drop: 0,
+                                arity: 1,
+                            },
+                            crate::vm::wasm::common::BrTableEntry {
+                                target: crate::vm::wasm::common::SemanticTarget::new(8),
+                                stack_drop: 0,
+                                arity: 1,
+                            },
+                            crate::vm::wasm::common::BrTableEntry {
+                                target: crate::vm::wasm::common::SemanticTarget::new(5),
+                                stack_drop: 0,
+                                arity: 1,
+                            },
+                        ],
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 51 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("nested br_table num preparation should succeed");
+
+        eprintln!("{:#?}", prepared.lir);
+    }
+
+    #[test]
+    fn debug_prepares_large_sig_shape() {
+        let mut ops = alloc::vec![
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 5 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 2 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 8 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 7 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 1 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 3 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 9 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 4 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 6 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 13 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 11 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 15 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 16 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 14 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 12 },
+            },
+        ];
+        ops.push(SemanticOp {
+            kind: SemanticOpKind::Return { arity: 16 },
+        });
+
+        let semantic = SemanticProgram {
+            params: 17,
+            results: 16,
+            local_count: 17,
+            max_stack_height: 16,
+            ops,
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 3),
+            },
+            &semantic,
+        )
+        .expect("large signature preparation should succeed");
+
+        eprintln!("{:#?}", prepared.lir);
     }
 }

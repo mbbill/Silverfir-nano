@@ -68,6 +68,11 @@ impl BlockState {
     }
 
     #[inline]
+    pub(super) fn spill_depth(&self) -> u16 {
+        self.spill_depth
+    }
+
+    #[inline]
     pub(super) fn live(&self) -> &[LirValue] {
         &self.live
     }

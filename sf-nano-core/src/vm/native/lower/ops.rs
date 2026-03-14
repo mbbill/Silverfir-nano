@@ -356,16 +356,16 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        let addr = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let addr_value = single_arg(args)?;
+        let addr = self.use_value(addr_value)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
         let addr32 = self.temp_reg(0)?;
         let scratch = self.temp_reg(1)?;
         let continuation_ops = self.lower_memory_continuation(
             spec.memidx,
-            spec.offset,
-            addr,
             addr32,
             scratch,
+            spec.access_bytes(),
             Some((dst, spec.width, spec.extension)),
             None,
         )?;
@@ -402,10 +402,9 @@ impl<'a> BlockLowerContext<'a> {
         let scratch = self.temp_reg(1)?;
         let continuation_ops = self.lower_memory_continuation(
             spec.memidx,
-            spec.offset,
-            addr,
             addr32,
             scratch,
+            spec.access_bytes(),
             None,
             Some((src, spec.width)),
         )?;
@@ -472,10 +471,9 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_memory_continuation(
         &self,
         memidx: u32,
-        offset: u32,
-        addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
         scratch: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
         load_dst: Option<(
             crate::vm::native::ir::machine::MachineReg,
             MachineMemWidth,
@@ -484,7 +482,17 @@ impl<'a> BlockLowerContext<'a> {
         store_src: Option<(crate::vm::native::ir::machine::MachineReg, MachineMemWidth)>,
     ) -> Result<Vec<MachineInst>, WasmError> {
         let mut ops = Vec::new();
-        emit_effective_addr_ops(&mut ops, offset, addr, addr32);
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
         emit_memory_base_load_ops(&mut ops, self.runtime_base_reg(), memidx, scratch)?;
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
