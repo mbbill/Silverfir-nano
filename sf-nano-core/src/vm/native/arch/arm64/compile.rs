@@ -605,7 +605,7 @@ impl<'a> FunctionCompiler<'a> {
     fn emit_terminator(&mut self, term: &MachineTerminator) -> Result<(), WasmError> {
         match term {
             MachineTerminator::Jump(edge) => {
-                let label = self.add_edge_stub(edge.target, &edge.args)?;
+                let label = self.emit_edge(edge.target, &edge.args)?;
                 self.emit_b(label);
                 Ok(())
             }
@@ -649,8 +649,8 @@ impl<'a> FunctionCompiler<'a> {
         then_edge: &crate::vm::native::ir::machine::MachineEdge,
         else_edge: &crate::vm::native::ir::machine::MachineEdge,
     ) -> Result<(), WasmError> {
-        let then_label = self.add_edge_stub(then_edge.target, &then_edge.args)?;
-        let else_label = self.add_edge_stub(else_edge.target, &else_edge.args)?;
+        let then_label = self.emit_edge(then_edge.target, &then_edge.args)?;
+        let else_label = self.emit_edge(else_edge.target, &else_edge.args)?;
         match *cond {
             MachineBranchCond::Value(value) => match value {
                 MachineValue::Imm64(0) => self.emit_b(else_label),
@@ -753,7 +753,7 @@ impl<'a> FunctionCompiler<'a> {
             ));
         }
         if entries.len() == 1 {
-            let label = self.add_edge_stub(entries[0].target, &entries[0].args)?;
+            let label = self.emit_edge(entries[0].target, &entries[0].args)?;
             self.emit_b(label);
             return Ok(());
         }
@@ -784,7 +784,7 @@ impl<'a> FunctionCompiler<'a> {
         });
 
         for entry in entries {
-            let label = self.add_edge_stub(entry.target, &entry.args)?;
+            let label = self.emit_edge(entry.target, &entry.args)?;
             let literal_offset = self.text.emit_u64(0);
             self.local_ptr_patches.push(PendingLocalPtrPatch {
                 literal_offset,
@@ -1949,6 +1949,37 @@ impl<'a> FunctionCompiler<'a> {
 
     fn materialize_u64(&mut self, dst: Arm64Reg, value: u64) {
         materialize_u64_into(&mut self.text, dst, value);
+    }
+
+    /// Check if an edge is a no-op (args match params exactly, no copies needed).
+    fn is_identity_edge(
+        &self,
+        target: MachineBlockId,
+        args: &[MachineValue],
+    ) -> bool {
+        let Some(block) = self.function.program.blocks.get(target.as_usize()) else {
+            return false;
+        };
+        if block.params.len() != args.len() {
+            return false;
+        }
+        block.params.iter().zip(args.iter()).all(|(param, arg)| {
+            matches!(arg, MachineValue::Reg(r) if *r == *param)
+        })
+    }
+
+    /// For identity/empty edges, branch directly to the target block.
+    /// For edges needing copies, create an edge stub.
+    fn emit_edge(
+        &mut self,
+        target: MachineBlockId,
+        args: &[MachineValue],
+    ) -> Result<usize, WasmError> {
+        if self.is_identity_edge(target, args) {
+            // No copies needed — branch directly to the target block.
+            return self.block_label(target);
+        }
+        self.add_edge_stub(target, args)
     }
 
     fn add_edge_stub(

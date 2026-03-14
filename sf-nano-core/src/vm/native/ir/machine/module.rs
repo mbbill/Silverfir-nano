@@ -37,3 +37,4 @@ pub struct MachineModule {
     pub consts: Vec<MachineConstData>,
     pub externs: Vec<MachineExternBinding>,
 }
+
