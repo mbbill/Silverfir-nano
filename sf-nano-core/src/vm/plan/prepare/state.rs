@@ -3,59 +3,99 @@
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
+use crate::value_type::ValueType;
 use crate::vm::lir::ir::{LirInst, LirValue};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
     next: u32,
+    /// Per-value type table indexed by `LirValue.0`.
+    types: Vec<ValueType>,
 }
 
 impl ValueAlloc {
     #[inline]
     pub(super) fn fresh(&mut self) -> LirValue {
+        self.fresh_typed(ValueType::I64)
+    }
+
+    #[inline]
+    pub(super) fn fresh_typed(&mut self, ty: ValueType) -> LirValue {
         let value = LirValue(self.next);
         self.next += 1;
+        self.types.push(ty);
         value
     }
 
     pub(super) fn many(&mut self, count: usize) -> Vec<LirValue> {
         (0..count).map(|_| self.fresh()).collect()
     }
+
+    pub(super) fn many_typed(&mut self, types: &[ValueType]) -> Vec<LirValue> {
+        types.iter().map(|ty| self.fresh_typed(*ty)).collect()
+    }
+
+    pub(super) fn value_type(&self, value: LirValue) -> ValueType {
+        let ty = self.types.get(value.0 as usize).copied();
+        debug_assert!(
+            ty.is_some(),
+            "LirValue({}) has no entry in the value-type table",
+            value.0,
+        );
+        ty.unwrap_or(ValueType::I64)
+    }
+
+    pub(super) fn take_types(&mut self) -> Vec<ValueType> {
+        core::mem::take(&mut self.types)
+    }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct EntryState {
     pub(super) stack_height: u16,
     pub(super) spill_depth: u16,
+    /// Value types for the live (non-spilled) suffix at block entry.
+    /// `live_types.len() == stack_height - spill_depth`.
+    pub(super) live_types: Vec<ValueType>,
 }
 
 impl EntryState {
     #[inline]
-    pub(super) const fn live_value_count(self) -> u16 {
+    pub(super) const fn live_value_count(&self) -> u16 {
         self.stack_height.saturating_sub(self.spill_depth)
     }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
-    tos_limit: u8,
+    gp_transient_limit: u8,
+    fp_transient_limit: u8,
     stack_height: u16,
     spill_depth: u16,
     live: Vec<LirValue>,
+    live_types: Vec<ValueType>,
     pub(super) ops: Vec<LirInst>,
 }
 
 impl BlockState {
     pub(super) fn from_entry(
-        entry: EntryState,
+        entry: &EntryState,
         params: &[LirValue],
-        tos_limit: u8,
+        gp_transient_limit: u8,
+        fp_transient_limit: u8,
     ) -> Result<Self, WasmError> {
+        debug_assert_eq!(
+            entry.live_types.len(),
+            params.len(),
+            "EntryState.live_types must line up with block params",
+        );
         let state = Self {
-            tos_limit,
+            gp_transient_limit,
+            fp_transient_limit,
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
             live: params.to_vec(),
+            live_types: entry.live_types.clone(),
             ops: Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
@@ -75,6 +115,11 @@ impl BlockState {
     #[inline]
     pub(super) fn live(&self) -> &[LirValue] {
         &self.live
+    }
+
+    #[inline]
+    pub(super) fn live_types(&self) -> &[ValueType] {
+        &self.live_types
     }
 
     pub(super) fn top_values(&self, count: usize) -> Result<Vec<LirValue>, WasmError> {
@@ -98,6 +143,9 @@ impl BlockState {
             .live
             .pop()
             .ok_or_else(|| WasmError::internal("prepared LIR transient underflow".into()))?;
+        self.live_types.pop().ok_or_else(|| {
+            WasmError::internal("prepared LIR lost type tracking for a live value".into())
+        })?;
         self.stack_height = self.stack_height.saturating_sub(1);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(value)
@@ -113,14 +161,27 @@ impl BlockState {
         }
         let new_len = self.live.len().saturating_sub(count);
         self.live.truncate(new_len);
+        self.live_types.truncate(new_len);
         self.stack_height = self.stack_height.saturating_sub(count as u16);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(())
     }
 
-    pub(super) fn push_results(&mut self, results: Vec<LirValue>) -> Result<(), WasmError> {
+    pub(super) fn push_results(
+        &mut self,
+        results: Vec<LirValue>,
+        result_types: Vec<ValueType>,
+    ) -> Result<(), WasmError> {
+        if results.len() != result_types.len() {
+            return Err(WasmError::internal(alloc::format!(
+                "prepared LIR result/value type length mismatch: {} values, {} types",
+                results.len(),
+                result_types.len(),
+            )));
+        }
         self.stack_height = self.stack_height.saturating_add(results.len() as u16);
         self.live.extend(results);
+        self.live_types.extend(result_types);
         self.ensure_live_fit("value push")
     }
 
@@ -134,15 +195,30 @@ impl BlockState {
             )));
         }
         let spilled = self.live.drain(..count).collect::<Vec<_>>();
+        self.live_types.drain(..count);
         self.spill_depth = self.spill_depth.saturating_add(count as u16);
         Ok(spilled)
     }
 
-    pub(super) fn fill_prefix(&mut self, values: Vec<LirValue>) -> Result<(), WasmError> {
+    pub(super) fn fill_prefix(
+        &mut self,
+        values: Vec<LirValue>,
+        value_types: Vec<ValueType>,
+    ) -> Result<(), WasmError> {
+        if values.len() != value_types.len() {
+            return Err(WasmError::internal(alloc::format!(
+                "prepared LIR fill/value type length mismatch: {} values, {} types",
+                values.len(),
+                value_types.len(),
+            )));
+        }
         self.spill_depth = self.spill_depth.saturating_sub(values.len() as u16);
         let mut new_live = values;
         new_live.extend(self.live.drain(..));
         self.live = new_live;
+        let mut new_live_types = value_types;
+        new_live_types.extend(self.live_types.drain(..));
+        self.live_types = new_live_types;
         self.ensure_live_fit("prefix fill")
     }
 
@@ -153,6 +229,7 @@ impl BlockState {
             .saturating_add(produced);
         self.spill_depth = self.stack_height;
         self.live.clear();
+        self.live_types.clear();
     }
 
     #[cfg(any(debug_assertions, test))]
@@ -168,15 +245,43 @@ impl BlockState {
     }
 
     fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
-        if self.live.len() > self.tos_limit as usize {
+        let (gp_live, fp_live) = count_live_banks(&self.live_types);
+        if gp_live > self.gp_transient_limit as usize
+            || fp_live > self.fp_transient_limit as usize
+        {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeds configured transient width during {context}: live window {} > limit {} (stack_height={}, spill_depth={})",
+                "prepared LIR exceeds configured transient bank budget during {context}: gp live {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
+                gp_live,
+                self.gp_transient_limit,
+                fp_live,
+                self.fp_transient_limit,
+                self.stack_height,
+                self.spill_depth,
+            )));
+        }
+        if self.live.len()
+            > self.gp_transient_limit as usize + self.fp_transient_limit as usize
+        {
+            return Err(WasmError::internal(alloc::format!(
+                "prepared LIR exceeds configured transient width during {context}: live window {} > total limit {} (stack_height={}, spill_depth={})",
                 self.live.len(),
-                self.tos_limit,
+                self.gp_transient_limit as usize + self.fp_transient_limit as usize,
                 self.stack_height,
                 self.spill_depth,
             )));
         }
         Ok(())
     }
+}
+
+fn count_live_banks(types: &[ValueType]) -> (usize, usize) {
+    let mut gp = 0usize;
+    let mut fp = 0usize;
+    for ty in types {
+        match ty {
+            ValueType::F32 | ValueType::F64 => fp += 1,
+            _ => gp += 1,
+        }
+    }
+    (gp, fp)
 }

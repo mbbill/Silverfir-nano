@@ -46,15 +46,108 @@ pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
         }
     }
 
-    for (index, slot) in program.local_cache.preferred_slots.iter().enumerate() {
-        if program.local_cache.preferred_slots[..index].contains(slot) {
+    for (index, slot) in program.local_cache.gp_preferred_slots.iter().enumerate() {
+        if program.local_cache.gp_preferred_slots[..index].contains(slot) {
             return Err(WasmError::internal(alloc::format!(
                 "LIR local-cache preferences contain duplicate slot {:?}",
                 slot,
             )));
         }
     }
+    if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len() {
+        return Err(WasmError::internal(alloc::format!(
+            "LIR FP local-cache preferences contain {} slots but {} type entries",
+            program.local_cache.fp_preferred_slots.len(),
+            program.local_cache.fp_preferred_types.len(),
+        )));
+    }
+    for (index, slot) in program.local_cache.fp_preferred_slots.iter().enumerate() {
+        if program.local_cache.fp_preferred_slots[..index].contains(slot) {
+            return Err(WasmError::internal(alloc::format!(
+                "LIR FP local-cache preferences contain duplicate slot {:?}",
+                slot,
+            )));
+        }
+    }
 
+    // Validate value-type side table coverage when present.
+    if !program.value_types.is_empty() {
+        validate_value_type_coverage(program)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
+    use super::ir::LirInstKind;
+
+    let type_count = program.value_types.len();
+    let check = |value: LirValue, ctx: &str| -> Result<(), WasmError> {
+        if value.0 as usize >= type_count {
+            return Err(WasmError::internal(alloc::format!(
+                "{ctx}: LirValue({}) is out of range for value_types table (len={type_count})",
+                value.0,
+            )));
+        }
+        Ok(())
+    };
+
+    for (block_idx, block) in program.blocks.iter().enumerate() {
+        let bctx = alloc::format!("b{block_idx}");
+        for param in &block.params {
+            check(*param, &alloc::format!("{bctx} param"))?;
+        }
+        for inst in &block.ops {
+            match &inst.kind {
+                LirInstKind::Value { args, results, .. } => {
+                    for a in args {
+                        check(*a, &alloc::format!("{bctx} Value arg"))?;
+                    }
+                    for r in results {
+                        check(*r, &alloc::format!("{bctx} Value result"))?;
+                    }
+                }
+                LirInstKind::LoadSlot { dst, .. } => {
+                    check(*dst, &alloc::format!("{bctx} LoadSlot dst"))?;
+                }
+                LirInstKind::StoreSlot { src, .. } => {
+                    check(*src, &alloc::format!("{bctx} StoreSlot src"))?;
+                }
+                LirInstKind::Boundary(_) => {}
+            }
+        }
+        match &block.terminator {
+            LirTerminator::Branch { cond, then_edge, else_edge } => {
+                check(*cond, &alloc::format!("{bctx} Branch cond"))?;
+                validate_edge_values(then_edge, &bctx, &check)?;
+                validate_edge_values(else_edge, &bctx, &check)?;
+            }
+            LirTerminator::Goto(edge) => {
+                validate_edge_values(edge, &bctx, &check)?;
+            }
+            LirTerminator::BrTable { index, entries } => {
+                check(*index, &alloc::format!("{bctx} BrTable index"))?;
+                for edge in entries {
+                    validate_edge_values(edge, &bctx, &check)?;
+                }
+            }
+            LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_edge_values(
+    edge: &LirEdge,
+    bctx: &str,
+    check: &dyn Fn(LirValue, &str) -> Result<(), WasmError>,
+) -> Result<(), WasmError> {
+    for binding in &edge.bindings {
+        check(binding.param, &alloc::format!("{bctx} edge binding param"))?;
+        check(binding.value, &alloc::format!("{bctx} edge binding value"))?;
+    }
     Ok(())
 }
 
@@ -188,6 +281,7 @@ mod tests {
                     terminator: crate::vm::lir::ir::LirTerminator::Return { results: None },
                 },
             ],
+            value_types: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -230,6 +324,7 @@ mod tests {
                     terminator: crate::vm::lir::ir::LirTerminator::Return { results: None },
                 },
             ],
+            value_types: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");

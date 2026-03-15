@@ -5,32 +5,44 @@ use crate::vm::backend::BackendConfig;
 /// Backend-facing preparation budgets.
 ///
 /// These values shape only the shared frontend handoff:
-/// - `cached_locals` selects how many canonical locals may be mirrored later
-/// - `lir_lanes` bounds the transient live SSA window in prepared LIR
+/// - `gp_cached_locals`/`fp_cached_locals` select how many canonical locals may be cached per bank
+/// - `gp_lir_lanes`/`fp_lir_lanes` bound the transient live SSA window per bank
 /// - `call_scratch_slots` reserves native-frame scratch for call-link/helper use
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanConfig {
-    pub cached_locals: u8,
-    pub lir_lanes: u8,
+    pub gp_cached_locals: u8,
+    pub gp_lir_lanes: u8,
+    pub fp_cached_locals: u8,
+    pub fp_lir_lanes: u8,
     pub call_scratch_slots: u16,
 }
 
 impl PlanConfig {
     #[inline]
-    pub const fn new(cached_locals: u8, lir_lanes: u8, call_scratch_slots: u16) -> Self {
+    pub const fn new(
+        gp_cached_locals: u8,
+        gp_lir_lanes: u8,
+        fp_cached_locals: u8,
+        fp_lir_lanes: u8,
+        call_scratch_slots: u16,
+    ) -> Self {
         Self {
-            cached_locals,
-            lir_lanes,
+            gp_cached_locals,
+            gp_lir_lanes,
+            fp_cached_locals,
+            fp_lir_lanes,
             call_scratch_slots,
         }
     }
 
     #[inline]
     pub const fn from_backend_config(value: BackendConfig, call_scratch_slots: u16) -> Self {
-        Self::new(
-            value.hot_local_count,
-            value.lir_lane_count,
+        Self {
+            gp_cached_locals: value.gp_local_cache_count,
+            gp_lir_lanes: value.gp_lane_count,
+            fp_cached_locals: value.fp_local_cache_count,
+            fp_lir_lanes: value.fp_lane_count,
             call_scratch_slots,
-        )
+        }
     }
 }

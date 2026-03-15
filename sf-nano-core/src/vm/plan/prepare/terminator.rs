@@ -1,13 +1,15 @@
 //! Terminator lowering and successor selection.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         lir::ir::{LirBlock, LirEdge, LirInst, LirInstKind, LirTerminator},
         plan::frame::FrameLayoutPlan,
-        wasm::{common::SemanticTarget, semantic_ir::SemanticOpKind},
+        wasm::{common::SemanticTarget, primitive_op, semantic_ir::SemanticOpKind},
     },
 };
 
@@ -34,6 +36,8 @@ pub(super) fn lower_block_terminator(
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
+    local_types: &[ValueType],
+    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) -> Result<LoweredTerminator, WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -50,7 +54,7 @@ pub(super) fn lower_block_terminator(
             if crate::vm::lir::leaf::is_boundary_primitive(kind) {
                 lower_boundary_primitive(kind, state, frame)?;
             } else {
-                lower_primitive(kind, state, values)?;
+                lower_primitive(kind, semantic_index, state, values, op_result_types)?;
             }
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
@@ -68,7 +72,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalGet { idx } => {
-            lower_local_get(*idx, state, frame, values)?;
+            lower_local_get(*idx, state, frame, values, local_types)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -236,7 +240,11 @@ pub(super) fn lower_block_terminator(
                 let then_block_id = crate::vm::lir::target::LirTarget(
                     (original_block_count + extra_blocks_len) as u32,
                 );
-                let then_params = values.many(*arity as usize);
+                let payload_types: alloc::vec::Vec<_> = payload
+                    .iter()
+                    .map(|v| values.value_type(*v))
+                    .collect();
+                let then_params = values.many_typed(&payload_types);
                 let payload_span = branch_payload(frame, state.height(), *stack_drop, *arity)
                     .ok_or_else(|| {
                         WasmError::internal(
@@ -506,7 +514,7 @@ pub(super) fn canonicalize_live_window_for_target(
     frame: FrameLayoutPlan,
     entry_states: &[EntryState],
 ) -> Result<(), WasmError> {
-    let target_entry = *entry_states
+    let target_entry = entry_states
         .get(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
     if target_entry.stack_height != state.height() || target_entry.spill_depth <= state.spill_depth()
@@ -616,6 +624,12 @@ fn canonicalize_return_results(
     }
 
     for offset in 0..arity as usize {
+        // These temporaries are typed I64 because function result types
+        // are not threaded into return canonicalization. They are
+        // immediately consumed by the following StoreSlot, so they stay
+        // in GP regardless of the actual result type. This is a raw bit
+        // copy and is correct, but float return values will not benefit
+        // from FP-bank residency during this shuffle.
         let value = values.fresh();
         state.ops.push(crate::vm::lir::ir::LirInst {
             kind: crate::vm::lir::ir::LirInstKind::LoadSlot {

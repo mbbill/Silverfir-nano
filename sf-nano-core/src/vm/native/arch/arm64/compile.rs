@@ -14,7 +14,7 @@ use crate::{
                     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
                     MachineFunction, MachineInst, MachineInstKind, MachineIntBinaryOp,
                     MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-                    MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
+                    MachineProgram, MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
                     MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
                     MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
                 },
@@ -39,7 +39,8 @@ const SCRATCH1: Arm64Reg = Arm64Reg::X17;
 const FP_SCRATCH0: u32 = 0; // D0/S0
 const FP_SCRATCH1: u32 = 1; // D1/S1
 const FP_SCRATCH2: u32 = 2; // D2/S2
-const FP_TRANSIENT_REGS: [u32; 2] = [3, 4]; // D3/S3, D4/S4
+/// All FP machine regs: transients first, then local cache.
+const FP_MACHINE_REGS: [u32; 4] = [3, 4, 5, 6]; // D3, D4 (transient), D5, D6 (cache)
 const CALLEE_SAVED_FRAME_SIZE: u32 = 96;
 const ARM64_FUNCTION_INFO_SIZE: usize = 32;
 const MAX_ARM64_CALL_DEPTH: u64 = if MAX_CALL_STACK_DEPTH < 300 {
@@ -170,7 +171,7 @@ struct FunctionCompiler<'a> {
     direct_call_patches: Vec<DirectCallPatch>,
     function_table_patches: Vec<usize>,
     deferred_traps: Vec<(usize, MachineTrapKind)>,
-    fp_reg_widths: [Option<MachineFloatWidth>; FP_TRANSIENT_REGS.len()],
+    fp_reg_widths: [Option<MachineFloatWidth>; FP_MACHINE_REGS.len()],
     current_block: Option<MachineBlockId>,
     current_op_index: Option<usize>,
     current_edge_target: Option<MachineBlockId>,
@@ -334,7 +335,7 @@ fn compile_function(
     function: &MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
     let max_reg = MACHINE_FIXED_REG_COUNT as usize + DYNAMIC_REGS.len();
-    let max_total_reg = max_reg + FP_TRANSIENT_REGS.len();
+    let max_total_reg = max_reg + FP_MACHINE_REGS.len();
     if function.program.reg_count as usize > max_total_reg {
         return Err(WasmError::invalid(alloc::format!(
             "arm64 MachineIR backend supports at most {} machine regs, got {} in function {}",
@@ -352,11 +353,11 @@ fn compile_function(
             function.id.0,
         )));
     }
-    if (function.program.reg_count - function.program.first_fp_reg) as usize > FP_TRANSIENT_REGS.len()
+    if (function.program.reg_count - function.program.first_fp_reg) as usize > FP_MACHINE_REGS.len()
     {
         return Err(WasmError::invalid(alloc::format!(
             "arm64 MachineIR backend supports at most {} FP machine regs, got {} in function {}",
-            FP_TRANSIENT_REGS.len(),
+            FP_MACHINE_REGS.len(),
             function.program.reg_count - function.program.first_fp_reg,
             function.id.0,
         )));
@@ -561,7 +562,24 @@ impl<'a> FunctionCompiler<'a> {
             direct_call_patches: Vec::new(),
             function_table_patches: Vec::new(),
             deferred_traps: Vec::new(),
-            fp_reg_widths: [None; FP_TRANSIENT_REGS.len()],
+            fp_reg_widths: {
+                let mut widths = [None; FP_MACHINE_REGS.len()];
+                if function.program.fp_reg_init_widths.is_empty() {
+                    let fp_bank_count =
+                        function.program.reg_count.saturating_sub(function.program.first_fp_reg)
+                            as usize;
+                    let transient_count = defaulted_fp_transient_count(&function.program);
+                    for i in transient_count..fp_bank_count.min(FP_MACHINE_REGS.len()) {
+                        widths[i] = Some(MachineFloatWidth::F64);
+                    }
+                } else {
+                    for (i, width) in function.program.fp_reg_init_widths.iter().copied().enumerate()
+                    {
+                        widths[i] = width;
+                    }
+                }
+                widths
+            },
             current_block: None,
             current_op_index: None,
             current_edge_target: None,
@@ -643,7 +661,9 @@ impl<'a> FunctionCompiler<'a> {
     }
 
     fn reset_block_fp_state(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
-        self.fp_reg_widths.fill(None);
+        for i in 0..defaulted_fp_transient_count(&self.function.program) {
+            self.fp_reg_widths[i] = None;
+        }
         for param in &block.params {
             if let Some(width) = param.float_width {
                 self.set_fp_reg_width(param.reg, width)?;
@@ -676,6 +696,9 @@ impl<'a> FunctionCompiler<'a> {
     fn emit_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
             MachineInstKind::Move { dst, src } => self.emit_move(*dst, *src),
+            MachineInstKind::FloatConst { width, dst, bits } => {
+                self.emit_float_const(*width, *dst, *bits)
+            }
             MachineInstKind::Lea { dst, addr } => self.emit_addr_into(self.map_gp_reg(*dst)?, *addr),
             MachineInstKind::Load {
                 dst,
@@ -1297,7 +1320,7 @@ impl<'a> FunctionCompiler<'a> {
                 reg.0
             )));
         };
-        FP_TRANSIENT_REGS
+        FP_MACHINE_REGS
             .get(index as usize)
             .copied()
             .ok_or_else(|| {
@@ -1384,9 +1407,24 @@ impl<'a> FunctionCompiler<'a> {
                     self.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::Reg(_) | MachineValue::Imm64(_) => Err(WasmError::invalid(
-                    "arm64 MachineIR backend does not support generic GP/imm moves into FP machine regs".into(),
-                )),
+                MachineValue::Reg(src_reg) => {
+                    let src_gp = self.map_gp_reg(src_reg)?;
+                    let width = self.fp_reg_width(dst)?;
+                    self.text.emit_u32(match width {
+                        MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, src_gp),
+                        MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, src_gp),
+                    });
+                    Ok(())
+                }
+                MachineValue::Imm64(value) => {
+                    let width = self.fp_reg_width(dst)?;
+                    self.materialize_u64(SCRATCH0, value);
+                    self.text.emit_u32(match width {
+                        MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, SCRATCH0),
+                        MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, SCRATCH0),
+                    });
+                    Ok(())
+                }
             }
         } else {
             let dst_gp = self.map_gp_reg(dst)?;
@@ -1416,6 +1454,32 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
         }
+    }
+
+    fn emit_float_const(
+        &mut self,
+        width: MachineFloatWidth,
+        dst: MachineReg,
+        bits: u64,
+    ) -> Result<(), WasmError> {
+        if !self.is_fp_reg(dst) {
+            return Err(WasmError::invalid(alloc::format!(
+                "arm64 FloatConst destination {} must be an FP register",
+                dst.0
+            )));
+        }
+        let dst_fp = self.map_fp_reg(dst)?;
+        let imm = match width {
+            MachineFloatWidth::F32 => u64::from(bits as u32),
+            MachineFloatWidth::F64 => bits,
+        };
+        self.materialize_u64(SCRATCH0, imm);
+        self.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, SCRATCH0),
+            MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, SCRATCH0),
+        });
+        self.set_fp_reg_width(dst, width)?;
+        Ok(())
     }
 
     fn emit_addr_into(&mut self, dst: Arm64Reg, addr: MachineAddr) -> Result<(), WasmError> {
@@ -1456,7 +1520,8 @@ impl<'a> FunctionCompiler<'a> {
         let base = self.map_gp_reg(addr.base)?;
         if self.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)?;
-            let tracked_width = self.fp_reg_width(dst).unwrap_or(match width {
+            // Derive width from the load, not from previously-tracked reg width.
+            let tracked_width = match width {
                 MachineMemWidth::U32 => MachineFloatWidth::F32,
                 MachineMemWidth::U64 => MachineFloatWidth::F64,
                 _ => {
@@ -1464,7 +1529,7 @@ impl<'a> FunctionCompiler<'a> {
                         "arm64 MachineIR backend does not support narrow integer loads into FP machine regs".into(),
                     ))
                 }
-            });
+            };
             let offset = addr.offset as i64;
             if offset >= 0
                 && matches!(
@@ -1566,7 +1631,8 @@ impl<'a> FunctionCompiler<'a> {
         let index = self.map_gp_reg(index)?;
         if self.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)?;
-            let tracked_width = self.fp_reg_width(dst).unwrap_or(match width {
+            // Derive width from the load, not from previously-tracked reg width.
+            let tracked_width = match width {
                 MachineMemWidth::U32 => MachineFloatWidth::F32,
                 MachineMemWidth::U64 => MachineFloatWidth::F64,
                 _ => {
@@ -1574,7 +1640,7 @@ impl<'a> FunctionCompiler<'a> {
                         "arm64 MachineIR backend does not support narrow integer indexed loads into FP machine regs".into(),
                     ))
                 }
-            });
+            };
             let inst = match (tracked_width, width, extension) {
                 (MachineFloatWidth::F32, MachineMemWidth::U32, MachineLoadExtension::None)
                 | (MachineFloatWidth::F32, MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
@@ -2944,6 +3010,14 @@ impl<'a> FunctionCompiler<'a> {
     }
 }
 
+fn defaulted_fp_transient_count(program: &MachineProgram) -> usize {
+    if program.fp_transient_count != 0 {
+        return program.fp_transient_count as usize;
+    }
+    let fp_bank_count = program.reg_count.saturating_sub(program.first_fp_reg) as usize;
+    fp_bank_count.min(2)
+}
+
 #[derive(Clone, Copy)]
 enum ParallelSource {
     Reg {
@@ -3735,6 +3809,7 @@ fn reg_value_live_after(ops: &[MachineInst], term: &MachineTerminator, reg: Mach
 fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
         | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
@@ -3754,6 +3829,7 @@ fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
 fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { src, .. } => value_is_reg(*src, reg),
+        MachineInstKind::FloatConst { .. } => false,
         MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => addr.base == reg,
         MachineInstKind::Store { addr, src, .. } => addr.base == reg || value_is_reg(*src, reg),
         MachineInstKind::IntUnary { src, .. }
@@ -4050,6 +4126,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 7,
                 reg_count: 8,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4099,7 +4180,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![function],
                 consts: vec![MachineConstData {
@@ -4154,6 +4235,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 7,
                 reg_count: 7,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4196,7 +4282,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![function],
                 consts: vec![],
@@ -4258,6 +4344,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 7,
                 reg_count: 7,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4277,7 +4368,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![function],
                 consts: vec![],
@@ -4337,6 +4428,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 4,
                 reg_count: 4,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4351,6 +4447,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 5,
                 reg_count: 5,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4368,7 +4469,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![supported, unsupported],
                 consts: vec![],
@@ -4438,6 +4539,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 4,
                 reg_count: 4,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![
                     MachineBlock {
                         id: MachineBlockId(0),
@@ -4472,7 +4578,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![function],
                 consts: vec![],
@@ -4529,6 +4635,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 4,
                 reg_count: 4,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4543,6 +4654,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 7,
                 reg_count: 7,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4570,7 +4686,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![dummy, target],
                 consts: vec![],
@@ -4643,6 +4759,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 4,
                 reg_count: 4,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4657,6 +4778,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 5,
                 reg_count: 5,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![
                     MachineBlock {
                         id: MachineBlockId(0),
@@ -4693,7 +4819,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![empty, jumpy],
                 consts: vec![],
@@ -4763,6 +4889,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 4,
                 reg_count: 4,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: vec![],
@@ -4777,6 +4908,11 @@ mod tests {
                 entry: MachineBlockId(0),
                 first_fp_reg: 5,
                 reg_count: 5,
+
+                fp_transient_count: 0,
+
+                fp_reg_init_widths: vec![],
+
                 blocks: vec![
                     MachineBlock {
                         id: MachineBlockId(0),
@@ -4808,7 +4944,7 @@ mod tests {
         };
         let compiled = CompiledNativeModule::new(
             crate::vm::native::arch::NativeBackend::Arm64,
-            crate::vm::backend::BackendConfig::new(3, 4),
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
             MachineModule {
                 functions: vec![empty, indirect],
                 consts: vec![],

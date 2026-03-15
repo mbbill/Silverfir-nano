@@ -1,7 +1,11 @@
 //! Straight-line prepared LIR op lowering.
 
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         lir::{
             ir::{LirBoundaryOp, LirInst, LirInstKind},
@@ -35,10 +39,18 @@ pub(super) fn lower_prefix_actions(
                     });
                 }
             }
-            PrepAction::Fill(frame) => {
+            PrepAction::Fill(frame, fill_types) => {
                 let mut reloaded = alloc::vec::Vec::with_capacity(frame.count as usize);
                 for offset in 0..frame.count as usize {
-                    let dst = values.fresh();
+                    let ty = fill_types.get(offset).copied();
+                    debug_assert!(
+                        ty.is_some(),
+                        "fill offset {} has no type in fill_types (len={})",
+                        offset,
+                        fill_types.len(),
+                    );
+                    let ty = ty.unwrap_or(ValueType::I64);
+                    let dst = values.fresh_typed(ty);
                     state.ops.push(LirInst {
                         kind: LirInstKind::LoadSlot {
                             slot: frame.start.advance(offset as u16),
@@ -47,7 +59,7 @@ pub(super) fn lower_prefix_actions(
                     });
                     reloaded.push(dst);
                 }
-                state.fill_prefix(reloaded)?;
+                state.fill_prefix(reloaded, fill_types.clone())?;
             }
         }
     }
@@ -56,8 +68,10 @@ pub(super) fn lower_prefix_actions(
 
 pub(super) fn lower_primitive(
     kind: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
+    semantic_index: usize,
     state: &mut BlockState,
     values: &mut ValueAlloc,
+    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
     let args = state.top_values(pop as usize).map_err(|err| {
@@ -68,8 +82,30 @@ pub(super) fn lower_primitive(
             err
         ))
     })?;
+    let result_ty = if push == 0 {
+        ValueType::I64 // unused — no LirValue created
+    } else if matches!(kind, PrimitiveOpKind::Select) {
+        let ty = args.first().map(|v| values.value_type(*v));
+        debug_assert!(ty.is_some(), "select has no on_true operand to derive type from");
+        ty.unwrap_or(ValueType::I64)
+    } else if let Some(ty) = primitive_op::result_type(kind) {
+        ty
+    } else {
+        let ty = op_result_types
+            .get(&semantic_index)
+            .and_then(|v| v.first().copied());
+        debug_assert!(
+            ty.is_some(),
+            "context-dependent primitive {:?} at op {} has no op_result_types entry",
+            kind,
+            semantic_index,
+        );
+        ty.unwrap_or(ValueType::I64)
+    };
     state.consume_top(pop as usize)?;
-    let results = values.many(push as usize);
+    let results: alloc::vec::Vec<_> = (0..push)
+        .map(|_| values.fresh_typed(result_ty))
+        .collect();
     state.ops.push(LirInst {
         kind: LirInstKind::Value {
             op: LirLeafOp::from_primitive(kind.clone())
@@ -78,7 +114,7 @@ pub(super) fn lower_primitive(
             results: results.clone(),
         },
     });
-    state.push_results(results)
+    state.push_results(results, alloc::vec![result_ty; push as usize])
 }
 
 pub(super) fn lower_boundary_primitive(
@@ -155,15 +191,24 @@ pub(super) fn lower_local_get(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
+    local_types: &[ValueType],
 ) -> Result<(), WasmError> {
-    let dst = values.fresh();
+    let ty = local_types.get(local_idx as usize).copied();
+    debug_assert!(
+        ty.is_some() || local_types.is_empty(),
+        "local {} has no entry in local_types (len={})",
+        local_idx,
+        local_types.len(),
+    );
+    let ty = ty.unwrap_or(ValueType::I64);
+    let dst = values.fresh_typed(ty);
     state.ops.push(LirInst {
         kind: LirInstKind::LoadSlot {
             slot: frame.local_slot(local_idx),
             dst,
         },
     });
-    state.push_results(alloc::vec![dst])
+    state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
 
 pub(super) fn lower_local_set(
@@ -298,9 +343,12 @@ pub(super) fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<Fra
 
 pub(super) fn lower_block_body_op(
     op: &PreparedOp<'_>,
+    semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
+    local_types: &[ValueType],
+    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) -> Result<(), WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -319,10 +367,10 @@ pub(super) fn lower_block_body_op(
             if crate::vm::lir::leaf::is_boundary_primitive(kind) {
                 lower_boundary_primitive(kind, state, frame)
             } else {
-                lower_primitive(kind, state, values)
+                lower_primitive(kind, semantic_index, state, values, op_result_types)
             }
         }
-        SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values),
+        SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values, local_types),
         SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame),
         SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame),
         SemanticOpKind::CallExternal {

@@ -110,8 +110,12 @@ impl<'a> BlockLowerContext<'a> {
             }
             P::I32Const { value } => self.lower_const(results, *value as u64),
             P::I64Const { value } => self.lower_const(results, *value),
-            P::F32Const { value } => self.lower_const(results, *value as u64),
-            P::F64Const { value } => self.lower_const(results, *value),
+            P::F32Const { value } => {
+                self.lower_float_const(results, MachineFloatWidth::F32, u64::from(*value))
+            }
+            P::F64Const { value } => {
+                self.lower_float_const(results, MachineFloatWidth::F64, *value)
+            }
             P::RefNull => self.lower_const(results, usize::MAX as u64),
             P::RefFunc { func_idx } => self.lower_const(results, *func_idx as u64),
             P::RefIsNull => self.lower_ref_is_null(args, results),
@@ -148,7 +152,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn lower_memory_size(&mut self, mem_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst = self.alloc_result_value(single_result(results)?)?;
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
@@ -193,7 +197,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
-        let dst = self.alloc_value(single_result(results)?)?;
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value(result)?;
+        let width = self.slot_mem_width_for_value(result);
         let base = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -212,7 +218,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<crate::vm::entities::GlobalInst>(),
                     global_offset::RAW,
                 )?,
-                width: MachineMemWidth::U64,
+                width,
                 extension: MachineLoadExtension::None,
             },
         });
@@ -220,7 +226,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
-        let src = self.use_value(single_arg(args)?)?;
+        let src_value = single_arg(args)?;
+        let src = self.use_value(src_value)?;
+        let width = self.slot_mem_width_for_value(src_value);
         let base = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -238,7 +246,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<crate::vm::entities::GlobalInst>(),
                     global_offset::RAW,
                 )?,
-                width: MachineMemWidth::U64,
+                width,
                 src: MachineValue::Reg(src),
             },
         });
@@ -246,7 +254,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn lower_table_size(&mut self, table_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst = self.alloc_result_value(single_result(results)?)?;
         let table_views = self.borrow_free_transients(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -281,7 +289,7 @@ impl<'a> BlockLowerContext<'a> {
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
         let index = self.use_value(single_arg(args)?)?;
-        let dst = self.alloc_value(single_result(results)?)?;
+        let dst = self.alloc_result_value(single_result(results)?)?;
         let index64 = dst;
         let table_len = self.borrow_free_transients(1)?[0];
         let continuation_ops = self.lower_table_access_continuation(
@@ -367,7 +375,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst = if let Some(width) = spec.float_width.filter(|_| fp_load_usable) {
             self.alloc_float_value(single_result(results)?, width)?
         } else {
-            self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?
+            self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?
         };
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {

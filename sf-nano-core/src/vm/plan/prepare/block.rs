@@ -1,19 +1,20 @@
 //! Block lowering orchestration.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         lir::{
             ir::{LirBlock, LirInst, LirTerminator},
             target::LirTarget,
         },
         plan::frame::FrameLayoutPlan,
+        wasm::semantic_ir::SemanticOpKind,
     },
 };
-
-use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
 use super::{
     ops::lower_block_body_op,
@@ -43,6 +44,8 @@ pub(super) fn lower_block_range(
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
+    local_types: &[ValueType],
+    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) -> Result<LoweredBlock, WasmError> {
     let last_index = semantic_range
         .end
@@ -57,7 +60,7 @@ pub(super) fn lower_block_range(
             let target = fallthrough_target(semantic_index, prepared.len())?;
             canonicalize_live_window_for_target(target, &mut state, frame, entry_states)?;
         }
-        lower_block_body_op(&prepared[semantic_index], &mut state, frame, values)?;
+        lower_block_body_op(&prepared[semantic_index], semantic_index, &mut state, frame, values, local_types, op_result_types)?;
         state.validate_live_fit("block body")?;
     }
 
@@ -73,6 +76,8 @@ pub(super) fn lower_block_range(
         values,
         original_block_count,
         extra_blocks_len,
+        local_types,
+        op_result_types,
     )?;
     state.validate_live_fit("block terminator")?;
 

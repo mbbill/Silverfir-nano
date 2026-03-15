@@ -266,6 +266,7 @@ mod tests {
                 ],
                 terminator: LirTerminator::Return { results: None },
             }],
+            value_types: alloc::vec![],
         };
 
         optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
@@ -312,6 +313,7 @@ mod tests {
                 ],
                 terminator: LirTerminator::Return { results: None },
             }],
+            value_types: alloc::vec![],
         };
 
         optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
@@ -365,6 +367,7 @@ mod tests {
                 ],
                 terminator: LirTerminator::Return { results: None },
             }],
+            value_types: alloc::vec![],
         };
 
         optimize_lir(&mut program, plan_frame_layout(1, 2, 0));

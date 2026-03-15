@@ -205,10 +205,17 @@ fn render_lir_program(out: &mut String, program: &LirProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
     let _ = writeln!(
         out,
-        "  local_cache=[{}]",
+        "  gp_local_cache=[{}] fp_local_cache=[{}]",
         program
             .local_cache
-            .preferred_slots
+            .gp_preferred_slots
+            .iter()
+            .map(|s| format!("fp[{}]", s.0))
+            .collect::<Vec<_>>()
+            .join(", "),
+        program
+            .local_cache
+            .fp_preferred_slots
             .iter()
             .map(|s| format!("fp[{}]", s.0))
             .collect::<Vec<_>>()
@@ -404,6 +411,9 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
     match kind {
         MachineInstKind::Move { dst, src } => {
             format!("move r{} <- {}", dst.0, mval(src))
+        }
+        MachineInstKind::FloatConst { width, dst, bits } => {
+            format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
         }
         MachineInstKind::Lea { dst, addr } => {
             format!("lea r{} <- {}", dst.0, maddr(addr))

@@ -12,7 +12,7 @@ use crate::vm::{
     },
     native::{
         ir::machine::{
-            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind,
+            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind, MachineMemWidth,
             MachineIntBinaryOp, MachineModule, MachineReg, MachineTerminator, MachineValue,
         },
         ir::runtime::MachineHelperSymbol,
@@ -62,10 +62,11 @@ fn lowers_simple_slot_and_add_block() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -168,10 +169,11 @@ fn lowers_select_with_wasm_operand_order() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 3),
+        backend: BackendConfig::new(0, 3, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -212,10 +214,11 @@ fn native_backend_requires_at_least_one_lir_lane() {
             ops: alloc::vec![],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 0),
+        backend: BackendConfig::new(0, 0, 0, 0),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -225,7 +228,7 @@ fn native_backend_requires_at_least_one_lir_lane() {
     })
     .expect_err("zero-lane native backend should be rejected");
 
-    assert!(alloc::format!("{err}").contains("at least one LIR lane register"));
+    assert!(alloc::format!("{err}").contains("at least one GP lane register"));
 }
 
 #[test]
@@ -243,10 +246,11 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
                 results: Some(result_span),
             },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -304,10 +308,11 @@ fn rejects_inconsistent_return_result_spans() {
                 },
             },
         ],
+        value_types: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -345,10 +350,11 @@ fn rejects_mixed_void_and_value_returns() {
                 },
             },
         ],
+        value_types: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -392,10 +398,11 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
                 terminator: LirTerminator::Return { results: None },
             },
         ],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
@@ -421,7 +428,9 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     let lir = LirProgram {
         entry: LirTarget(0),
         local_cache: LirLocalCachePrefs {
-            preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -450,10 +459,11 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -511,10 +521,11 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -555,10 +566,11 @@ fn lowers_memory_copy_through_frame_metadata() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -598,10 +610,11 @@ fn lowers_table_fill_through_frame_metadata() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -642,10 +655,11 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -675,7 +689,9 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     let lir = LirProgram {
         entry: LirTarget(0),
         local_cache: LirLocalCachePrefs {
-            preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -705,10 +721,11 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             ],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -742,7 +759,9 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     let lir = LirProgram {
         entry: LirTarget(0),
         local_cache: LirLocalCachePrefs {
-            preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -771,10 +790,11 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -825,6 +845,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
     let callee = LirProgram {
         entry: LirTarget(0),
@@ -840,10 +861,11 @@ fn lowers_direct_local_call_with_continuation_block() {
                 )),
             },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -959,7 +981,9 @@ fn flushes_cached_local_before_second_direct_call() {
     let caller = LirProgram {
         entry: LirTarget(0),
         local_cache: LirLocalCachePrefs {
-            preferred_slots: alloc::vec![caller_frame.local_slot(0)],
+            gp_preferred_slots: alloc::vec![caller_frame.local_slot(0)],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -1006,6 +1030,7 @@ fn flushes_cached_local_before_second_direct_call() {
             ],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
     let callee = LirProgram {
         entry: LirTarget(0),
@@ -1021,10 +1046,11 @@ fn flushes_cached_local_before_second_direct_call() {
                 )),
             },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1091,7 +1117,9 @@ fn preserves_cached_locals_across_block_edges() {
     let lir = LirProgram {
         entry: LirTarget(0),
         local_cache: LirLocalCachePrefs {
-            preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
         },
         blocks: alloc::vec![
             LirBlock {
@@ -1138,10 +1166,11 @@ fn preserves_cached_locals_across_block_edges() {
                 terminator: LirTerminator::Return { results: None },
             },
         ],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4),
+        backend: BackendConfig::new(1, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1216,6 +1245,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
     let callee = LirProgram {
         entry: LirTarget(0),
@@ -1231,10 +1261,11 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                 )),
             },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1288,10 +1319,11 @@ fn lowers_memory_size_without_helper_boundary() {
             }],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1336,10 +1368,11 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             }],
             terminator: LirTerminator::TrapUnreachable,
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1515,10 +1548,11 @@ fn lowers_global_get_and_set_without_helpers() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1572,10 +1606,11 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1639,10 +1674,11 @@ fn lowers_i32_load_with_inline_trap_if() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1718,10 +1754,11 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1794,10 +1831,11 @@ fn threads_live_transients_through_split_continuation_params() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1882,10 +1920,11 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
             ],
             terminator: LirTerminator::Return { results: None },
         }],
+        value_types: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4),
+        backend: BackendConfig::new(0, 4, 0, 2),
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1916,4 +1955,303 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
             } if reg.0 >= program.first_fp_reg
         )
     }));
+}
+
+#[test]
+fn lowers_f32_const_to_fp_machine_const() {
+    use crate::value_type::ValueType;
+
+    let frame = plan_frame_layout(0, 1, 1);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Const {
+                            value: 0x4120_0000,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.operand_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+        value_types: alloc::vec![ValueType::F32],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4, 0, 2),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 1,
+        }],
+    })
+    .expect("f32 const should lower");
+
+    let program = &lowered.module.functions[0].program;
+    assert!(program.blocks[0].ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::FloatConst {
+                width: crate::vm::native::ir::machine::MachineFloatWidth::F32,
+                bits: 0x4120_0000,
+                dst,
+            } if dst.0 >= program.first_fp_reg
+        )
+    }));
+}
+
+#[test]
+fn float_slot_load_routes_to_fp_bank_when_typed() {
+    use crate::value_type::ValueType;
+
+    let frame = plan_frame_layout(1, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.operand_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+        value_types: alloc::vec![ValueType::F64],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(1, 4, 0, 2),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 1,
+        }],
+    })
+    .expect("typed float slot load should lower");
+
+    let program = &lowered.module.functions[0].program;
+    // The Load destination for the float slot must be an FP register.
+    let load_dst = program.blocks[0]
+        .ops
+        .iter()
+        .find_map(|inst| match &inst.kind {
+            MachineInstKind::Load { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .expect("there should be a Load instruction");
+    assert!(
+        program.is_fp_reg(load_dst),
+        "typed F64 LoadSlot must allocate into FP bank, got GP reg {}",
+        load_dst.0,
+    );
+}
+
+#[test]
+fn untyped_slot_load_stays_in_gp_bank() {
+    let frame = plan_frame_layout(1, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.operand_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+        value_types: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(1, 4, 0, 2),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 1,
+        }],
+    })
+    .expect("untyped slot load should lower");
+
+    let program = &lowered.module.functions[0].program;
+    let load_dst = program.blocks[0]
+        .ops
+        .iter()
+        .find_map(|inst| match &inst.kind {
+            MachineInstKind::Load { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .expect("there should be a Load instruction");
+    assert!(
+        program.is_gp_reg(load_dst),
+        "untyped LoadSlot must stay in GP bank, got FP reg {}",
+        load_dst.0,
+    );
+}
+
+#[test]
+fn f32_block_params_keep_f32_width() {
+    use crate::value_type::ValueType;
+
+    let frame = plan_frame_layout(1, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![
+            LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                }],
+                terminator: LirTerminator::Goto(LirEdge {
+                    target: LirTarget(1),
+                    bindings: alloc::vec![LirBinding {
+                        param: LirValue(1),
+                        value: LirValue(0),
+                    }],
+                }),
+            },
+            LirBlock {
+                id: LirTarget(1),
+                params: alloc::vec![LirValue(1)],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::F32, ValueType::F32],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4, 0, 2),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("typed f32 block params should lower");
+
+    let params = &lowered.module.functions[0].program.blocks[1].params;
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].float_width, Some(MachineFloatWidth::F32));
+}
+
+#[test]
+fn f32_cached_locals_use_f32_slot_widths() {
+    use crate::value_type::ValueType;
+
+    let frame = plan_frame_layout(1, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![],
+            fp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            fp_preferred_types: alloc::vec![ValueType::F32],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::F32],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4, 1, 2),
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("typed f32 cached locals should lower");
+
+    let program = &lowered.module.functions[0].program;
+    assert_eq!(
+        program.fp_reg_init_widths,
+        alloc::vec![None, None, Some(MachineFloatWidth::F32)],
+    );
+
+    let ops = &program.blocks[0].ops;
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Load {
+            width: MachineMemWidth::U32,
+            ..
+        }
+    ));
 }

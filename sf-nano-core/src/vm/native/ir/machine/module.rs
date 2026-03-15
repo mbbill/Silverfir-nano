@@ -1,3 +1,4 @@
+use super::types::MachineFloatWidth;
 use alloc::vec::Vec;
 
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
@@ -15,9 +16,15 @@ pub struct MachineConstData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachineProgram {
     pub entry: MachineBlockId,
-    /// Registers `[first_fp_reg, reg_count)` belong to the FP-only transient bank.
+    /// Registers `[first_fp_reg, reg_count)` belong to the FP bank.
     pub first_fp_reg: u16,
     pub reg_count: u16,
+    /// Number of FP-bank registers reserved for transient SSA values.
+    pub fp_transient_count: u16,
+    /// Initial semantic width for each FP-bank register, indexed by
+    /// `reg - first_fp_reg`. FP cached-local regs use `Some(width)`;
+    /// transient regs start as `None`.
+    pub fp_reg_init_widths: Vec<Option<MachineFloatWidth>>,
     pub blocks: Vec<super::cfg::MachineBlock>,
 }
 
@@ -55,9 +62,8 @@ pub struct MachineModule {
 impl MachineModule {
     /// Run ISA-agnostic optimization passes on all functions.
     ///
-    /// `first_transient` is the register index where transient (SSA-like)
-    /// registers start. Registers below this are fixed or cached-local and
-    /// must not be disturbed by peephole optimizations.
+    /// `first_transient` is the first GP transient register. FP transients are
+    /// the prefix of the FP bank with length `fp_transient_count`.
     pub fn optimize(&mut self, first_transient: u16) {
         for func in &mut self.functions {
             super::peephole::optimize(&mut func.program, first_transient);

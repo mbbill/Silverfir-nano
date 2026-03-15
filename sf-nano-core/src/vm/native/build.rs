@@ -51,9 +51,20 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let params = spec.func_type().params().len() as u16;
         let local_count = params.saturating_add(spec.locals().len() as u16);
         let results = spec.func_type().results().len() as u16;
+        let mut local_types = Vec::with_capacity(local_count as usize);
+        local_types.extend_from_slice(spec.func_type().params());
+        local_types.extend_from_slice(spec.locals());
         let semantic = decode::decode_to_semantic_ir(
             spec.code(),
-            CompileContext::new(&module.types, store, module, params, local_count, results),
+            CompileContext::with_local_types(
+                &module.types,
+                store,
+                module,
+                params,
+                local_count,
+                results,
+                &local_types,
+            ),
         )
         .map_err(|err| {
             WasmError::internal(alloc::format!(
@@ -99,7 +110,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         backend,
         functions: &lowered_inputs,
     })?;
-    let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT + backend.hot_local_count as u16;
+    let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT + backend.gp_local_cache_count as u16;
     lowered.module.optimize(first_transient);
 
     // Collect LIR for dump before moving lowered data
@@ -240,5 +251,102 @@ mod tests {
         assert!(Rc::ptr_eq(first.compiled_rc(), second.compiled_rc()));
         assert_eq!(first.func_id().0, 0);
         assert_eq!(second.func_id().0, 1);
+    }
+
+    #[test]
+    fn compiles_function_with_f64_local() {
+        // (func (param f64) (result f64) (local.get 0))
+        // Bytecode: local.get 0, end
+        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
+            vec![ValueType::F64],
+            vec![ValueType::F64],
+        ))]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(
+            Rc::new(FunctionType::new(vec![ValueType::F64], vec![ValueType::F64])),
+            0,
+        );
+        spec.set_code((&[0x20, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        let store = Box::new(Store::new(module));
+
+        ensure_module_compiled(&store).expect("f64 local function should compile");
+    }
+
+    #[test]
+    fn compiles_function_with_f32_local_and_add() {
+        // (func (param f32 f32) (result f32) (f32.add (local.get 0) (local.get 1)))
+        // Bytecode: local.get 0, local.get 1, f32.add, end
+        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
+            vec![ValueType::F32, ValueType::F32],
+            vec![ValueType::F32],
+        ))]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(
+            Rc::new(FunctionType::new(
+                vec![ValueType::F32, ValueType::F32],
+                vec![ValueType::F32],
+            )),
+            0,
+        );
+        spec.set_code((&[0x20, 0x00, 0x20, 0x01, 0x92, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        let store = Box::new(Store::new(module));
+
+        ensure_module_compiled(&store).expect("f32 add function should compile");
+    }
+
+    #[test]
+    fn compiles_function_with_f32_local_in_if() {
+        // (func (param f32) (param i32) (result f32)
+        //   (if (result f32) (local.get 1)
+        //     (then (local.get 0))
+        //     (else (f32.const 0))
+        //   ))
+        // Bytecode:
+        //   local.get 1     ;; 0x20 0x01
+        //   if (result f32)  ;; 0x04 0x7d
+        //   local.get 0     ;; 0x20 0x00
+        //   else             ;; 0x05
+        //   f32.const 0     ;; 0x43 0x00 0x00 0x00 0x00
+        //   end              ;; 0x0b
+        //   end              ;; 0x0b
+        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
+            vec![ValueType::F32, ValueType::I32],
+            vec![ValueType::F32],
+        ))]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(
+            Rc::new(FunctionType::new(
+                vec![ValueType::F32, ValueType::I32],
+                vec![ValueType::F32],
+            )),
+            0,
+        );
+        spec.set_code(
+            (&[
+                0x20, 0x01, // local.get 1
+                0x04, 0x7d, // if (result f32)
+                0x20, 0x00, // local.get 0
+                0x05, // else
+                0x43, 0x00, 0x00, 0x00, 0x00, // f32.const 0
+                0x0b, // end
+                0x0b, // end (function)
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        let store = Box::new(Store::new(module));
+
+        ensure_module_compiled(&store).expect("f32 if/else function should compile");
     }
 }

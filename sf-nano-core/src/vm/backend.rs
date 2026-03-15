@@ -20,9 +20,8 @@ pub enum BackendKind {
 /// view regs).
 ///
 /// Different layers consume different subsets of this budget:
-/// - planning/LIR shapes the live transient window from `lir_lane_count`
-/// - native lowering maps `hot_local_count` onto cache regs and may reuse lane
-///   regs for lowering-only scratch when no live LIR values own them
+/// - planning/LIR shapes the live transient window from `gp_lane_count`/`fp_lane_count`
+/// - native lowering maps `gp_local_cache_count`/`fp_local_cache_count` onto cache regs
 /// - backends may also repurpose cache or lane regs for other temporary work
 ///   when they can prove the owning values are not live
 ///
@@ -30,16 +29,25 @@ pub enum BackendKind {
 /// state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackendConfig {
-    pub hot_local_count: u8,
-    pub lir_lane_count: u8,
+    pub gp_local_cache_count: u8,
+    pub gp_lane_count: u8,
+    pub fp_local_cache_count: u8,
+    pub fp_lane_count: u8,
 }
 
 impl BackendConfig {
     #[inline]
-    pub const fn new(hot_local_count: u8, lir_lane_count: u8) -> Self {
+    pub const fn new(
+        gp_local_cache_count: u8,
+        gp_lane_count: u8,
+        fp_local_cache_count: u8,
+        fp_lane_count: u8,
+    ) -> Self {
         Self {
-            hot_local_count,
-            lir_lane_count,
+            gp_local_cache_count,
+            gp_lane_count,
+            fp_local_cache_count,
+            fp_lane_count,
         }
     }
 }

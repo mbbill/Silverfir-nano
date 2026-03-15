@@ -30,6 +30,22 @@ impl MachineProgram {
             )));
         }
 
+        let fp_bank_count = self.reg_count.saturating_sub(self.first_fp_reg) as usize;
+        if self.fp_transient_count as usize > fp_bank_count {
+            return Err(WasmError::internal(alloc::format!(
+                "machine fp_transient_count {} exceeds fp bank size {}",
+                self.fp_transient_count,
+                fp_bank_count,
+            )));
+        }
+        if !self.fp_reg_init_widths.is_empty() && self.fp_reg_init_widths.len() != fp_bank_count {
+            return Err(WasmError::internal(alloc::format!(
+                "machine fp_reg_init_widths length {} does not match fp bank size {}",
+                self.fp_reg_init_widths.len(),
+                fp_bank_count,
+            )));
+        }
+
         for (index, block) in self.blocks.iter().enumerate() {
             if block.id.as_usize() != index {
                 return Err(WasmError::internal(alloc::format!(
@@ -81,6 +97,15 @@ impl MachineProgram {
             MachineInstKind::Move { dst, src } => {
                 self.validate_reg(*dst)?;
                 self.validate_value(*src)?;
+            }
+            MachineInstKind::FloatConst { dst, .. } => {
+                self.validate_reg(*dst)?;
+                if !self.is_fp_reg(*dst) {
+                    return Err(WasmError::internal(alloc::format!(
+                        "machine FloatConst destination {} must be an FP register",
+                        dst.0,
+                    )));
+                }
             }
             MachineInstKind::Lea { dst, addr } => {
                 self.validate_reg(*dst)?;

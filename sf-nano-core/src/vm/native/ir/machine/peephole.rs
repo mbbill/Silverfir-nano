@@ -35,17 +35,30 @@ struct TrackedLoad {
 
 /// Run peephole optimizations on all blocks in a program.
 ///
-/// `first_transient` is the register index where transient (single-use SSA)
-/// registers start. Only transient registers are candidates for constant
-/// folding — fixed and cached-local registers must not be disturbed.
+/// `first_transient` is the first GP transient register. FP transients are the
+/// prefix of the FP bank with length `program.fp_transient_count`. Only
+/// transient registers are candidates for copy/constant rewriting; fixed and
+/// cached-local registers must not be disturbed.
 pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     for block in &mut program.blocks {
         fold_constants(block, first_transient, program.first_fp_reg);
-        copy_propagate(block, program.reg_count, first_transient, program.first_fp_reg);
+        copy_propagate(
+            block,
+            program.reg_count,
+            first_transient,
+            program.first_fp_reg,
+            program.fp_transient_count,
+        );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
         fold_constants(block, first_transient, program.first_fp_reg);
-        copy_propagate(block, program.reg_count, first_transient, program.first_fp_reg);
+        copy_propagate(
+            block,
+            program.reg_count,
+            first_transient,
+            program.first_fp_reg,
+            program.fp_transient_count,
+        );
     }
 }
 
@@ -232,6 +245,7 @@ fn copy_propagate(
     reg_count: u16,
     first_transient: u16,
     first_fp_reg: u16,
+    fp_transient_count: u16,
 ) {
     let original_ops = core::mem::take(&mut block.ops);
     let mut aliases = vec![None; reg_count as usize];
@@ -266,7 +280,7 @@ fn copy_propagate(
                 if *dst == *src {
                     continue;
                 }
-                if dst.0 >= first_transient
+                if is_transient_reg(*dst, first_transient, first_fp_reg, fp_transient_count)
                     && same_reg_bank(*dst, *src, first_fp_reg)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
@@ -305,6 +319,7 @@ fn count_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize {
 fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
         | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
@@ -324,6 +339,7 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
 fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
         | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
@@ -411,6 +427,7 @@ fn value_is_reg(v: &MachineValue, reg: MachineReg) -> bool {
 fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
     match kind {
         MachineInstKind::Move { src, .. } => f(src),
+        MachineInstKind::FloatConst { .. } => {}
         MachineInstKind::Lea { addr, .. } => {
             f(&MachineValue::Reg(addr.base));
         }
@@ -515,6 +532,7 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         | MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => rewrite_value(src, aliases),
+        MachineInstKind::FloatConst { .. } => {}
         MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => {
             rewrite_addr(addr, aliases);
         }
@@ -742,6 +760,18 @@ fn clear_aliases(aliases: &mut [Option<MachineReg>]) {
 
 fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, first_fp_reg: u16) -> bool {
     (lhs.0 >= first_fp_reg) == (rhs.0 >= first_fp_reg)
+}
+
+fn is_transient_reg(
+    reg: MachineReg,
+    first_gp_transient: u16,
+    first_fp_reg: u16,
+    fp_transient_count: u16,
+) -> bool {
+    if reg.0 < first_fp_reg {
+        return reg.0 >= first_gp_transient;
+    }
+    reg.0 < first_fp_reg.saturating_add(fp_transient_count)
 }
 
 fn reg_move_rewrite_supported(dst: MachineReg, src: MachineReg, first_fp_reg: u16) -> bool {

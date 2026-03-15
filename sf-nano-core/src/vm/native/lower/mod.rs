@@ -17,32 +17,30 @@ mod tests;
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    error::WasmError,
-    vm::{
+    error::WasmError, value_type::ValueType, vm::{
         backend::BackendConfig,
         lir::{
-            ir::{LirBoundaryOp, LirInstKind, LirProgram, LirTerminator},
+            ir::{LirBoundaryOp, LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue},
             slot::FrameSpan,
             validate::validate_program,
         },
-        native::ir::{
+        native::{ir::{
             machine::{
                 MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-                MachineCompareKind, MachineConstData, MachineFuncId, MachineFunction,
-                MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth,
-                MachineModule, MachineProgram, MachineReg, MachineTerminator, MachineTrapKind,
-                MachineValue,
+                MachineCompareKind, MachineConstData, MachineFloatWidth, MachineFuncId,
+                MachineFunction, MachineInst, MachineInstKind, MachineLoadExtension,
+                MachineMemWidth, MachineModule, MachineProgram, MachineReg,
+                MachineTerminator, MachineTrapKind, MachineValue,
             },
             runtime::{
                 MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
                 MachineFunctionRuntime, MachineRuntimeContract,
             },
-        },
-        native::runtime::context::{
-            ctx_offset, function_kind, function_view_offset, NativeFunctionView,
-        },
+        }, runtime::context::{
+            NativeFunctionView, ctx_offset, function_kind, function_view_offset
+        }},
         plan::frame::FrameLayoutPlan,
-    },
+    }
 };
 
 use self::{
@@ -200,7 +198,14 @@ fn lower_function(
             .machine_params()
             .iter()
             .copied()
-            .map(MachineBlockParam::gp)
+            .zip(block.params.iter().copied())
+            .map(|(reg, value)| {
+                if let Some(width) = program_value_float_width(input.lir, value) {
+                    MachineBlockParam::fp(reg, width)
+                } else {
+                    MachineBlockParam::gp(reg)
+                }
+            })
             .collect::<Vec<_>>();
 
         for inst in &block.ops {
@@ -528,6 +533,8 @@ fn lower_function(
         entry: MachineBlockId(input.lir.entry.as_u32()),
         first_fp_reg: regfile.first_fp_reg(),
         reg_count: regfile.reg_count(),
+        fp_transient_count: regfile.fp_transient_count() as u16,
+        fp_reg_init_widths: fp_reg_init_widths(regfile, &input.lir.local_cache)?,
         blocks,
     };
     program.validate()?;
@@ -545,6 +552,8 @@ fn stub_machine_function(id: MachineFuncId, reg_count: u16) -> MachineFunction {
             entry: MachineBlockId(0),
             first_fp_reg: reg_count,
             reg_count,
+            fp_transient_count: 0,
+            fp_reg_init_widths: Vec::new(),
             blocks: vec![MachineBlock {
                 id: MachineBlockId(0),
                 params: Vec::new(),
@@ -682,14 +691,74 @@ fn attach_edge_args(
 }
 
 #[inline]
-fn target_param_regs(count: usize, regfile: &MachineRegFile) -> Result<Vec<MachineReg>, WasmError> {
-    let mut regs = Vec::with_capacity(count);
-    for index in 0..count {
-        regs.push(regfile.transient(index).ok_or_else(|| {
-            WasmError::internal("target params exceed transient register budget".into())
-        })?);
+fn target_param_regs(
+    params: &[LirValue],
+    program: &LirProgram,
+    regfile: &MachineRegFile,
+) -> Result<Vec<MachineReg>, WasmError> {
+    let mut regs = Vec::with_capacity(params.len());
+    let mut gp_index = 0usize;
+    let mut fp_index = 0usize;
+    for param in params {
+        if program_value_float_width(program, *param).is_some() {
+            regs.push(regfile.fp_transient(fp_index).ok_or_else(|| {
+                WasmError::internal("target params exceed FP transient register budget".into())
+            })?);
+            fp_index += 1;
+        } else {
+            regs.push(regfile.gp_transient(gp_index).ok_or_else(|| {
+                WasmError::internal("target params exceed GP transient register budget".into())
+            })?);
+            gp_index += 1;
+        }
     }
     Ok(regs)
+}
+
+fn program_value_float_width(
+    program: &LirProgram,
+    value: LirValue,
+) -> Option<MachineFloatWidth> {
+    program
+        .value_types
+        .get(value.0 as usize)
+        .copied()
+        .and_then(|ty| match ty {
+            ValueType::F32 => Some(MachineFloatWidth::F32),
+            ValueType::F64 => Some(MachineFloatWidth::F64),
+            _ => None,
+        })
+}
+
+fn fp_reg_init_widths(
+    regfile: &MachineRegFile,
+    cache_prefs: &LirLocalCachePrefs,
+) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
+    let mut widths = vec![None; regfile.fp_transient_count() + regfile.fp_local_cache_count()];
+    if cache_prefs.fp_preferred_slots.len() != cache_prefs.fp_preferred_types.len() {
+        return Err(WasmError::internal(
+            "FP cached-local slot/type metadata length mismatch".into(),
+        ));
+    }
+    for (index, ty) in cache_prefs.fp_preferred_types.iter().copied().enumerate() {
+        let width = match ty {
+            ValueType::F32 => MachineFloatWidth::F32,
+            ValueType::F64 => MachineFloatWidth::F64,
+            _ => {
+                return Err(WasmError::internal(
+                    "FP cached-local preference contains a non-float type".into(),
+                ))
+            }
+        };
+        let slot = regfile.fp_transient_count() + index;
+        let Some(entry) = widths.get_mut(slot) else {
+            return Err(WasmError::internal(
+                "FP cached-local preferences exceed declared FP cache register count".into(),
+            ));
+        };
+        *entry = Some(width);
+    }
+    Ok(widths)
 }
 
 struct ExtraBlockAllocator {

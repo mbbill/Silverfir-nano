@@ -10,9 +10,11 @@
 //! - no local-cache decisions
 //! - no prepared block shaping or machine placement
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::error::WasmError;
+use crate::value_type::ValueType;
 
 use super::common::{BrTableEntry, SemanticTarget};
 use super::primitive_op::PrimitiveOpKind;
@@ -101,6 +103,17 @@ pub struct SemanticProgram {
     pub local_count: u16,
     pub max_stack_height: u16,
     pub ops: alloc::vec::Vec<SemanticOp>,
+    /// Per-local value types (params ++ non-param locals).
+    ///
+    /// When non-empty, `local_types.len() == local_count`.
+    /// When empty, downstream consumers should treat all values as untyped.
+    pub local_types: Vec<ValueType>,
+    /// Per-op result types for calls and block-type-producing ops.
+    ///
+    /// Maps semantic op index to result value types for ops that push
+    /// results whose types are not deterministic from the opcode alone
+    /// (calls, blocks with multi-value signatures, etc.).
+    pub op_result_types: BTreeMap<usize, Vec<ValueType>>,
 }
 
 impl SemanticProgram {
@@ -158,6 +171,49 @@ impl SemanticProgram {
                     )));
                 }
                 _ => {}
+            }
+        }
+
+        // Validate local_types length when present.
+        if !self.local_types.is_empty() && self.local_types.len() != self.local_count as usize {
+            return Err(WasmError::internal(alloc::format!(
+                "semantic local_types length {} does not match local_count {}",
+                self.local_types.len(),
+                self.local_count,
+            )));
+        }
+
+        // Validate op_result_types indices are in range and match arity.
+        for (op_idx, result_types) in &self.op_result_types {
+            if *op_idx >= len {
+                return Err(WasmError::internal(alloc::format!(
+                    "op_result_types entry for op index {} is out of range (ops len={})",
+                    op_idx, len,
+                )));
+            }
+            if let Some(op) = self.ops.get(*op_idx) {
+                let expected_results = match &op.kind {
+                    SemanticOpKind::CallExternal { results, .. }
+                    | SemanticOpKind::CallInternal { results, .. }
+                    | SemanticOpKind::CallIndirect { results, .. } => *results as usize,
+                    SemanticOpKind::Primitive(kind) => {
+                        super::primitive_op::stack_effect(kind).1 as usize
+                    }
+                    _ => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "op_result_types entry at op {} attached to a non-producing op",
+                            op_idx,
+                        )));
+                    }
+                };
+                if result_types.len() != expected_results {
+                    return Err(WasmError::internal(alloc::format!(
+                        "op_result_types at op {} has {} types but op expects {} results",
+                        op_idx,
+                        result_types.len(),
+                        expected_results,
+                    )));
+                }
             }
         }
 
@@ -305,6 +361,8 @@ mod tests {
             ops: alloc::vec![SemanticOp {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
             }],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic
@@ -327,6 +385,8 @@ mod tests {
                     target: SemanticTarget::new(3),
                 },
             }],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic
@@ -345,6 +405,8 @@ mod tests {
             ops: alloc::vec![SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
             }],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic

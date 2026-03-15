@@ -35,6 +35,11 @@ pub enum MachineInstKind {
         dst: MachineReg,
         src: MachineValue,
     },
+    FloatConst {
+        width: MachineFloatWidth,
+        dst: MachineReg,
+        bits: u64,
+    },
     Lea {
         dst: MachineReg,
         addr: MachineAddr,

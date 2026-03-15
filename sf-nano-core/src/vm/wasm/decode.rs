@@ -11,12 +11,13 @@
 //! - assign transient-window handlers
 //! - shape prepared execution blocks
 
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 use crate::{
     error::WasmError,
     op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFC, WasmOpcode},
+    value_type::ValueType,
 };
 
 use super::{
@@ -77,6 +78,8 @@ impl SemanticBuilder {
         results: u16,
         local_count: u16,
         max_stack_height: u16,
+        local_types: Vec<ValueType>,
+        op_result_types: BTreeMap<usize, Vec<ValueType>>,
     ) -> SemanticProgram {
         SemanticProgram {
             params,
@@ -84,6 +87,8 @@ impl SemanticBuilder {
             local_count,
             max_stack_height,
             ops: self.ops,
+            local_types,
+            op_result_types,
         }
     }
 }
@@ -121,6 +126,8 @@ pub struct DecodeContext<'a> {
     height: usize,
     max_height: usize,
     unreachable: bool,
+    /// Per-op result types for calls and typed blocks.
+    op_result_types: BTreeMap<usize, Vec<ValueType>>,
 }
 
 impl<'a> DecodeContext<'a> {
@@ -140,6 +147,7 @@ impl<'a> DecodeContext<'a> {
             height: 0,
             max_height: 0,
             unreachable: false,
+            op_result_types: BTreeMap::new(),
         }
     }
 
@@ -285,6 +293,12 @@ impl<'a> DecodeContext<'a> {
         }
     }
 
+    fn record_result_types(&mut self, idx: SemanticIndex, tys: &[ValueType]) {
+        if !tys.is_empty() {
+            self.op_result_types.insert(idx.as_usize(), tys.to_vec());
+        }
+    }
+
     fn handle_primitive(&mut self, kind: PrimitiveOpKind) {
         let (pops, pushes) = primitive_op::stack_effect(&kind);
         self.pop_values(pops as usize);
@@ -326,7 +340,11 @@ impl<'a> DecodeContext<'a> {
                 results,
             }
         };
-        self.push_op(kind);
+        let idx = self.push_op(kind);
+        if results > 0 {
+            let func = self.compile.store.function(func_idx as usize);
+            self.record_result_types(idx, func.func_type().results());
+        }
         self.pop_values(params as usize);
         self.push_values(results as usize);
     }
@@ -334,12 +352,17 @@ impl<'a> DecodeContext<'a> {
     fn handle_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
         let (params, results) = self.compile.resolve_type_index(type_idx);
         self.pop_values(1);
-        self.push_op(SemanticOpKind::CallIndirect {
+        let idx = self.push_op(SemanticOpKind::CallIndirect {
             type_idx,
             table_idx,
             params,
             results,
         });
+        if results > 0 {
+            if let Some(ty) = self.compile.types.get(type_idx) {
+                self.record_result_types(idx, ty.results());
+            }
+        }
         self.pop_values(params as usize);
         self.push_values(results as usize);
     }
@@ -350,6 +373,8 @@ impl<'a> DecodeContext<'a> {
             self.compile.results,
             self.compile.local_count,
             self.max_height as u16,
+            self.compile.local_types.to_vec(),
+            self.op_result_types,
         )
     }
 
@@ -685,7 +710,10 @@ impl<'a> DecodeContext<'a> {
 
             OP(GLOBAL_GET) => {
                 if let Immediate::GlobalIndex(idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::GlobalGet { idx: *idx });
+                    let gty = self.compile.store.global(*idx as usize).value_type;
+                    self.record_result_types(op_idx, &[gty]);
                 }
             }
             OP(GLOBAL_SET) => {
@@ -696,9 +724,12 @@ impl<'a> DecodeContext<'a> {
 
             OP(TABLE_GET) => {
                 if let Immediate::TableIndex(table_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::TableGet {
                         table_idx: *table_idx,
                     });
+                    let tty = self.compile.store.table(*table_idx as usize).value_type;
+                    self.record_result_types(op_idx, &[tty]);
                 }
             }
             OP(TABLE_SET) => {
@@ -742,13 +773,30 @@ impl<'a> DecodeContext<'a> {
                 }
             }
 
-            OP(REF_NULL) => self.handle_primitive(PrimitiveOpKind::RefNull),
+            OP(REF_NULL) => {
+                let op_idx = self.current_index();
+                self.handle_primitive(PrimitiveOpKind::RefNull);
+                if let Immediate::RefType(vt) = imm {
+                    self.record_result_types(op_idx, &[*vt]);
+                }
+            }
             OP(REF_IS_NULL) => self.handle_primitive(PrimitiveOpKind::RefIsNull),
             OP(REF_FUNC) => {
                 if let Immediate::FunctionIndex(func_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::RefFunc {
                         func_idx: *func_idx,
                     });
+                    let func_type_idx = self
+                        .compile
+                        .store
+                        .function(*func_idx as usize)
+                        .type_index();
+                    let ty = ValueType::Ref(crate::value_type::RefType::new(
+                        false,
+                        crate::value_type::HeapType::Concrete(func_type_idx),
+                    ));
+                    self.record_result_types(op_idx, &[ty]);
                 }
             }
 

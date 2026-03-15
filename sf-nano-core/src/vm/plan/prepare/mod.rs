@@ -59,7 +59,12 @@ pub fn prepare_function(
         semantic.max_stack_height,
         input.config.call_scratch_slots,
     );
-    let local_cache = analyze_local_cache_prefs(semantic, input.config.cached_locals, frame);
+    let local_cache = analyze_local_cache_prefs(
+        semantic,
+        input.config.gp_cached_locals,
+        input.config.fp_cached_locals,
+        frame,
+    );
     let prepared = prepare_semantic_ops(semantic, frame, input.config)?;
 
     if semantic.ops.is_empty() {
@@ -69,6 +74,7 @@ pub fn prepare_function(
                 entry: LirTarget(0),
                 local_cache,
                 blocks: Vec::new(),
+                value_types: Vec::new(),
             },
         });
     }
@@ -76,9 +82,11 @@ pub fn prepare_function(
     let block_ranges = retain_reachable_blocks(semantic, build_block_ranges(semantic));
     let semantic_to_block = build_semantic_to_block_map(semantic.ops.len(), &block_ranges);
     let mut values = ValueAlloc::default();
+    let local_types = &semantic.local_types;
+    let op_result_types = &semantic.op_result_types;
     let block_params = block_ranges
         .iter()
-        .map(|range| make_block_params(prepared.entry_states[range.start], &mut values))
+        .map(|range| make_block_params(&prepared.entry_states[range.start], &mut values))
         .collect::<Vec<_>>();
 
     let original_block_count = block_ranges.len();
@@ -87,9 +95,10 @@ pub fn prepare_function(
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
-            prepared.entry_states[semantic_range.start],
+            &prepared.entry_states[semantic_range.start],
             &params,
-            input.config.lir_lanes,
+            input.config.gp_lir_lanes,
+            input.config.fp_lir_lanes,
         )?;
         let block = lower_block_range(
             semantic_range.clone(),
@@ -102,6 +111,8 @@ pub fn prepare_function(
             &mut values,
             original_block_count,
             extra_blocks.len(),
+            local_types,
+            op_result_types,
         )?;
         blocks.push(LirBlock {
             id: LirTarget(block_index as u32),
@@ -117,6 +128,7 @@ pub fn prepare_function(
         entry: semantic_to_block[0],
         local_cache,
         blocks,
+        value_types: values.take_types(),
     };
     let mut lir = lir;
     optimize::optimize_lir(&mut lir, frame);
@@ -127,16 +139,19 @@ pub fn prepare_function(
 
 #[inline]
 fn make_block_params(
-    entry: EntryState,
+    entry: &EntryState,
     values: &mut ValueAlloc,
 ) -> alloc::vec::Vec<crate::vm::lir::ir::LirValue> {
-    values.many(entry.live_value_count() as usize)
+    debug_assert_eq!(
+        entry.live_types.len(),
+        entry.live_value_count() as usize,
+        "EntryState.live_types length must match live_value_count",
+    );
+    values.many_typed(&entry.live_types)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::eprintln;
-
     use crate::vm::{
         lir::ir::{LirBoundaryOp, LirInstKind},
         plan::{
@@ -176,11 +191,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnVoid,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -202,6 +219,8 @@ mod tests {
 
     #[test]
     fn prepares_table_fill_as_boundary_op() {
+        use crate::value_type::ValueType;
+
         let semantic = SemanticProgram {
             params: 0,
             results: 0,
@@ -227,11 +246,16 @@ mod tests {
                     kind: SemanticOpKind::ReturnVoid,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![ValueType::funcref()],
+            )]),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -274,11 +298,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnVoid,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -325,11 +351,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnVoid,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -387,11 +415,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnVoid,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -439,11 +469,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -516,11 +548,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -547,6 +581,8 @@ mod tests {
 
     #[test]
     fn prepares_if_with_block_param_and_result() {
+        use crate::value_type::ValueType;
+
         let semantic = SemanticProgram {
             params: 3,
             results: 1,
@@ -586,11 +622,16 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![ValueType::I64, ValueType::I64, ValueType::I64],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                2usize,
+                alloc::vec![ValueType::I64, ValueType::I32],
+            )]),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -643,11 +684,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -733,11 +776,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -782,11 +827,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -839,11 +886,13 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
@@ -938,17 +987,19 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
         .expect("nested br_table index preparation should succeed");
 
-        eprintln!("{:#?}", prepared.lir);
+        assert!(!prepared.lir.blocks.is_empty());
     }
 
     #[test]
@@ -1008,17 +1059,19 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
         .expect("nested br_table num preparation should succeed");
 
-        eprintln!("{:#?}", prepared.lir);
+        assert!(!prepared.lir.blocks.is_empty());
     }
 
     #[test]
@@ -1083,16 +1136,342 @@ mod tests {
             local_count: 17,
             max_stack_height: 16,
             ops,
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         let prepared = prepare_function(
             PrepareInput {
-                config: PlanConfig::new(0, 4, 3),
+                config: PlanConfig::new(0, 4, 0, 2, 3),
             },
             &semantic,
         )
         .expect("large signature preparation should succeed");
 
-        eprintln!("{:#?}", prepared.lir);
+        assert!(!prepared.lir.blocks.is_empty());
+    }
+
+    #[test]
+    fn typed_pipeline_assigns_float_types_to_float_values() {
+        use crate::value_type::ValueType;
+
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 2,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed float pipeline should succeed");
+
+        assert!(
+            !prepared.lir.value_types.is_empty(),
+            "value_types side table must be populated"
+        );
+
+        // Find LoadSlot results (from local.get) — they should be F64.
+        for block in &prepared.lir.blocks {
+            for inst in &block.ops {
+                if let LirInstKind::LoadSlot { dst, .. } = &inst.kind {
+                    let ty = prepared.lir.value_types.get(dst.0 as usize);
+                    assert_eq!(
+                        ty.copied(),
+                        Some(ValueType::F64),
+                        "local.get of an f64 local must produce an F64-typed LirValue"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_pipeline_assigns_i32_types_to_int_ops() {
+        use crate::value_type::ValueType;
+
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed i32 pipeline should succeed");
+
+        // All values should be I32 (consts produce I32, add produces I32).
+        for ty in &prepared.lir.value_types {
+            assert!(
+                matches!(ty, ValueType::I32),
+                "i32 ops should produce I32-typed values, got {:?}",
+                ty,
+            );
+        }
+    }
+
+    #[test]
+    fn typed_pipeline_fills_preserve_float_types() {
+        use crate::value_type::ValueType;
+
+        // Push 4 f64 values to force a spill, then use them in an add.
+        // The fill should preserve the f64 type.
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 4,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Const {
+                        value: 1.0f64.to_bits(),
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Const {
+                        value: 2.0f64.to_bits(),
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Const {
+                        value: 3.0f64.to_bits(),
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Const {
+                        value: 4.0f64.to_bits(),
+                    }),
+                },
+                // This add will need to fill the first spilled value.
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed fill pipeline should succeed");
+
+        // Every value in this program should be F64.
+        for (idx, ty) in prepared.lir.value_types.iter().enumerate() {
+            assert!(
+                matches!(ty, ValueType::F64),
+                "value {} should be F64 (fills must preserve float type), got {:?}",
+                idx,
+                ty,
+            );
+        }
+    }
+
+    #[test]
+    fn typed_select_preserves_operand_type() {
+        use crate::value_type::ValueType;
+
+        // select(f64, f64, i32) should produce f64, not i64.
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 2,
+            max_stack_height: 3,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Select),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed select pipeline should succeed");
+
+        // Find the Select result value and verify it's F64.
+        let select_result = prepared
+            .lir
+            .blocks
+            .iter()
+            .flat_map(|b| b.ops.iter())
+            .find_map(|inst| {
+                if let LirInstKind::Value { op, results, .. } = &inst.kind {
+                    if matches!(
+                        op.primitive(),
+                        PrimitiveOpKind::Select
+                    ) {
+                        results.first().copied()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .expect("select instruction must exist");
+        let ty = prepared.lir.value_types[select_result.0 as usize];
+        assert_eq!(
+            ty,
+            ValueType::F64,
+            "select of f64 operands must produce F64-typed value, got {:?}",
+            ty,
+        );
+    }
+
+    #[test]
+    fn typed_if_else_preserves_param_types_across_arms() {
+        use crate::value_type::ValueType;
+
+        // if (param f64) (result f64): then-arm drops and pushes i32,
+        // else-arm should still see f64 block param, not the i32 from then.
+        //
+        // (local.get 0)  ;; f64
+        // (local.get 1)  ;; i32 condition
+        // (if (param f64) (result f64)
+        //   (then (drop) (f64.const 1.0))
+        //   (else (nop))  ;; param f64 passes through
+        // )
+        // (return)
+        let semantic = SemanticProgram {
+            params: 2,
+            results: 1,
+            local_count: 2,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 1,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(6),
+                    },
+                },
+                // then: drop the f64 param, push f64.const
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::F64Const {
+                        value: 1.0f64.to_bits(),
+                    }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                // else: nop — pass through the f64 param
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::F64, ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed if/else param pipeline should succeed");
+
+        // All block params across both arms should be F64 for the block
+        // that corresponds to the else entry. Check that no block param
+        // is typed as I32 (which would indicate type corruption from the
+        // then arm's drop+push).
+        for block in &prepared.lir.blocks {
+            for param in &block.params {
+                let ty = prepared.lir.value_types[param.0 as usize];
+                // Block params for the if block carry the f64 param.
+                // They must not be I32.
+                assert_ne!(
+                    ty,
+                    ValueType::I32,
+                    "block param LirValue({}) should not be I32 — if/else must preserve f64 param type",
+                    param.0,
+                );
+            }
+        }
     }
 }

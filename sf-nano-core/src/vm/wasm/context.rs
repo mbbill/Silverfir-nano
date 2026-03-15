@@ -3,12 +3,10 @@
 //! This is semantic/frontend-only metadata used while decoding a function body.
 
 use crate::{
-    module::type_context::TypeContext,
-    op_decoder::{BlockType, Immediate},
-    vm::{
+    module::type_context::TypeContext, op_decoder::{BlockType, Immediate}, value_type::ValueType, vm::{
         entities::{FunctionInst, ModuleInst},
         store::Store,
-    },
+    }
 };
 
 /// Immutable decode context for one function body.
@@ -20,6 +18,9 @@ pub struct CompileContext<'a> {
     pub params: u16,
     pub local_count: u16,
     pub results: u16,
+    /// Per-local value types (params ++ non-param locals).
+    /// When empty, the decode stage will not propagate type info.
+    pub local_types: &'a [ValueType],
 }
 
 impl<'a> CompileContext<'a> {
@@ -39,6 +40,28 @@ impl<'a> CompileContext<'a> {
             params,
             local_count,
             results,
+            local_types: &[],
+        }
+    }
+
+    #[inline]
+    pub const fn with_local_types(
+        types: &'a TypeContext,
+        store: &'a Store,
+        module: &'a ModuleInst,
+        params: u16,
+        local_count: u16,
+        results: u16,
+        local_types: &'a [crate::value_type::ValueType],
+    ) -> Self {
+        Self {
+            types,
+            store,
+            module,
+            params,
+            local_count,
+            results,
+            local_types,
         }
     }
 

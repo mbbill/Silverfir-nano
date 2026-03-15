@@ -19,33 +19,36 @@ use crate::{
 /// owning values are proven dead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
-    local_cache: Vec<MachineReg>,
+    gp_local_cache: Vec<MachineReg>,
     gp_transient: Vec<MachineReg>,
     fp_transient: Vec<MachineReg>,
+    fp_local_cache: Vec<MachineReg>,
     first_fp_reg: u16,
     reg_count: u16,
 }
 
 impl MachineRegFile {
     pub(super) fn new(config: BackendConfig) -> Result<Self, WasmError> {
-        const FP_TRANSIENT_COUNT: u8 = 2;
-
-        if config.lir_lane_count == 0 {
+        if config.gp_lane_count == 0 {
             return Err(WasmError::internal(
-                "native lowering requires at least one LIR lane register".into(),
+                "native lowering requires at least one GP lane register".into(),
             ));
         }
 
         let mut next = MACHINE_FIXED_REG_COUNT;
-        let local_cache = collect_regs(&mut next, config.hot_local_count);
-        let gp_transient = collect_regs(&mut next, config.lir_lane_count);
+        let gp_local_cache = collect_regs(&mut next, config.gp_local_cache_count);
+        let gp_transient = collect_regs(&mut next, config.gp_lane_count);
         let first_fp_reg = next;
-        let fp_transient = collect_regs(&mut next, FP_TRANSIENT_COUNT);
+        let fp_transient = collect_regs(&mut next, config.fp_lane_count);
+        let fp_local_cache = collect_regs(&mut next, config.fp_local_cache_count);
 
+        // Layout: [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
+        //                                                              ^ first_fp_reg
         Ok(Self {
-            local_cache,
+            gp_local_cache,
             gp_transient,
             fp_transient,
+            fp_local_cache,
             first_fp_reg,
             reg_count: next,
         })
@@ -72,16 +75,16 @@ impl MachineRegFile {
     }
 
     #[inline]
-    pub(super) fn local_cache(&self, index: usize) -> Option<MachineReg> {
-        self.local_cache.get(index).copied()
+    pub(super) fn gp_local_cache(&self, index: usize) -> Option<MachineReg> {
+        self.gp_local_cache.get(index).copied()
     }
 
     #[inline]
-    pub(super) fn transient(&self, index: usize) -> Option<MachineReg> {
+    pub(super) fn gp_transient(&self, index: usize) -> Option<MachineReg> {
         self.gp_transient.get(index).copied()
     }
 
-    pub(super) fn transient_count(&self) -> usize {
+    pub(super) fn gp_transient_count(&self) -> usize {
         self.gp_transient.len()
     }
 
@@ -92,6 +95,15 @@ impl MachineRegFile {
 
     pub(super) fn fp_transient_count(&self) -> usize {
         self.fp_transient.len()
+    }
+
+    #[inline]
+    pub(super) fn fp_local_cache(&self, index: usize) -> Option<MachineReg> {
+        self.fp_local_cache.get(index).copied()
+    }
+
+    pub(super) fn fp_local_cache_count(&self) -> usize {
+        self.fp_local_cache.len()
     }
 
     #[inline]

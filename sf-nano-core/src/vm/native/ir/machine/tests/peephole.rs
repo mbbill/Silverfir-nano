@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use crate::vm::native::ir::machine::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
@@ -12,6 +12,8 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
         entry: MachineBlockId(0),
         first_fp_reg: 9,
         reg_count: 9,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
                 id: MachineBlockId(0),
@@ -69,6 +71,8 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
         entry: MachineBlockId(0),
         first_fp_reg: 8,
         reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -126,6 +130,8 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         entry: MachineBlockId(0),
         first_fp_reg: 8,
         reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -187,6 +193,8 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
         entry: MachineBlockId(0),
         first_fp_reg: 9,
         reg_count: 9,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -269,6 +277,8 @@ fn forwards_fp_spill_reload_into_gp_move() {
         entry: MachineBlockId(0),
         first_fp_reg: 11,
         reg_count: 12,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -327,6 +337,8 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
         entry: MachineBlockId(0),
         first_fp_reg: 8,
         reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -385,6 +397,8 @@ fn does_not_forward_across_overlapping_store() {
         entry: MachineBlockId(0),
         first_fp_reg: 8,
         reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -447,6 +461,8 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
         entry: MachineBlockId(0),
         first_fp_reg: 10,
         reg_count: 10,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -520,6 +536,8 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
         entry: MachineBlockId(0),
         first_fp_reg: 11,
         reg_count: 12,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -569,6 +587,8 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
         entry: MachineBlockId(0),
         first_fp_reg: 9,
         reg_count: 9,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -628,6 +648,8 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
         entry: MachineBlockId(0),
         first_fp_reg: 8,
         reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -674,6 +696,8 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
         entry: MachineBlockId(0),
         first_fp_reg: 10,
         reg_count: 12,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -716,6 +740,8 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         entry: MachineBlockId(0),
         first_fp_reg: 10,
         reg_count: 11,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -748,6 +774,59 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         block.ops[1].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(10)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn preserves_moves_into_fp_cached_locals() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 11,
+        reg_count: 15,
+        fp_transient_count: 2,
+        fp_reg_init_widths: vec![None, None, Some(crate::vm::native::ir::machine::MachineFloatWidth::F32), Some(crate::vm::native::ir::machine::MachineFloatWidth::F32)],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        dst: MachineReg(13),
+                        src: MachineValue::Reg(MachineReg(11)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 48,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(13)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(13),
+            src: MachineValue::Reg(MachineReg(11)),
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Reg(MachineReg(13)),
             ..
         }
     ));

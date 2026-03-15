@@ -3,6 +3,7 @@ use core::mem;
 
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         lir::{
             ir::{
@@ -36,6 +37,7 @@ use super::{
 struct CachedLocal {
     slot: FrameSlot,
     reg: MachineReg,
+    float_width: Option<MachineFloatWidth>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,13 +80,38 @@ impl<'a> BlockLowerContext<'a> {
         call_link: MachineCallLinkLayout,
         is_entry: bool,
     ) -> Result<Self, WasmError> {
-        let machine_params = target_param_regs(block.params.len(), regfile)?;
+        let machine_params = target_param_regs(&block.params, program, regfile)?;
         let mut cached_locals = Vec::new();
-        for (index, slot) in cache_prefs.preferred_slots.iter().copied().enumerate() {
-            let Some(reg) = regfile.local_cache(index) else {
+        for (index, slot) in cache_prefs.gp_preferred_slots.iter().copied().enumerate() {
+            let Some(reg) = regfile.gp_local_cache(index) else {
                 break;
             };
-            cached_locals.push(CachedLocal { slot, reg });
+            cached_locals.push(CachedLocal {
+                slot,
+                reg,
+                float_width: None,
+            });
+        }
+        for (index, slot) in cache_prefs.fp_preferred_slots.iter().copied().enumerate() {
+            let Some(reg) = regfile.fp_local_cache(index) else {
+                break;
+            };
+            let float_width = cache_prefs
+                .fp_preferred_types
+                .get(index)
+                .copied()
+                .and_then(value_type_float_width)
+                .ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "FP cached local {:?} is missing a float type entry",
+                        slot
+                    ))
+                })?;
+            cached_locals.push(CachedLocal {
+                slot,
+                reg,
+                float_width: Some(float_width),
+            });
         }
 
         let mut lower = Self {
@@ -102,14 +129,15 @@ impl<'a> BlockLowerContext<'a> {
             remaining_uses: compute_remaining_uses(block),
             transient_state: alloc::vec![
                 TransientState::default();
-                regfile.transient_count() + regfile.fp_transient_count()
+                regfile.gp_transient_count() + regfile.fp_transient_count()
             ],
         };
 
         let machine_params = lower.machine_params.clone();
         for (param, reg) in block.params.iter().copied().zip(machine_params.into_iter()) {
             lower.values.push(ValueLocation { value: param, reg });
-            lower.set_transient(reg, Some(param), None)?;
+            let fw = lir_value_float_width(lower.program, param);
+            lower.set_transient(reg, Some(param), fw)?;
         }
         lower.release_dead_values()?;
 
@@ -184,7 +212,8 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_inst(&mut self, inst: &LirInst) -> Result<(), WasmError> {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
-                let dst_reg = self.alloc_value(*dst)?;
+                let dst_reg = self.alloc_slot_load_value(*dst)?;
+                let width = lir_value_slot_mem_width(self.program, *dst);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
@@ -197,7 +226,7 @@ impl<'a> BlockLowerContext<'a> {
                         kind: MachineInstKind::Load {
                             dst: dst_reg,
                             addr: self.frame_addr(*slot)?,
-                            width: MachineMemWidth::U64,
+                            width,
                             extension: MachineLoadExtension::None,
                         },
                     });
@@ -205,6 +234,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             LirInstKind::StoreSlot { slot, src } => {
                 let src_reg = self.use_value(*src)?;
+                let width = lir_value_slot_mem_width(self.program, *src);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
@@ -216,7 +246,7 @@ impl<'a> BlockLowerContext<'a> {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
                             addr: self.frame_addr(*slot)?,
-                            width: MachineMemWidth::U64,
+                            width,
                             src: MachineValue::Reg(src_reg),
                         },
                     });
@@ -245,6 +275,19 @@ impl<'a> BlockLowerContext<'a> {
                 dst: dst_reg,
                 src: MachineValue::Imm64(imm),
             },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_float_const(
+        &mut self,
+        results: &[LirValue],
+        width: MachineFloatWidth,
+        bits: u64,
+    ) -> Result<(), WasmError> {
+        let dst = self.alloc_float_value(single_result(results)?, width)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::FloatConst { width, dst, bits },
         });
         Ok(())
     }
@@ -425,7 +468,7 @@ impl<'a> BlockLowerContext<'a> {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
         let on_true = self.use_value(args[0])?;
-        let on_false = self.use_value(args[1])?;
+       let on_false = self.use_value(args[1])?;
         let cond = self.use_value(args[2])?;
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, args)?;
         self.emit_machine_inst(MachineInst {
@@ -490,13 +533,12 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
-            let reg = self.cached_locals[index].reg;
-            let slot = self.cached_locals[index].slot;
+            let cached = self.cached_locals[index];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    dst: reg,
-                    addr: self.frame_addr(slot)?,
-                    width: MachineMemWidth::U64,
+                    dst: cached.reg,
+                    addr: self.frame_addr(cached.slot)?,
+                    width: cached_local_mem_width(cached),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -510,7 +552,7 @@ impl<'a> BlockLowerContext<'a> {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
                     addr: self.frame_addr(cached.slot)?,
-                    width: MachineMemWidth::U64,
+                    width: cached_local_mem_width(cached),
                     src: MachineValue::Reg(cached.reg),
                 },
             });
@@ -594,12 +636,37 @@ impl<'a> BlockLowerContext<'a> {
         self.alloc_value_in_bank(value, None)
     }
 
+    pub(super) fn alloc_result_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+        self.alloc_value_in_bank(value, lir_value_float_width(self.program, value))
+    }
+
+    /// Allocate a LoadSlot destination in the correct bank based on the type table.
+    fn alloc_slot_load_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+        self.alloc_value_in_bank(value, lir_value_float_width(self.program, value))
+    }
+
     pub(super) fn alloc_value_reusing_dead_inputs(
         &mut self,
         value: LirValue,
         candidates: &[LirValue],
     ) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, None)
+    }
+
+    pub(super) fn alloc_result_value_reusing_dead_inputs(
+        &mut self,
+        value: LirValue,
+        candidates: &[LirValue],
+    ) -> Result<MachineReg, WasmError> {
+        self.alloc_value_in_bank_reusing_dead_inputs(
+            value,
+            candidates,
+            lir_value_float_width(self.program, value),
+        )
+    }
+
+    pub(super) fn slot_mem_width_for_value(&self, value: LirValue) -> MachineMemWidth {
+        lir_value_slot_mem_width(self.program, value)
     }
 
     pub(super) fn alloc_float_value(
@@ -729,12 +796,12 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(reg);
         }
         let Some(reg) = self.first_free_transient(float_width) else {
-            if float_width.is_some() {
-                return self.alloc_value_in_bank(value, None);
-            }
-            return Err(WasmError::internal(
-                "prepared LIR exceeded transient register budget during native lowering".into(),
-            ));
+            return Err(WasmError::internal(alloc::format!(
+                "prepared LIR exceeded {} transient register budget during native lowering in block b{} for value {}",
+                if float_width.is_some() { "FP" } else { "GP" },
+                self.block.id.0,
+                value.0,
+            )));
         };
         self.values.push(ValueLocation { value, reg });
         self.set_transient(reg, Some(value), float_width)?;
@@ -767,30 +834,26 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
 
-        if float_width.is_some() && self.first_free_transient(float_width).is_none() {
-            return self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, None);
-        }
-
         self.alloc_value_in_bank(value, float_width)
     }
 
     fn first_free_transient(&self, float_width: Option<MachineFloatWidth>) -> Option<MachineReg> {
         let start = if float_width.is_some() {
-            self.regfile.transient_count()
+            self.regfile.gp_transient_count()
         } else {
             0
         };
         let count = if float_width.is_some() {
             self.regfile.fp_transient_count()
         } else {
-            self.regfile.transient_count()
+            self.regfile.gp_transient_count()
         };
         for index in start..start + count {
             if self.transient_state[index].value.is_none() {
                 return if float_width.is_some() {
                     self.regfile.fp_transient(index - start)
                 } else {
-                    self.regfile.transient(index - start)
+                    self.regfile.gp_transient(index - start)
                 };
             }
         }
@@ -824,9 +887,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn transient_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
-        if let Some(first) = self.regfile.transient(0) {
+        if let Some(first) = self.regfile.gp_transient(0) {
             let start = first.0;
-            let end = start + self.regfile.transient_count() as u16;
+            let end = start + self.regfile.gp_transient_count() as u16;
             if reg.0 >= start && reg.0 < end {
                 return Ok((reg.0 - start) as usize);
             }
@@ -837,7 +900,7 @@ impl<'a> BlockLowerContext<'a> {
             let end = start + self.regfile.fp_transient_count() as u16;
             if reg.0 >= start && reg.0 < end {
                 return Ok(
-                    self.regfile.transient_count() + (reg.0 - start) as usize,
+                    self.regfile.gp_transient_count() + (reg.0 - start) as usize,
                 );
             }
         }
@@ -848,8 +911,13 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn float_width_for_reg(&self, reg: MachineReg) -> Option<MachineFloatWidth> {
-        let index = self.transient_index(reg).ok()?;
-        self.transient_state.get(index)?.float_width
+        if let Ok(index) = self.transient_index(reg) {
+            return self.transient_state.get(index).and_then(|state| state.float_width);
+        }
+        self.cached_locals
+            .iter()
+            .find(|cached| cached.reg == reg)
+            .and_then(|cached| cached.float_width)
     }
 
     pub(super) fn ensure_no_live_values(&self, message: &'static str) -> Result<(), WasmError> {
@@ -894,7 +962,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn transient_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
-        self.regfile.transient(index).ok_or_else(|| {
+        self.regfile.gp_transient(index).ok_or_else(|| {
             WasmError::internal("native lowering requires one transient register".into())
         })
     }
@@ -911,9 +979,9 @@ impl<'a> BlockLowerContext<'a> {
         count: usize,
     ) -> Result<Vec<MachineReg>, WasmError> {
         let mut regs = Vec::with_capacity(count);
-        for index in 0..self.regfile.transient_count() {
+        for index in 0..self.regfile.gp_transient_count() {
             if self.transient_state[index].value.is_none() {
-                regs.push(self.regfile.transient(index).ok_or_else(|| {
+                regs.push(self.regfile.gp_transient(index).ok_or_else(|| {
                     WasmError::internal("free transient register index is out of range".into())
                 })?);
                 if regs.len() == count {
@@ -945,6 +1013,42 @@ fn machine_block_param(reg: MachineReg, float_width: Option<MachineFloatWidth>) 
     }
 }
 
+fn value_type_float_width(ty: ValueType) -> Option<MachineFloatWidth> {
+    match ty {
+        ValueType::F32 => Some(MachineFloatWidth::F32),
+        ValueType::F64 => Some(MachineFloatWidth::F64),
+        _ => None,
+    }
+}
+
+fn float_slot_mem_width(width: MachineFloatWidth) -> MachineMemWidth {
+    match width {
+        MachineFloatWidth::F32 => MachineMemWidth::U32,
+        MachineFloatWidth::F64 => MachineMemWidth::U64,
+    }
+}
+
+fn cached_local_mem_width(cached: CachedLocal) -> MachineMemWidth {
+    match cached.float_width {
+        Some(width) => float_slot_mem_width(width),
+        None => MachineMemWidth::U64,
+    }
+}
+
+fn lir_value_float_width(program: &LirProgram, value: LirValue) -> Option<MachineFloatWidth> {
+    program
+        .value_types
+        .get(value.0 as usize)
+        .copied()
+        .and_then(value_type_float_width)
+}
+
+fn lir_value_slot_mem_width(program: &LirProgram, value: LirValue) -> MachineMemWidth {
+    lir_value_float_width(program, value)
+        .map(float_slot_mem_width)
+        .unwrap_or(MachineMemWidth::U64)
+}
+
 fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {
     if !params.iter().any(|candidate| candidate.reg == param.reg) {
         params.push(param);
@@ -954,6 +1058,7 @@ fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockPar
 fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
         | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
@@ -973,6 +1078,7 @@ fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
 fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineReg)) {
     match kind {
         MachineInstKind::Move { src, .. } => visit_value_reg(src, &mut visit),
+        MachineInstKind::FloatConst { .. } => {}
         MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => visit(addr.base),
         MachineInstKind::Store { addr, src, .. } => {
             visit(addr.base);

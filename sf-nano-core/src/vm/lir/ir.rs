@@ -9,6 +9,8 @@
 
 use alloc::vec::Vec;
 
+use crate::value_type::ValueType;
+
 use super::{
     leaf::LirLeafOp,
     slot::{FrameSlot, FrameSpan},
@@ -19,10 +21,15 @@ use super::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LirValue(pub u32);
 
-/// Preferred canonical local-slot ranking selected by planning.
+/// Preferred canonical local-slot ranking selected by planning, per bank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LirLocalCachePrefs {
-    pub preferred_slots: Vec<FrameSlot>,
+    /// GP-bank cached local slots (i32, i64, ref).
+    pub gp_preferred_slots: Vec<FrameSlot>,
+    /// FP-bank cached local slots (f32, f64).
+    pub fp_preferred_slots: Vec<FrameSlot>,
+    /// Semantic types for `fp_preferred_slots`, kept in the same order.
+    pub fp_preferred_types: Vec<ValueType>,
 }
 
 /// Full prepared LIR program for one function.
@@ -31,6 +38,12 @@ pub struct LirProgram {
     pub entry: LirTarget,
     pub local_cache: LirLocalCachePrefs,
     pub blocks: Vec<LirBlock>,
+    /// Per-value type information indexed by `LirValue.0`.
+    ///
+    /// When non-empty, every allocated LirValue has a corresponding entry.
+    /// Float values (F32, F64) should be placed in FP transients; all others
+    /// in GP transients.
+    pub value_types: Vec<ValueType>,
 }
 
 /// One LIR basic block.

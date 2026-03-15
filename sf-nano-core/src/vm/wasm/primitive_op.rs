@@ -224,3 +224,245 @@ macro_rules! define_primitive_ops {
 }
 
 for_each_primitive_op!(define_primitive_ops);
+
+/// Returns the Wasm value type of the single result produced by a primitive op.
+///
+/// Returns `None` for ops that produce zero results (stores, drops, etc.) or
+/// ops whose result type depends on context (Select, GlobalGet).
+#[inline]
+pub fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueType> {
+    use crate::value_type::ValueType;
+
+    Some(match kind {
+        // i32 arithmetic
+        PrimitiveOpKind::I32Add
+        | PrimitiveOpKind::I32Sub
+        | PrimitiveOpKind::I32Mul
+        | PrimitiveOpKind::I32DivS
+        | PrimitiveOpKind::I32DivU
+        | PrimitiveOpKind::I32RemS
+        | PrimitiveOpKind::I32RemU
+        | PrimitiveOpKind::I32And
+        | PrimitiveOpKind::I32Or
+        | PrimitiveOpKind::I32Xor
+        | PrimitiveOpKind::I32Shl
+        | PrimitiveOpKind::I32ShrS
+        | PrimitiveOpKind::I32ShrU
+        | PrimitiveOpKind::I32Rotl
+        | PrimitiveOpKind::I32Rotr => ValueType::I32,
+
+        // i64 arithmetic
+        PrimitiveOpKind::I64Add
+        | PrimitiveOpKind::I64Sub
+        | PrimitiveOpKind::I64Mul
+        | PrimitiveOpKind::I64DivS
+        | PrimitiveOpKind::I64DivU
+        | PrimitiveOpKind::I64RemS
+        | PrimitiveOpKind::I64RemU
+        | PrimitiveOpKind::I64And
+        | PrimitiveOpKind::I64Or
+        | PrimitiveOpKind::I64Xor
+        | PrimitiveOpKind::I64Shl
+        | PrimitiveOpKind::I64ShrS
+        | PrimitiveOpKind::I64ShrU
+        | PrimitiveOpKind::I64Rotl
+        | PrimitiveOpKind::I64Rotr => ValueType::I64,
+
+        // f32 arithmetic
+        PrimitiveOpKind::F32Add
+        | PrimitiveOpKind::F32Sub
+        | PrimitiveOpKind::F32Mul
+        | PrimitiveOpKind::F32Div
+        | PrimitiveOpKind::F32Min
+        | PrimitiveOpKind::F32Max
+        | PrimitiveOpKind::F32Copysign => ValueType::F32,
+
+        // f64 arithmetic
+        PrimitiveOpKind::F64Add
+        | PrimitiveOpKind::F64Sub
+        | PrimitiveOpKind::F64Mul
+        | PrimitiveOpKind::F64Div
+        | PrimitiveOpKind::F64Min
+        | PrimitiveOpKind::F64Max
+        | PrimitiveOpKind::F64Copysign => ValueType::F64,
+
+        // All comparisons produce i32
+        PrimitiveOpKind::I32Eq
+        | PrimitiveOpKind::I32Ne
+        | PrimitiveOpKind::I32LtS
+        | PrimitiveOpKind::I32LtU
+        | PrimitiveOpKind::I32GtS
+        | PrimitiveOpKind::I32GtU
+        | PrimitiveOpKind::I32LeS
+        | PrimitiveOpKind::I32LeU
+        | PrimitiveOpKind::I32GeS
+        | PrimitiveOpKind::I32GeU
+        | PrimitiveOpKind::I64Eq
+        | PrimitiveOpKind::I64Ne
+        | PrimitiveOpKind::I64LtS
+        | PrimitiveOpKind::I64LtU
+        | PrimitiveOpKind::I64GtS
+        | PrimitiveOpKind::I64GtU
+        | PrimitiveOpKind::I64LeS
+        | PrimitiveOpKind::I64LeU
+        | PrimitiveOpKind::I64GeS
+        | PrimitiveOpKind::I64GeU
+        | PrimitiveOpKind::F32Eq
+        | PrimitiveOpKind::F32Ne
+        | PrimitiveOpKind::F32Lt
+        | PrimitiveOpKind::F32Gt
+        | PrimitiveOpKind::F32Le
+        | PrimitiveOpKind::F32Ge
+        | PrimitiveOpKind::F64Eq
+        | PrimitiveOpKind::F64Ne
+        | PrimitiveOpKind::F64Lt
+        | PrimitiveOpKind::F64Gt
+        | PrimitiveOpKind::F64Le
+        | PrimitiveOpKind::F64Ge
+        | PrimitiveOpKind::I32Eqz
+        | PrimitiveOpKind::I64Eqz => ValueType::I32,
+
+        // i32 unary
+        PrimitiveOpKind::I32Clz
+        | PrimitiveOpKind::I32Ctz
+        | PrimitiveOpKind::I32Popcnt => ValueType::I32,
+
+        // i64 unary
+        PrimitiveOpKind::I64Clz
+        | PrimitiveOpKind::I64Ctz
+        | PrimitiveOpKind::I64Popcnt => ValueType::I64,
+
+        // f32 unary
+        PrimitiveOpKind::F32Abs
+        | PrimitiveOpKind::F32Neg
+        | PrimitiveOpKind::F32Ceil
+        | PrimitiveOpKind::F32Floor
+        | PrimitiveOpKind::F32Trunc
+        | PrimitiveOpKind::F32Nearest
+        | PrimitiveOpKind::F32Sqrt => ValueType::F32,
+
+        // f64 unary
+        PrimitiveOpKind::F64Abs
+        | PrimitiveOpKind::F64Neg
+        | PrimitiveOpKind::F64Ceil
+        | PrimitiveOpKind::F64Floor
+        | PrimitiveOpKind::F64Trunc
+        | PrimitiveOpKind::F64Nearest
+        | PrimitiveOpKind::F64Sqrt => ValueType::F64,
+
+        // Conversions — result type is the target type
+        PrimitiveOpKind::I32WrapI64
+        | PrimitiveOpKind::I32TruncF32S
+        | PrimitiveOpKind::I32TruncF32U
+        | PrimitiveOpKind::I32TruncF64S
+        | PrimitiveOpKind::I32TruncF64U
+        | PrimitiveOpKind::I32TruncSatF32S
+        | PrimitiveOpKind::I32TruncSatF32U
+        | PrimitiveOpKind::I32TruncSatF64S
+        | PrimitiveOpKind::I32TruncSatF64U
+        | PrimitiveOpKind::I32ReinterpretF32 => ValueType::I32,
+
+        PrimitiveOpKind::I64ExtendI32S
+        | PrimitiveOpKind::I64ExtendI32U
+        | PrimitiveOpKind::I64TruncF32S
+        | PrimitiveOpKind::I64TruncF32U
+        | PrimitiveOpKind::I64TruncF64S
+        | PrimitiveOpKind::I64TruncF64U
+        | PrimitiveOpKind::I64TruncSatF32S
+        | PrimitiveOpKind::I64TruncSatF32U
+        | PrimitiveOpKind::I64TruncSatF64S
+        | PrimitiveOpKind::I64TruncSatF64U
+        | PrimitiveOpKind::I64ReinterpretF64 => ValueType::I64,
+
+        PrimitiveOpKind::F32ConvertI32S
+        | PrimitiveOpKind::F32ConvertI32U
+        | PrimitiveOpKind::F32ConvertI64S
+        | PrimitiveOpKind::F32ConvertI64U
+        | PrimitiveOpKind::F32DemoteF64
+        | PrimitiveOpKind::F32ReinterpretI32 => ValueType::F32,
+
+        PrimitiveOpKind::F64ConvertI32S
+        | PrimitiveOpKind::F64ConvertI32U
+        | PrimitiveOpKind::F64ConvertI64S
+        | PrimitiveOpKind::F64ConvertI64U
+        | PrimitiveOpKind::F64PromoteF32
+        | PrimitiveOpKind::F64ReinterpretI64 => ValueType::F64,
+
+        // Extensions
+        PrimitiveOpKind::I32Extend8S
+        | PrimitiveOpKind::I32Extend16S => ValueType::I32,
+        PrimitiveOpKind::I64Extend8S
+        | PrimitiveOpKind::I64Extend16S
+        | PrimitiveOpKind::I64Extend32S => ValueType::I64,
+
+        // Constants
+        PrimitiveOpKind::I32Const { .. } => ValueType::I32,
+        PrimitiveOpKind::I64Const { .. } => ValueType::I64,
+        PrimitiveOpKind::F32Const { .. } => ValueType::F32,
+        PrimitiveOpKind::F64Const { .. } => ValueType::F64,
+
+        // Loads — result type matches the load type
+        PrimitiveOpKind::I32Load { .. }
+        | PrimitiveOpKind::I32Load8S { .. }
+        | PrimitiveOpKind::I32Load8U { .. }
+        | PrimitiveOpKind::I32Load16S { .. }
+        | PrimitiveOpKind::I32Load16U { .. } => ValueType::I32,
+
+        PrimitiveOpKind::I64Load { .. }
+        | PrimitiveOpKind::I64Load8S { .. }
+        | PrimitiveOpKind::I64Load8U { .. }
+        | PrimitiveOpKind::I64Load16S { .. }
+        | PrimitiveOpKind::I64Load16U { .. }
+        | PrimitiveOpKind::I64Load32S { .. }
+        | PrimitiveOpKind::I64Load32U { .. } => ValueType::I64,
+
+        PrimitiveOpKind::F32Load { .. } => ValueType::F32,
+        PrimitiveOpKind::F64Load { .. } => ValueType::F64,
+
+        // Stores — no result
+        PrimitiveOpKind::I32Store { .. }
+        | PrimitiveOpKind::I64Store { .. }
+        | PrimitiveOpKind::F32Store { .. }
+        | PrimitiveOpKind::F64Store { .. }
+        | PrimitiveOpKind::I32Store8 { .. }
+        | PrimitiveOpKind::I32Store16 { .. }
+        | PrimitiveOpKind::I64Store8 { .. }
+        | PrimitiveOpKind::I64Store16 { .. }
+        | PrimitiveOpKind::I64Store32 { .. } => return None,
+
+        // Globals — type depends on the global, not deterministic here
+        PrimitiveOpKind::GlobalGet { .. } => return None,
+        PrimitiveOpKind::GlobalSet { .. } => return None,
+
+        // Memory/table size => i32
+        PrimitiveOpKind::MemorySize { .. } => ValueType::I32,
+        PrimitiveOpKind::MemoryGrow { .. } => ValueType::I32,
+
+        // Memory/table bulk ops — no result or boundary
+        PrimitiveOpKind::MemoryFill { .. }
+        | PrimitiveOpKind::MemoryCopy { .. }
+        | PrimitiveOpKind::MemoryInit { .. }
+        | PrimitiveOpKind::DataDrop { .. }
+        | PrimitiveOpKind::TableFill { .. }
+        | PrimitiveOpKind::TableCopy { .. }
+        | PrimitiveOpKind::TableInit { .. }
+        | PrimitiveOpKind::ElemDrop { .. }
+        | PrimitiveOpKind::TableSet { .. } => return None,
+
+        // Table get/size/grow — context-dependent or i32
+        PrimitiveOpKind::TableGet { .. } => return None,
+        PrimitiveOpKind::TableSize { .. } => ValueType::I32,
+        PrimitiveOpKind::TableGrow { .. } => ValueType::I32,
+
+        // References
+        PrimitiveOpKind::RefNull => return None,
+        PrimitiveOpKind::RefIsNull => ValueType::I32,
+        PrimitiveOpKind::RefFunc { .. } => return None,
+
+        // Stack/control
+        PrimitiveOpKind::Drop => return None,
+        PrimitiveOpKind::Select => return None,
+        PrimitiveOpKind::Nop => return None,
+        PrimitiveOpKind::Unreachable => return None,
+    })
+}

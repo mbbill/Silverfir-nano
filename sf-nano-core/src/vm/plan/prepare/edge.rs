@@ -64,7 +64,7 @@ pub(super) fn edge_to_target(
     block_params: &[Vec<LirValue>],
     entry_states: &[EntryState],
 ) -> Result<LirEdge, WasmError> {
-    let target_entry = *entry_states
+    let target_entry = entry_states
         .get(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
     let target_block = *semantic_to_block

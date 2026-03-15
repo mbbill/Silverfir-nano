@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use crate::vm::native::ir::machine::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId,
@@ -13,6 +13,8 @@ fn rejects_edge_arity_mismatch() {
         entry: MachineBlockId(0),
         first_fp_reg: 2,
         reg_count: 2,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
                 id: MachineBlockId(0),
@@ -42,6 +44,8 @@ fn rejects_out_of_range_register() {
         entry: MachineBlockId(0),
         first_fp_reg: 1,
         reg_count: 1,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),
@@ -68,6 +72,8 @@ fn rejects_out_of_range_helper_metadata() {
                 entry: MachineBlockId(0),
                 first_fp_reg: 2,
                 reg_count: 2,
+                fp_transient_count: 0,
+                fp_reg_init_widths: vec![],
                 blocks: alloc::vec![MachineBlock {
                     id: MachineBlockId(0),
                     params: Vec::new(),

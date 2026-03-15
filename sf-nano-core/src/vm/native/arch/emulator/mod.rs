@@ -258,6 +258,13 @@ impl<'a> Emulator<'a> {
                 let value = self.read_value(*src)?;
                 self.write_reg(*dst, value)?;
             }
+            MachineInstKind::FloatConst { width, dst, bits } => {
+                let value = match width {
+                    MachineFloatWidth::F32 => u64::from(*bits as u32),
+                    MachineFloatWidth::F64 => *bits,
+                };
+                self.write_reg(*dst, value)?;
+            }
             MachineInstKind::Lea { dst, addr } => {
                 self.write_reg(*dst, self.addr_value(*addr))?;
             }
