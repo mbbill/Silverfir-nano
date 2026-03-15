@@ -167,6 +167,125 @@ Use:
 - `samply-for-ai query ... hotspots` for runtime hotness
 - `samply-for-ai query ... asm "<symbol>"` for disassembly
 
+Practical workflow:
+
+1. Record the benchmark exactly the way `run_tests.py` runs it.
+
+Example for `benchmarks/wasi/c-ray`:
+
+```bash
+cd benchmarks/wasi/c-ray
+samply-for-ai record --save-only --output /tmp/cray-native-profile.json.gz -- \
+../../../target/release/sf-nano-cli --backend native c-ray.wasm -s 4000x4000 < scene > /dev/null
+```
+
+2. Query hotspots first.
+
+```bash
+samply-for-ai query --profile /tmp/cray-native-profile.json.gz hotspots --limit 20
+```
+
+This usually gives symbols like:
+
+- `jit::main::func18::b0`
+- `jit::main::func19::b19`
+
+3. Dump the same workload statically.
+
+```bash
+cd benchmarks/wasi/c-ray
+SF_NATIVE_DUMP_DIR=/tmp/cray-native-dump \
+../../../target/release/sf-nano-cli --backend native c-ray.wasm -s 4000x4000 < scene > /dev/null
+```
+
+4. Find the same symbol in `native_index.txt`.
+
+```bash
+rg -n "jit::main::func19::b19" /tmp/cray-native-dump/native_index.txt
+```
+
+The region table gives:
+
+- `func=<N>`
+- `region=<block>`
+- `file_off=0x...`
+- `code_size=...`
+
+Then the later `[function N]` section gives:
+
+- frame layout facts
+- full LIR
+- full MachineIR
+
+5. If a profile exists, ask `samply` for asm for exactly that symbol.
+
+```bash
+samply-for-ai query --profile /tmp/cray-native-profile.json.gz asm "jit::main::func19::b19"
+```
+
+That is usually the fastest way to correlate:
+
+- hotspot symbol
+- LIR / MachineIR meaning
+- final assembly
+
+#### Reading `native_index.txt`
+
+Use the dump in this order:
+
+1. region table entry for the hot symbol
+2. `[function N]` runtime contract and frame layout
+3. LIR block for the hot region
+4. MachineIR block for the hot region
+
+Questions to answer while reading:
+
+- Is the bad pattern already present in LIR?
+- If not, where does it first appear in MachineIR?
+- Does the MachineIR explain the final assembly shape?
+- Are the hot frame accesses local-home traffic, temp spill/fill, or call scratch?
+
+Useful heuristics:
+
+- slots below `frame_prefix_slots` are local homes
+- slots in `call_scratch=base:... slots:...` are call-link / local-call scratch
+- slots above that are temp/result area
+
+#### Reading `native_code.bin`
+
+Prefer `samply-for-ai query ... asm` when possible. Use `native_code.bin`
+directly when you need byte-accurate inspection without a profile.
+
+Workflow:
+
+1. Get `file_off` and `code_size` for the region from `native_index.txt`.
+2. Slice that byte range out of `native_code.bin`.
+3. Disassemble the slice with an AArch64-capable raw-binary disassembler.
+
+Example:
+
+```bash
+dd if=/tmp/cray-native-dump/native_code.bin of=/tmp/func19_b19.bin bs=1 \
+skip=$((0x725c)) count=616 status=none
+```
+
+Then disassemble with whatever raw-binary-capable AArch64 disassembler is
+available on the host. A common form is:
+
+```bash
+objdump -D -b binary -m aarch64 /tmp/func19_b19.bin
+```
+
+Tool support for raw binaries varies by host. If one form does not work, fall
+back to `samply-for-ai query ... asm` or use a host-specific AArch64 raw-binary
+disassembler such as `gobjdump` on macOS.
+
+When using `native_code.bin`, always keep the region metadata nearby:
+
+- `file_off` tells you where the region starts in the concatenated code blob
+- `code_size` tells you how many bytes belong to that region
+- the symbol name tells you which LIR / MachineIR block the bytes came from
+
 ### 4. Find a real codegen issue
 
 Do not move on until you can point to a specific hot pattern and explain why it
