@@ -81,6 +81,10 @@ pub struct NativeContext {
     pub store: *mut Store,
     pub current_module: *const ModuleInst,
     pub error: Option<WasmError>,
+    /// Trap kind set by the guard-page signal handler (no allocation needed).
+    /// 0 = no trap, 1 = memory out of bounds.
+    #[cfg(feature = "guard-pages")]
+    pub trap_kind: u32,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
     function_views: Vec<NativeFunctionView>,
@@ -109,6 +113,8 @@ impl NativeContext {
             store,
             current_module: core::ptr::null(),
             error: None,
+            #[cfg(feature = "guard-pages")]
+            trap_kind: 0,
             memory_views: Vec::new(),
             table_views: Vec::new(),
             function_views: Vec::new(),
@@ -149,13 +155,17 @@ impl NativeContext {
             .module()
             .memories
             .iter()
-            .map(|memory| NativeMemoryView {
-                base: if memory.data.is_empty() {
-                    core::ptr::null_mut()
-                } else {
-                    memory.data.as_ptr() as *mut u8
-                },
-                len: memory.data.len(),
+            .map(|memory| {
+                let ptr = memory.memory_ptr();
+                let len = memory.memory_len();
+                NativeMemoryView {
+                    base: if len == 0 {
+                        core::ptr::null_mut()
+                    } else {
+                        ptr
+                    },
+                    len,
+                }
             })
             .collect();
 
@@ -343,6 +353,8 @@ pub mod ctx_offset {
     pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
     pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
     pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
+    #[cfg(feature = "guard-pages")]
+    pub const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
 }
 
 pub mod memory_view_offset {

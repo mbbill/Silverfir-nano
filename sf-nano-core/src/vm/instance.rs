@@ -246,7 +246,14 @@ impl Instance {
         for mem in &mod_memories {
             match mem.def() {
                 MemoryDef::Local(_spec) => {
-                    memories.push(MemInst::new(mem.limits().clone()));
+                    #[cfg(feature = "guard-pages")]
+                    {
+                        memories.push(MemInst::new_guarded(mem.limits().clone())?);
+                    }
+                    #[cfg(not(feature = "guard-pages"))]
+                    {
+                        memories.push(MemInst::new(mem.limits().clone()));
+                    }
                 }
                 MemoryDef::Import {
                     module: mod_name,
@@ -281,7 +288,14 @@ impl Instance {
                                 }
                             }
                             let import_limits = Limits::new(*initial_pages, *max_pages)?;
-                            memories.push(MemInst::new(import_limits));
+                            #[cfg(feature = "guard-pages")]
+                            {
+                                memories.push(MemInst::new_guarded(import_limits)?);
+                            }
+                            #[cfg(not(feature = "guard-pages"))]
+                            {
+                                memories.push(MemInst::new(import_limits));
+                            }
                         }
                         _ => {
                             return Err(WasmError::unlinkable(format!(
@@ -411,12 +425,16 @@ impl Instance {
                 } => {
                     let offset = eval_offset(offset_expr, store.module())?;
                     let mem = store.memory_mut(*memory_index);
-                    if offset + init.len() > mem.data.len() {
+                    let mem_len = mem.memory_len();
+                    if offset + init.len() > mem_len {
                         return Err(WasmError::unlinkable(
                             "out of bounds memory access".to_string(),
                         ));
                     }
-                    mem.data[offset..offset + init.len()].copy_from_slice(init);
+                    let dst = unsafe {
+                        core::slice::from_raw_parts_mut(mem.memory_ptr().add(offset), init.len())
+                    };
+                    dst.copy_from_slice(init);
                 }
                 Data::Passive { .. } => {}
             }

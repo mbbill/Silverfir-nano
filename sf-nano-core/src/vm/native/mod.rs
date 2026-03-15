@@ -7,12 +7,16 @@ pub mod arch;
 pub mod build;
 pub mod code;
 pub mod code_buf;
+#[cfg(feature = "guard-pages")]
+pub mod guard_pages;
 mod helper;
 pub mod ir;
 pub mod ir_dump;
 pub mod lower;
 pub mod profiler;
 pub mod runtime;
+#[cfg(feature = "guard-pages")]
+pub mod trap_signal;
 
 /// Minimal native stats surface kept for CLI/debug compatibility while the new
 /// backend is being rebuilt.

@@ -375,7 +375,14 @@ fn call_external_by_index(
         if store.module().memories.is_empty() {
             None
         } else {
-            Some(store.memory_mut(0).data.as_mut_slice())
+            let mem = store.memory_mut(0);
+            let ptr = mem.memory_ptr();
+            let len = mem.memory_len();
+            if len == 0 {
+                None
+            } else {
+                Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+            }
         }
     };
     let mut caller = Caller::new(mem_slice);
@@ -423,8 +430,23 @@ fn memory_grow_helper(
         if new_pages > mem.limits.get_max() {
             (error_value, error_value)
         } else {
-            mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
-            (old_pages as u64, error_value)
+            #[cfg(feature = "guard-pages")]
+            {
+                if let Some(guard) = mem.guard_mut() {
+                    match guard.grow(delta_pages) {
+                        Ok(_) => (old_pages as u64, error_value),
+                        Err(_) => (error_value, error_value),
+                    }
+                } else {
+                    mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
+                    (old_pages as u64, error_value)
+                }
+            }
+            #[cfg(not(feature = "guard-pages"))]
+            {
+                mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
+                (old_pages as u64, error_value)
+            }
         }
     };
 
@@ -493,10 +515,15 @@ fn memory_fill_helper(
     };
 
     let mem = memory_mut(ctx, meta.mem_idx)?;
-    if dst.saturating_add(size) > mem.data.len() {
+    let mem_len = mem.memory_len();
+    let mem_ptr = mem.memory_ptr();
+    if dst.saturating_add(size) > mem_len {
         return Err(trap_error("out of bounds memory access"));
     }
-    mem.data[dst..dst + size].fill(value);
+    unsafe {
+        let slice = core::slice::from_raw_parts_mut(mem_ptr, mem_len);
+        slice[dst..dst + size].fill(value);
+    }
     Ok(())
 }
 
@@ -534,10 +561,13 @@ fn memory_copy_helper(
     }
 
     if dst_idx == src_idx {
-        let mem_data = &mut store.memory_mut(dst_idx).data;
-        if src.saturating_add(size) > mem_data.len() || dst.saturating_add(size) > mem_data.len() {
+        let mem = store.memory_mut(dst_idx);
+        let mem_len = mem.memory_len();
+        let mem_ptr = mem.memory_ptr();
+        if src.saturating_add(size) > mem_len || dst.saturating_add(size) > mem_len {
             return Err(trap_error("out of bounds memory access"));
         }
+        let mem_data = unsafe { core::slice::from_raw_parts_mut(mem_ptr, mem_len) };
         mem_data.copy_within(src..src + size, dst);
     } else {
         let module = store.module_mut();
@@ -548,12 +578,16 @@ fn memory_copy_helper(
             let (left, right) = module.memories.split_at_mut(src_idx);
             (&right[0] as &MemInst, &mut left[dst_idx])
         };
-        if src.saturating_add(size) > src_mem.data.len()
-            || dst.saturating_add(size) > dst_mem.data.len()
+        let src_len = src_mem.memory_len();
+        let dst_len = dst_mem.memory_len();
+        if src.saturating_add(size) > src_len
+            || dst.saturating_add(size) > dst_len
         {
             return Err(trap_error("out of bounds memory access"));
         }
-        dst_mem.data[dst..dst + size].copy_from_slice(&src_mem.data[src..src + size]);
+        let src_slice = unsafe { core::slice::from_raw_parts(src_mem.memory_ptr(), src_len) };
+        let dst_slice = unsafe { core::slice::from_raw_parts_mut(dst_mem.memory_ptr(), dst_len) };
+        dst_slice[dst..dst + size].copy_from_slice(&src_slice[src..src + size]);
     }
 
     Ok(())
@@ -741,8 +775,10 @@ fn memory_init_helper(
     let data_bytes = &module.data[data_idx].bytes;
     let data_dropped = module.data[data_idx].is_dropped();
 
+    let mem_len = module.memories[mem_idx].memory_len();
+
     if size == 0 {
-        if src > data_bytes.len() || dst > module.memories[mem_idx].data.len() {
+        if src > data_bytes.len() || dst > mem_len {
             return Err(trap_error("out of bounds memory access"));
         }
         return Ok(());
@@ -755,12 +791,12 @@ fn memory_init_helper(
     }
 
     let src_ptr = data_bytes[src..].as_ptr();
-    let mem_data = &mut module.memories[mem_idx].data;
-    if dst.saturating_add(size) > mem_data.len() {
+    let mem_ptr = module.memories[mem_idx].memory_ptr();
+    if dst.saturating_add(size) > mem_len {
         return Err(trap_error("out of bounds memory access"));
     }
     unsafe {
-        core::ptr::copy_nonoverlapping(src_ptr, mem_data[dst..].as_mut_ptr(), size);
+        core::ptr::copy_nonoverlapping(src_ptr, mem_ptr.add(dst), size);
     }
 
     Ok(())

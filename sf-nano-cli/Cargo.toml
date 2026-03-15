@@ -11,7 +11,7 @@ name = "sf-nano-cli"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["guard-pages"]
 profile = ["sf-nano-core/profile"]
 micro-jit = ["sf-nano-core/micro-jit"]
 fusion = ["sf-nano-core/fusion"]
@@ -19,6 +19,7 @@ interp = ["sf-nano-core/interp"]
 trace = ["sf-nano-core/trace"]
 function-trace = ["sf-nano-core/function-trace"]
 ir-dump = ["sf-nano-core/ir-dump"]
+guard-pages = ["sf-nano-core/guard-pages"]
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }

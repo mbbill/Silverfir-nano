@@ -66,6 +66,8 @@ pub(super) struct BlockLowerContext<'a> {
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<LirValue, u32>,
     transient_state: Vec<TransientState>,
+    #[cfg(feature = "guard-pages")]
+    guard_pages: bool,
 }
 
 impl<'a> BlockLowerContext<'a> {
@@ -79,6 +81,8 @@ impl<'a> BlockLowerContext<'a> {
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
         is_entry: bool,
+        #[cfg(feature = "guard-pages")]
+        guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile)?;
         let mut cached_locals = Vec::new();
@@ -131,6 +135,8 @@ impl<'a> BlockLowerContext<'a> {
                 TransientState::default();
                 regfile.gp_transient_count() + regfile.fp_transient_count()
             ],
+            #[cfg(feature = "guard-pages")]
+            guard_pages,
         };
 
         let machine_params = lower.machine_params.clone();
@@ -926,6 +932,11 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             Err(WasmError::internal(message.into()))
         }
+    }
+    
+    #[cfg(feature = "guard-pages")]
+    pub(super) fn use_guard_pages(&self) -> bool {
+        self.guard_pages
     }
 
     pub(super) fn current_runtime(&self) -> MachineFunctionRuntime {

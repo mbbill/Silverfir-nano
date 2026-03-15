@@ -102,10 +102,23 @@ impl TableInst {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MemInst {
     pub data: Vec<u8>,
     pub limits: Limits,
+    #[cfg(feature = "guard-pages")]
+    guard: Option<crate::vm::native::guard_pages::GuardPageMemory>,
+}
+
+impl Clone for MemInst {
+    fn clone(&self) -> Self {
+        MemInst {
+            data: self.data.clone(),
+            limits: self.limits.clone(),
+            #[cfg(feature = "guard-pages")]
+            guard: None, // guard-page backing is not cloneable; clone falls back to Vec
+        }
+    }
 }
 
 impl MemInst {
@@ -114,12 +127,67 @@ impl MemInst {
         MemInst {
             data: alloc::vec![0u8; initial_bytes],
             limits,
+            #[cfg(feature = "guard-pages")]
+            guard: None,
         }
+    }
+
+    /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
+    #[cfg(feature = "guard-pages")]
+    pub fn new_guarded(
+        limits: Limits,
+    ) -> Result<Self, crate::error::WasmError> {
+        let guard = crate::vm::native::guard_pages::GuardPageMemory::new(limits.min())?;
+        Ok(MemInst {
+            data: Vec::new(),
+            limits,
+            guard: Some(guard),
+        })
     }
 
     #[inline]
     pub fn current_pages(&self) -> usize {
-        self.data.len() / crate::constants::WASM_PAGE_SIZE
+        self.memory_len() / crate::constants::WASM_PAGE_SIZE
+    }
+
+    /// Whether this memory uses guard-page backing.
+    #[inline]
+    pub fn has_guard_pages(&self) -> bool {
+        #[cfg(feature = "guard-pages")]
+        {
+            self.guard.is_some()
+        }
+        #[cfg(not(feature = "guard-pages"))]
+        {
+            false
+        }
+    }
+
+    /// Pointer to the memory buffer (works for both Vec and guard-page backing).
+    #[inline]
+    pub fn memory_ptr(&self) -> *mut u8 {
+        #[cfg(feature = "guard-pages")]
+        if let Some(ref g) = self.guard {
+            return g.base();
+        }
+        self.data.as_ptr() as *mut u8
+    }
+
+    /// Current committed size in bytes.
+    #[inline]
+    pub fn memory_len(&self) -> usize {
+        #[cfg(feature = "guard-pages")]
+        if let Some(ref g) = self.guard {
+            return g.len();
+        }
+        self.data.len()
+    }
+
+    /// Mutable access to the guard-page backing (for grow).
+    #[cfg(feature = "guard-pages")]
+    #[inline]
+    pub fn guard_mut(&mut self) -> Option<&mut crate::vm::native::guard_pages::GuardPageMemory> {
+        self.guard.as_mut()
     }
 }
 

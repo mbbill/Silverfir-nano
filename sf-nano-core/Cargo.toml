@@ -26,6 +26,7 @@ function-trace = ["std"]
 ir-dump = ["std"]
 native-dump = ["std"]
 tos-stats = ["std"]
+guard-pages = ["micro-jit", "std"]
 std = []
 
 [build-dependencies]

@@ -114,6 +114,8 @@ struct FunctionArtifact {
     direct_call_patches: Vec<DirectCallPatch>,
     function_table_patches: Vec<usize>,
     root_return_offset: usize,
+    #[cfg(feature = "guard-pages")]
+    return_error_offset: usize,
     /// Offset of the internal entry point (after prologue), for local calls.
     internal_entry_offset: usize,
     /// Per-block/region debug map for profiler symbols.
@@ -137,6 +139,8 @@ pub struct CompiledArm64Entry {
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
     pub root_return: Arm64CodePtr,
+    #[cfg(feature = "guard-pages")]
+    pub return_error: Arm64CodePtr,
 }
 
 #[derive(Debug)]
@@ -279,7 +283,16 @@ pub fn compile_module(
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<Arm64RootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        entries.push(Some(CompiledArm64Entry { entry, root_return, text_len, debug_regions }));
+        #[cfg(feature = "guard-pages")]
+        let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };
+        entries.push(Some(CompiledArm64Entry {
+            entry,
+            root_return,
+            #[cfg(feature = "guard-pages")]
+            return_error,
+            text_len,
+            debug_regions,
+        }));
     }
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
@@ -307,6 +320,22 @@ pub fn compile_module(
                 }
             }
         }
+    }
+
+    #[cfg(feature = "guard-pages")]
+    {
+        let ranges: Vec<_> = entries
+            .iter()
+            .flatten()
+            .map(|e| {
+                (
+                    e.entry as usize,
+                    e.entry as usize + e.text_len,
+                    e.return_error as usize,
+                )
+            })
+            .collect();
+        crate::vm::native::trap_signal::register_jit_ranges(&ranges);
     }
 
     Ok(entries)
@@ -444,6 +473,12 @@ fn compile_function(
         .get(compiler.return_ok_label)
         .and_then(|offset| *offset)
         .ok_or_else(|| WasmError::internal("arm64 root return label is unresolved".into()))?;
+    #[cfg(feature = "guard-pages")]
+    let return_error_offset = compiler
+        .labels
+        .get(compiler.return_error_label)
+        .and_then(|offset| *offset)
+        .ok_or_else(|| WasmError::internal("arm64 return error label is unresolved".into()))?;
     let mut local_ptr_patches = compiler.resolved_ptr_patches;
     local_ptr_patches.reserve(compiler.local_ptr_patches.len());
     for patch in compiler.local_ptr_patches {
@@ -465,6 +500,8 @@ fn compile_function(
         direct_call_patches: compiler.direct_call_patches,
         function_table_patches: compiler.function_table_patches,
         root_return_offset,
+        #[cfg(feature = "guard-pages")]
+        return_error_offset,
         internal_entry_offset,
         debug_regions,
     })
@@ -496,6 +533,8 @@ fn compile_unsupported_stub(
         direct_call_patches: Vec::new(),
         function_table_patches: Vec::new(),
         root_return_offset: 0,
+        #[cfg(feature = "guard-pages")]
+        return_error_offset: 0,
         internal_entry_offset: 0, // stub uses root entry
         debug_regions: Vec::new(),
     }

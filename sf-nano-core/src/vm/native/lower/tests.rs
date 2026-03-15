@@ -67,6 +67,8 @@ fn lowers_simple_slot_and_add_block() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -174,6 +176,8 @@ fn lowers_select_with_wasm_operand_order() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 3, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -219,6 +223,8 @@ fn native_backend_requires_at_least_one_lir_lane() {
 
     let err = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 0, 0, 0),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -251,6 +257,8 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -313,6 +321,8 @@ fn rejects_inconsistent_return_result_spans() {
 
     let err = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -355,6 +365,8 @@ fn rejects_mixed_void_and_value_returns() {
 
     let err = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -403,6 +415,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
@@ -464,6 +478,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -526,6 +542,8 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -571,6 +589,8 @@ fn lowers_memory_copy_through_frame_metadata() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -615,6 +635,8 @@ fn lowers_table_fill_through_frame_metadata() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -660,6 +682,8 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -726,6 +750,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -795,6 +821,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -866,6 +894,8 @@ fn lowers_direct_local_call_with_continuation_block() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1026,6 +1056,8 @@ fn flushes_cached_local_before_second_direct_call() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1146,6 +1178,8 @@ fn preserves_cached_locals_across_block_edges() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1241,6 +1275,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
                 id: crate::vm::native::ir::machine::MachineFuncId(0),
@@ -1299,6 +1335,8 @@ fn lowers_memory_size_without_helper_boundary() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1348,6 +1386,8 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1528,6 +1568,8 @@ fn lowers_global_get_and_set_without_helpers() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1586,6 +1628,8 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1654,6 +1698,8 @@ fn lowers_i32_load_with_inline_trap_if() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1735,6 +1781,8 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1812,6 +1860,8 @@ fn threads_live_transients_through_split_continuation_params() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1901,6 +1951,8 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -1974,6 +2026,8 @@ fn lowers_f32_const_to_fp_machine_const() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -2033,6 +2087,8 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -2094,6 +2150,8 @@ fn untyped_slot_load_stays_in_gp_bank() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(1, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -2157,6 +2215,8 @@ fn f32_block_params_keep_f32_width() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,
@@ -2207,6 +2267,8 @@ fn f32_cached_locals_use_f32_slot_widths() {
 
     let lowered = lower_module(LowerModuleInput {
         backend: BackendConfig::new(0, 4, 1, 2),
+        #[cfg(feature = "guard-pages")]
+        use_guard_pages: false,
         functions: &[LowerFunctionInput {
             id: crate::vm::native::ir::machine::MachineFuncId(0),
             frame,

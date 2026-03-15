@@ -83,7 +83,24 @@ pub fn eval(
         function_trace::native_root_entry(&mut ctx, spec, backend);
     }
 
+    #[cfg(feature = "guard-pages")]
+    {
+        use crate::vm::native::{runtime::context::ctx_offset, trap_signal};
+        trap_signal::install_signal_handler();
+        trap_signal::set_trap_kind_offset(ctx_offset::TRAP_KIND as usize);
+        ctx.trap_kind = 0;
+    }
+
     let status = unsafe { entry(&mut ctx, stack_base) };
+
+    #[cfg(feature = "guard-pages")]
+    if ctx.trap_kind != 0 {
+        let error = WasmError::trap("out of bounds memory access".into());
+        #[cfg(feature = "function-trace")]
+        function_trace::native_trap_current(&mut ctx, &error);
+        return Err(error);
+    }
+
     if status != 0 {
         let error = ctx.error.take().unwrap_or_else(|| {
             WasmError::internal("arm64 root entry failed without setting an error".into())

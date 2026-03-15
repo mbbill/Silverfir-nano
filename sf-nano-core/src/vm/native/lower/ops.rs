@@ -559,6 +559,10 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<u32, WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
+        #[cfg(feature = "guard-pages")]
+        if self.use_guard_pages() {
+            return Ok(0);
+        }
         if access_bytes == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
