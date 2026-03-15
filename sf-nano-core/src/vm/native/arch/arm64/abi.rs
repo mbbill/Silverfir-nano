@@ -11,6 +11,27 @@
 //! It intentionally does *not* choose how much of that capacity the compiler
 //! spends by default. That policy lives in `config.rs` as a backend budget
 //! preset and must fit within the capacities described here.
+//!
+//! # FP register plan (D0-D31)
+//!
+//! ```text
+//! Reg       AAPCS64          Role                    Count
+//! ──────────────────────────────────────────────────────────
+//! D0-D2     caller-saved     scratch                    3
+//! D3-D7     caller-saved     FP transient (TOS)         5
+//! D8-D15    callee-saved     FP local cache (tier 1)    8
+//! D16-D20   caller-saved     FP transient (TOS)         5
+//! D21-D31   caller-saved     FP local cache (tier 2)   11
+//! ──────────────────────────────────────────────────────────
+//!                            scratch                    3
+//!                            FP transient total        10
+//!                            FP local cache total      19
+//! ```
+//!
+//! Helper call cost by tier:
+//! - scratch/transient: zero (dead at call boundaries)
+//! - tier 1 cache (D8-D15): zero (AAPCS64 callee-saved, Rust preserves them)
+//! - tier 2 cache (D21-D31): save/restore only in-use locals at call sites
 
 use crate::{
     error::WasmError,
@@ -34,21 +55,41 @@ pub(super) const FP_SCRATCH0: u32 = 0; // D0/S0
 pub(super) const FP_SCRATCH1: u32 = 1; // D1/S1
 pub(super) const FP_SCRATCH2: u32 = 2; // D2/S2
 
-/// Caller-saved FP registers reserved for transient SSA values.
+/// Caller-saved FP registers reserved for transient SSA values (TOS lanes).
 ///
-/// Transients do not need to survive helper or local calls, so they live in
-/// caller-saved physical FP regs.
-const FP_TRANSIENT_REGS: [u32; 6] = [3, 4, 5, 6, 7, 16];
-
-/// Callee-saved FP registers reserved for cached locals.
+/// Transients are dead at helper and local-call boundaries
+/// (`ensure_no_live_values`), so they can freely use caller-saved regs.
 ///
-/// Cached locals are persistent values and must survive helper calls and local
-/// JIT-to-JIT calls, so they live in the callee-saved FP range.
-const FP_LOCAL_CACHE_REGS: [u32; 7] = [8, 9, 10, 11, 12, 13, 14];
+/// The physical D-register numbers are non-contiguous (D3-D7 then D16-D20)
+/// because AAPCS64 makes D8-D15 callee-saved. Those go to the local cache
+/// below so that hot locals survive Rust helper calls for free. The remaining
+/// caller-saved regs are split between transients and extra cache capacity.
+const FP_TRANSIENT_REGS: [u32; 10] = [3, 4, 5, 6, 7, 16, 17, 18, 19, 20];
 
-/// Total FP machine-register capacity exposed to MachineIR: transients first,
-/// then cached locals.
+/// FP registers reserved for cached locals.
+///
+/// Cached locals persist across block boundaries. The array is ordered so that
+/// the first 8 entries are AAPCS64 callee-saved (D8-D15) and survive Rust
+/// helper calls for free. The remaining entries are caller-saved (D21-D31)
+/// and are spilled/reloaded around helper calls by the portable lowering
+/// (`emit_save_all_cached_locals`), which saves every in-use cached local
+/// regardless of its physical register.
+///
+/// `analyze_local_cache_prefs` sorts locals by usage weight, so the hottest
+/// locals naturally land in the first (callee-saved) slots.
+const FP_LOCAL_CACHE_REGS: [u32; 19] = [
+    8, 9, 10, 11, 12, 13, 14, 15,                    // callee-saved (D8-D15)
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,      // caller-saved (D21-D31)
+];
+
+/// Total FP machine-register capacity: transients first, then cached locals.
 pub(super) const FP_MACHINE_REG_COUNT: usize = FP_TRANSIENT_REGS.len() + FP_LOCAL_CACHE_REGS.len();
+
+// Compile-time check: transients + cache + scratch must cover all 32 D-regs.
+const _: () = assert!(
+    FP_TRANSIENT_REGS.len() + FP_LOCAL_CACHE_REGS.len() + 3 == 32,
+    "FP register plan must account for all 32 D-registers"
+);
 
 const DYNAMIC_REGS: [Arm64Reg; 13] = [
     Arm64Reg::X9,
@@ -75,7 +116,10 @@ const CALLEE_SAVED_GP_PAIRS: [(Arm64Reg, Arm64Reg); 6] = [
     (Arm64Reg::X29, Arm64Reg::X30),
 ];
 
-const CALLEE_SAVED_FP_REGS: [u32; FP_LOCAL_CACHE_REGS.len()] = FP_LOCAL_CACHE_REGS;
+/// AAPCS64 callee-saved FP regs that the shared prologue/epilogue must
+/// save/restore. These are D8-D15 — the only FP regs the Rust entry-point
+/// caller expects us to preserve.
+const CALLEE_SAVED_FP_REGS: [u32; 8] = [8, 9, 10, 11, 12, 13, 14, 15];
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 const STACK_ALIGNMENT_BYTES: u32 = 16;
 const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
