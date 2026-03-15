@@ -395,9 +395,15 @@ It must not require a general-purpose lifetime-based register allocator.
 
 ### Engine Style
 
-**Decision:** The engine is intentionally a prepared single-pass compiler. It does not rely on traditional optimization passes or a traditional general register allocator.
+**Decision:** The engine is intentionally a prepared single-pass compiler. It does not rely on heavyweight traditional optimization passes or a traditional general register allocator.
 
 **Reason:** The design gets its efficiency from Wasm stack discipline and from frontend preparation rather than from heavyweight backend analysis.
+
+### Local Cleanup Passes
+
+**Decision:** Small local cleanup passes are allowed in prepared LIR and MachineIR as long as they remain mechanical, conservative, and ownership-preserving.
+
+**Reason:** The design is not "no optimization ever." It is "no heavyweight optimizer as the primary strategy." Small block-local cleanups such as slot forwarding, copy propagation, constant folding into operands, and conservative load/store forwarding are acceptable when they simplify the generated machine code without reintroducing hidden semantics, whole-function dataflow dependence, or a general register allocator.
 
 ### Prepared LIR Contract
 
@@ -422,6 +428,18 @@ It must not require a general-purpose lifetime-based register allocator.
 **Decision:** Taken branch payload travels through canonical operand slots prepared above LIR. Taken branch edges do not remap payload as live boundary SSA values.
 
 **Reason:** Branch payload publication is part of the prepared frame contract. Reconstructing it as edge SSA would reintroduce hidden stack policy and would disagree with the canonical slot-based branch layout.
+
+### Inline Trap Guards
+
+**Decision:** MachineIR may express value-dependent trap guards as straight-line `TrapIf` instructions instead of forcing every trap check to become an explicit split CFG shape with a dedicated trap block.
+
+**Reason:** Many hot checks are ordinary straight-line guards whose only cold behavior is to trap. Keeping them as inline guarded instructions preserves explicit trap semantics while avoiding unnecessary continuation splitting in hot code. The backend is still free to lower those guards to shared cold trap stubs or other efficient ISA-specific trap exits.
+
+### FP-Only Transient Bank
+
+**Decision:** The fixed MachineIR register partition may include a small FP-only transient bank after the GP transient bank. Registers in that bank carry block-local floating-point SSA values only.
+
+**Reason:** Float-heavy code should not be forced to bounce every transient through GP registers. A tiny FP transient bank keeps the design within the same fixed-budget lowering model while removing avoidable GP/FP churn. These registers are not a second local-cache system and are not ABI-visible persistent state.
 
 ### Lowering-Time Fit Validation
 
@@ -893,7 +911,8 @@ Defines the fixed machine register partition from backend config:
 - one frame anchor reg
 - fixed `mem0_base` / `mem0_size` view regs
 - `cached_locals` fixed local-cache regs
-- `tos_lanes` fixed transient regs
+- `tos_lanes` fixed GP transient regs
+- a small fixed FP-only transient bank
 
 The fixed machine roles (`ctx`, `fp`, and any pinned runtime-view regs such as
 `mem0_base` / `mem0_size`) are ABI facts, not tuning knobs.
@@ -902,7 +921,7 @@ The backend-configured budgets above them should stay minimal and meaningful:
 
 - `cached_locals` controls how many canonical local slots stay resident in
   fixed cache regs
-- `tos_lanes` controls the prepared transient live window budget
+- `tos_lanes` controls the prepared GP transient live window budget
 
 When safe, lowering may temporarily borrow transient lanes or cached-local regs
 for internal helper work. That reuse is an implementation detail, not a new ABI
@@ -919,7 +938,7 @@ This is where local calls split a LIR block into:
 
 3. `transient window mapper`
 
-Keeps the current `LirValue -> MachineReg` mapping for the bounded live transient set.
+Keeps the current `LirValue -> MachineReg` mapping for the bounded live transient set across both the GP transient window and the FP-only transient bank.
 
 There is no global register allocation here. It is only the prepared transient window.
 
@@ -1024,18 +1043,10 @@ The intended model remains:
 
 ## Optimization Backlog
 
-With the current MachineIR path and emulator in place, the main remaining
-shared-code optimizations are:
+With the current MachineIR path and emulator in place, the most likely
+remaining shared-code optimization directions are:
 
-1. Compare-branch fusion
-
-- when a compare result is consumed only by a branch terminator, lowering should
-  emit `MachineBranchCond::IntCompare` / `FloatCompare` directly instead of
-  materializing a boolean register first
-- this keeps the shared IR closer to the eventual ISA branch form and removes
-  redundant boolean traffic in branch-heavy code
-
-2. Pinned globals base
+1. Pinned globals base
 
 - `mem0_base` / `mem0_size` are already worth pinning because memory0 is the
   hottest runtime view
@@ -1046,15 +1057,24 @@ shared-code optimizations are:
   - local native calls keep the pinned view live
   - helper-backed boundaries reload it after return
 
-3. Small MachineIR peephole cleanup
+2. Broader compare/guard direct lowering
 
-- the current design intentionally avoids traditional optimization passes, but a
-  tiny structural cleanup after lowering is still worthwhile
-- the intended scope is mechanical only:
-  - remove self-moves
-  - collapse trivial move chains
-  - prune obvious redundant edge copies
-- this should stay a local cleanup pass, not grow into a general optimizer
+- direct `MachineBranchCond::{IntCompare, FloatCompare}` lowering is already the
+  right shape where the control use is visible during lowering
+- the remaining opportunity is to broaden that same principle to more boolean
+  values that are consumed only by control or trap guards, without turning
+  MachineIR into a value-numbering or CFG-rewriting optimizer
+
+3. Conservative extension of local cleanup passes
+
+- there is already a small local cleanup layer in prepared LIR and MachineIR
+- future additions should stay mechanical and block-local:
+  - no global optimizer
+  - no hidden semantic reconstruction
+  - no general register allocation
+- examples of acceptable growth are better move cleanup, more exact forwarding
+  of already-proven frame traffic, and float-aware cleanup that respects the GP
+  vs FP register-bank split
 
 4. Helper-specific pinned-view reload elision
 

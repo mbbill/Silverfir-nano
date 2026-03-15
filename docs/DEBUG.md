@@ -291,6 +291,10 @@ Extra knob:
 
 ## Common Debug Loops
 
+For a disciplined performance-improvement process, including measurement rules,
+IR/assembly proof requirements, and landing criteria, see
+[NATIVE_OPTIMIZATION_WORKFLOW.md](./NATIVE_OPTIMIZATION_WORKFLOW.md).
+
 ### Validate native correctness first
 
 ```bash
