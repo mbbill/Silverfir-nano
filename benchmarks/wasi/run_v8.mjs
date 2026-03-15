@@ -41,29 +41,7 @@ const TESTS = [
     source: 'stdout',
     multi: true,
   },
-  {
-    name: 'mandelbrot/mandel.wasm',
-    cwd: path.join(SCRIPT_DIR, 'mandelbrot'),
-    args: ['mandel.wasm', '128', '6e6'],
-    pattern: /Elapsed time:\s*(.+)/,
-    source: 'stderr',
-  },
-  {
-    name: 'c-ray/c-ray.wasm',
-    cwd: path.join(SCRIPT_DIR, 'c-ray'),
-    args: ['c-ray.wasm', '-s', '4000x4000'],
-    stdin: path.join(SCRIPT_DIR, 'c-ray', 'scene'),
-    pattern: /Rendering took:\s*(.+\))/,
-    source: 'stderr',
-  },
-  {
-    name: 'stream/stream.wasm',
-    cwd: path.join(SCRIPT_DIR, 'stream'),
-    args: ['stream.wasm'],
-    pattern: /(Copy|Scale|Add|Triad):\s+(\S+)/g,
-    source: 'stdout',
-    multi: true,
-  },
+  // --- Lua ---
   {
     name: 'lua/fib',
     cwd: path.join(SCRIPT_DIR, 'lua'),
@@ -84,6 +62,31 @@ const TESTS = [
     args: ['lua.wasm', 'json_bench.lua'],
     pattern: /Score:\s+(\S+)/,
     source: 'stdout',
+  },
+  // --- Floating Point ---
+  {
+    name: 'mandelbrot/mandel.wasm',
+    cwd: path.join(SCRIPT_DIR, 'mandelbrot'),
+    args: ['mandel.wasm', '128', '6e6'],
+    pattern: /Elapsed time:\s*(.+)/,
+    source: 'stderr',
+  },
+  {
+    name: 'c-ray/c-ray.wasm',
+    cwd: path.join(SCRIPT_DIR, 'c-ray'),
+    args: ['c-ray.wasm', '-s', '4000x4000'],
+    stdin: path.join(SCRIPT_DIR, 'c-ray', 'scene'),
+    pattern: /Rendering took:\s*(.+\))/,
+    source: 'stderr',
+  },
+  // --- Memory Bound ---
+  {
+    name: 'stream/stream.wasm',
+    cwd: path.join(SCRIPT_DIR, 'stream'),
+    args: ['stream.wasm'],
+    pattern: /(Copy|Scale|Add|Triad):\s+(\S+)/g,
+    source: 'stdout',
+    multi: true,
   },
 ];
 

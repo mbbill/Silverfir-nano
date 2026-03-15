@@ -20,7 +20,7 @@ DEFAULT_CLI = os.path.join(REPO_ROOT, "target", "release", "sf-nano-cli")
 # Parameters are tuned so each test runs ~3-10 s on a typical machine.
 # simple: fib(20) is hardcoded, can't increase (~0.5s).
 TESTS = [
-    # --- Primary benchmarks (paper Table 8) ---
+    # --- Integer / Control Flow ---
     {
         "name": "coremark/coremark.wasm",
         "cwd": os.path.join(SCRIPT_DIR, "coremark"),
@@ -50,30 +50,7 @@ TESTS = [
         "source": "stdout",
         "multi": True,
     },
-    # --- Supplementary benchmarks ---
-    {
-        "name": "mandelbrot/mandel.wasm",
-        "cwd": os.path.join(SCRIPT_DIR, "mandelbrot"),
-        "args": ["mandel.wasm", "128", "6e6"],
-        "pattern": r"Elapsed time:\s*(.+)",
-        "source": "stderr",
-    },
-    {
-        "name": "c-ray/c-ray.wasm",
-        "cwd": os.path.join(SCRIPT_DIR, "c-ray"),
-        "args": ["c-ray.wasm", "-s", "4000x4000"],
-        "stdin": os.path.join(SCRIPT_DIR, "c-ray", "scene"),
-        "pattern": r"Rendering took:\s*(.+\))",
-        "source": "stderr",
-    },
-    {
-        "name": "stream/stream.wasm",
-        "cwd": os.path.join(SCRIPT_DIR, "stream"),
-        "args": ["stream.wasm"],
-        "pattern": r"(Copy|Scale|Add|Triad):\s+(\S+)",
-        "source": "stdout",
-        "multi": True,
-    },
+    # --- Lua ---
     {
         "name": "lua/fib",
         "cwd": os.path.join(SCRIPT_DIR, "lua"),
@@ -94,6 +71,31 @@ TESTS = [
         "args": ["lua.wasm", "json_bench.lua"],
         "pattern": r"Score:\s+(\S+)",
         "source": "stdout",
+    },
+    # --- Floating Point ---
+    {
+        "name": "mandelbrot/mandel.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "mandelbrot"),
+        "args": ["mandel.wasm", "128", "6e6"],
+        "pattern": r"Elapsed time:\s*(.+)",
+        "source": "stderr",
+    },
+    {
+        "name": "c-ray/c-ray.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "c-ray"),
+        "args": ["c-ray.wasm", "-s", "4000x4000"],
+        "stdin": os.path.join(SCRIPT_DIR, "c-ray", "scene"),
+        "pattern": r"Rendering took:\s*(.+\))",
+        "source": "stderr",
+    },
+    # --- Memory Bound ---
+    {
+        "name": "stream/stream.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "stream"),
+        "args": ["stream.wasm"],
+        "pattern": r"(Copy|Scale|Add|Triad):\s+(\S+)",
+        "source": "stdout",
+        "multi": True,
     },
 ]
 
