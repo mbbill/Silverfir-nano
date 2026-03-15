@@ -3850,7 +3850,7 @@ mod tests {
                 MachineValue::Imm64(u32::MAX as u64),
             )
             .expect("immediate selection should succeed"),
-            Some(enc::sub_imm_32(Arm64Reg::X9, Arm64Reg::X9, 1))
+            Some(enc::sub_imm_32(Arm64Reg::X9, Arm64Reg::X23, 1))
         );
     }
 
@@ -3865,7 +3865,7 @@ mod tests {
                 MachineValue::Imm64(8),
             )
             .expect("shift-immediate selection should succeed"),
-            Some(enc::lsr_imm_32(Arm64Reg::X9, Arm64Reg::X9, 8))
+            Some(enc::lsr_imm_32(Arm64Reg::X9, Arm64Reg::X23, 8))
         );
     }
 
@@ -3880,7 +3880,7 @@ mod tests {
                 MachineValue::Imm64(8),
             )
             .expect("mul-immediate selection should succeed"),
-            Some(enc::lsl_imm_64(Arm64Reg::X9, Arm64Reg::X9, 3))
+            Some(enc::lsl_imm_64(Arm64Reg::X9, Arm64Reg::X23, 3))
         );
     }
 
@@ -3895,7 +3895,7 @@ mod tests {
                 MachineValue::Imm64(15),
             )
             .expect("logical-immediate selection should succeed"),
-            enc::and_imm_32(Arm64Reg::X9, Arm64Reg::X9, 15)
+            enc::and_imm_32(Arm64Reg::X9, Arm64Reg::X23, 15)
         );
     }
 
@@ -3910,7 +3910,7 @@ mod tests {
                 MachineValue::Imm64(u32::MAX as u64),
             )
             .expect("xor-all-ones selection should succeed"),
-            Some(enc::mvn_32(Arm64Reg::X9, Arm64Reg::X9))
+            Some(enc::mvn_32(Arm64Reg::X9, Arm64Reg::X23))
         );
     }
 

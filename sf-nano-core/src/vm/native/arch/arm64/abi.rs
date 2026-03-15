@@ -12,6 +12,24 @@
 //! spends by default. That policy lives in `config.rs` as a backend budget
 //! preset and must fit within the capacities described here.
 //!
+//! # GP register plan (X0-X30)
+//!
+//! ```text
+//! Reg       AAPCS64          Role                    Count
+//! ──────────────────────────────────────────────────────────
+//! X0-X2     caller-saved     reserved (helper args)      3
+//! X3-X8     caller-saved     GP transient                6
+//! X9-X15    caller-saved     GP local cache (tier 2)     7
+//! X16-X17   —                scratch                     2
+//! X18       —                platform (reserved)         1
+//! X19-X22   callee-saved     fixed (ctx/fp/mem0)         4
+//! X23-X28   callee-saved     GP local cache (tier 1)     6
+//! X29-X30   —                FP/LR (reserved)            2
+//! ──────────────────────────────────────────────────────────
+//!                            GP transient                6
+//!                            GP local cache total       13
+//! ```
+//!
 //! # FP register plan (D0-D31)
 //!
 //! ```text
@@ -28,10 +46,10 @@
 //!                            FP local cache total      19
 //! ```
 //!
-//! Helper call cost by tier:
+//! Helper call cost by tier (same for GP and FP):
 //! - scratch/transient: zero (dead at call boundaries)
-//! - tier 1 cache (D8-D15): zero (AAPCS64 callee-saved, Rust preserves them)
-//! - tier 2 cache (D21-D31): save/restore only in-use locals at call sites
+//! - tier 1 cache (callee-saved): zero (AAPCS64, Rust preserves them)
+//! - tier 2 cache (caller-saved): save/restore only in-use locals at call sites
 
 use crate::{
     error::WasmError,
@@ -91,7 +109,18 @@ const _: () = assert!(
     "FP register plan must account for all 32 D-registers"
 );
 
-const DYNAMIC_REGS: [Arm64Reg; 13] = [
+/// GP registers available to the machine-reg file, ordered for the regfile
+/// layout: local cache first (callee-saved tier 1, then caller-saved tier 2),
+/// then transients.
+const DYNAMIC_REGS: [Arm64Reg; 19] = [
+    // GP local cache tier 1: callee-saved — free at helper calls
+    Arm64Reg::X23,
+    Arm64Reg::X24,
+    Arm64Reg::X25,
+    Arm64Reg::X26,
+    Arm64Reg::X27,
+    Arm64Reg::X28,
+    // GP local cache tier 2: caller-saved — save/restore at helper calls
     Arm64Reg::X9,
     Arm64Reg::X10,
     Arm64Reg::X11,
@@ -99,12 +128,13 @@ const DYNAMIC_REGS: [Arm64Reg; 13] = [
     Arm64Reg::X13,
     Arm64Reg::X14,
     Arm64Reg::X15,
-    Arm64Reg::X23,
-    Arm64Reg::X24,
-    Arm64Reg::X25,
-    Arm64Reg::X26,
-    Arm64Reg::X27,
-    Arm64Reg::X28,
+    // GP transient: caller-saved — dead at call boundaries
+    Arm64Reg::X3,
+    Arm64Reg::X4,
+    Arm64Reg::X5,
+    Arm64Reg::X6,
+    Arm64Reg::X7,
+    Arm64Reg::X8,
 ];
 
 const CALLEE_SAVED_GP_PAIRS: [(Arm64Reg, Arm64Reg); 6] = [
