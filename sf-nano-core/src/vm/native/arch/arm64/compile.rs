@@ -178,6 +178,7 @@ struct FunctionCompiler<'a> {
     call_depth_label: usize,
     return_ok_label: usize,
     return_error_label: usize,
+    shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -542,6 +543,11 @@ impl<'a> FunctionCompiler<'a> {
         labels.push(None);
         let return_error_label = labels.len();
         labels.push(None);
+        let mut shared_trap_labels = [None; MACHINE_TRAP_KIND_COUNT];
+        shared_trap_labels[trap_kind_index(MachineTrapKind::CallStackExhausted)] =
+            Some(call_depth_label);
+        shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
+            Some(stack_overflow_label);
         Self {
             compiled,
             function,
@@ -563,6 +569,7 @@ impl<'a> FunctionCompiler<'a> {
             call_depth_label,
             return_ok_label,
             return_error_label,
+            shared_trap_labels,
         }
     }
 
@@ -697,6 +704,7 @@ impl<'a> FunctionCompiler<'a> {
                 on_false,
                 cond,
             } => self.emit_select(*dst, *on_true, *on_false, *cond),
+            MachineInstKind::TrapIf { kind, cond } => self.emit_trap_if(*kind, cond),
             MachineInstKind::CallHelper(call) => {
                 self.emit_call_helper(call.target.0 as usize, call.metadata.0 as usize)
             }
@@ -857,6 +865,68 @@ impl<'a> FunctionCompiler<'a> {
             }
         }
         Ok(())
+    }
+
+    fn emit_trap_if(
+        &mut self,
+        kind: MachineTrapKind,
+        cond: &MachineBranchCond,
+    ) -> Result<(), WasmError> {
+        let trap_label = self.ensure_trap_label(kind);
+        self.emit_branch_if(cond, trap_label)
+    }
+
+    fn emit_branch_if(
+        &mut self,
+        cond: &MachineBranchCond,
+        trap_label: usize,
+    ) -> Result<(), WasmError> {
+        match *cond {
+            MachineBranchCond::Value(value) => match value {
+                MachineValue::Imm64(0) => {}
+                MachineValue::Imm64(_) => self.emit_b(trap_label),
+                MachineValue::Reg(reg) => {
+                    let reg = self.map_gp_reg(reg)?;
+                    self.emit_cbnz(reg, trap_label);
+                }
+            },
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
+                self.emit_cmp_values(width, lhs, rhs)?;
+                self.emit_b_cond(map_int_cond(kind, sign), trap_label);
+            }
+            MachineBranchCond::FloatCompare {
+                width,
+                kind,
+                lhs,
+                rhs,
+            } => {
+                let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
+                let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+                match width {
+                    MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
+                    MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
+                };
+                self.emit_b_cond(map_float_cond(kind), trap_label);
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_trap_label(&mut self, kind: MachineTrapKind) -> usize {
+        let slot = trap_kind_index(kind);
+        if let Some(label) = self.shared_trap_labels[slot] {
+            return label;
+        }
+        let label = self.new_label(LabelKind::Edge);
+        self.shared_trap_labels[slot] = Some(label);
+        self.deferred_traps.push((label, kind));
+        label
     }
 
     fn emit_call_direct(
@@ -3023,6 +3093,12 @@ fn trap_code(kind: MachineTrapKind) -> u64 {
     }
 }
 
+const MACHINE_TRAP_KIND_COUNT: usize = 10;
+
+fn trap_kind_index(kind: MachineTrapKind) -> usize {
+    trap_code(kind) as usize
+}
+
 /// Map a Wasm float comparison kind to an ARM64 condition code.
 ///
 /// Wasm float comparisons treat unordered (NaN) as false for all relations
@@ -3669,7 +3745,9 @@ fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
-        MachineInstKind::Store { .. } | MachineInstKind::CallHelper(_) => false,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => false,
     }
 }
 
@@ -3697,6 +3775,7 @@ fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
                 || value_is_reg(*on_false, reg)
                 || value_is_reg(*cond, reg)
         }
+        MachineInstKind::TrapIf { cond, .. } => branch_cond_uses_reg(cond, reg),
         MachineInstKind::CallHelper(_) => false,
     }
 }

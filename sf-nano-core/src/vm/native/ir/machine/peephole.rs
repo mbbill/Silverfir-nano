@@ -235,10 +235,12 @@ fn copy_propagate(
 ) {
     let original_ops = core::mem::take(&mut block.ops);
     let mut aliases = vec![None; reg_count as usize];
+    let mut float_aliases = vec![None; reg_count as usize];
     let mut rewritten = Vec::with_capacity(original_ops.len());
 
     for (index, mut inst) in original_ops.iter().cloned().enumerate() {
         rewrite_sources(&mut inst.kind, &aliases);
+        rewrite_float_alias_sources(&mut inst.kind, &float_aliases);
 
         if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
             // Helpers preserve the abstract machine-register file, but they can
@@ -246,12 +248,14 @@ fn copy_propagate(
             // Dropping aliases here keeps the pass aligned with MachineIR's
             // memory-visible semantics instead of assuming helper purity.
             clear_aliases(&mut aliases);
+            clear_aliases(&mut float_aliases);
             rewritten.push(inst);
             continue;
         }
 
         if let Some(dst) = defined_reg(&inst.kind) {
             kill_alias(&mut aliases, dst);
+            kill_alias(&mut float_aliases, dst);
         }
 
         match &inst.kind {
@@ -269,6 +273,9 @@ fn copy_propagate(
                     aliases[dst.0 as usize] = Some(*src);
                     continue;
                 }
+                if dst.0 < first_fp_reg && src.0 >= first_fp_reg {
+                    float_aliases[dst.0 as usize] = Some(*src);
+                }
             }
             _ => {}
         }
@@ -277,6 +284,7 @@ fn copy_propagate(
     }
 
     rewrite_terminator_sources(&mut block.terminator, &aliases);
+    rewrite_float_alias_terminator_sources(&mut block.terminator, &float_aliases);
     block.ops = rewritten;
 }
 
@@ -307,7 +315,9 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
-        MachineInstKind::Store { .. } | MachineInstKind::CallHelper(_) => false,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => false,
     }
 }
 
@@ -324,7 +334,9 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
-        MachineInstKind::Store { .. } | MachineInstKind::CallHelper(_) => None,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => None,
     }
 }
 
@@ -438,6 +450,7 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
             f(on_false);
             f(cond);
         }
+        MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
         MachineInstKind::CallHelper(_) => {}
     }
 }
@@ -482,6 +495,7 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
                 }
             }
         }
+        MachineInstKind::TrapIf { cond, .. } => replace_branch_cond_value(cond, old, new_val),
         _ => {}
     }
 }
@@ -525,6 +539,7 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(on_false, aliases);
             rewrite_value(cond, aliases);
         }
+        MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallHelper(_) => {}
     }
 }
@@ -564,6 +579,21 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
     }
 }
 
+fn rewrite_float_alias_terminator_sources(
+    term: &mut MachineTerminator,
+    aliases: &[Option<MachineReg>],
+) {
+    match term {
+        MachineTerminator::Branch { cond, .. } => rewrite_float_alias_branch_cond(cond, aliases),
+        MachineTerminator::Jump(_)
+        | MachineTerminator::JumpTable { .. }
+        | MachineTerminator::CallDirect { .. }
+        | MachineTerminator::CallIndirect { .. }
+        | MachineTerminator::Return
+        | MachineTerminator::Trap { .. } => {}
+    }
+}
+
 fn rewrite_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineReg>]) {
     match cond {
         MachineBranchCond::Value(value) => rewrite_value(value, aliases),
@@ -572,6 +602,13 @@ fn rewrite_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineRe
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
         }
+    }
+}
+
+fn rewrite_float_alias_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineReg>]) {
+    if let MachineBranchCond::FloatCompare { lhs, rhs, .. } = cond {
+        rewrite_float_alias_value(lhs, aliases);
+        rewrite_float_alias_value(rhs, aliases);
     }
 }
 
@@ -591,6 +628,64 @@ fn rewrite_value(value: &mut MachineValue, aliases: &[Option<MachineReg>]) {
     }
 }
 
+fn rewrite_float_alias_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
+    match kind {
+        MachineInstKind::FloatUnary { src, .. } => rewrite_float_alias_value(src, aliases),
+        MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
+            rewrite_float_alias_value(lhs, aliases);
+            rewrite_float_alias_value(rhs, aliases);
+        }
+        MachineInstKind::Store { width, src, .. }
+            if matches!(
+                width,
+                super::MachineMemWidth::U32 | super::MachineMemWidth::U64
+            ) =>
+        {
+            rewrite_float_alias_value(src, aliases);
+        }
+        MachineInstKind::TrapIf { cond, .. } => rewrite_float_alias_branch_cond(cond, aliases),
+        MachineInstKind::Convert { op, src, .. } if convert_src_accepts_fp(*op) => {
+            rewrite_float_alias_value(src, aliases);
+        }
+        _ => {}
+    }
+}
+
+fn visit_branch_cond_values(cond: &MachineBranchCond, mut f: impl FnMut(&MachineValue)) {
+    match cond {
+        MachineBranchCond::Value(value) => f(value),
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+    }
+}
+
+fn replace_branch_cond_value(cond: &mut MachineBranchCond, old: MachineReg, new_val: MachineValue) {
+    match cond {
+        MachineBranchCond::Value(value) => {
+            try_replace(value, old, new_val);
+        }
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            if !try_replace(lhs, old, new_val) {
+                try_replace(rhs, old, new_val);
+            }
+        }
+    }
+}
+
+fn rewrite_float_alias_value(value: &mut MachineValue, aliases: &[Option<MachineReg>]) {
+    let MachineValue::Reg(reg) = value else {
+        return;
+    };
+    if let Some(Some(src)) = aliases.get(reg.0 as usize) {
+        *value = MachineValue::Reg(*src);
+    }
+}
+
 fn resolve_alias(reg: MachineReg, aliases: &[Option<MachineReg>]) -> MachineReg {
     let mut resolved = reg;
     while let Some(Some(next)) = aliases.get(resolved.0 as usize) {
@@ -600,6 +695,32 @@ fn resolve_alias(reg: MachineReg, aliases: &[Option<MachineReg>]) -> MachineReg 
         resolved = *next;
     }
     resolved
+}
+
+fn convert_src_accepts_fp(op: super::MachineConvertOp) -> bool {
+    matches!(
+        op,
+        super::MachineConvertOp::I32TruncF32S
+            | super::MachineConvertOp::I32TruncF32U
+            | super::MachineConvertOp::I32TruncF64S
+            | super::MachineConvertOp::I32TruncF64U
+            | super::MachineConvertOp::I64TruncF32S
+            | super::MachineConvertOp::I64TruncF32U
+            | super::MachineConvertOp::I64TruncF64S
+            | super::MachineConvertOp::I64TruncF64U
+            | super::MachineConvertOp::I32TruncSatF32S
+            | super::MachineConvertOp::I32TruncSatF32U
+            | super::MachineConvertOp::I32TruncSatF64S
+            | super::MachineConvertOp::I32TruncSatF64U
+            | super::MachineConvertOp::I64TruncSatF32S
+            | super::MachineConvertOp::I64TruncSatF32U
+            | super::MachineConvertOp::I64TruncSatF64S
+            | super::MachineConvertOp::I64TruncSatF64U
+            | super::MachineConvertOp::F32DemoteF64
+            | super::MachineConvertOp::F64PromoteF32
+            | super::MachineConvertOp::I32ReinterpretF32
+            | super::MachineConvertOp::I64ReinterpretF64
+    )
 }
 
 fn kill_alias(aliases: &mut [Option<MachineReg>], reg: MachineReg) {

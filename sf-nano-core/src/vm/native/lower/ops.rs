@@ -355,8 +355,8 @@ impl<'a> BlockLowerContext<'a> {
         spec: MemoryLoadSpec,
         args: &[LirValue],
         results: &[LirValue],
-        continuation: MachineBlockId,
-        trap: MachineBlockId,
+        _continuation: MachineBlockId,
+        _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
@@ -370,7 +370,7 @@ impl<'a> BlockLowerContext<'a> {
             self.alloc_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?
         };
         let access_bytes = spec.access_bytes();
-        let (continuation_ops, terminator) = if spec.memidx == 0 {
+        if spec.memidx == 0 {
             let addr32 = if self.is_fp_reg(dst) {
                 if let Some(addr32) = self.dead_value_reg(addr_value) {
                     addr32
@@ -380,120 +380,87 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 dst
             };
-            (
-                self.lower_mem0_load_continuation(
-                    addr32,
-                    access_bytes,
-                    dst,
-                    spec.width,
-                    spec.extension,
-                )?,
-                self.lower_mem0_bounds_check(
-                    spec.offset,
-                    access_bytes,
-                    addr,
-                    addr32,
-                    continuation,
-                    trap,
-                )?,
-            )
+            self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            self.emit_machine_ops(self.lower_mem0_load_continuation(
+                addr32,
+                access_bytes,
+                dst,
+                spec.width,
+                spec.extension,
+            )?);
         } else {
             let scratch = self.borrow_free_transients(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
-            (
-                self.lower_memory_continuation(
-                    spec.memidx,
-                    addr32,
-                    memory_view,
-                    access_bytes,
-                    Some((dst, spec.width, spec.extension)),
-                    None,
-                )?,
-                self.lower_memory_bounds_check(
-                    spec.memidx,
-                    spec.offset,
-                    access_bytes,
-                    addr,
-                    addr32,
-                    memory_view,
-                    continuation,
-                    trap,
-                )?,
-            )
-        };
-        Ok(LeafLowering::Split {
-            continuation,
-            trap,
-            trap_kind: MachineTrapKind::MemoryOutOfBounds,
-            terminator,
-            continuation_ops,
-        })
+            self.emit_memory_bounds_trap_if(
+                spec.memidx,
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                memory_view,
+            )?;
+            self.emit_machine_ops(self.lower_memory_continuation(
+                spec.memidx,
+                addr32,
+                memory_view,
+                access_bytes,
+                Some((dst, spec.width, spec.extension)),
+                None,
+            )?);
+        }
+        Ok(LeafLowering::InPlace)
     }
 
     fn lower_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
         args: &[LirValue],
-        continuation: MachineBlockId,
-        trap: MachineBlockId,
+        _continuation: MachineBlockId,
+        _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
         let (addr_value, src_value) = two_args(args)?;
         let addr = self.use_value(addr_value)?;
         let src = self.use_value(src_value)?;
         let access_bytes = spec.access_bytes();
-        let (continuation_ops, terminator) = if spec.memidx == 0 {
+        if spec.memidx == 0 {
             let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
                 addr32
             } else {
                 self.borrow_free_transients(1)?[0]
             };
-            (
-                self.lower_mem0_store_continuation(addr32, access_bytes, src, spec.width)?,
-                self.lower_mem0_bounds_check(
-                    spec.offset,
-                    access_bytes,
-                    addr,
-                    addr32,
-                    continuation,
-                    trap,
-                )?,
-            )
+            self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            self.emit_machine_ops(self.lower_mem0_store_continuation(
+                addr32,
+                access_bytes,
+                src,
+                spec.width,
+            )?);
         } else {
             let scratch = self.borrow_free_transients(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
-            (
-                self.lower_memory_continuation(
-                    spec.memidx,
-                    addr32,
-                    memory_view,
-                    access_bytes,
-                    None,
-                    Some((src, spec.width)),
-                )?,
-                self.lower_memory_bounds_check(
-                    spec.memidx,
-                    spec.offset,
-                    access_bytes,
-                    addr,
-                    addr32,
-                    memory_view,
-                    continuation,
-                    trap,
-                )?,
-            )
-        };
-        Ok(LeafLowering::Split {
-            continuation,
-            trap,
-            trap_kind: MachineTrapKind::MemoryOutOfBounds,
-            terminator,
-            continuation_ops,
-        })
+            self.emit_memory_bounds_trap_if(
+                spec.memidx,
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                memory_view,
+            )?;
+            self.emit_machine_ops(self.lower_memory_continuation(
+                spec.memidx,
+                addr32,
+                memory_view,
+                access_bytes,
+                None,
+                Some((src, spec.width)),
+            )?);
+        }
+        Ok(LeafLowering::InPlace)
     }
 
-    fn lower_memory_bounds_check(
+    fn emit_memory_bounds_trap_if(
         &mut self,
         memidx: u32,
         offset: u32,
@@ -501,9 +468,7 @@ impl<'a> BlockLowerContext<'a> {
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
         scratch: crate::vm::native::ir::machine::MachineReg,
-        continuation: MachineBlockId,
-        trap: MachineBlockId,
-    ) -> Result<MachineTerminator, WasmError> {
+    ) -> Result<(), WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
         self.emit_memory_len_load(memidx, scratch)?;
         self.emit_machine_inst(MachineInst {
@@ -515,34 +480,28 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Imm64(access_bytes as u64),
             },
         });
-        Ok(MachineTerminator::Branch {
-            cond: MachineBranchCond::IntCompare {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                kind: MachineCompareKind::Gt,
-                sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                lhs: MachineValue::Reg(addr32),
-                rhs: MachineValue::Reg(scratch),
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::MemoryOutOfBounds,
+                cond: MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    kind: MachineCompareKind::Gt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Reg(scratch),
+                },
             },
-            then_edge: crate::vm::native::ir::machine::MachineEdge {
-                target: trap,
-                args: Vec::new(),
-            },
-            else_edge: crate::vm::native::ir::machine::MachineEdge {
-                target: continuation,
-                args: Vec::new(),
-            },
-        })
+        });
+        Ok(())
     }
 
-    fn lower_mem0_bounds_check(
+    fn emit_mem0_bounds_trap_if(
         &mut self,
         offset: u32,
         access_bytes: u32,
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
-        continuation: MachineBlockId,
-        trap: MachineBlockId,
-    ) -> Result<MachineTerminator, WasmError> {
+    ) -> Result<(), WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
@@ -553,23 +512,19 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Imm64(access_bytes as u64),
             },
         });
-        Ok(MachineTerminator::Branch {
-            cond: MachineBranchCond::IntCompare {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                kind: MachineCompareKind::Gt,
-                sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                lhs: MachineValue::Reg(addr32),
-                rhs: MachineValue::Reg(self.mem0_size_reg()),
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::MemoryOutOfBounds,
+                cond: MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    kind: MachineCompareKind::Gt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Reg(self.mem0_size_reg()),
+                },
             },
-            then_edge: crate::vm::native::ir::machine::MachineEdge {
-                target: trap,
-                args: Vec::new(),
-            },
-            else_edge: crate::vm::native::ir::machine::MachineEdge {
-                target: continuation,
-                args: Vec::new(),
-            },
-        })
+        });
+        Ok(())
     }
 
     fn lower_memory_continuation(

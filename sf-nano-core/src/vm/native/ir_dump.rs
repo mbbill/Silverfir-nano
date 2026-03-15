@@ -530,6 +530,9 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(on_false)
             )
         }
+        MachineInstKind::TrapIf { kind, cond } => {
+            format!("trap_if {:?} {}", kind, render_branch_cond(cond))
+        }
         MachineInstKind::CallHelper(call) => {
             format!("call_helper extern={} const={}", call.target.0, call.metadata.0)
         }

@@ -3,6 +3,7 @@
 mod block;
 mod cfg;
 mod edge;
+mod optimize;
 mod ops;
 mod state;
 mod steps;
@@ -117,6 +118,8 @@ pub fn prepare_function(
         local_cache,
         blocks,
     };
+    let mut lir = lir;
+    optimize::optimize_lir(&mut lir, frame);
     validate_program(&lir)?;
 
     Ok(PreparedFunction { frame, lir })

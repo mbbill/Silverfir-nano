@@ -964,7 +964,9 @@ fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
-        MachineInstKind::Store { .. } | MachineInstKind::CallHelper(_) => None,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => None,
     }
 }
 
@@ -996,7 +998,21 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(on_false, &mut visit);
             visit_value_reg(cond, &mut visit);
         }
+        MachineInstKind::TrapIf { cond, .. } => {
+            visit_branch_cond_regs(cond, &mut visit);
+        }
         MachineInstKind::CallHelper(_) => {}
+    }
+}
+
+fn visit_branch_cond_regs(cond: &MachineBranchCond, visit: &mut impl FnMut(MachineReg)) {
+    match cond {
+        MachineBranchCond::Value(value) => visit_value_reg(value, visit),
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            visit_value_reg(lhs, visit);
+            visit_value_reg(rhs, visit);
+        }
     }
 }
 
@@ -1036,17 +1052,6 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
             visit(*callee_frame_base);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
-    }
-}
-
-fn visit_branch_cond_regs(cond: &MachineBranchCond, visit: &mut impl FnMut(MachineReg)) {
-    match cond {
-        MachineBranchCond::Value(value) => visit_value_reg(value, visit),
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
-            visit_value_reg(lhs, visit);
-            visit_value_reg(rhs, visit);
-        }
     }
 }
 

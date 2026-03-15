@@ -667,3 +667,88 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
     };
     assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
 }
+
+#[test]
+fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 10,
+        reg_count: 12,
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(10)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::FloatBinary {
+                        width: crate::vm::native::ir::machine::MachineFloatWidth::F64,
+                        op: crate::vm::native::ir::machine::MachineFloatBinaryOp::Add,
+                        dst: MachineReg(11),
+                        lhs: MachineValue::Reg(MachineReg(10)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::FloatBinary {
+            rhs: MachineValue::Reg(MachineReg(10)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 10,
+        reg_count: 11,
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(10)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 32,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Reg(MachineReg(10)),
+            ..
+        }
+    ));
+}

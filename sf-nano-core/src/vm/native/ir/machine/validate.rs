@@ -123,6 +123,9 @@ impl MachineProgram {
                 self.validate_value(*on_false)?;
                 self.validate_value(*cond)?;
             }
+            MachineInstKind::TrapIf { cond, .. } => {
+                self.validate_branch_cond(*cond)?;
+            }
             MachineInstKind::CallHelper(_) => {}
         }
         Ok(())

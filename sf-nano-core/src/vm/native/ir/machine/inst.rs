@@ -1,3 +1,5 @@
+use crate::vm::native::ir::machine::{MachineBranchCond, MachineTrapKind};
+
 use super::types::{
     MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIntBinaryOp,
@@ -99,6 +101,10 @@ pub enum MachineInstKind {
         on_true: MachineValue,
         on_false: MachineValue,
         cond: MachineValue,
+    },
+    TrapIf {
+        kind: MachineTrapKind,
+        cond: MachineBranchCond,
     },
     CallHelper(MachineHelperCall),
 }

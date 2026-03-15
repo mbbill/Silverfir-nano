@@ -1608,7 +1608,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
 }
 
 #[test]
-fn lowers_i32_load_with_explicit_oob_trap_block() {
+fn lowers_i32_load_with_inline_trap_if() {
     let frame = plan_frame_layout(0, 1, 2);
     let lir = LirProgram {
         entry: LirTarget(0),
@@ -1650,14 +1650,11 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
             result_count: 0,
         }],
     })
-    .expect("i32.load should lower with an explicit trap split");
+    .expect("i32.load should lower with an inline trap");
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 3);
-    assert!(matches!(
-        program.blocks[0].terminator,
-        MachineTerminator::Branch { .. }
-    ));
+    assert_eq!(program.blocks.len(), 1);
+    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
     assert!(matches!(
         program.blocks[0].ops[1].kind,
         MachineInstKind::Convert {
@@ -1673,22 +1670,19 @@ fn lowers_i32_load_with_explicit_oob_trap_block() {
             ..
         }
     ));
-    assert!(matches!(
-        program.blocks[1].terminator,
-        MachineTerminator::Trap {
-            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds
+    assert!(program.blocks[0].ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::TrapIf {
+            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
+            ..
         }
-    ));
+    )));
     assert!(matches!(
-        program.blocks[2].ops.last().unwrap().kind,
+        program.blocks[0].ops.last().unwrap().kind,
         MachineInstKind::Load {
             width: crate::vm::native::ir::machine::MachineMemWidth::U32,
             ..
         }
-    ));
-    assert!(matches!(
-        program.blocks[2].terminator,
-        MachineTerminator::Return
     ));
 }
 
@@ -1770,7 +1764,7 @@ fn threads_live_transients_through_split_continuation_params() {
                 },
                 LirInst {
                     kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 3 })
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 3 })
                             .unwrap(),
                         args: alloc::vec![],
                         results: alloc::vec![LirValue(1)],
@@ -1778,10 +1772,7 @@ fn threads_live_transients_through_split_continuation_params() {
                 },
                 LirInst {
                     kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
-                            offset: 4,
-                            memidx: 1,
-                        })
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
                         .unwrap(),
                         args: alloc::vec![LirValue(0)],
                         results: alloc::vec![LirValue(2)],
@@ -1789,7 +1780,7 @@ fn threads_live_transients_through_split_continuation_params() {
                 },
                 LirInst {
                     kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
                         args: alloc::vec![LirValue(1), LirValue(2)],
                         results: alloc::vec![LirValue(3)],
                     },
@@ -1833,23 +1824,17 @@ fn threads_live_transients_through_split_continuation_params() {
         .params
         .iter()
         .any(|param| param.reg == MachineReg(5)));
-    assert!(continuation
-        .params
-        .iter()
-        .any(|param| param.reg == MachineReg(6)));
     assert!(matches!(
         continuation.ops[0].kind,
-        MachineInstKind::IntBinary {
-            op: MachineIntBinaryOp::Sub,
-            dst: MachineReg(6),
-            lhs: MachineValue::Reg(MachineReg(6)),
+        MachineInstKind::Convert {
+            op: crate::vm::native::ir::machine::MachineConvertOp::I64ExtendI32U,
             ..
         }
     ));
 }
 
 #[test]
-fn threads_live_float_transients_through_split_continuation_params() {
+fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
     let frame = plan_frame_layout(0, 0, 3);
     let lir = LirProgram {
         entry: LirTarget(0),
@@ -1908,31 +1893,27 @@ fn threads_live_float_transients_through_split_continuation_params() {
             result_count: 0,
         }],
     })
-    .expect("split continuation should preserve FP transient widths");
+    .expect("inline memory store should preserve FP transient widths");
 
     let program = &lowered.module.functions[0].program;
-    let MachineTerminator::Branch { else_edge, .. } = &program.blocks[0].terminator else {
-        panic!("expected split branch terminator");
-    };
-    let continuation = program
-        .blocks
-        .iter()
-        .find(|block| block.id == else_edge.target)
-        .expect("continuation block");
-    let fp_param = continuation
-        .params
-        .iter()
-        .find(|param| param.reg.0 >= program.first_fp_reg)
-        .expect("continuation should carry an FP transient");
-
-    assert_eq!(fp_param.float_width, Some(MachineFloatWidth::F32));
-    assert!(continuation.ops.iter().any(|inst| {
+    assert_eq!(program.blocks.len(), 1);
+    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
+    assert!(program.blocks[0].ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::TrapIf {
+                kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
+                ..
+            }
+        )
+    }));
+    assert!(program.blocks[0].ops.iter().any(|inst| {
         matches!(
             inst.kind,
             MachineInstKind::Store {
                 src: MachineValue::Reg(reg),
                 ..
-            } if reg == fp_param.reg
+            } if reg.0 >= program.first_fp_reg
         )
     }));
 }

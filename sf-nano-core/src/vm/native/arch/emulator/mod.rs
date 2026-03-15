@@ -365,6 +365,19 @@ impl<'a> Emulator<'a> {
                 };
                 self.write_reg(*dst, value)?;
             }
+            MachineInstKind::TrapIf { kind, cond } => {
+                if self.eval_branch_cond(*cond)? {
+                    #[cfg(debug_assertions)]
+                    {
+                        extern crate std;
+                        std::eprintln!(
+                            "[emu trap] func={} block=b{} kind={:?}",
+                            self.func_id.0, self.block_id.0, kind
+                        );
+                    }
+                    return Err(trap_from_kind(*kind));
+                }
+            }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
         }
         Ok(())
