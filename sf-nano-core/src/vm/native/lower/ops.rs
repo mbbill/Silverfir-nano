@@ -388,10 +388,10 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 dst
             };
-            self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
             self.emit_machine_ops(self.lower_mem0_load_continuation(
                 addr32,
-                access_bytes,
+                residual,
                 dst,
                 spec.width,
                 spec.extension,
@@ -400,7 +400,7 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_transients(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
-            self.emit_memory_bounds_trap_if(
+            let residual = self.emit_memory_bounds_trap_if(
                 spec.memidx,
                 spec.offset,
                 access_bytes,
@@ -412,7 +412,7 @@ impl<'a> BlockLowerContext<'a> {
                 spec.memidx,
                 addr32,
                 memory_view,
-                access_bytes,
+                residual,
                 Some((dst, spec.width, spec.extension)),
                 None,
             )?);
@@ -437,10 +437,10 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_transients(1)?[0]
             };
-            self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual = self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
             self.emit_machine_ops(self.lower_mem0_store_continuation(
                 addr32,
-                access_bytes,
+                residual,
                 src,
                 spec.width,
             )?);
@@ -448,7 +448,7 @@ impl<'a> BlockLowerContext<'a> {
             let scratch = self.borrow_free_transients(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
-            self.emit_memory_bounds_trap_if(
+            let residual = self.emit_memory_bounds_trap_if(
                 spec.memidx,
                 spec.offset,
                 access_bytes,
@@ -460,7 +460,7 @@ impl<'a> BlockLowerContext<'a> {
                 spec.memidx,
                 addr32,
                 memory_view,
-                access_bytes,
+                residual,
                 None,
                 Some((src, spec.width)),
             )?);
@@ -468,6 +468,8 @@ impl<'a> BlockLowerContext<'a> {
         Ok(LeafLowering::InPlace)
     }
 
+    /// Emit a non-mem0 bounds check. Returns residual access_bytes embedded
+    /// in addr32 (0 when a scratch was available, access_bytes otherwise).
     fn emit_memory_bounds_trap_if(
         &mut self,
         memidx: u32,
@@ -476,58 +478,129 @@ impl<'a> BlockLowerContext<'a> {
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
         scratch: crate::vm::native::ir::machine::MachineReg,
-    ) -> Result<(), WasmError> {
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Convert {
-                op: MachineConvertOp::I64ExtendI32U,
-                dst: addr32,
-                src: MachineValue::Reg(addr),
-            },
-        });
+    ) -> Result<u32, WasmError> {
+        self.emit_effective_addr(offset, addr, addr32)?;
         self.emit_memory_len_load(memidx, scratch)?;
-        let check_addend = offset as u64 + access_bytes as u64;
-        if check_addend != 0 {
+        if access_bytes == 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Reg(scratch),
+                    },
+                },
+            });
+            return Ok(0);
+        }
+        if let Ok(free) = self.borrow_free_transients(1) {
+            let check_reg = free[0];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst: check_reg,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(check_reg),
+                        rhs: MachineValue::Reg(scratch),
+                    },
+                },
+            });
+            Ok(0)
+        } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
                     width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
-                    rhs: MachineValue::Imm64(check_addend),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
-        }
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TrapIf {
-                kind: MachineTrapKind::MemoryOutOfBounds,
-                cond: MachineBranchCond::IntCompare {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                    kind: MachineCompareKind::Gt,
-                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                    lhs: MachineValue::Reg(addr32),
-                    rhs: MachineValue::Reg(scratch),
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Reg(scratch),
+                    },
                 },
-            },
-        });
-        Ok(())
+            });
+            Ok(access_bytes)
+        }
     }
 
+    /// Emit a mem0 bounds check. Returns the number of `access_bytes` still
+    /// embedded in `addr32` that the continuation must subtract. When a scratch
+    /// transient is available this is 0 (addr32 = zext(addr) + offset). When
+    /// register pressure is too high, falls back to adding offset+access_bytes
+    /// into addr32 and returns `access_bytes` so the continuation can undo it.
     fn emit_mem0_bounds_trap_if(
         &mut self,
         offset: u32,
         access_bytes: u32,
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
-    ) -> Result<(), WasmError> {
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Convert {
-                op: MachineConvertOp::I64ExtendI32U,
-                dst: addr32,
-                src: MachineValue::Reg(addr),
-            },
-        });
-        let check_addend = offset as u64 + access_bytes as u64;
-        if check_addend != 0 {
+    ) -> Result<u32, WasmError> {
+        self.emit_effective_addr(offset, addr, addr32)?;
+        if access_bytes == 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Reg(self.mem0_size_reg()),
+                    },
+                },
+            });
+            return Ok(0);
+        }
+        if let Ok(scratch) = self.borrow_free_transients(1) {
+            let check_reg = scratch[0];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst: check_reg,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(check_reg),
+                        rhs: MachineValue::Reg(self.mem0_size_reg()),
+                    },
+                },
+            });
+            Ok(0)
+        } else {
+            // Fallback: add access_bytes into addr32; continuation must sub it back.
+            let check_addend = access_bytes as u64;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
                     width: crate::vm::native::ir::machine::MachineIntWidth::I64,
@@ -537,20 +610,20 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(check_addend),
                 },
             });
-        }
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TrapIf {
-                kind: MachineTrapKind::MemoryOutOfBounds,
-                cond: MachineBranchCond::IntCompare {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                    kind: MachineCompareKind::Gt,
-                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
-                    lhs: MachineValue::Reg(addr32),
-                    rhs: MachineValue::Reg(self.mem0_size_reg()),
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TrapIf {
+                    kind: MachineTrapKind::MemoryOutOfBounds,
+                    cond: MachineBranchCond::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: MachineCompareKind::Gt,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Reg(self.mem0_size_reg()),
+                    },
                 },
-            },
-        });
-        Ok(())
+            });
+            Ok(access_bytes)
+        }
     }
 
     fn lower_memory_continuation(
