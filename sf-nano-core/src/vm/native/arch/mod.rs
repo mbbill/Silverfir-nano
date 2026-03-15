@@ -16,6 +16,9 @@ pub enum NativeBackend {
 #[inline]
 pub const fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
     match backend {
+        // Each backend returns an explicit budget preset. Physical register
+        // mapping and ABI constraints stay in the backend-specific ABI/layout
+        // code; this function selects policy, not hardware facts.
         NativeBackend::Arm64 => arm64::config::compile_backend_config(),
         #[cfg(debug_assertions)]
         NativeBackend::Reference => emulator::config::compile_backend_config(),

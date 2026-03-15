@@ -27,42 +27,22 @@ use crate::{
 };
 
 use super::{
+    abi::{
+        emit_shared_epilogue, emit_shared_prologue, inv_map_reg, map_fixed_reg, map_reg,
+        max_fp_machine_regs, max_gp_mapped_regs, max_total_machine_regs, FP_MACHINE_REGS,
+        FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1,
+    },
     arm64_raise_trap, arm64_raise_unsupported,
     emit::Arm64TextEmitter,
     enc::{self, Cond},
     reg::Arm64Reg,
 };
 
-const SCRATCH0: Arm64Reg = Arm64Reg::X16;
-const SCRATCH1: Arm64Reg = Arm64Reg::X17;
-/// FP scratch registers (caller-saved, not used for parameter passing in our ABI)
-const FP_SCRATCH0: u32 = 0; // D0/S0
-const FP_SCRATCH1: u32 = 1; // D1/S1
-const FP_SCRATCH2: u32 = 2; // D2/S2
-/// All FP machine regs: transients first, then local cache.
-const FP_MACHINE_REGS: [u32; 4] = [3, 4, 5, 6]; // D3, D4 (transient), D5, D6 (cache)
-const CALLEE_SAVED_FRAME_SIZE: u32 = 96;
-const ARM64_FUNCTION_INFO_SIZE: usize = 32;
 const MAX_ARM64_CALL_DEPTH: u64 = if MAX_CALL_STACK_DEPTH < 300 {
     MAX_CALL_STACK_DEPTH as u64
 } else {
     300
 };
-const DYNAMIC_REGS: [Arm64Reg; 13] = [
-    Arm64Reg::X9,
-    Arm64Reg::X10,
-    Arm64Reg::X11,
-    Arm64Reg::X12,
-    Arm64Reg::X13,
-    Arm64Reg::X14,
-    Arm64Reg::X15,
-    Arm64Reg::X23,
-    Arm64Reg::X24,
-    Arm64Reg::X25,
-    Arm64Reg::X26,
-    Arm64Reg::X27,
-    Arm64Reg::X28,
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LabelKind {
@@ -148,6 +128,8 @@ struct Arm64FunctionInfo {
     frame_prefix_slots: u64,
     call_scratch_base_slot: u64,
 }
+
+const ARM64_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Arm64FunctionInfo>();
 
 #[derive(Clone, Debug)]
 pub struct CompiledArm64Entry {
@@ -334,8 +316,8 @@ fn compile_function(
     compiled: &CompiledNativeModule,
     function: &MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
-    let max_reg = MACHINE_FIXED_REG_COUNT as usize + DYNAMIC_REGS.len();
-    let max_total_reg = max_reg + FP_MACHINE_REGS.len();
+    let max_reg = max_gp_mapped_regs();
+    let max_total_reg = max_total_machine_regs();
     if function.program.reg_count as usize > max_total_reg {
         return Err(WasmError::invalid(alloc::format!(
             "arm64 MachineIR backend supports at most {} machine regs, got {} in function {}",
@@ -353,11 +335,11 @@ fn compile_function(
             function.id.0,
         )));
     }
-    if (function.program.reg_count - function.program.first_fp_reg) as usize > FP_MACHINE_REGS.len()
+    if (function.program.reg_count - function.program.first_fp_reg) as usize > max_fp_machine_regs()
     {
         return Err(WasmError::invalid(alloc::format!(
             "arm64 MachineIR backend supports at most {} FP machine regs, got {} in function {}",
-            FP_MACHINE_REGS.len(),
+            max_fp_machine_regs(),
             function.program.reg_count - function.program.first_fp_reg,
             function.id.0,
         )));
@@ -3035,35 +3017,6 @@ impl From<u64> for ParallelSource {
     }
 }
 
-fn emit_shared_prologue(text: &mut Arm64TextEmitter) {
-    text.emit_u32(enc::sub_imm_64(
-        Arm64Reg::SP,
-        Arm64Reg::SP,
-        CALLEE_SAVED_FRAME_SIZE,
-    ));
-    text.emit_u32(enc::stp_64(Arm64Reg::X19, Arm64Reg::X20, Arm64Reg::SP, 0));
-    text.emit_u32(enc::stp_64(Arm64Reg::X21, Arm64Reg::X22, Arm64Reg::SP, 2));
-    text.emit_u32(enc::stp_64(Arm64Reg::X23, Arm64Reg::X24, Arm64Reg::SP, 4));
-    text.emit_u32(enc::stp_64(Arm64Reg::X25, Arm64Reg::X26, Arm64Reg::SP, 6));
-    text.emit_u32(enc::stp_64(Arm64Reg::X27, Arm64Reg::X28, Arm64Reg::SP, 8));
-    text.emit_u32(enc::stp_64(Arm64Reg::X29, Arm64Reg::X30, Arm64Reg::SP, 10));
-}
-
-fn emit_shared_epilogue(text: &mut Arm64TextEmitter) {
-    text.emit_u32(enc::ldp_64(Arm64Reg::X19, Arm64Reg::X20, Arm64Reg::SP, 0));
-    text.emit_u32(enc::ldp_64(Arm64Reg::X21, Arm64Reg::X22, Arm64Reg::SP, 2));
-    text.emit_u32(enc::ldp_64(Arm64Reg::X23, Arm64Reg::X24, Arm64Reg::SP, 4));
-    text.emit_u32(enc::ldp_64(Arm64Reg::X25, Arm64Reg::X26, Arm64Reg::SP, 6));
-    text.emit_u32(enc::ldp_64(Arm64Reg::X27, Arm64Reg::X28, Arm64Reg::SP, 8));
-    text.emit_u32(enc::ldp_64(Arm64Reg::X29, Arm64Reg::X30, Arm64Reg::SP, 10));
-    text.emit_u32(enc::add_imm_64(
-        Arm64Reg::SP,
-        Arm64Reg::SP,
-        CALLEE_SAVED_FRAME_SIZE,
-    ));
-    text.emit_u32(enc::ret());
-}
-
 fn materialize_u64_into(text: &mut Arm64TextEmitter, dst: Arm64Reg, value: u64) {
     if value == 0 {
         text.emit_u32(enc::mov_reg_64(dst, Arm64Reg::Xzr));
@@ -3093,47 +3046,6 @@ fn materialize_u64_into(text: &mut Arm64TextEmitter, dst: Arm64Reg, value: u64) 
     if first {
         // All chunks are zero but value != 0 (shouldn't happen, covered above)
         text.emit_u32(enc::movz_64(dst, 0, 0));
-    }
-}
-
-fn map_fixed_reg(reg: MachineReg) -> Arm64Reg {
-    match reg {
-        MACHINE_CTX_REG => Arm64Reg::X19,
-        MACHINE_FP_REG => Arm64Reg::X20,
-        MACHINE_MEM0_BASE_REG => Arm64Reg::X21,
-        MACHINE_MEM0_SIZE_REG => Arm64Reg::X22,
-        _ => unreachable!("not a fixed machine reg"),
-    }
-}
-
-fn map_reg(reg: MachineReg) -> Result<Arm64Reg, WasmError> {
-    if reg.0 < MACHINE_FIXED_REG_COUNT {
-        return Ok(map_fixed_reg(reg));
-    }
-    DYNAMIC_REGS
-        .get((reg.0 - MACHINE_FIXED_REG_COUNT) as usize)
-        .copied()
-        .ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "arm64 MachineIR backend has no physical mapping for machine reg {}",
-                reg.0
-            ))
-        })
-}
-
-fn inv_map_reg(reg: Arm64Reg) -> MachineReg {
-    match reg {
-        Arm64Reg::X19 => MACHINE_CTX_REG,
-        Arm64Reg::X20 => MACHINE_FP_REG,
-        Arm64Reg::X21 => MACHINE_MEM0_BASE_REG,
-        Arm64Reg::X22 => MACHINE_MEM0_SIZE_REG,
-        other => {
-            let index = DYNAMIC_REGS
-                .iter()
-                .position(|candidate| *candidate == other)
-                .expect("mapped reg must come from dynamic table");
-            MachineReg(MACHINE_FIXED_REG_COUNT + index as u16)
-        }
     }
 }
 

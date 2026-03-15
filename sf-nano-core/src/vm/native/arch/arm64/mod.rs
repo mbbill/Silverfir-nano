@@ -1,3 +1,4 @@
+mod abi;
 pub mod compile;
 pub mod config;
 mod emit;
