@@ -1005,17 +1005,15 @@ fn build_call_indirect_local_block(
             op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
             dst: callee_frame_base,
             lhs: MachineValue::Reg(lower.frame_base_reg()),
-            rhs: MachineValue::Imm64(slot_offset_bytes(crate::vm::plan::frame::FrameSlot(
-                lower.current_runtime().total_frame_slots,
-            ))? as u64),
+            rhs: MachineValue::Imm64(slot_offset_bytes(args.start)? as u64),
         },
     }];
     // By the time the local branch reaches this block, the dispatch path has
     // already resolved and validated the local callee target above MachineIR.
     // The remaining dynamic work below MachineIR is just the local-call
-    // transfer mechanics for that resolved target.
+    // transfer mechanics for that resolved target. Arguments are already laid
+    // out in the caller operand window, so the callee frame starts there.
     lower.emit_machine_ops(ops);
-    lower.copy_call_args_to_frame(args, callee_frame_base)?;
     Ok(lower.take_ops())
 }
 

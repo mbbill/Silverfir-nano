@@ -903,59 +903,34 @@ fn lowers_direct_local_call_with_continuation_block() {
         MachineInstKind::IntBinary {
             dst,
             lhs: MachineValue::Reg(MachineReg(1)),
-            rhs: MachineValue::Imm64(_),
+            rhs: MachineValue::Imm64(offset),
             ..
-        } if dst == callee_frame_base
+        } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    assert_eq!(call_block.ops.len(), 9);
+    assert_eq!(call_block.ops.len(), 5);
     assert!(matches!(
         call_block.ops[1].kind,
-        MachineInstKind::Load { .. }
-    ));
-    assert!(matches!(
-        call_block.ops[2].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[3].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[4].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[5].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(0),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[6].kind,
+        call_block.ops[2].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(1),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[7].kind,
+        call_block.ops[3].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(1)),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[8].kind,
+        call_block.ops[4].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(40),
             ..

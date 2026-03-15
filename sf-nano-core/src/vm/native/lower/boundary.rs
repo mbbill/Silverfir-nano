@@ -63,41 +63,19 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_all_cached_locals()?;
 
-        let scratch = self.borrow_free_transients(2)?;
-        let copy_reg = scratch[0];
-        let callee_frame_base = scratch[1];
+        let callee_frame_base = self.borrow_free_transients(1)?[0];
 
+        // Native local calls reuse the caller operand span as the callee frame
+        // prefix, so arguments are already in place when control transfers.
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width: crate::vm::native::ir::machine::MachineIntWidth::I64,
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: callee_frame_base,
                 lhs: MachineValue::Reg(self.frame_base_reg()),
-                rhs: MachineValue::Imm64(slot_offset_bytes(FrameSlot(
-                    self.current_runtime().total_frame_slots,
-                ))? as u64),
+                rhs: MachineValue::Imm64(slot_offset_bytes(args.start)? as u64),
             },
         });
-
-        for offset in 0..args.count as usize {
-            let src_slot = args.start.advance(offset as u16);
-            let dst_slot = FrameSlot(offset as u16);
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    dst: copy_reg,
-                    addr: self.frame_addr(src_slot)?,
-                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
-                    extension: crate::vm::native::ir::machine::MachineLoadExtension::None,
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    addr: self.frame_addr_from(callee_frame_base, dst_slot)?,
-                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
-                    src: MachineValue::Reg(copy_reg),
-                },
-            });
-        }
 
         for slot in args.count..callee_runtime.frame_prefix_slots {
             self.emit_machine_inst(MachineInst {
@@ -152,37 +130,6 @@ impl<'a> BlockLowerContext<'a> {
             results: results.into(),
         });
         MachineHelperCall { target, metadata }
-    }
-
-    pub(super) fn copy_call_args_to_frame(
-        &mut self,
-        args: FrameSpan,
-        callee_frame_base: MachineReg,
-    ) -> Result<(), WasmError> {
-        // Indirect local-call blocks carry the resolved callee target in the
-        // first transient lane, so argument copies must not clobber it.
-        let copy_reg = self.transient_reg(2)?;
-
-        for offset in 0..args.count as usize {
-            let src_slot = args.start.advance(offset as u16);
-            let dst_slot = FrameSlot(offset as u16);
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    dst: copy_reg,
-                    addr: self.frame_addr(src_slot)?,
-                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
-                    extension: crate::vm::native::ir::machine::MachineLoadExtension::None,
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    addr: self.frame_addr_from(callee_frame_base, dst_slot)?,
-                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
-                    src: MachineValue::Reg(copy_reg),
-                },
-            });
-        }
-        Ok(())
     }
 
     pub(super) fn lower_runtime(
