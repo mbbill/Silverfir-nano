@@ -441,6 +441,8 @@ It must not require a general-purpose lifetime-based register allocator.
 
 **Reason:** Float-heavy code should not be forced to bounce every transient through GP registers. A tiny FP transient bank keeps the design within the same fixed-budget lowering model while removing avoidable GP/FP churn. These registers are not a second local-cache system and are not ABI-visible persistent state.
 
+**Follow-up design:** See [NATIVE_TYPED_RESIDENCY_DESIGN.md](./NATIVE_TYPED_RESIDENCY_DESIGN.md) for the proposed frontend redesign that preserves value types through decode and prepare, separates GP and FP residency, and removes generic float fallback into GP MachineIR values.
+
 ### Lowering-Time Fit Validation
 
 **Decision:** TOS-window fit and local-cache assumptions are validated during lowering against real backend configuration.
