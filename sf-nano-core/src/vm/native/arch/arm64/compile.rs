@@ -29,8 +29,8 @@ use crate::{
 use super::{
     abi::{
         emit_shared_epilogue, emit_shared_prologue, inv_map_reg, map_fixed_reg, map_reg,
-        max_fp_machine_regs, max_gp_mapped_regs, max_total_machine_regs, FP_MACHINE_REGS,
-        FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1,
+        fp_machine_reg, max_fp_machine_regs, max_gp_mapped_regs, max_total_machine_regs,
+        FP_MACHINE_REG_COUNT, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1,
     },
     arm64_raise_trap, arm64_raise_unsupported,
     emit::Arm64TextEmitter,
@@ -153,7 +153,7 @@ struct FunctionCompiler<'a> {
     direct_call_patches: Vec<DirectCallPatch>,
     function_table_patches: Vec<usize>,
     deferred_traps: Vec<(usize, MachineTrapKind)>,
-    fp_reg_widths: [Option<MachineFloatWidth>; FP_MACHINE_REGS.len()],
+    fp_reg_widths: [Option<MachineFloatWidth>; FP_MACHINE_REG_COUNT],
     current_block: Option<MachineBlockId>,
     current_op_index: Option<usize>,
     current_edge_target: Option<MachineBlockId>,
@@ -545,13 +545,13 @@ impl<'a> FunctionCompiler<'a> {
             function_table_patches: Vec::new(),
             deferred_traps: Vec::new(),
             fp_reg_widths: {
-                let mut widths = [None; FP_MACHINE_REGS.len()];
+                let mut widths = [None; FP_MACHINE_REG_COUNT];
                 if function.program.fp_reg_init_widths.is_empty() {
                     let fp_bank_count =
                         function.program.reg_count.saturating_sub(function.program.first_fp_reg)
                             as usize;
                     let transient_count = defaulted_fp_transient_count(&function.program);
-                    for i in transient_count..fp_bank_count.min(FP_MACHINE_REGS.len()) {
+                    for i in transient_count..fp_bank_count.min(FP_MACHINE_REG_COUNT) {
                         widths[i] = Some(MachineFloatWidth::F64);
                     }
                 } else {
@@ -1302,9 +1302,7 @@ impl<'a> FunctionCompiler<'a> {
                 reg.0
             )));
         };
-        FP_MACHINE_REGS
-            .get(index as usize)
-            .copied()
+        fp_machine_reg(index as usize)
             .ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
                     "arm64 MachineIR backend has no physical FP mapping for machine reg {}",

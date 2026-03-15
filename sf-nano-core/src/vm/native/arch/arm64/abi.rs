@@ -34,11 +34,21 @@ pub(super) const FP_SCRATCH0: u32 = 0; // D0/S0
 pub(super) const FP_SCRATCH1: u32 = 1; // D1/S1
 pub(super) const FP_SCRATCH2: u32 = 2; // D2/S2
 
-/// All FP machine regs: transients first, then local cache.
+/// Caller-saved FP registers reserved for transient SSA values.
 ///
-/// We use D3-D10 for the machine FP bank. D8-D10 are callee-saved under the
-/// platform ABI, so the shared prologue/epilogue preserves them explicitly.
-pub(super) const FP_MACHINE_REGS: [u32; 8] = [3, 4, 5, 6, 7, 8, 9, 10];
+/// Transients do not need to survive helper or local calls, so they live in
+/// caller-saved physical FP regs.
+const FP_TRANSIENT_REGS: [u32; 6] = [3, 4, 5, 6, 7, 16];
+
+/// Callee-saved FP registers reserved for cached locals.
+///
+/// Cached locals are persistent values and must survive helper calls and local
+/// JIT-to-JIT calls, so they live in the callee-saved FP range.
+const FP_LOCAL_CACHE_REGS: [u32; 7] = [8, 9, 10, 11, 12, 13, 14];
+
+/// Total FP machine-register capacity exposed to MachineIR: transients first,
+/// then cached locals.
+pub(super) const FP_MACHINE_REG_COUNT: usize = FP_TRANSIENT_REGS.len() + FP_LOCAL_CACHE_REGS.len();
 
 const DYNAMIC_REGS: [Arm64Reg; 13] = [
     Arm64Reg::X9,
@@ -65,7 +75,7 @@ const CALLEE_SAVED_GP_PAIRS: [(Arm64Reg, Arm64Reg); 6] = [
     (Arm64Reg::X29, Arm64Reg::X30),
 ];
 
-const CALLEE_SAVED_FP_REGS: [u32; 3] = [8, 9, 10];
+const CALLEE_SAVED_FP_REGS: [u32; FP_LOCAL_CACHE_REGS.len()] = FP_LOCAL_CACHE_REGS;
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 const STACK_ALIGNMENT_BYTES: u32 = 16;
 const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
@@ -84,12 +94,24 @@ pub(super) const fn max_gp_mapped_regs() -> usize {
 
 #[inline]
 pub(super) const fn max_fp_machine_regs() -> usize {
-    FP_MACHINE_REGS.len()
+    FP_MACHINE_REG_COUNT
 }
 
 #[inline]
 pub(super) const fn max_total_machine_regs() -> usize {
     max_gp_mapped_regs() + max_fp_machine_regs()
+}
+
+#[inline]
+pub(super) const fn fp_machine_reg(index: usize) -> Option<u32> {
+    if index < FP_TRANSIENT_REGS.len() {
+        return Some(FP_TRANSIENT_REGS[index]);
+    }
+    let local_index = index - FP_TRANSIENT_REGS.len();
+    if local_index < FP_LOCAL_CACHE_REGS.len() {
+        return Some(FP_LOCAL_CACHE_REGS[local_index]);
+    }
+    None
 }
 
 #[inline]

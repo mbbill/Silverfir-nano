@@ -18,6 +18,6 @@ use crate::vm::backend::BackendConfig;
 pub const fn compile_backend_config() -> BackendConfig {
     // Policy choice within the ARM64 ABI capacity from `abi.rs`:
     // 3 GP cached locals (X9-X11), 4 GP transients (X12-X15),
-    // 2 FP local cache (D9-D10), 6 FP transients (D3-D8).
-    BackendConfig::new(3, 4, 2, 6)
+    // 7 FP local cache (D8-D14), 6 FP transients (D3-D7, D16).
+    BackendConfig::new(3, 4, 7, 6)
 }
