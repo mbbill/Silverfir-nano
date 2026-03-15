@@ -477,17 +477,26 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
         scratch: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<(), WasmError> {
-        self.emit_effective_addr(offset, addr, addr32)?;
-        self.emit_memory_len_load(memidx, scratch)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
                 dst: addr32,
-                lhs: MachineValue::Reg(addr32),
-                rhs: MachineValue::Imm64(access_bytes as u64),
+                src: MachineValue::Reg(addr),
             },
         });
+        self.emit_memory_len_load(memidx, scratch)?;
+        let check_addend = offset as u64 + access_bytes as u64;
+        if check_addend != 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(check_addend),
+                },
+            });
+        }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::TrapIf {
                 kind: MachineTrapKind::MemoryOutOfBounds,
@@ -510,16 +519,25 @@ impl<'a> BlockLowerContext<'a> {
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<(), WasmError> {
-        self.emit_effective_addr(offset, addr, addr32)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
-                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
                 dst: addr32,
-                lhs: MachineValue::Reg(addr32),
-                rhs: MachineValue::Imm64(access_bytes as u64),
+                src: MachineValue::Reg(addr),
             },
         });
+        let check_addend = offset as u64 + access_bytes as u64;
+        if check_addend != 0 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(check_addend),
+                },
+            });
+        }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::TrapIf {
                 kind: MachineTrapKind::MemoryOutOfBounds,

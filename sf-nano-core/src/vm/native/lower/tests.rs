@@ -1666,22 +1666,23 @@ fn lowers_i32_load_with_inline_trap_if() {
     let program = &lowered.module.functions[0].program;
     assert_eq!(program.blocks.len(), 1);
     assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
-    assert!(matches!(
-        program.blocks[0].ops[1].kind,
+    let ops = &program.blocks[0].ops;
+    assert!(ops.iter().any(|inst| matches!(
+        inst.kind,
         MachineInstKind::Convert {
             op: crate::vm::native::ir::machine::MachineConvertOp::I64ExtendI32U,
             ..
         }
-    ));
-    assert!(matches!(
-        program.blocks[0].ops[2].kind,
+    )));
+    assert!(ops.iter().any(|inst| matches!(
+        inst.kind,
         MachineInstKind::IntBinary {
             width: crate::vm::native::ir::machine::MachineIntWidth::I64,
             op: MachineIntBinaryOp::Add,
             ..
         }
-    ));
-    assert!(program.blocks[0].ops.iter().any(|inst| matches!(
+    )));
+    assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::TrapIf {
             kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
@@ -1689,7 +1690,7 @@ fn lowers_i32_load_with_inline_trap_if() {
         }
     )));
     assert!(matches!(
-        program.blocks[0].ops.last().unwrap().kind,
+        ops.last().unwrap().kind,
         MachineInstKind::Load {
             width: crate::vm::native::ir::machine::MachineMemWidth::U32,
             ..
