@@ -50,3 +50,14 @@ pub use vm::native::{
 };
 pub use vm::runtime::{active_runtime_engine, set_reference_backend, RuntimeEngine};
 pub use vm::value::Value;
+
+/// Reset process-global native runtime state that does not track module
+/// lifetimes on its own. Harnesses that repeatedly construct and drop native
+/// modules can call this between independent runs.
+pub fn reset_native_runtime_state() {
+    #[cfg(feature = "guard-pages")]
+    {
+        crate::vm::native::trap_signal::reset_debug_state();
+        crate::vm::native::trap_signal::clear_registered_jit_ranges();
+    }
+}

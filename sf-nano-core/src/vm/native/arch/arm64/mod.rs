@@ -88,6 +88,7 @@ pub fn eval(
         use crate::vm::native::{runtime::context::ctx_offset, trap_signal};
         trap_signal::install_signal_handler();
         trap_signal::set_trap_kind_offset(ctx_offset::TRAP_KIND as usize);
+        trap_signal::reset_debug_state();
         ctx.trap_kind = 0;
     }
 

@@ -5,7 +5,10 @@ mod wast_test_runner;
 
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
-use sf_nano_core::{active_runtime_engine, set_backend_mode, set_reference_backend, BackendMode};
+use sf_nano_core::{
+    active_runtime_engine, reset_native_runtime_state, set_backend_mode, set_reference_backend,
+    BackendMode,
+};
 use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
 use structopt::StructOpt;
 use summary::print_summary;
@@ -250,6 +253,7 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
         let test_start = Instant::now();
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            reset_native_runtime_state();
             let mut runner = WastTestRunner::new();
             runner.run_wast_file(&wast_file)
         }));

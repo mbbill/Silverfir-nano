@@ -11,9 +11,12 @@
 //!
 //! This module is gated on `#[cfg(feature = "guard-pages")]`.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use alloc::vec::Vec;
+
+/// Debug counter: aborts after too many consecutive signals (infinite loop detection).
+static SIGNAL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// A registered JIT code range with its error-return address.
 #[derive(Clone, Copy)]
@@ -94,6 +97,30 @@ pub fn install_signal_handler() {
     }
 }
 
+/// Reset debug state tracked by the signal handler.
+///
+/// The infinite-loop detector is only meaningful within a single native entry:
+/// one wasm invocation should either complete or trap after the first fault.
+/// Resetting here prevents expected trapping test cases from accumulating
+/// counts across many independent invocations.
+pub fn reset_debug_state() {
+    SIGNAL_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Drop all registered JIT ranges.
+///
+/// Callers must only use this when no compiled native frames from the old
+/// ranges can still fault, otherwise a later trap would be unable to resolve
+/// back to its owning function.
+pub fn clear_registered_jit_ranges() {
+    lock_trap_table();
+    unsafe {
+        let table = &raw mut TRAP_TABLE;
+        (*table).clear();
+    }
+    unlock_trap_table();
+}
+
 // ─── macOS ARM64 ────────────────────────────────────────────────────────────
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -138,10 +165,10 @@ mod platform {
     /// Offsets into Darwin's `ucontext_t` to reach the thread state.
     /// On ARM64 macOS the layout is:
     ///   ucontext_t.uc_mcontext → pointer to __darwin_mcontext64
-    ///   __darwin_mcontext64.__es (exception state, 24 bytes)
+    ///   __darwin_mcontext64.__es (exception state, 16 bytes: far:u64 + esr:u32 + exception:u32)
     ///   __darwin_mcontext64.__ss (thread state = Arm64ThreadState)
     const UCONTEXT_MCONTEXT_OFFSET: usize = 48; // uc_mcontext field offset
-    const MCONTEXT_SS_OFFSET: usize = 24; // skip __es (exception state)
+    const MCONTEXT_SS_OFFSET: usize = 16; // skip __es (exception state)
 
     unsafe fn thread_state(ucontext: *mut u8) -> *mut Arm64ThreadState {
         let mctx_ptr = *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *const *mut u8);
@@ -149,6 +176,11 @@ mod platform {
     }
 
     unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
+        let count = SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count > 100 {
+            std::process::abort();
+        }
+
         let ts = unsafe { thread_state(ucontext) };
         let pc = unsafe { (*ts).pc as usize };
 
@@ -162,10 +194,6 @@ mod platform {
         let ctx_ptr = unsafe { (*ts).x[19] } as *mut u8;
 
         // Set ctx.trap_kind = 1 (MemoryOutOfBounds).
-        // trap_kind is the field right after `error: Option<WasmError>` at the
-        // end of NativeContext. We use the offset passed at registration time.
-        // For simplicity, we use a fixed offset computed from the struct layout.
-        // This is set by the caller via `set_trap_kind_offset`.
         let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
         if trap_kind_offset > 0 {
             let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
@@ -367,4 +395,32 @@ static TRAP_KIND_OFFSET: core::sync::atomic::AtomicUsize =
 /// can write it without knowing the struct layout at compile time.
 pub fn set_trap_kind_offset(offset: usize) {
     TRAP_KIND_OFFSET.store(offset, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_registered_jit_ranges_drops_stale_entries() {
+        clear_registered_jit_ranges();
+        register_jit_ranges(&[(0x1000, 0x1100, 0x2000)]);
+
+        unsafe {
+            assert_eq!(lookup_return_error(0x1080), Some(0x2000));
+        }
+
+        clear_registered_jit_ranges();
+
+        unsafe {
+            assert_eq!(lookup_return_error(0x1080), None);
+        }
+    }
+
+    #[test]
+    fn reset_debug_state_clears_signal_counter() {
+        SIGNAL_COUNT.store(17, Ordering::Relaxed);
+        reset_debug_state();
+        assert_eq!(SIGNAL_COUNT.load(Ordering::Relaxed), 0);
+    }
 }
