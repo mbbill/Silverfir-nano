@@ -4,7 +4,6 @@ members = [
     "sf-nano-cli",
     "sf-nano-spectest",
     "sf-nano-wasitest",
-    "tools/static-discover",
 ]
 exclude = [
     "sf-nano-cli-minimal",
