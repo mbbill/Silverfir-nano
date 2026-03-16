@@ -12,7 +12,7 @@ categories = ["wasm", "no-std"]
 paste = "1.0"
 
 [features]
-default = ["guard-pages"]
+default = ["micro-jit", "guard-pages"]
 validate = []
 wasi = []
 interp = []

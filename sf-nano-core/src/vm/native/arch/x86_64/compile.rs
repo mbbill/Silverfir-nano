@@ -2158,6 +2158,18 @@ impl<'a> FunctionCompiler<'a> {
             | MachineFloatBinaryOp::Mul
             | MachineFloatBinaryOp::Div => {
                 // SSE two-operand: dst = dst OP src. Move lhs into result first.
+                // If result == rhs and result != lhs, the move would clobber rhs.
+                // Save rhs to scratch first in that case.
+                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
+                    let scratch = FP_SCRATCH2 as u8;
+                    match width {
+                        MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, scratch, rhs_fp as u8),
+                        MachineFloatWidth::F64 => enc::movsd_rr(&mut self.text, scratch, rhs_fp as u8),
+                    };
+                    scratch
+                } else {
+                    rhs_fp as u8
+                };
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, result_fp, lhs_fp as u8),
@@ -2165,14 +2177,14 @@ impl<'a> FunctionCompiler<'a> {
                     };
                 }
                 match (width, op) {
-                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => enc::addss(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => enc::addsd(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => enc::subss(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => enc::subsd(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => enc::mulss(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => enc::mulsd(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => enc::divss(&mut self.text, result_fp, rhs_fp as u8),
-                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => enc::divsd(&mut self.text, result_fp, rhs_fp as u8),
+                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => enc::addss(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => enc::addsd(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => enc::subss(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => enc::subsd(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => enc::mulss(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => enc::mulsd(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => enc::divss(&mut self.text, result_fp, actual_rhs),
+                    (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => enc::divsd(&mut self.text, result_fp, actual_rhs),
                     _ => unreachable!(),
                 };
             }
@@ -2180,6 +2192,17 @@ impl<'a> FunctionCompiler<'a> {
                 // Wasm fmin: if either operand is NaN, result is NaN.
                 // x86_64 minsd/minss: if either is NaN, returns the SECOND operand.
                 // Strategy: result = minsd(lhs, rhs); if unordered, result = addsd(lhs, rhs) (NaN propagation).
+                // Guard: if result == rhs and result != lhs, save rhs to scratch first.
+                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
+                    let scratch = FP_SCRATCH2 as u8;
+                    match width {
+                        MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, scratch, rhs_fp as u8),
+                        MachineFloatWidth::F64 => enc::movsd_rr(&mut self.text, scratch, rhs_fp as u8),
+                    };
+                    scratch
+                } else {
+                    rhs_fp as u8
+                };
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, result_fp, lhs_fp as u8),
@@ -2187,13 +2210,13 @@ impl<'a> FunctionCompiler<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::minss(&mut self.text, result_fp, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::minsd(&mut self.text, result_fp, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::minss(&mut self.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F64 => enc::minsd(&mut self.text, result_fp, actual_rhs),
                 };
                 // Compare for NaN: ucomisd lhs, rhs sets PF=1 if unordered (NaN)
                 match width {
-                    MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, actual_rhs),
+                    MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, actual_rhs),
                 };
                 let done = self.new_label(LabelKind::Edge);
                 self.emit_jcc(Cc::NP, done); // no NaN => minsd result is correct
@@ -2205,13 +2228,24 @@ impl<'a> FunctionCompiler<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::addss(&mut self.text, result_fp, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::addsd(&mut self.text, result_fp, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::addss(&mut self.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F64 => enc::addsd(&mut self.text, result_fp, actual_rhs),
                 };
                 self.bind_label(done);
             }
             MachineFloatBinaryOp::Max => {
                 // Same NaN handling as Min but with maxsd/maxss.
+                // Guard: if result == rhs and result != lhs, save rhs to scratch first.
+                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
+                    let scratch = FP_SCRATCH2 as u8;
+                    match width {
+                        MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, scratch, rhs_fp as u8),
+                        MachineFloatWidth::F64 => enc::movsd_rr(&mut self.text, scratch, rhs_fp as u8),
+                    };
+                    scratch
+                } else {
+                    rhs_fp as u8
+                };
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => enc::movss_rr(&mut self.text, result_fp, lhs_fp as u8),
@@ -2219,12 +2253,12 @@ impl<'a> FunctionCompiler<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::maxss(&mut self.text, result_fp, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::maxsd(&mut self.text, result_fp, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::maxss(&mut self.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F64 => enc::maxsd(&mut self.text, result_fp, actual_rhs),
                 };
                 match width {
-                    MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, actual_rhs),
+                    MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, actual_rhs),
                 };
                 let done = self.new_label(LabelKind::Edge);
                 self.emit_jcc(Cc::NP, done);
@@ -2235,8 +2269,8 @@ impl<'a> FunctionCompiler<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::addss(&mut self.text, result_fp, rhs_fp as u8),
-                    MachineFloatWidth::F64 => enc::addsd(&mut self.text, result_fp, rhs_fp as u8),
+                    MachineFloatWidth::F32 => enc::addss(&mut self.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F64 => enc::addsd(&mut self.text, result_fp, actual_rhs),
                 };
                 self.bind_label(done);
             }
