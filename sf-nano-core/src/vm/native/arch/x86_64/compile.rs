@@ -1595,12 +1595,12 @@ impl<'a> FunctionCompiler<'a> {
             enc::mov_rr_64(&mut self.text, X86Reg::RCX, SCRATCH0);
             return Ok(());
         }
-        let lhs_gp = self.materialize_value(SCRATCH0, lhs)?;
-        if dst != lhs_gp {
-            enc::mov_rr_64(&mut self.text, dst, lhs_gp);
-        }
         // For immediate shift amounts, use the imm8 form (no RCX needed).
         if let MachineValue::Imm64(amount) = rhs {
+            let lhs_gp = self.materialize_value(SCRATCH0, lhs)?;
+            if dst != lhs_gp {
+                enc::mov_rr_64(&mut self.text, dst, lhs_gp);
+            }
             let imm = (amount & 0x3F) as u8; // mask to 6 bits (x86 does this anyway)
             match (width, op) {
                 (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => enc::shl_imm_64(&mut self.text, dst, imm),
@@ -1617,16 +1617,40 @@ impl<'a> FunctionCompiler<'a> {
             };
             return Ok(());
         }
-        // Variable shift: must use CL. Save RCX if it's not dst.
-        // RCX is a GP transient that might hold a live value.
+        // Variable shift: need lhs in dst and rhs in RCX (CL).
+        // Careful: moving lhs→dst may clobber rhs, and moving rhs→RCX may clobber lhs.
+        // Resolve both source registers first, then do a safe parallel assignment.
+        let lhs_gp = self.materialize_value(SCRATCH0, lhs)?;
+        let rhs_gp = self.materialize_value(SCRATCH1, rhs)?;
         let need_save_rcx = dst != X86Reg::RCX;
         if need_save_rcx {
-            // Save RCX to SCRATCH1 (R11) which is not in the dynamic pool
             enc::mov_rr_64(&mut self.text, SCRATCH1, X86Reg::RCX);
         }
-        let rhs_gp = self.materialize_value(X86Reg::RCX, rhs)?;
-        if rhs_gp != X86Reg::RCX {
-            enc::mov_rr_64(&mut self.text, X86Reg::RCX, rhs_gp);
+        // Parallel assignment: lhs_gp → dst, rhs_gp → RCX.
+        // Check for conflicts to determine safe ordering.
+        let lhs_conflicts_rcx = lhs_gp == X86Reg::RCX; // moving rhs→RCX clobbers lhs
+        let rhs_conflicts_dst = rhs_gp == dst;          // moving lhs→dst clobbers rhs
+        if lhs_conflicts_rcx && rhs_conflicts_dst {
+            // Cycle: lhs is in RCX, rhs is in dst. Swap via SCRATCH0.
+            enc::mov_rr_64(&mut self.text, SCRATCH0, lhs_gp); // save lhs
+            enc::mov_rr_64(&mut self.text, X86Reg::RCX, rhs_gp); // rhs → RCX
+            enc::mov_rr_64(&mut self.text, dst, SCRATCH0); // lhs → dst
+        } else if rhs_conflicts_dst {
+            // Moving lhs→dst would clobber rhs. Do rhs→RCX first.
+            if rhs_gp != X86Reg::RCX {
+                enc::mov_rr_64(&mut self.text, X86Reg::RCX, rhs_gp);
+            }
+            if dst != lhs_gp {
+                enc::mov_rr_64(&mut self.text, dst, lhs_gp);
+            }
+        } else {
+            // No conflict, or only lhs_conflicts_rcx. Do lhs→dst first.
+            if dst != lhs_gp {
+                enc::mov_rr_64(&mut self.text, dst, lhs_gp);
+            }
+            if rhs_gp != X86Reg::RCX {
+                enc::mov_rr_64(&mut self.text, X86Reg::RCX, rhs_gp);
+            }
         }
         match (width, op) {
             (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => enc::shl_cl_64(&mut self.text, dst),
@@ -2443,12 +2467,40 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
+    /// Save GP transient registers to the system stack before a C helper call.
+    /// Pushes 8 registers (7 transients + padding) for 16-byte alignment.
+    fn save_gp_transients(&mut self) {
+        // Push 7 GP transients + 1 padding for 16-byte alignment (8 * 8 = 64 bytes)
+        enc::push(&mut self.text, X86Reg::RCX);
+        enc::push(&mut self.text, X86Reg::RDX);
+        enc::push(&mut self.text, X86Reg::RSI);
+        enc::push(&mut self.text, X86Reg::RDI);
+        enc::push(&mut self.text, X86Reg::R8);
+        enc::push(&mut self.text, X86Reg::R9);
+        enc::push(&mut self.text, X86Reg::R10);
+        enc::push(&mut self.text, X86Reg::R10); // padding for 16-byte alignment
+    }
+
+    /// Restore GP transient registers from the system stack after a C helper call.
+    fn restore_gp_transients(&mut self) {
+        enc::pop(&mut self.text, X86Reg::R10); // padding
+        enc::pop(&mut self.text, X86Reg::R10);
+        enc::pop(&mut self.text, X86Reg::R9);
+        enc::pop(&mut self.text, X86Reg::R8);
+        enc::pop(&mut self.text, X86Reg::RDI);
+        enc::pop(&mut self.text, X86Reg::RSI);
+        enc::pop(&mut self.text, X86Reg::RDX);
+        enc::pop(&mut self.text, X86Reg::RCX);
+    }
+
     fn emit_trapping_trunc(
         &mut self,
         op: MachineConvertOp,
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
+        // The C helper call clobbers all GP transient registers. Save them.
+        self.save_gp_transients();
         // Call: x86_64_trapping_trunc(ctx, src_bits, op_code) -> TruncResult{status, value}
         // System V: RDI=ctx, RSI=src_bits, RDX=op_code
         // Returns: RAX=status, RDX=value (struct in RAX+RDX)
@@ -2457,11 +2509,15 @@ impl<'a> FunctionCompiler<'a> {
         self.materialize_u64(X86Reg::RDX, convert_op_code(op));
         self.materialize_u64(SCRATCH1, x86_64_trapping_trunc as usize as u64);
         enc::call_reg(&mut self.text, SCRATCH1);
-        // RAX = status (0 = ok), RDX = result value
-        enc::test_rr_64(&mut self.text, X86Reg::RAX, X86Reg::RAX);
+        // Save result before restoring transients (RDX would be clobbered)
+        enc::mov_rr_64(&mut self.text, SCRATCH1, X86Reg::RDX); // save result value
+        let status = X86Reg::RAX; // save status
+        self.restore_gp_transients();
+        // Check status
+        enc::test_rr_64(&mut self.text, status, status);
         self.emit_jcc(Cc::NE, self.return_error_label);
-        if dst != X86Reg::RDX {
-            enc::mov_rr_64(&mut self.text, dst, X86Reg::RDX);
+        if dst != SCRATCH1 {
+            enc::mov_rr_64(&mut self.text, dst, SCRATCH1);
         }
         Ok(())
     }
@@ -2472,14 +2528,19 @@ impl<'a> FunctionCompiler<'a> {
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
+        // The C helper call clobbers all GP transient registers. Save them.
+        self.save_gp_transients();
         // Call: x86_64_saturating_trunc(src_bits, op_code) -> u64
         // System V: RDI=src_bits, RSI=op_code. Returns RAX.
         enc::mov_rr_64(&mut self.text, X86Reg::RDI, src);
         self.materialize_u64(X86Reg::RSI, convert_op_code(op));
         self.materialize_u64(SCRATCH1, x86_64_saturating_trunc as usize as u64);
         enc::call_reg(&mut self.text, SCRATCH1);
-        if dst != X86Reg::RAX {
-            enc::mov_rr_64(&mut self.text, dst, X86Reg::RAX);
+        // Save result before restoring transients
+        enc::mov_rr_64(&mut self.text, SCRATCH1, X86Reg::RAX);
+        self.restore_gp_transients();
+        if dst != SCRATCH1 {
+            enc::mov_rr_64(&mut self.text, dst, SCRATCH1);
         }
         Ok(())
     }
