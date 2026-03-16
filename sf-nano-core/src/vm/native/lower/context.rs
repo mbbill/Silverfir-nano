@@ -18,7 +18,7 @@ use crate::{
                 MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineEdge,
                 MachineFloatWidth, MachineFuncId, MachineInst, MachineInstKind,
                 MachineLoadExtension, MachineMemWidth, MachineReg, MachineTerminator,
-                MachineTrapKind, MachineValue,
+                MachineTrapKind, MachineValue, machine_ptr_width,
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
@@ -574,7 +574,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: self.regfile.mem0_base(),
                 addr: self.runtime_addr(ctx_offset::MEM0_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });

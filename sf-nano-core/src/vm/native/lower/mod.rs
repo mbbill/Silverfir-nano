@@ -30,7 +30,7 @@ use crate::{
                 MachineCompareKind, MachineConstData, MachineFloatWidth, MachineFuncId,
                 MachineFunction, MachineInst, MachineInstKind, MachineLoadExtension,
                 MachineMemWidth, MachineModule, MachineProgram, MachineReg,
-                MachineTerminator, MachineTrapKind, MachineValue,
+                MachineTerminator, MachineTrapKind, MachineValue, machine_ptr_width,
             },
             runtime::{
                 MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
@@ -821,7 +821,7 @@ fn emit_call_indirect_bounds_check_setup(
         kind: MachineInstKind::Load {
             dst: table_views,
             addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-            width: MachineMemWidth::U64,
+            width: machine_ptr_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -834,7 +834,7 @@ fn emit_call_indirect_bounds_check_setup(
                 core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
                 crate::vm::native::runtime::context::table_view_offset::ELEMENTS_LEN,
             )?,
-            width: MachineMemWidth::U64,
+            width: machine_ptr_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -862,7 +862,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Load {
                 dst: table_base,
                 addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -875,7 +875,7 @@ fn build_call_indirect_checked_block(
                     core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
                     crate::vm::native::runtime::context::table_view_offset::ELEMENTS_BASE,
                 )?,
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -904,7 +904,7 @@ fn build_call_indirect_checked_block(
                     base: table_base,
                     offset: 0,
                 },
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -919,7 +919,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Load {
                 dst: table_base,
                 addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_LEN),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -950,7 +950,7 @@ fn build_call_indirect_type_check_block(
         kind: MachineInstKind::Load {
             dst: function_views,
             addr: lower.runtime_addr(ctx_offset::TYPE_CANON_BASE),
-            width: MachineMemWidth::U64,
+            width: machine_ptr_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -1066,7 +1066,7 @@ fn dynamic_function_view_load(
             kind: MachineInstKind::Load {
                 dst: base_reg,
                 addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         },

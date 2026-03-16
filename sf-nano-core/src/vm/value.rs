@@ -11,9 +11,19 @@ use core::fmt::Display;
 pub struct RefHandle(pub(crate) usize);
 
 impl RefHandle {
+    #[cfg(target_pointer_width = "64")]
     const HOST_TAG: usize = 1 << 60;
+    #[cfg(target_pointer_width = "64")]
     const EXTERN_TAG: usize = 1 << 61;
+    #[cfg(target_pointer_width = "64")]
     const TAG_MASK: usize = 0x3 << 60;
+
+    #[cfg(target_pointer_width = "32")]
+    const HOST_TAG: usize = 1 << 28;
+    #[cfg(target_pointer_width = "32")]
+    const EXTERN_TAG: usize = 1 << 29;
+    #[cfg(target_pointer_width = "32")]
+    const TAG_MASK: usize = 0x3 << 28;
 
     pub const fn new(value: usize) -> Self {
         Self(value)

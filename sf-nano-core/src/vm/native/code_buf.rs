@@ -13,7 +13,55 @@ unsafe extern "C" {
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
     fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
+}
+
+/// Flush the instruction cache for the given range.
+///
+/// On AArch64, `__clear_cache` is provided by compiler-builtins. On ARM32
+/// musl with rust-lld the symbol is absent, so we call the kernel's
+/// `cacheflush` syscall directly.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[inline]
+unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
+    unsafe { __clear_cache(start, end) };
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+#[inline]
+unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
+    // ARM Linux cacheflush syscall (__ARM_NR_cacheflush = 0x0f0002)
+    unsafe {
+        core::arch::asm!(
+            "mov r0, {start}",
+            "mov r1, {end}",
+            "mov r2, #0",
+            "mov r7, #0xf0000",
+            "add r7, r7, #0x2",
+            "svc #0",
+            start = in(reg) start,
+            end = in(reg) end,
+            out("r0") _,
+            out("r1") _,
+            out("r2") _,
+            out("r7") _,
+        );
+    }
+}
+
+#[cfg(all(target_os = "linux", not(any(target_arch = "aarch64", target_arch = "arm"))))]
+unsafe extern "C" {
+    fn __clear_cache(start: *mut u8, end: *mut u8);
+}
+
+#[cfg(all(target_os = "linux", not(any(target_arch = "aarch64", target_arch = "arm"))))]
+#[inline]
+unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
+    unsafe { __clear_cache(start, end) };
 }
 
 #[cfg(target_os = "macos")]
@@ -134,7 +182,7 @@ impl CodeBuffer {
             assert_eq!(rc, 0, "mprotect RX failed for native code buffer");
             let start = self.base.add(written_start);
             let end = start.add(written_len);
-            __clear_cache(start, end);
+            clear_instruction_cache(start, end);
         }
     }
 

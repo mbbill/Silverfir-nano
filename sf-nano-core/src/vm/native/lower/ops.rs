@@ -5,15 +5,13 @@ use crate::{
     vm::{
         entities::global_offset,
         lir::{ir::LirValue, leaf::LirLeafOp},
-        native::ir::machine::{
+        native::{ir::machine::{
             MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp,
             MachineFloatWidth, MachineInst, MachineInstKind, MachineLoadExtension,
-            MachineMemWidth, MachineTerminator, MachineTrapKind, MachineValue,
-        },
-        native::runtime::context::{
-            ctx_offset, globals_view_offset, memory_view_offset, table_view_offset,
-            NativeMemoryView, NativeTableView,
-        },
+            MachineMemWidth, MachineTerminator, MachineTrapKind, MachineValue, machine_ptr_width,
+        }, runtime::context::{
+            NativeMemoryView, NativeTableView, ctx_offset, globals_view_offset, memory_view_offset, table_view_offset
+        }},
         wasm::primitive_op::PrimitiveOpKind,
     },
 };
@@ -166,7 +164,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::Load {
                     dst: temp,
                     addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
-                    width: MachineMemWidth::U64,
+                    width: machine_ptr_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -179,7 +177,7 @@ impl<'a> BlockLowerContext<'a> {
                         core::mem::size_of::<NativeMemoryView>(),
                         memory_view_offset::LEN,
                     )?,
-                    width: MachineMemWidth::U64,
+                    width: machine_ptr_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -205,7 +203,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: base,
                 addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -234,7 +232,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: base,
                 addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -260,7 +258,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: table_views,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -273,7 +271,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_LEN,
                 )?,
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -797,7 +795,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: table_len,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -810,7 +808,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_LEN,
                 )?,
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -854,7 +852,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: scratch,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -867,7 +865,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_BASE,
                 )?,
-                width: MachineMemWidth::U64,
+                width: machine_ptr_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -897,7 +895,7 @@ impl<'a> BlockLowerContext<'a> {
                         base: scratch,
                         offset: 0,
                     },
-                    width: MachineMemWidth::U64,
+                    width: machine_ptr_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -909,7 +907,7 @@ impl<'a> BlockLowerContext<'a> {
                         base: scratch,
                         offset: 0,
                     },
-                    width: MachineMemWidth::U64,
+                    width: machine_ptr_width(),
                     src: MachineValue::Reg(src),
                 },
             });
@@ -1479,7 +1477,7 @@ fn emit_memory_base_load_ops(
                 base: runtime_base,
                 offset: ctx_offset::MEMORY_VIEWS_BASE as i32,
             },
-            width: MachineMemWidth::U64,
+            width: machine_ptr_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -1494,7 +1492,7 @@ fn emit_memory_base_load_ops(
                     memory_view_offset::BASE,
                 )?,
             },
-            width: MachineMemWidth::U64,
+            width: machine_ptr_width(),
             extension: MachineLoadExtension::None,
         },
     });

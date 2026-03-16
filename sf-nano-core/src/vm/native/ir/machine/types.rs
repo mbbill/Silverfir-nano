@@ -68,6 +68,20 @@ pub enum MachineMemWidth {
     U64,
 }
 
+/// Returns the `MachineMemWidth` matching the target pointer size.
+///
+/// Used by the lowering pipeline for loads/stores of pointer-width fields
+/// (pointers, `usize`) from `NativeContext` and related ABI structs.
+/// On 64-bit targets this is `U64`; on 32-bit targets it is `U32`.
+#[inline]
+pub const fn machine_ptr_width() -> MachineMemWidth {
+    if core::mem::size_of::<usize>() == 8 {
+        MachineMemWidth::U64
+    } else {
+        MachineMemWidth::U32
+    }
+}
+
 /// Integer sign mode where it matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MachineSign {

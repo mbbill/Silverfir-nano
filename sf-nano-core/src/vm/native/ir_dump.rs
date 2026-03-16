@@ -34,7 +34,16 @@ use std::{
     path::PathBuf,
 };
 
-use crate::vm::native::arch::arm64::compile::DebugRegion;
+/// One debug region within a compiled function (for profiler symbols).
+#[derive(Clone, Debug)]
+pub struct DebugRegion {
+    /// Byte offset within the function text.
+    pub offset: usize,
+    /// Byte length of this region.
+    pub len: usize,
+    /// Human-readable label (e.g. "b0", "edge_3", "prologue", "return_ok").
+    pub label: String,
+}
 
 /// Per-function LIR data for the dump.
 pub struct DumpFunctionLir<'a> {

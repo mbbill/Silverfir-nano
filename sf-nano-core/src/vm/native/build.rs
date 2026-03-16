@@ -136,16 +136,31 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         lowered.module,
         lowered.runtime,
     )?);
+    #[cfg(target_arch = "aarch64")]
     let arm64_entries = match active_backend {
         arch::NativeBackend::Arm64 => {
             Some(arch::arm64::compile::compile_module(module, &compiled)?)
         }
-        #[cfg(debug_assertions)]
-        arch::NativeBackend::Reference => None,
+        _ => None,
+    };
+    #[cfg(target_arch = "arm")]
+    let armv7a_entries = match active_backend {
+        arch::NativeBackend::Armv7a => {
+            Some(arch::armv7a::compile::compile_module(module, &compiled)?)
+        }
+        _ => None,
+    };
+    #[cfg(target_arch = "x86_64")]
+    let x86_64_entries = match active_backend {
+        arch::NativeBackend::X86_64 => {
+            Some(arch::x86_64::compile::compile_module(module, &compiled)?)
+        }
+        _ => None,
     };
 
     // Write dump if SF_NATIVE_DUMP_DIR is set
     if ir_dump::dump_enabled() {
+        #[cfg(target_arch = "aarch64")]
         let code_slices: Vec<(u32, &[u8])> = arm64_entries
             .as_ref()
             .map(|entries| {
@@ -164,6 +179,9 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
+        #[cfg(not(target_arch = "aarch64"))]
+        let code_slices: Vec<(u32, &[u8])> = Vec::new();
+        #[cfg(target_arch = "aarch64")]
         let dump_regions: Vec<ir_dump::DumpFunctionRegions> = arm64_entries
             .as_ref()
             .map(|entries| {
@@ -179,6 +197,8 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
+        #[cfg(not(target_arch = "aarch64"))]
+        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = Vec::new();
         let _ = ir_dump::write_module_dump(
             &module.name,
             module.functions.len(),
@@ -194,16 +214,38 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let Some(spec) = func.spec() else {
             continue;
         };
-        let arm64_entry = arm64_entries
-            .as_ref()
-            .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-        spec.set_native_code(
-            NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32)).with_arm64_entry(
+        let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let arm64_entry = arm64_entries
+                .as_ref()
+                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
+            code = code.with_arm64_entry(
                 arm64_entry.map(|entry| entry.entry),
                 arm64_entry.map(|entry| entry.root_return),
-            ),
-            NativeCodeCache::compiled(),
-        );
+            );
+        }
+        #[cfg(target_arch = "arm")]
+        {
+            let armv7a_entry = armv7a_entries
+                .as_ref()
+                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
+            code = code.with_armv7a_entry(
+                armv7a_entry.map(|entry| entry.entry),
+                armv7a_entry.map(|entry| entry.root_return),
+            );
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let x86_64_entry = x86_64_entries
+                .as_ref()
+                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
+            code = code.with_x86_64_entry(
+                x86_64_entry.map(|entry| entry.entry),
+                x86_64_entry.map(|entry| entry.root_return),
+            );
+        }
+        spec.set_native_code(code, NativeCodeCache::compiled());
     }
 
     Ok(())
