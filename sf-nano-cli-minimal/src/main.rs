@@ -195,7 +195,7 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_CONST, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL const: instantiate: {}", e); failed += 1; return 1; }
+            Err(e) => { eprintln!("FAIL const: instantiate: {}", e); return 1; }
         };
         match inst.invoke("test", &[]) {
             Ok(ref r) if check_i32(r, 42) => { println!("PASS const: test() = 42"); passed += 1; }
@@ -208,7 +208,7 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_ADD, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL add: instantiate: {}", e); failed += 1; return 1; }
+            Err(e) => { eprintln!("FAIL add: instantiate: {}", e); return 1; }
         };
         let args = [Value::I32(13), Value::I32(29)];
         match inst.invoke("add", &args) {
@@ -222,7 +222,7 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_LOOP, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL loop: instantiate: {}", e); failed += 1; return 1; }
+            Err(e) => { eprintln!("FAIL loop: instantiate: {}", e); return 1; }
         };
         let args = [Value::I32(10)];
         match inst.invoke("sum_to", &args) {
@@ -236,7 +236,7 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_FIB, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL fib: instantiate: {}", e); failed += 1; return 1; }
+            Err(e) => { eprintln!("FAIL fib: instantiate: {}", e); return 1; }
         };
         let args = [Value::I32(10)];
         match inst.invoke("fib", &args) {
@@ -253,7 +253,7 @@ fn run_self_test() -> i32 {
         ];
         let mut inst = match Instance::new(WASM_HOSTCALL, &imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL hostcall: instantiate: {}", e); failed += 1; return 1; }
+            Err(e) => { eprintln!("FAIL hostcall: instantiate: {}", e); return 1; }
         };
         match inst.invoke("run", &[]) {
             Ok(_) => { println!("PASS hostcall: wasm printed \"Hello\" via host import"); passed += 1; }
