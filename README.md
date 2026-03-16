@@ -1,7 +1,7 @@
 # Silverfir-nano
 
 A lightweight WebAssembly JIT engine that competes with production-grade optimizing compilers.
-On Apple M4, Silverfir-nano **beats Wasmtime's Cranelift** on CoreMark (184%), Lua fib (471%), and two other benchmarks, while going **7-7 against V8 TurboFan**. It reaches 91-99% of Cranelift on LZ4 compress, SHA-256, and STREAM Add.
+On Apple M4, Silverfir-nano **beats Wasmtime's Cranelift** on multiple benchmarks and **goes head-to-head with V8 TurboFan**, while staying ultra-compact and `no_std`-compatible.
 
 ## Performance
 
@@ -25,21 +25,11 @@ All benchmarks on Apple M4 (MacBook Air, macOS 26). Silverfir vs Wasmtime Cranel
 
 ### Summary
 
-| Category              | vs Cranelift        | vs V8 TurboFan     |
-|-----------------------|---------------------|---------------------|
-| Integer / Control Flow | 75-184% (wins CoreMark) | 68-118% (wins SHA-256) |
-| Lua interpreter       | 134-471% (wins all 3) | 38-121% (wins fib) |
-| Floating point        | 39-73%              | 37-173% (wins mandelbrot) |
-| Memory (STREAM)       | 81-99%              | 104-220% (wins all 4) |
-| **Overall**           | **SF wins 4, CL wins 10** | **SF wins 7, V8 wins 7** |
-
-See [full benchmark results](benchmarks/wasi/RESULTS.md) for details.
+See the charts above and [full benchmark results](benchmarks/wasi/RESULTS.md) for numbers.
 
 ## Highlights
 
-- **Competes with optimizing JITs** — beats Cranelift on 4 benchmarks, ties V8 at 7-7
-- **184% of Cranelift on CoreMark** — an interpreter-heavy benchmark where dispatch quality dominates
-- **99.4% of Cranelift on STREAM Add** — nearly matching a full optimizing compiler on memory throughput
+- **Competes with optimizing JITs** — beats Cranelift on CoreMark and Lua benchmarks, beats V8 on STREAM and floating-point workloads
 - **Ultra-compact** — the `no_std` core is ~500KB stripped, with zero runtime dependencies
 - **Full WebAssembly 2.0** — multi-value, reference types, bulk memory, multiple tables
 - **`no_std`** — core library requires only `alloc`; runs on embedded and bare-metal
@@ -61,6 +51,16 @@ The engine also includes an advanced interpreter with profile-guided instruction
 |-------|------|----------|
 | `sf-nano-cli` minimal | **~230 KB** | `no_std`, no WASI, no fusion |
 | `sf-nano-cli` full | ~3.0 MB | WASI + micro-JIT + std |
+
+## Interpreter-Only Mode
+
+If you need a pure interpreter without JIT (e.g., for platforms without executable memory), check out the `interp` branch:
+
+```bash
+git checkout interp
+```
+
+This branch includes the fast interpreter with instruction fusion and register caching, but no native code generation.
 
 ## Building
 
