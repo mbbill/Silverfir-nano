@@ -43,9 +43,6 @@ Silverfir-nano uses a micro-JIT that translates WebAssembly to native ARM64 mach
 - **Native code generation** — direct ARM64 emission, no interpreter dispatch overhead
 - **Register allocation** — maps WebAssembly locals and stack to hardware registers
 - **Inline operations** — arithmetic, comparisons, and memory access compiled to native instructions
-- **Fallback to interpreter** — unsupported patterns fall back gracefully to the fast interpreter
-
-The engine also includes an advanced interpreter with profile-guided instruction fusion, hot-local register caching, and `preserve_none` tail-call dispatch.
 
 ## Interpreter-Only Mode
 
