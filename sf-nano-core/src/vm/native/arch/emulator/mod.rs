@@ -238,14 +238,6 @@ impl<'a> Emulator<'a> {
                     }
                 }
                 MachineTerminator::Trap { kind } => {
-                    #[cfg(debug_assertions)]
-                    {
-                        extern crate std;
-                        std::eprintln!(
-                            "[emu trap] func={} block=b{} kind={:?}",
-                            self.func_id.0, self.block_id.0, kind
-                        );
-                    }
                     return Err(trap_from_kind(kind));
                 }
             }
@@ -374,14 +366,6 @@ impl<'a> Emulator<'a> {
             }
             MachineInstKind::TrapIf { kind, cond } => {
                 if self.eval_branch_cond(*cond)? {
-                    #[cfg(debug_assertions)]
-                    {
-                        extern crate std;
-                        std::eprintln!(
-                            "[emu trap] func={} block=b{} kind={:?}",
-                            self.func_id.0, self.block_id.0, kind
-                        );
-                    }
                     return Err(trap_from_kind(*kind));
                 }
             }
