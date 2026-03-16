@@ -73,10 +73,8 @@ python3 benchmarks/wasi/run_tests.py
 node benchmarks/wasi/run_v8.mjs
 
 # Minimal no_std build (277 KB, no WASI, JIT only)
-cd sf-nano-cli-minimal && cargo build --release
-
-# Run embedded self-test (no file I/O needed)
-./target/release/sf-nano-cli-minimal
+# Must be built standalone (excluded from workspace due to no_std)
+cd sf-nano-cli-minimal && cargo run --release
 ```
 
 ## WebAssembly 2.0 Compatibility
