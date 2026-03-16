@@ -1,8 +1,0 @@
-[package]
-name = "static-discover"
-version = "0.1.0"
-edition = "2021"
-description = "Static fusion pattern discovery for Silverfir-nano"
-
-[dependencies]
-wasmparser = "0.224"
