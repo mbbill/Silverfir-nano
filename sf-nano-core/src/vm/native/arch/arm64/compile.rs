@@ -96,16 +96,7 @@ struct DirectCallPatch {
     callee: crate::vm::native::ir::machine::MachineFuncId,
 }
 
-/// One debug region within a compiled function (for profiler symbols).
-#[derive(Clone, Debug)]
-pub struct DebugRegion {
-    /// Byte offset within the function text.
-    pub offset: usize,
-    /// Byte length of this region.
-    pub len: usize,
-    /// Human-readable label (e.g. "b0", "edge_3", "prologue", "return_ok").
-    pub label: alloc::string::String,
-}
+pub use crate::vm::native::ir_dump::DebugRegion;
 
 #[derive(Debug)]
 struct FunctionArtifact {
