@@ -242,12 +242,15 @@ impl<'a> BlockLowerContext<'a> {
                 let src_reg = self.use_value(*src)?;
                 let width = lir_value_slot_mem_width(self.program, *src);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Move {
-                            dst: self.cached_locals[cached_index].reg,
-                            src: MachineValue::Reg(src_reg),
-                        },
-                    });
+                    let cache_reg = self.cached_locals[cached_index].reg;
+                    if !self.try_coalesce_last_dst(*src, src_reg, cache_reg) {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                dst: cache_reg,
+                                src: MachineValue::Reg(src_reg),
+                            },
+                        });
+                    }
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
@@ -1005,6 +1008,52 @@ impl<'a> BlockLowerContext<'a> {
         )))
     }
 
+    /// Try to coalesce a transient-to-cache-local move by patching the previous
+    /// instruction's destination register directly. Returns true if successful.
+    ///
+    /// This eliminates patterns like `load r_transient <- [addr]; move r_cache <- r_transient`
+    /// by rewriting to `load r_cache <- [addr]`.
+    ///
+    /// Only safe when:
+    /// - src is a transient defined by the immediately preceding instruction
+    /// - src and target are in the same register bank
+    /// - the last instruction doesn't also read target_reg (would clobber input)
+    fn try_coalesce_last_dst(
+        &mut self,
+        src_value: LirValue,
+        src_reg: MachineReg,
+        target_reg: MachineReg,
+    ) -> bool {
+        if src_reg == target_reg {
+            return true;
+        }
+        if self.is_fp_reg(src_reg) != self.is_fp_reg(target_reg) {
+            return false;
+        }
+        if !self.is_transient_reg(src_reg) {
+            return false;
+        }
+        // The value must have 0 remaining uses after this store consumes it.
+        // This ensures no other instruction between the def and store reads it.
+        let remaining = self.remaining_uses.get(&src_value).copied().unwrap_or(0);
+        if remaining != 0 {
+            return false;
+        }
+        let Some(last) = self.ops.last_mut() else {
+            return false;
+        };
+        if !machine_inst_dst_eq(&last.kind, src_reg) {
+            return false;
+        }
+        // Make sure the last instruction doesn't read target_reg as an input
+        // (that would mean we'd clobber an input by redirecting the output).
+        if machine_inst_uses_reg(&last.kind, target_reg) {
+            return false;
+        }
+        patch_machine_inst_dst(&mut last.kind, target_reg);
+        true
+    }
+
     pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {
         self.ops.push(inst);
     }
@@ -1198,4 +1247,71 @@ fn convert_result_float_width(
         | Op::F64ReinterpretI64 => MachineFloatWidth::F64,
         _ => return None,
     })
+}
+
+/// Check if the instruction defines (writes to) the given register.
+fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
+    match kind {
+        MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
+        | MachineInstKind::Lea { dst, .. }
+        | MachineInstKind::Load { dst, .. }
+        | MachineInstKind::IntUnary { dst, .. }
+        | MachineInstKind::IntBinary { dst, .. }
+        | MachineInstKind::IntCompare { dst, .. }
+        | MachineInstKind::FloatUnary { dst, .. }
+        | MachineInstKind::FloatBinary { dst, .. }
+        | MachineInstKind::FloatCompare { dst, .. }
+        | MachineInstKind::Convert { dst, .. }
+        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => false,
+    }
+}
+
+/// Check if the instruction reads the given register as an input.
+fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
+    let is = |v: &MachineValue| matches!(v, MachineValue::Reg(r) if *r == reg);
+    match kind {
+        MachineInstKind::Move { src, .. } => is(src),
+        MachineInstKind::FloatConst { .. } => false,
+        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => addr.base == reg,
+        MachineInstKind::Store { addr, src, .. } => addr.base == reg || is(src),
+        MachineInstKind::IntUnary { src, .. }
+        | MachineInstKind::FloatUnary { src, .. }
+        | MachineInstKind::Convert { src, .. } => is(src),
+        MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntCompare { lhs, rhs, .. }
+        | MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
+        MachineInstKind::Select {
+            on_true,
+            on_false,
+            cond,
+            ..
+        } => is(on_true) || is(on_false) || is(cond),
+        MachineInstKind::TrapIf { .. } | MachineInstKind::CallHelper(_) => false,
+    }
+}
+
+/// Patch the destination register of an instruction in place.
+fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
+    match kind {
+        MachineInstKind::Move { dst, .. }
+        | MachineInstKind::FloatConst { dst, .. }
+        | MachineInstKind::Lea { dst, .. }
+        | MachineInstKind::Load { dst, .. }
+        | MachineInstKind::IntUnary { dst, .. }
+        | MachineInstKind::IntBinary { dst, .. }
+        | MachineInstKind::IntCompare { dst, .. }
+        | MachineInstKind::FloatUnary { dst, .. }
+        | MachineInstKind::FloatBinary { dst, .. }
+        | MachineInstKind::FloatCompare { dst, .. }
+        | MachineInstKind::Convert { dst, .. }
+        | MachineInstKind::Select { dst, .. } => *dst = new_dst,
+        MachineInstKind::Store { .. }
+        | MachineInstKind::TrapIf { .. }
+        | MachineInstKind::CallHelper(_) => {}
+    }
 }
