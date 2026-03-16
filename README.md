@@ -49,7 +49,7 @@ The engine also includes an advanced interpreter with profile-guided instruction
 
 | Build | Size | Features |
 |-------|------|----------|
-| `sf-nano-cli` minimal | **~230 KB** | `no_std`, no WASI, no fusion |
+| `sf-nano-cli` minimal | **~500 KB** | `no_std`, no WASI, no fusion |
 | `sf-nano-cli` full | ~3.0 MB | WASI + micro-JIT + std |
 
 ## Interpreter-Only Mode
