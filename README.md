@@ -45,13 +45,6 @@ Silverfir-nano uses a micro-JIT that translates WebAssembly to native ARM64 mach
 
 The engine also includes an advanced interpreter with profile-guided instruction fusion, hot-local register caching, and `preserve_none` tail-call dispatch.
 
-## Binary Size
-
-| Build | Size | Features |
-|-------|------|----------|
-| `sf-nano-cli` minimal | **~500 KB** | `no_std`, no WASI, no fusion |
-| `sf-nano-cli` full | ~3.0 MB | WASI + micro-JIT + std |
-
 ## Interpreter-Only Mode
 
 If you need a pure interpreter without JIT (e.g., for platforms without executable memory), check out the `interp` branch:
@@ -77,8 +70,6 @@ python3 benchmarks/wasi/run_tests.py
 # Run benchmarks in V8 (Node.js)
 node benchmarks/wasi/run_v8.mjs
 
-# Regenerate benchmark SVGs
-python3 benchmarks/wasi/gen_svg.py
 ```
 
 ## WebAssembly 2.0 Compatibility
