@@ -177,6 +177,10 @@ enum IndexedMemFusion {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
         scaled: bool,
+        /// Use UXTW addressing: `ldr Rt, [Xn, Wm, UXTW]`. The index register
+        /// is treated as a 32-bit value that is zero-extended inline by the
+        /// load instruction, eliminating an explicit I64ExtendI32U.
+        uxtw: bool,
     },
     Store {
         base: MachineReg,
@@ -647,6 +651,11 @@ impl<'a> FunctionCompiler<'a> {
         let mut index = 0;
         while index < block.ops.len() {
             self.current_op_index = Some(index);
+            if let Some((fused, skip)) = uxtw_mem_fusion(block, index) {
+                self.emit_indexed_mem_fusion(fused)?;
+                index += 1 + skip; // skip convert + (add+load fused pair)
+                continue;
+            }
             if let Some(fused) = indexed_mem_fusion(block, index) {
                 self.emit_indexed_mem_fusion(fused)?;
                 index += 2;
@@ -670,7 +679,8 @@ impl<'a> FunctionCompiler<'a> {
                 width,
                 extension,
                 scaled,
-            } => self.emit_indexed_load(dst, base, index, width, extension, scaled),
+                uxtw,
+            } => self.emit_indexed_load(dst, base, index, width, extension, scaled, uxtw),
             IndexedMemFusion::Store {
                 base,
                 index,
@@ -1645,12 +1655,12 @@ impl<'a> FunctionCompiler<'a> {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
         scaled: bool,
+        uxtw: bool,
     ) -> Result<(), WasmError> {
         let base = self.map_gp_reg(base)?;
         let index = self.map_gp_reg(index)?;
         if self.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)?;
-            // Derive width from the load, not from previously-tracked reg width.
             let tracked_width = match width {
                 MachineMemWidth::U32 => MachineFloatWidth::F32,
                 MachineMemWidth::U64 => MachineFloatWidth::F64,
@@ -1663,11 +1673,13 @@ impl<'a> FunctionCompiler<'a> {
             let inst = match (tracked_width, width, extension) {
                 (MachineFloatWidth::F32, MachineMemWidth::U32, MachineLoadExtension::None)
                 | (MachineFloatWidth::F32, MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
-                    enc::ldr_s_reg(dst_fp, base, index, scaled)
+                    if uxtw { enc::ldr_s_reg_uxtw(dst_fp, base, index) }
+                    else { enc::ldr_s_reg(dst_fp, base, index, scaled) }
                 }
                 (MachineFloatWidth::F64, MachineMemWidth::U64, MachineLoadExtension::None)
                 | (MachineFloatWidth::F64, MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
-                    enc::ldr_d_reg(dst_fp, base, index, scaled)
+                    if uxtw { enc::ldr_d_reg_uxtw(dst_fp, base, index) }
+                    else { enc::ldr_d_reg(dst_fp, base, index, scaled) }
                 }
                 _ => {
                     return Err(WasmError::invalid(
@@ -1683,48 +1695,40 @@ impl<'a> FunctionCompiler<'a> {
         let inst = match (width, extension) {
             (MachineMemWidth::U8, MachineLoadExtension::None)
             | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
-                enc::ldrb_reg(dst, base, index)
+                if uxtw { enc::ldrb_reg_uxtw(dst, base, index) }
+                else { enc::ldrb_reg(dst, base, index) }
             }
             (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
-                enc::ldrsb_reg_64(dst, base, index)
+                if uxtw { enc::ldrsb_reg_64_uxtw(dst, base, index) }
+                else { enc::ldrsb_reg_64(dst, base, index) }
             }
             (MachineMemWidth::U16, MachineLoadExtension::None)
             | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
-                if scaled {
-                    enc::ldrh_reg_scaled(dst, base, index)
-                } else {
-                    enc::ldrh_reg(dst, base, index)
-                }
+                if uxtw { enc::ldrh_reg_uxtw(dst, base, index) }
+                else if scaled { enc::ldrh_reg_scaled(dst, base, index) }
+                else { enc::ldrh_reg(dst, base, index) }
             }
             (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
-                if scaled {
-                    enc::ldrsh_reg_64_scaled(dst, base, index)
-                } else {
-                    enc::ldrsh_reg_64(dst, base, index)
-                }
+                if uxtw { enc::ldrsh_reg_64_uxtw(dst, base, index) }
+                else if scaled { enc::ldrsh_reg_64_scaled(dst, base, index) }
+                else { enc::ldrsh_reg_64(dst, base, index) }
             }
             (MachineMemWidth::U32, MachineLoadExtension::None)
             | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
-                if scaled {
-                    enc::ldr_reg_32_scaled(dst, base, index)
-                } else {
-                    enc::ldr_reg_32(dst, base, index)
-                }
+                if uxtw { enc::ldr_reg_32_uxtw(dst, base, index) }
+                else if scaled { enc::ldr_reg_32_scaled(dst, base, index) }
+                else { enc::ldr_reg_32(dst, base, index) }
             }
             (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
-                if scaled {
-                    enc::ldrsw_reg_scaled(dst, base, index)
-                } else {
-                    enc::ldrsw_reg(dst, base, index)
-                }
+                if uxtw { enc::ldrsw_reg_uxtw(dst, base, index) }
+                else if scaled { enc::ldrsw_reg_scaled(dst, base, index) }
+                else { enc::ldrsw_reg(dst, base, index) }
             }
             (MachineMemWidth::U64, MachineLoadExtension::None)
             | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
-                if scaled {
-                    enc::ldr_reg_64_scaled(dst, base, index)
-                } else {
-                    enc::ldr_reg_64(dst, base, index)
-                }
+                if uxtw { enc::ldr_reg_64_uxtw(dst, base, index) }
+                else if scaled { enc::ldr_reg_64_scaled(dst, base, index) }
+                else { enc::ldr_reg_64(dst, base, index) }
             }
             (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
                 return Err(WasmError::invalid(
@@ -3720,6 +3724,7 @@ fn indexed_mem_fusion(block: &MachineBlock, index: usize) -> Option<IndexedMemFu
                     width,
                     extension,
                     scaled: false,
+                    uxtw: false,
                 })
             } else {
                 None
@@ -3738,6 +3743,86 @@ fn indexed_mem_fusion(block: &MachineBlock, index: usize) -> Option<IndexedMemFu
                 src,
                 scaled: false,
             })
+        }
+        _ => None,
+    }
+}
+
+/// Detect a 3-instruction pattern: Convert I64ExtendI32U + Add base+index + Load.
+/// Fuses into a single `ldr Rt, [Xbase, Windex, UXTW]` which zero-extends the
+/// 32-bit wasm address inline in the load instruction.
+fn uxtw_mem_fusion(block: &MachineBlock, index: usize) -> Option<(IndexedMemFusion, usize)> {
+    let cvt_inst = block.ops.get(index)?;
+    let MachineInstKind::Convert {
+        op: MachineConvertOp::I64ExtendI32U,
+        dst: ext_dst,
+        src: MachineValue::Reg(wasm_addr),
+    } = cvt_inst.kind
+    else {
+        return None;
+    };
+
+    // Check for optional offset add: ext_dst = ext_dst + imm
+    let (add_offset_count, base_add_index) = {
+        let next = block.ops.get(index + 1)?;
+        if let MachineInstKind::IntBinary {
+            width: MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Add,
+            dst: add_dst,
+            lhs: MachineValue::Reg(add_lhs),
+            rhs: MachineValue::Imm64(_),
+        } = next.kind
+        {
+            if add_dst == ext_dst && add_lhs == ext_dst {
+                // There's an offset add — can't use UXTW (address is modified)
+                return None;
+            }
+        }
+        // No offset add — the base+index add should be right after the convert
+        (0, index + 1)
+    };
+
+    // Now check for the base+index add + load pattern (same as indexed_mem_fusion)
+    let fused = indexed_mem_fusion(block, base_add_index)?;
+    match fused {
+        IndexedMemFusion::Load {
+            dst,
+            base,
+            index: idx_reg,
+            width,
+            extension,
+            ..
+        } if idx_reg == ext_dst => {
+            Some((
+                IndexedMemFusion::Load {
+                    dst,
+                    base,
+                    index: wasm_addr, // use the ORIGINAL 32-bit register
+                    width,
+                    extension,
+                    scaled: false,
+                    uxtw: true,
+                },
+                2 + add_offset_count, // skip convert + add + load (3 instructions)
+            ))
+        }
+        IndexedMemFusion::Store {
+            base,
+            index: idx_reg,
+            width,
+            src,
+            ..
+        } if idx_reg == ext_dst => {
+            Some((
+                IndexedMemFusion::Store {
+                    base,
+                    index: wasm_addr,
+                    width,
+                    src,
+                    scaled: false,
+                },
+                2 + add_offset_count,
+            ))
         }
         _ => None,
     }
@@ -3992,6 +4077,7 @@ mod tests {
                 width: MachineMemWidth::U64,
                 extension: MachineLoadExtension::None,
                 scaled: false,
+                uxtw: false,
             })
         );
     }

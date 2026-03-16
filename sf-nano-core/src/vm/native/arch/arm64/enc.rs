@@ -349,6 +349,61 @@ pub fn ldr_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xf860_6800, rt, rn, rm, false)
 }
 
+/// `ldr Xt, [Xn, Wm, UXTW]` — load with 32-bit zero-extending index.
+pub fn ldr_reg_64_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xf860_4800, rt, rn, rm, false)
+}
+
+/// `str Xt, [Xn, Wm, UXTW]` — store with 32-bit zero-extending index.
+pub fn str_reg_64_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xf820_4800, rt, rn, rm, false)
+}
+
+/// `ldr Wt, [Xn, Wm, UXTW]` — load 32-bit with zero-extending index.
+pub fn ldr_reg_32_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb860_4800, rt, rn, rm, false)
+}
+
+/// `ldrb Wt, [Xn, Wm, UXTW]` — load byte with zero-extending index.
+pub fn ldrb_reg_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x3860_4800, rt, rn, rm, false)
+}
+
+/// `ldrh Wt, [Xn, Wm, UXTW]` — load halfword with zero-extending index.
+pub fn ldrh_reg_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x7860_4800, rt, rn, rm, false)
+}
+
+/// `ldrsb Xt, [Xn, Wm, UXTW]` — load signed byte with zero-extending index.
+pub fn ldrsb_reg_64_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x38a0_4800, rt, rn, rm, false)
+}
+
+/// `ldrsh Xt, [Xn, Wm, UXTW]` — load signed halfword with zero-extending index.
+pub fn ldrsh_reg_64_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x78a0_4800, rt, rn, rm, false)
+}
+
+/// `ldrsw Xt, [Xn, Wm, UXTW]` — load signed word with zero-extending index.
+pub fn ldrsw_reg_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb8a0_4800, rt, rn, rm, false)
+}
+
+/// `strb Wt, [Xn, Wm, UXTW]` — store byte with zero-extending index.
+pub fn strb_reg_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x3820_4800, rt, rn, rm, false)
+}
+
+/// `strh Wt, [Xn, Wm, UXTW]` — store halfword with zero-extending index.
+pub fn strh_reg_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0x7820_4800, rt, rn, rm, false)
+}
+
+/// `str Wt, [Xn, Wm, UXTW]` — store 32-bit with zero-extending index.
+pub fn str_reg_32_uxtw(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    ldst_register_offset(0xb820_4800, rt, rn, rm, false)
+}
+
 pub fn ldr_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xf860_6800, rt, rn, rm, true)
 }
@@ -453,12 +508,32 @@ pub fn ldr_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xfc60_6800, rt, rn, rm, scaled)
 }
 
+/// `ldr Dd, [Xn, Wm, UXTW]` — load with 32-bit zero-extending index.
+pub fn ldr_d_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    fp_ldst_register_offset(0xfc60_4800, rt, rn, rm, false)
+}
+
+/// `ldr Sd, [Xn, Wm, UXTW]` — load with 32-bit zero-extending index.
+pub fn ldr_s_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    fp_ldst_register_offset(0xbc60_4800, rt, rn, rm, false)
+}
+
 pub fn str_s_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xbc20_6800, rt, rn, rm, scaled)
 }
 
 pub fn str_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xfc20_6800, rt, rn, rm, scaled)
+}
+
+/// `str Dd, [Xn, Wm, UXTW]` — store with 32-bit zero-extending index.
+pub fn str_d_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    fp_ldst_register_offset(0xfc20_4800, rt, rn, rm, false)
+}
+
+/// `str Sd, [Xn, Wm, UXTW]` — store with 32-bit zero-extending index.
+pub fn str_s_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    fp_ldst_register_offset(0xbc20_4800, rt, rn, rm, false)
 }
 
 pub fn stp_64(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {

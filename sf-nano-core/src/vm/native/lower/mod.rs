@@ -200,6 +200,7 @@ fn lower_function(
             runtime,
             call_link,
             target == input.lir.entry,
+            #[cfg(feature = "guard-pages")]
             guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
