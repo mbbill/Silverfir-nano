@@ -1,6 +1,7 @@
 # Silverfir-nano
 
-**A 277 KB no_std WebAssembly JIT engine that beats Wasmtime Cranelift and goes head-to-head with V8 TurboFan.**
+## A 277 KB no_std WebAssembly JIT engine that goes head-to-head with V8 and Wasmtime.
+
 
 On Apple M4, Silverfir-nano **beats Wasmtime's Cranelift** on multiple benchmarks and **goes head-to-head with V8 TurboFan**, while staying ultra-compact and `no_std`-compatible.
 
