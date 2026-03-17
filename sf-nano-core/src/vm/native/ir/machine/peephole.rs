@@ -2,21 +2,25 @@
 //!
 //! Runs within a single block. Current optimizations:
 //!
-//! 1. **Constant folding into operands**: `move rX <- C; op rD <- ... rX ...`
+//! 1. **Constant deduplication**: When the same constant value is materialized
+//!    multiple times (`Move { src: Imm64 }` or `FloatConst`), subsequent
+//!    occurrences are replaced with register copies from the first.
+//!
+//! 2. **Constant folding into operands**: `move rX <- C; op rD <- ... rX ...`
 //!    → `op rD <- ... C ...` when rX has no other uses before redefinition.
 //!
-//! 2. **Copy propagation**: `move rTmp <- rSrc; op ... rTmp ...`
+//! 3. **Copy propagation**: `move rTmp <- rSrc; op ... rTmp ...`
 //!    → rewrite later uses to `rSrc` and remove the transient move.
 //!
-//! 3. **Store-to-load forwarding**: `store.u64 [addr] <- X; ...; load.u64 rY <- [addr]`
+//! 4. **Store-to-load forwarding**: `store.u64 [addr] <- X; ...; load.u64 rY <- [addr]`
 //!    → `move rY <- X` when intervening ops cannot invalidate the exact address.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    MachineAddr, MachineBlock, MachineBranchCond, MachineEdge, MachineInst, MachineInstKind,
-    MachineProgram, MachineReg, MachineTerminator, MachineValue,
+    MachineAddr, MachineBlock, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
+    MachineInstKind, MachineProgram, MachineReg, MachineTerminator, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -42,6 +46,7 @@ struct TrackedLoad {
 pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
     for block in &mut program.blocks {
+        deduplicate_constants(block, program.first_fp_reg);
         fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
         copy_propagate(
             block,
@@ -60,6 +65,82 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
             program.first_fp_reg,
             program.fp_transient_count,
         );
+    }
+}
+
+/// Replace duplicate constant materializations with register copies.
+///
+/// Within a block, if the same constant value is materialized into multiple
+/// registers (via `Move { src: Imm64 }` or `FloatConst`), the second and
+/// subsequent materializations are replaced with register-to-register copies.
+///
+/// Runs before `fold_constants` so that shared constants keep their defining
+/// instruction alive, preventing fold from inlining the same expensive constant
+/// into multiple consumers independently.
+fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
+    let mut gp_consts: Vec<(u64, MachineReg)> = Vec::new();
+    let mut fp_consts: Vec<(u64, MachineFloatWidth, MachineReg)> = Vec::new();
+
+    for inst in &mut block.ops {
+        if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
+            gp_consts.clear();
+            fp_consts.clear();
+            continue;
+        }
+
+        let mut new_gp = None;
+        let mut new_fp = None;
+
+        match &mut inst.kind {
+            MachineInstKind::Move {
+                dst,
+                src: src @ MachineValue::Imm64(..),
+            } if dst.0 < first_fp_reg => {
+                let bits = match *src {
+                    MachineValue::Imm64(b) => b,
+                    _ => unreachable!(),
+                };
+                // Skip zero: fold_constants can inline Imm64(0) into consumers
+                // for free (str xzr, cmp #0, etc.), so dedup would be a regression.
+                if bits != 0 {
+                    if let Some(&(_, prev)) =
+                        gp_consts.iter().find(|(b, r)| *b == bits && *r != *dst)
+                    {
+                        *src = MachineValue::Reg(prev);
+                    }
+                    new_gp = Some((bits, *dst));
+                }
+            }
+            MachineInstKind::FloatConst { dst, bits, width } => {
+                let (d, b, w) = (*dst, *bits, *width);
+                // Skip zero: fcmp d, #0.0 is free when folded as Imm64(0).
+                if b != 0 {
+                    if let Some(&(_, _, prev)) =
+                        fp_consts.iter().find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
+                    {
+                        inst.kind = MachineInstKind::Move {
+                            dst: d,
+                            src: MachineValue::Reg(prev),
+                        };
+                    }
+                    new_fp = Some((b, w, d));
+                }
+            }
+            _ => {}
+        }
+
+        // Invalidate tracking for any register redefined by this instruction.
+        if let Some(def) = defined_reg(&inst.kind) {
+            gp_consts.retain(|(_, r)| *r != def);
+            fp_consts.retain(|(_, _, r)| *r != def);
+        }
+
+        if let Some(e) = new_gp {
+            gp_consts.push(e);
+        }
+        if let Some(e) = new_fp {
+            fp_consts.push(e);
+        }
     }
 }
 
