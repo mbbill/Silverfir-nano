@@ -1770,6 +1770,15 @@ impl<'a> FunctionCompiler<'a> {
                 return Ok(());
             }
         }
+        // Fast path: store zero → use xzr directly (no materialization).
+        if matches!(src, MachineValue::Imm64(0)) && width == MachineMemWidth::U64 {
+            let offset = addr.offset as i64;
+            if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
+                self.text
+                    .emit_u32(enc::str_64(Arm64Reg::Xzr, base, (offset / 8) as u32));
+                return Ok(());
+            }
+        }
         // Fast path: U64 store with aligned immediate offset → single str_64
         if width == MachineMemWidth::U64 {
             let offset = addr.offset as i64;
@@ -2433,11 +2442,42 @@ impl<'a> FunctionCompiler<'a> {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
             }
-            MachineConvertOp::I32ReinterpretF32 | MachineConvertOp::I64ReinterpretF64 => {
-                let src_gp = self.materialize_value(SCRATCH0, src)?;
+            MachineConvertOp::I32ReinterpretF32 => {
                 let dst_gp = self.map_gp_reg(dst)?;
-                if dst_gp != src_gp {
-                    self.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
+                if let MachineValue::Reg(src_reg) = src {
+                    if self.is_fp_reg(src_reg) {
+                        let src_fp = self.map_fp_reg(src_reg)?;
+                        self.text.emit_u32(enc::fmov_gp_from_s(dst_gp, src_fp));
+                    } else {
+                        let src_gp = self.map_gp_reg(src_reg)?;
+                        if dst_gp != src_gp {
+                            self.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
+                        }
+                    }
+                } else {
+                    let src_gp = self.materialize_value(SCRATCH0, src)?;
+                    if dst_gp != src_gp {
+                        self.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
+                    }
+                }
+            }
+            MachineConvertOp::I64ReinterpretF64 => {
+                let dst_gp = self.map_gp_reg(dst)?;
+                if let MachineValue::Reg(src_reg) = src {
+                    if self.is_fp_reg(src_reg) {
+                        let src_fp = self.map_fp_reg(src_reg)?;
+                        self.text.emit_u32(enc::fmov_gp_from_d(dst_gp, src_fp));
+                    } else {
+                        let src_gp = self.map_gp_reg(src_reg)?;
+                        if dst_gp != src_gp {
+                            self.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
+                        }
+                    }
+                } else {
+                    let src_gp = self.materialize_value(SCRATCH0, src)?;
+                    if dst_gp != src_gp {
+                        self.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
+                    }
                 }
             }
             MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
