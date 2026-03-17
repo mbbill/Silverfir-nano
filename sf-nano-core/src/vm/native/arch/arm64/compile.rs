@@ -2380,15 +2380,19 @@ impl<'a> FunctionCompiler<'a> {
     ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-        let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-        match width {
-            MachineFloatWidth::F32 => {
-                self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp));
-            }
-            MachineFloatWidth::F64 => {
-                self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp));
-            }
-        };
+        // Compare against zero: use FCMP Dn, #0.0 when rhs is immediate zero.
+        if matches!(rhs, MachineValue::Imm64(0)) {
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s_zero(lhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d_zero(lhs_fp)),
+            };
+        } else {
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
+            };
+        }
         // Wasm float comparisons: unordered (NaN) => false for all except Ne
         let cond = map_float_cond(kind);
         self.text.emit_u32(enc::cset_32(dst_gp, cond));
@@ -2619,11 +2623,18 @@ impl<'a> FunctionCompiler<'a> {
         else_fallthrough: bool,
     ) -> Result<(), WasmError> {
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-        let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-        match width {
-            MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
-            MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
-        };
+        if matches!(rhs, MachineValue::Imm64(0)) {
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s_zero(lhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d_zero(lhs_fp)),
+            };
+        } else {
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
+            };
+        }
         let cond = map_float_cond(kind);
         if else_fallthrough {
             if let Some(label) = then_label {

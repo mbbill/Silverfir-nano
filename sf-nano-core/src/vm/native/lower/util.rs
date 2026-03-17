@@ -54,10 +54,9 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
         LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
     }
 
-    // Linear-SSA invariant: within the op stream (excluding edge bindings),
-    // every value should be used exactly once. Multi-use from operand-stack
-    // spill (StoreSlot) + edge binding, or from multiple edge bindings, is
-    // expected. We check that no value has more than 1 use within ops alone.
+    // Linear-SSA invariant: within the op stream, every value is used exactly
+    // once. Edge bindings (terminators) may add additional uses for values
+    // that are live across block boundaries.
     #[cfg(debug_assertions)]
     {
         let mut op_uses: BTreeMap<LirValue, u32> = BTreeMap::new();
@@ -75,11 +74,10 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
             }
         }
         for (&value, &count) in &op_uses {
-            debug_assert!(
-                count == 1,
-                "LIR value {:?} has {} uses within ops (expected 1 for linear SSA)",
-                value,
-                count,
+            debug_assert_eq!(
+                count, 1,
+                "LIR value {:?} has {} uses within ops (linear SSA requires exactly 1)",
+                value, count,
             );
         }
     }

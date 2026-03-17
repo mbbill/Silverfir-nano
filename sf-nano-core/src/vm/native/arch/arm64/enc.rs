@@ -913,6 +913,10 @@ pub fn frintz_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b001011, rd,
 // FP compare
 pub fn fcmp_s(rn: u32, rm: u32) -> u32 { fp_compare(0b00, rn, rm, 0b00000) }
 pub fn fcmp_d(rn: u32, rm: u32) -> u32 { fp_compare(0b01, rn, rm, 0b00000) }
+/// FCMP Sn, #0.0
+pub fn fcmp_s_zero(rn: u32) -> u32 { fp_compare(0b00, rn, 0, 0b01000) }
+/// FCMP Dn, #0.0
+pub fn fcmp_d_zero(rn: u32) -> u32 { fp_compare(0b01, rn, 0, 0b01000) }
 
 // FP conditional select
 pub fn fcsel_s(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 { fp_csel(0b00, rd, rn, rm, cond) }

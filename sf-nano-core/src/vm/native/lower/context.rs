@@ -761,6 +761,10 @@ impl<'a> BlockLowerContext<'a> {
         Ok(reg)
     }
 
+    /// Free transient registers for values with no remaining uses. With
+    /// linear SSA, each op's inputs become dead after a single use, so this
+    /// typically frees exactly the consumed operands. Must be called after
+    /// the instruction's results are allocated to avoid reuse conflicts.
     pub(super) fn release_dead_values(&mut self) -> Result<(), WasmError> {
         let mut index = 0;
         while index < self.values.len() {

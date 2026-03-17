@@ -40,8 +40,9 @@ struct TrackedLoad {
 /// transient registers are candidates for copy/constant rewriting; fixed and
 /// cached-local registers must not be disturbed.
 pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
+    let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
     for block in &mut program.blocks {
-        fold_constants(block, first_transient, program.first_fp_reg);
+        fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
         copy_propagate(
             block,
             program.reg_count,
@@ -51,7 +52,7 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
-        fold_constants(block, first_transient, program.first_fp_reg);
+        fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
         copy_propagate(
             block,
             program.reg_count,
@@ -63,33 +64,40 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
 }
 
 /// Fold `move rX <- imm; op ... rX ...` into `op ... imm ...` when rX is
-/// a transient register (single-use SSA value). Cached-local and fixed
-/// registers are never folded — they persist across the block.
-fn fold_constants(block: &mut MachineBlock, first_transient: u16, first_fp_reg: u16) {
+/// a transient register (single-use SSA value). Also folds
+/// `FloatConst rX <- bits; FloatCompare/op ... rX ...` into `op ... Imm64(bits) ...`.
+/// Cached-local and fixed registers are never folded — they persist across the block.
+fn fold_constants(
+    block: &mut MachineBlock,
+    first_transient: u16,
+    first_fp_reg: u16,
+    fp_transient_end: u16,
+) {
     let mut i = 0;
     while i + 1 < block.ops.len() {
         let (dst, imm) = match &block.ops[i].kind {
+            // GP transient constant: move rX <- imm
             MachineInstKind::Move {
                 dst,
                 src: MachineValue::Imm64(imm),
             } if dst.0 >= first_transient && dst.0 < first_fp_reg => (*dst, *imm),
+            // FP transient constant: FloatConst rX <- bits
+            MachineInstKind::FloatConst { dst, bits, .. }
+                if dst.0 >= first_fp_reg && dst.0 < fp_transient_end =>
+            {
+                (*dst, *bits)
+            }
             _ => {
                 i += 1;
                 continue;
             }
         };
 
-        // Check: is dst used in the next instruction? And is it NOT used
-        // anywhere else before being redefined?
-        // Simple conservative check: dst must appear exactly once in the
-        // next instruction's source operands, and must not be the next
-        // instruction's destination.
         let next = &block.ops[i + 1].kind;
         let use_count = count_value_uses(next, dst);
         let is_dst_of_next = inst_defines(next, dst);
 
         if use_count == 1 && !is_dst_of_next {
-            // Check that no later instruction or the terminator uses dst before redefinition
             let safe = is_last_use_before_redef(block, i + 1, dst);
             if safe {
                 let imm_val = MachineValue::Imm64(imm);

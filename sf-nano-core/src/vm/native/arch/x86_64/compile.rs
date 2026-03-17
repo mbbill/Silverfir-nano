@@ -2353,11 +2353,20 @@ impl<'a> FunctionCompiler<'a> {
     ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-        let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-        match width {
-            MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-            MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-        };
+        if matches!(rhs, MachineValue::Imm64(0)) {
+            // Zero the scratch XMM via xorpd and compare against it.
+            enc::xorpd(&mut self.text, FP_SCRATCH1 as u8, FP_SCRATCH1 as u8);
+            match width {
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+            };
+        } else {
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            match width {
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+            };
+        }
         // Wasm float comparisons: unordered (NaN) => 0 for all except Ne.
         // UCOMISD sets: ZF=1,PF=1,CF=1 for unordered; ZF=1,PF=0,CF=0 for equal;
         // ZF=0,PF=0,CF=1 for less-than; ZF=0,PF=0,CF=0 for greater-than.
@@ -2691,11 +2700,19 @@ impl<'a> FunctionCompiler<'a> {
         else_fallthrough: bool,
     ) -> Result<(), WasmError> {
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-        let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-        match width {
-            MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-            MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
-        };
+        if matches!(rhs, MachineValue::Imm64(0)) {
+            enc::xorpd(&mut self.text, FP_SCRATCH1 as u8, FP_SCRATCH1 as u8);
+            match width {
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+            };
+        } else {
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            match width {
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
+            };
+        }
         let cc = map_float_cond(kind);
         if else_fallthrough {
             if let Some(label) = then_label {
