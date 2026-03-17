@@ -21,6 +21,16 @@ use super::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LirValue(pub u32);
 
+/// Analysis facts about a cached local, carried from planning to the backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CachedLocalInfo {
+    /// True if this local is a function parameter (local index < param count).
+    pub is_param: bool,
+    /// True if this non-param local may be read before being written at
+    /// function-entry scope (control depth 0). Only meaningful when `!is_param`.
+    pub reads_before_write: bool,
+}
+
 /// Preferred canonical local-slot ranking selected by planning, per bank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LirLocalCachePrefs {
@@ -30,6 +40,10 @@ pub struct LirLocalCachePrefs {
     pub fp_preferred_slots: Vec<FrameSlot>,
     /// Semantic types for `fp_preferred_slots`, kept in the same order.
     pub fp_preferred_types: Vec<ValueType>,
+    /// Per-local analysis facts, parallel to `gp_preferred_slots`.
+    pub gp_local_info: Vec<CachedLocalInfo>,
+    /// Per-local analysis facts, parallel to `fp_preferred_slots`.
+    pub fp_local_info: Vec<CachedLocalInfo>,
 }
 
 /// Full prepared LIR program for one function.

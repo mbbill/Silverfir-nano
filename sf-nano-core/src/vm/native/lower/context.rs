@@ -33,11 +33,14 @@ use super::{
     util::{compute_remaining_uses, single_arg, single_result, two_args},
 };
 
+use crate::vm::lir::ir::CachedLocalInfo;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CachedLocal {
     slot: FrameSlot,
     reg: MachineReg,
     float_width: Option<MachineFloatWidth>,
+    info: CachedLocalInfo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,10 +93,16 @@ impl<'a> BlockLowerContext<'a> {
             let Some(reg) = regfile.gp_local_cache(index) else {
                 break;
             };
+            let info = cache_prefs
+                .gp_local_info
+                .get(index)
+                .copied()
+                .unwrap_or_default();
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
                 float_width: None,
+                info,
             });
         }
         for (index, slot) in cache_prefs.fp_preferred_slots.iter().copied().enumerate() {
@@ -111,10 +120,16 @@ impl<'a> BlockLowerContext<'a> {
                         slot
                     ))
                 })?;
+            let info = cache_prefs
+                .fp_local_info
+                .get(index)
+                .copied()
+                .unwrap_or_default();
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
                 float_width: Some(float_width),
+                info,
             });
         }
 
@@ -148,7 +163,7 @@ impl<'a> BlockLowerContext<'a> {
         lower.release_dead_values()?;
 
         if is_entry {
-            lower.emit_reload_cached_locals()?;
+            lower.emit_entry_cached_locals()?;
         }
 
         Ok(lower)
@@ -540,6 +555,8 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
+    /// Reload all cached locals from the frame. Used after calls and at
+    /// non-entry block boundaries where the cache may be stale.
     pub(super) fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
             let cached = self.cached_locals[index];
@@ -551,6 +568,47 @@ impl<'a> BlockLowerContext<'a> {
                     extension: MachineLoadExtension::None,
                 },
             });
+        }
+        Ok(())
+    }
+
+    /// Initialize cached locals at function entry. Uses analysis info to avoid
+    /// unnecessary frame loads for non-parameter locals.
+    fn emit_entry_cached_locals(&mut self) -> Result<(), WasmError> {
+        for index in 0..self.cached_locals.len() {
+            let cached = self.cached_locals[index];
+            if cached.info.is_param {
+                // Argument — caller wrote a real value, must load from frame.
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        dst: cached.reg,
+                        addr: self.frame_addr(cached.slot)?,
+                        width: cached_local_mem_width(cached),
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            } else if cached.info.reads_before_write {
+                // Non-param local that may be read before written — zero the
+                // register (wasm locals are initialized to zero).
+                if cached.float_width.is_some() {
+                    let width = cached.float_width.unwrap();
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::FloatConst {
+                            width,
+                            dst: cached.reg,
+                            bits: 0,
+                        },
+                    });
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Move {
+                            dst: cached.reg,
+                            src: MachineValue::Imm64(0),
+                        },
+                    });
+                }
+            }
+            // else: non-param, written before read — skip entirely.
         }
         Ok(())
     }
