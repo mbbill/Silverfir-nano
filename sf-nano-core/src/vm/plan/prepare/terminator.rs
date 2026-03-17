@@ -106,7 +106,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalTee { idx } => {
-            lower_local_tee(*idx, state, frame)?;
+            lower_local_tee(*idx, state, frame, values, local_types)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,

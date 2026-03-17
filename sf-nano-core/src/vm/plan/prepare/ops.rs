@@ -230,18 +230,26 @@ pub(super) fn lower_local_tee(
     local_idx: u16,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+    local_types: &[ValueType],
 ) -> Result<(), WasmError> {
-    let src = *state
-        .live()
-        .last()
-        .ok_or_else(|| WasmError::internal("local.tee requires a live transient value".into()))?;
+    // Pop the value, store it, then reload from the slot to produce a fresh
+    // single-use value. This maintains the linear-SSA invariant: every LIR
+    // value is used exactly once.
+    let src = state.pop_one()?;
+    let slot = frame.local_slot(local_idx);
     state.ops.push(LirInst {
-        kind: LirInstKind::StoreSlot {
-            slot: frame.local_slot(local_idx),
-            src,
-        },
+        kind: LirInstKind::StoreSlot { slot, src },
     });
-    Ok(())
+    let ty = local_types
+        .get(local_idx as usize)
+        .copied()
+        .unwrap_or(ValueType::I64);
+    let dst = values.fresh_typed(ty);
+    state.ops.push(LirInst {
+        kind: LirInstKind::LoadSlot { slot, dst },
+    });
+    state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
 
 pub(super) fn lower_call_external(
@@ -372,7 +380,7 @@ pub(super) fn lower_block_body_op(
         }
         SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values, local_types),
         SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame),
-        SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame),
+        SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame, values, local_types),
         SemanticOpKind::CallExternal {
             func_idx,
             params,
