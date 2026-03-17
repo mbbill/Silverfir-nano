@@ -91,11 +91,11 @@ def make_svg(title, subtitle, benchmarks, filename):
 # ══════════════════════════════════════════════════
 
 INTEGER_DATA = [
-    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 31829,   'cl': 14669,   'v8': 37869  }},
+    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 32010,   'cl': 14669,   'v8': 37869  }},
     {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 238.12,  'cl': 249.26,  'v8': 201.20 }},
     {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 15.96,   'cl': 19.41,   'v8': 19.88  }},
     {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 762.89,  'cl': 736.45,  'v8': 704.01 }},
-    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3199.18, 'cl': 3455.15, 'v8': 2908.07}},
+    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3202.36, 'cl': 3455.15, 'v8': 2908.07}},
 ]
 
 LUA_DATA = [
@@ -106,13 +106,13 @@ LUA_DATA = [
 
 FP_DATA = [
     {'name': 'mandelbrot', 'unit': 'ms', 'data': {'sf': 834, 'cl': 855,  'v8': 2035}, 'inv': True},
-    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 3949, 'cl': 2055, 'v8': 1947}, 'inv': True},
+    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 3937, 'cl': 2055, 'v8': 1947}, 'inv': True},
 ]
 
 MEMORY_DATA = [
-    {'name': 'STREAM Copy',  'unit': 'MB/s', 'data': {'sf': 47227, 'cl': 44124, 'v8': 39714}},
+    {'name': 'STREAM Copy',  'unit': 'MB/s', 'data': {'sf': 51314, 'cl': 44124, 'v8': 39714}},
     {'name': 'STREAM Scale', 'unit': 'MB/s', 'data': {'sf': 49688, 'cl': 49692, 'v8': 18332}},
-    {'name': 'STREAM Add',   'unit': 'MB/s', 'data': {'sf': 64375, 'cl': 48398, 'v8': 29989}},
+    {'name': 'STREAM Add',   'unit': 'MB/s', 'data': {'sf': 64412, 'cl': 48398, 'v8': 29989}},
     {'name': 'STREAM Triad', 'unit': 'MB/s', 'data': {'sf': 48426, 'cl': 47864, 'v8': 30869}},
 ]
 
