@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    constants::MAX_CALL_STACK_DEPTH,
+
     error::WasmError,
     vm::{
         entities::ModuleInst,
@@ -59,11 +59,7 @@ fn patch_movw_movt(text: &mut Arm32TextEmitter, movw_offset: usize, addr: u32) {
     text.patch_u32(movw_offset + 4, enc::movt(rd, (addr >> 16) as u16));
 }
 
-const MAX_ARM32_CALL_DEPTH: u64 = if MAX_CALL_STACK_DEPTH < 300 {
-    MAX_CALL_STACK_DEPTH as u64
-} else {
-    300
-};
+
 
 // ─── Label & fixup types ────────────────────────────────────────────────────
 
@@ -535,27 +531,6 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
-    fn emit_call_depth_increment(&mut self) -> Result<(), WasmError> {
-        // call_depth is u64 at ctx_offset::CALL_DEPTH — load low 32 bits
-        self.text.emit_u32(enc::ldr_imm(
-            SCRATCH0,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::CALL_DEPTH as i32,
-        ));
-        self.emit_load_u32(Arm32Reg::R3, MAX_ARM32_CALL_DEPTH as u32);
-        self.text.emit_u32(enc::cmp_reg(SCRATCH0, Arm32Reg::R3));
-        self.emit_branch(BranchFixupKind::BCond(Cond::Cs), self.call_depth_label);
-        // Increment
-        self.text
-            .emit_u32(enc::add_imm(SCRATCH0, SCRATCH0, 1, 0));
-        self.text.emit_u32(enc::str_imm(
-            SCRATCH0,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::CALL_DEPTH as i32,
-        ));
-        Ok(())
-    }
-
     fn emit_call_direct(
         &mut self,
         callee: MachineFuncId,
@@ -579,9 +554,6 @@ impl<'a> FunctionCompiler<'a> {
 
         // Stack overflow check
         self.emit_stack_overflow_check(callee_fp, callee_total)?;
-
-        // Increment call depth
-        self.emit_call_depth_increment()?;
 
         // Store continuation address (patchable) into callee frame
         let cont_patch = self.emit_patchable_addr(SCRATCH0);
@@ -704,20 +676,6 @@ impl<'a> FunctionCompiler<'a> {
                 ));
             }
         }
-
-        // Decrement call depth
-        self.text.emit_u32(enc::ldr_imm(
-            Arm32Reg::R1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::CALL_DEPTH as i32,
-        ));
-        self.text
-            .emit_u32(enc::sub_imm(Arm32Reg::R1, Arm32Reg::R1, 1, 0));
-        self.text.emit_u32(enc::str_imm(
-            Arm32Reg::R1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::CALL_DEPTH as i32,
-        ));
 
         // Restore FP to caller's FP and jump to continuation
         self.text.emit_u32(enc::mov_reg(fp_reg, Arm32Reg::R3));

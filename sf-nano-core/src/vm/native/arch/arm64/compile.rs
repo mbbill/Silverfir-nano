@@ -1,7 +1,6 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    constants::MAX_CALL_STACK_DEPTH,
     error::WasmError,
     vm::{
         entities::ModuleInst,
@@ -38,11 +37,6 @@ use super::{
     reg::Arm64Reg,
 };
 
-const MAX_ARM64_CALL_DEPTH: u64 = if MAX_CALL_STACK_DEPTH < 300 {
-    MAX_CALL_STACK_DEPTH as u64
-} else {
-    300
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LabelKind {
@@ -989,7 +983,6 @@ impl<'a> FunctionCompiler<'a> {
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
         self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-        self.emit_call_depth_increment()?;
 
         let continuation_load = self.text.emit_u32(enc::ldr_lit_64(SCRATCH0, 0));
         if continuation_slot < 4096 {
@@ -1126,18 +1119,6 @@ impl<'a> FunctionCompiler<'a> {
             }
         }
 
-        self.text.emit_u32(enc::ldr_64(
-            Arm64Reg::X1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::CALL_DEPTH / 8) as u32,
-        ));
-        self.text
-            .emit_u32(enc::sub_imm_64(Arm64Reg::X1, Arm64Reg::X1, 1));
-        self.text.emit_u32(enc::str_64(
-            Arm64Reg::X1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::CALL_DEPTH / 8) as u32,
-        ));
         self.text
             .emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), SCRATCH1));
         self.text.emit_u32(enc::br(SCRATCH0));
@@ -1152,8 +1133,6 @@ impl<'a> FunctionCompiler<'a> {
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        self.emit_call_depth_increment()?;
-
         let callee_id_reg = self.materialize_value(SCRATCH1, callee_target)?;
         let table_base_load = self.text.emit_u32(enc::ldr_lit_64(SCRATCH0, 0));
         let skip_table_literal = self.text.emit_u32(enc::b(0)); // skip over literal
@@ -1284,24 +1263,6 @@ impl<'a> FunctionCompiler<'a> {
         ));
         self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, SCRATCH1));
         self.emit_b_cond(Cond::Hi, self.stack_overflow_label);
-        Ok(())
-    }
-
-    fn emit_call_depth_increment(&mut self) -> Result<(), WasmError> {
-        self.text.emit_u32(enc::ldr_64(
-            SCRATCH0,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::CALL_DEPTH / 8) as u32,
-        ));
-        self.materialize_u64(SCRATCH1, MAX_ARM64_CALL_DEPTH);
-        self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, SCRATCH1));
-        self.emit_b_cond(Cond::Hs, self.call_depth_label);
-        self.text.emit_u32(enc::add_imm_64(SCRATCH0, SCRATCH0, 1));
-        self.text.emit_u32(enc::str_64(
-            SCRATCH0,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::CALL_DEPTH / 8) as u32,
-        ));
         Ok(())
     }
 
@@ -4515,7 +4476,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[1] = entry.root_return as u64;
         stack[2] = stack.as_mut_ptr() as u64;
         stack[3] = 0;
@@ -4601,7 +4561,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[1] = entry.root_return as u64;
         stack[2] = stack.as_mut_ptr() as u64;
         stack[3] = 0;
@@ -4712,7 +4671,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[0] = entry.root_return as u64;
         stack[1] = stack.as_mut_ptr() as u64;
         stack[2] = 0;
@@ -4808,7 +4766,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[0] = entry.root_return as u64;
         stack[1] = stack.as_mut_ptr() as u64;
         stack[2] = 0;
@@ -4932,7 +4889,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[1] = entry.root_return as u64;
         stack[2] = stack.as_mut_ptr() as u64;
         stack[3] = 0;
@@ -5062,7 +5018,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[0] = entry.root_return as u64;
         stack[1] = stack.as_mut_ptr() as u64;
         stack[2] = 0;
@@ -5187,7 +5142,6 @@ mod tests {
         let mut store = Box::new(Store::new(module));
         let stack_end = unsafe { stack.as_mut_ptr().add(stack.len()) };
         let mut ctx = NativeContext::new(store.as_mut() as *mut Store, stack_end);
-        ctx.call_depth = 1;
         stack[0] = entry.root_return as u64;
         stack[1] = stack.as_mut_ptr() as u64;
         stack[2] = 0;

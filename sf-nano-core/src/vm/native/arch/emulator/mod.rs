@@ -9,7 +9,7 @@ pub mod config;
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    constants::{MAX_CALL_STACK_DEPTH, MAX_STACK_SIZE},
+    constants::MAX_STACK_SIZE,
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
@@ -472,10 +472,6 @@ impl<'a> Emulator<'a> {
             self.ctx.stack_end,
             callee_runtime.total_frame_slots,
         )?;
-        if self.ctx.call_depth >= MAX_CALL_STACK_DEPTH as u64 {
-            return Err(WasmError::exhaustion("call stack exhausted".into()));
-        }
-
         self.call_stack.push(SavedCaller {
             func_id: self.func_id,
             regs: core::mem::take(&mut self.regs),
@@ -491,7 +487,6 @@ impl<'a> Emulator<'a> {
             self.ctx.mem0_base as u64,
             self.ctx.mem0_size,
         );
-        self.ctx.call_depth = self.ctx.call_depth.saturating_add(1);
         #[cfg(feature = "function-trace")]
         function_trace::native_function_trace_enter_func_idx(self.ctx, callee.0);
         Ok(())
@@ -527,7 +522,6 @@ impl<'a> Emulator<'a> {
                     .wrapping_add(caller_result_base_bytes)
                     .cast::<u64>(),
             )?;
-            self.ctx.call_depth = self.ctx.call_depth.saturating_sub(1);
             #[cfg(feature = "function-trace")]
             {
                 let arity = results.map(|region| region.slots).unwrap_or(0) as u64;

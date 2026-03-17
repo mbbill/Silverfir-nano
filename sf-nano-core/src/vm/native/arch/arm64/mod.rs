@@ -76,7 +76,6 @@ pub fn eval(
 
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
     seed_root_call_link(compiled, runtime, stack_base, root_return)?;
-    ctx.call_depth = 1;
     #[cfg(feature = "function-trace")]
     {
         function_trace::init_from_env();

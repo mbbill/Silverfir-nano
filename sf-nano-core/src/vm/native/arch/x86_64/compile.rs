@@ -3,7 +3,6 @@
 use alloc::{string::String, vec, vec::Vec};
 
 use crate::{
-    constants::MAX_CALL_STACK_DEPTH,
     error::WasmError,
     vm::{
         entities::ModuleInst,
@@ -40,11 +39,7 @@ use super::{
     x86_64_raise_trap, x86_64_raise_unsupported,
 };
 
-const MAX_X86_64_CALL_DEPTH: u64 = if MAX_CALL_STACK_DEPTH < 300 {
-    MAX_CALL_STACK_DEPTH as u64
-} else {
-    300
-};
+// Call depth checking removed: the stack overflow check alone limits recursion.
 
 // ─── Label & fixup types ─────────────────────────────────────────────────────
 
@@ -2767,11 +2762,6 @@ impl<'a> FunctionCompiler<'a> {
             }
         }
 
-        // Decrement call depth
-        let ctx = map_fixed_reg(MACHINE_CTX_REG);
-        enc::load_64(&mut self.text, X86Reg::RCX, ctx, ctx_offset::CALL_DEPTH as i32);
-        enc::sub_ri_64(&mut self.text, X86Reg::RCX, 1);
-        enc::store_64(&mut self.text, ctx, ctx_offset::CALL_DEPTH as i32, X86Reg::RCX);
         // Restore caller FP
         enc::mov_rr_64(&mut self.text, fp, SCRATCH1);
         // Jump to continuation
@@ -2796,7 +2786,6 @@ impl<'a> FunctionCompiler<'a> {
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
         self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-        self.emit_call_depth_increment()?;
 
         // Load continuation address via movabs (patched after label resolution).
         // mov_ri_64 emits REX.W B8+rd imm64 (2 + 8 = 10 bytes).
@@ -2838,8 +2827,6 @@ impl<'a> FunctionCompiler<'a> {
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        self.emit_call_depth_increment()?;
-
         // Load function table base address
         enc::movabs_ri_64(&mut self.text, SCRATCH0, 0); // placeholder (patched later)
         let table_base_offset = self.text.len() - 8;
@@ -3032,17 +3019,6 @@ impl<'a> FunctionCompiler<'a> {
         );
         enc::cmp_rr_64(&mut self.text, SCRATCH0, SCRATCH1);
         self.emit_jcc(Cc::A, self.stack_overflow_label);
-        Ok(())
-    }
-
-    fn emit_call_depth_increment(&mut self) -> Result<(), WasmError> {
-        let ctx = map_fixed_reg(MACHINE_CTX_REG);
-        enc::load_64(&mut self.text, SCRATCH0, ctx, ctx_offset::CALL_DEPTH as i32);
-        self.materialize_u64(SCRATCH1, MAX_X86_64_CALL_DEPTH);
-        enc::cmp_rr_64(&mut self.text, SCRATCH0, SCRATCH1);
-        self.emit_jcc(Cc::AE, self.call_depth_label);
-        enc::add_ri_64(&mut self.text, SCRATCH0, 1);
-        enc::store_64(&mut self.text, ctx, ctx_offset::CALL_DEPTH as i32, SCRATCH0);
         Ok(())
     }
 

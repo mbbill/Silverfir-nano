@@ -66,7 +66,6 @@ pub struct NativeFunctionView {
 #[derive(Debug)]
 pub struct NativeContext {
     pub stack_end: *mut u64,
-    pub call_depth: u64,
     pub mem0_base: *mut u8,
     pub mem0_size: u64,
     pub globals_view: NativeGlobalsView,
@@ -98,7 +97,6 @@ impl NativeContext {
     pub fn new(store: *mut Store, stack_end: *mut u64) -> Self {
         let mut ctx = Self {
             stack_end,
-            call_depth: 0,
             mem0_base: core::ptr::null_mut(),
             mem0_size: 0,
             globals_view: NativeGlobalsView::default(),
@@ -336,7 +334,6 @@ pub mod ctx_offset {
     use super::NativeContext;
 
     pub const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
-    pub const CALL_DEPTH: u32 = core::mem::offset_of!(NativeContext, call_depth) as u32;
     pub const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
     pub const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
