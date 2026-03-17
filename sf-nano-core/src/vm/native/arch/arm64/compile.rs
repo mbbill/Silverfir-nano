@@ -2411,29 +2411,33 @@ impl<'a> FunctionCompiler<'a> {
                 Ok(FP_SCRATCH1)
             }
         };
-        let src_gp = self.materialize_value(SCRATCH0, src)?;
         match op {
             // Integer wrapping / extension (no FP involved)
             MachineConvertOp::I32WrapI64 => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_gp = self.map_gp_reg(dst)?;
                 // Just mask to 32 bits
                 self.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
             }
             MachineConvertOp::I64ExtendI32S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.text.emit_u32(enc::sxtw(dst_gp, src_gp));
             }
             MachineConvertOp::I64ExtendI32U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
             }
             MachineConvertOp::I32ReinterpretF32 | MachineConvertOp::I64ReinterpretF64 => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_gp = self.map_gp_reg(dst)?;
                 if dst_gp != src_gp {
                     self.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
                 }
             }
             MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let width = dst_float_width.expect("float reinterpret width");
                 let dst_fp = dst_float_reg(self, width)?;
                 self.text.emit_u32(match width {
@@ -2466,6 +2470,7 @@ impl<'a> FunctionCompiler<'a> {
             }
             // Int -> Float conversions
             MachineConvertOp::F32ConvertI32S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F32)?;
                 self.text.emit_u32(enc::scvtf_s_32(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2475,6 +2480,7 @@ impl<'a> FunctionCompiler<'a> {
             }
             MachineConvertOp::F32ConvertI32U => {
                 // Zero-extend to 64-bit first to ensure unsigned interpretation
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 self.text.emit_u32(enc::mov_reg_32(SCRATCH0, src_gp));
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F32)?;
                 self.text.emit_u32(enc::ucvtf_s_64(dst_fp, SCRATCH0));
@@ -2484,6 +2490,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F32ConvertI64S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F32)?;
                 self.text.emit_u32(enc::scvtf_s_64(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2492,6 +2499,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F32ConvertI64U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F32)?;
                 self.text.emit_u32(enc::ucvtf_s_64(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2500,6 +2508,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F64ConvertI32S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F64)?;
                 self.text.emit_u32(enc::scvtf_d_32(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2508,6 +2517,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F64ConvertI32U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 self.text.emit_u32(enc::mov_reg_32(SCRATCH0, src_gp));
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F64)?;
                 self.text.emit_u32(enc::ucvtf_d_64(dst_fp, SCRATCH0));
@@ -2517,6 +2527,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F64ConvertI64S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F64)?;
                 self.text.emit_u32(enc::scvtf_d_64(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2525,6 +2536,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F64ConvertI64U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F64)?;
                 self.text.emit_u32(enc::ucvtf_d_64(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
@@ -2542,6 +2554,7 @@ impl<'a> FunctionCompiler<'a> {
             | MachineConvertOp::I64TruncF64S
             | MachineConvertOp::I64TruncF64U => {
                 let dst_gp = self.map_gp_reg(dst)?;
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 self.emit_trapping_trunc(op, dst_gp, src_gp)?;
             }
             // Saturating truncations
@@ -2554,6 +2567,7 @@ impl<'a> FunctionCompiler<'a> {
             | MachineConvertOp::I64TruncSatF64S
             | MachineConvertOp::I64TruncSatF64U => {
                 let dst_gp = self.map_gp_reg(dst)?;
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
                 self.emit_saturating_trunc(op, dst_gp, src_gp)?;
             }
         }
@@ -3939,9 +3953,10 @@ mod tests {
                 ir::{
                     machine::{
                         MachineBlock, MachineBlockId, MachineConstData, MachineFunction,
-                        MachineHelperCall, MachineInst, MachineInstKind, MachineIntBinaryOp,
-                        MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
-                        MachineReg, MachineTerminator, MachineValue,
+                        MachineConvertOp, MachineFloatWidth, MachineHelperCall, MachineInst,
+                        MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+                        MachineLoadExtension, MachineMemWidth, MachineModule, MachineReg,
+                        MachineTerminator, MachineValue,
                     },
                     runtime::{
                         MachineExternBinding, MachineFunctionRuntime, MachineHelperSymbol,
@@ -4250,6 +4265,105 @@ mod tests {
         );
         compile_module(&module, &compiled)
             .expect("arm64 compile should preserve live FP widths across helpers");
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn float_to_float_converts_do_not_bounce_through_gp_scratch() {
+        let function = MachineFunction {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            program: crate::vm::native::ir::machine::MachineProgram {
+                entry: MachineBlockId(0),
+                first_fp_reg: 7,
+                reg_count: 10,
+                fp_transient_count: 3,
+                fp_reg_init_widths: vec![],
+                blocks: vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: vec![],
+                    ops: vec![
+                        MachineInst {
+                            kind: MachineInstKind::FloatConst {
+                                width: MachineFloatWidth::F64,
+                                dst: MachineReg(7),
+                                bits: 1.5f64.to_bits(),
+                            },
+                        },
+                        MachineInst {
+                            kind: MachineInstKind::Convert {
+                                op: MachineConvertOp::F32DemoteF64,
+                                dst: MachineReg(8),
+                                src: MachineValue::Reg(MachineReg(7)),
+                            },
+                        },
+                        MachineInst {
+                            kind: MachineInstKind::Convert {
+                                op: MachineConvertOp::F64PromoteF32,
+                                dst: MachineReg(9),
+                                src: MachineValue::Reg(MachineReg(8)),
+                            },
+                        },
+                    ],
+                    terminator: MachineTerminator::Return,
+                }],
+            },
+        };
+        let compiled = CompiledNativeModule::new(
+            crate::vm::native::arch::NativeBackend::Arm64,
+            crate::vm::backend::BackendConfig::new(3, 4, 2, 2),
+            MachineModule {
+                functions: vec![function],
+                consts: vec![],
+                externs: vec![],
+            },
+            MachineRuntimeContract {
+                call_link: crate::vm::native::ir::runtime::MachineCallLinkLayout {
+                    slot_count: 3,
+                    continuation_offset: 0,
+                    caller_frame_offset: 8,
+                    caller_result_base_offset: 16,
+                },
+                functions: vec![MachineFunctionRuntime {
+                    id: crate::vm::native::ir::machine::MachineFuncId(0),
+                    frame_prefix_slots: 0,
+                    total_frame_slots: 4,
+                    call_scratch: Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+                        base_slot: 1,
+                        slots: 3,
+                    }),
+                    helper_scratch: None,
+                    return_results: Some(crate::vm::native::ir::runtime::MachineFrameRegion {
+                        base_slot: 0,
+                        slots: 1,
+                    }),
+                }],
+            },
+        )
+        .expect("compiled module");
+
+        let module = ModuleInst::new(
+            String::from("m"),
+            TypeContext::new(vec![Rc::new(FunctionType::new(vec![], vec![]))]),
+        );
+        let entries = compile_module(&module, &compiled).expect("arm64 compile should succeed");
+        let entry = entries[0].as_ref().expect("entry");
+        let executable = module
+            .native_code_buffer()
+            .expect("native code buffer should exist");
+        let code = unsafe { core::slice::from_raw_parts(executable.as_ptr(), entry.text_len) };
+        let words = code
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect::<vec::Vec<_>>();
+
+        let fp0 = super::fp_machine_reg(0).expect("fp0");
+        let fp1 = super::fp_machine_reg(1).expect("fp1");
+        let fp2 = super::fp_machine_reg(2).expect("fp2");
+
+        assert!(words.contains(&enc::fcvt_s_from_d(fp1, fp0)));
+        assert!(words.contains(&enc::fcvt_d_from_s(fp2, fp1)));
+        assert!(!words.contains(&enc::fmov_gp_from_d(super::SCRATCH0, fp0)));
+        assert!(!words.contains(&enc::fmov_gp_from_s(super::SCRATCH0, fp1)));
     }
 
     #[test]
