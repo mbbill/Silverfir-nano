@@ -158,7 +158,7 @@ struct FunctionArtifact {
     direct_call_patches: Vec<DirectCallPatch>,
     function_table_patches: Vec<usize>,
     root_return_offset: usize,
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     return_error_offset: usize,
     internal_entry_offset: usize,
     debug_regions: Vec<DebugRegion>,
@@ -171,7 +171,7 @@ pub struct CompiledArm32Entry {
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
     pub root_return: Armv7aCodePtr,
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     pub return_error: Armv7aCodePtr,
 }
 
@@ -910,12 +910,12 @@ pub fn compile_module(
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<Armv7aRootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };
         entries.push(Some(CompiledArm32Entry {
             entry,
             root_return,
-            #[cfg(feature = "guard-pages")]
+            #[cfg(has_guard_pages)]
             return_error,
             text_len,
             debug_regions,
@@ -950,7 +950,7 @@ pub fn compile_module(
     }
 
     // Register guard-pages JIT ranges
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     {
         let ranges: Vec<_> = entries
             .iter()
@@ -1111,7 +1111,7 @@ fn compile_function(
         direct_call_patches: fc.direct_call_patches,
         function_table_patches: fc.function_table_patches,
         root_return_offset,
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         return_error_offset: return_error_start,
         internal_entry_offset,
         debug_regions: fc.debug_regions,

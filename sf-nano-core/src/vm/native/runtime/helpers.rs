@@ -430,7 +430,7 @@ fn memory_grow_helper(
         if new_pages > mem.limits.get_max() {
             (error_value, error_value)
         } else {
-            #[cfg(feature = "guard-pages")]
+            #[cfg(has_guard_pages)]
             {
                 if let Some(guard) = mem.guard_mut() {
                     match guard.grow(delta_pages) {
@@ -442,7 +442,7 @@ fn memory_grow_helper(
                     (old_pages as u64, error_value)
                 }
             }
-            #[cfg(not(feature = "guard-pages"))]
+            #[cfg(not(has_guard_pages))]
             {
                 mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
                 (old_pages as u64, error_value)

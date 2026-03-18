@@ -63,7 +63,7 @@ pub struct LowerFunctionInput<'a> {
 pub struct LowerModuleInput<'a> {
     pub backend: BackendConfig,
     pub functions: &'a [LowerFunctionInput<'a>],
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     pub use_guard_pages: bool,
 }
 
@@ -102,9 +102,9 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
         validate_program(function.lir)?;
         function_runtime[function.id.0 as usize] = lower_function_runtime(*function, call_link)?;
     }
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     let guard_pages = input.use_guard_pages;
-    #[cfg(not(feature = "guard-pages"))]
+    #[cfg(not(has_guard_pages))]
     let guard_pages = false;
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
@@ -200,7 +200,7 @@ fn lower_function(
             runtime,
             call_link,
             target == input.lir.entry,
-            #[cfg(feature = "guard-pages")]
+            #[cfg(has_guard_pages)]
             guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());

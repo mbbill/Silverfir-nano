@@ -12,6 +12,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     check_llvm_version_compatibility();
+    emit_guard_pages_cfg();
 
     if env::var_os("CARGO_FEATURE_INTERP").is_some() {
         let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
@@ -25,6 +26,24 @@ fn main() {
 
         // Compile fast interpreter C trampoline.
         compile::compile_fast_trampoline(&out_dir);
+    }
+}
+
+fn emit_guard_pages_cfg() {
+    println!("cargo::rustc-check-cfg=cfg(has_guard_pages)");
+    let dominated = env::var_os("CARGO_FEATURE_GUARD_PAGES").is_some()
+        && env::var_os("CARGO_FEATURE_MICRO_JIT").is_some();
+    if !dominated {
+        return;
+    }
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let pw = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
+    if pw == "64"
+        && matches!(os.as_str(), "macos" | "linux")
+        && matches!(arch.as_str(), "x86_64" | "aarch64")
+    {
+        println!("cargo:rustc-cfg=has_guard_pages");
     }
 }
 

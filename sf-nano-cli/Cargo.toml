@@ -18,7 +18,5 @@ fusion = ["sf-nano-core/fusion"]
 interp = ["sf-nano-core/interp"]
 trace = ["sf-nano-core/trace"]
 function-trace = ["sf-nano-core/function-trace"]
-ir-dump = ["sf-nano-core/ir-dump"]
-
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }

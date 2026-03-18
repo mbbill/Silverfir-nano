@@ -82,7 +82,7 @@ pub struct NativeContext {
     pub error: Option<WasmError>,
     /// Trap kind set by the guard-page signal handler (no allocation needed).
     /// 0 = no trap, 1 = memory out of bounds.
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     pub trap_kind: u32,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
@@ -111,7 +111,7 @@ impl NativeContext {
             store,
             current_module: core::ptr::null(),
             error: None,
-            #[cfg(feature = "guard-pages")]
+            #[cfg(has_guard_pages)]
             trap_kind: 0,
             memory_views: Vec::new(),
             table_views: Vec::new(),
@@ -350,7 +350,7 @@ pub mod ctx_offset {
     pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
     pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
     pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     pub const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
 }
 

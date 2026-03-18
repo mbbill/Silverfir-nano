@@ -557,7 +557,7 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<u32, WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         if self.use_guard_pages() {
             return Ok(0);
         }

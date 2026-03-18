@@ -99,7 +99,7 @@ struct FunctionArtifact {
     direct_call_patches: Vec<DirectCallPatch>,
     function_table_patches: Vec<usize>,
     root_return_offset: usize,
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     return_error_offset: usize,
     internal_entry_offset: usize,
     debug_regions: Vec<DebugRegion>,
@@ -123,7 +123,7 @@ pub struct CompiledX86_64Entry {
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
     pub root_return: X86_64CodePtr,
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     pub return_error: X86_64CodePtr,
 }
 
@@ -253,12 +253,12 @@ pub fn compile_module(
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<X86_64RootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };
         entries.push(Some(CompiledX86_64Entry {
             entry,
             root_return,
-            #[cfg(feature = "guard-pages")]
+            #[cfg(has_guard_pages)]
             return_error,
             text_len,
             debug_regions,
@@ -292,7 +292,7 @@ pub fn compile_module(
         }
     }
 
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     {
         let ranges: Vec<_> = entries
             .iter()
@@ -451,7 +451,7 @@ fn compile_function(
         .get(compiler.return_ok_label)
         .and_then(|offset| *offset)
         .ok_or_else(|| WasmError::internal("x86_64 root return label is unresolved".into()))?;
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     let return_error_offset = compiler
         .labels
         .get(compiler.return_error_label)
@@ -478,7 +478,7 @@ fn compile_function(
         direct_call_patches: compiler.direct_call_patches,
         function_table_patches: compiler.function_table_patches,
         root_return_offset,
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         return_error_offset,
         internal_entry_offset,
         debug_regions,

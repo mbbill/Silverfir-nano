@@ -55,7 +55,7 @@ pub use vm::value::Value;
 /// lifetimes on its own. Harnesses that repeatedly construct and drop native
 /// modules can call this between independent runs.
 pub fn reset_native_runtime_state() {
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     {
         crate::vm::native::trap_signal::reset_debug_state();
         crate::vm::native::trap_signal::clear_registered_jit_ranges();

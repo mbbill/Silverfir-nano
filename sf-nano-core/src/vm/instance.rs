@@ -246,11 +246,11 @@ impl Instance {
         for mem in &mod_memories {
             match mem.def() {
                 MemoryDef::Local(_spec) => {
-                    #[cfg(feature = "guard-pages")]
+                    #[cfg(has_guard_pages)]
                     {
                         memories.push(MemInst::new_guarded(mem.limits().clone())?);
                     }
-                    #[cfg(not(feature = "guard-pages"))]
+                    #[cfg(not(has_guard_pages))]
                     {
                         memories.push(MemInst::new(mem.limits().clone()));
                     }
@@ -288,11 +288,11 @@ impl Instance {
                                 }
                             }
                             let import_limits = Limits::new(*initial_pages, *max_pages)?;
-                            #[cfg(feature = "guard-pages")]
+                            #[cfg(has_guard_pages)]
                             {
                                 memories.push(MemInst::new_guarded(import_limits)?);
                             }
-                            #[cfg(not(feature = "guard-pages"))]
+                            #[cfg(not(has_guard_pages))]
                             {
                                 memories.push(MemInst::new(import_limits));
                             }

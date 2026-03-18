@@ -138,7 +138,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         });
     }
 
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     let use_guard_pages = module
         .memories
         .first()
@@ -147,7 +147,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let mut lowered = lower_module(LowerModuleInput {
         backend,
         functions: &lowered_inputs,
-        #[cfg(feature = "guard-pages")]
+        #[cfg(has_guard_pages)]
         use_guard_pages,
     })?;
     let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT + backend.gp_local_cache_count as u16;

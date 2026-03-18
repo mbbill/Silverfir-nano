@@ -672,13 +672,16 @@ impl<'a> Emulator<'a> {
         if mem_base == 0 {
             return Ok(());
         }
-        // Guard-page reservation is 8 GB + 64 KB on 64-bit, full address
-        // space on 32-bit.
+        // On 64-bit with guard pages, the 8 GB virtual reservation reliably
+        // separates wasm-memory pointers from frame/stack pointers.  On 32-bit
+        // (no guard pages) we just check the actual committed memory range.
         #[cfg(target_pointer_width = "64")]
         const GUARD_WINDOW: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
+        #[cfg(target_pointer_width = "64")]
+        let in_wasm_region = ptr >= mem_base && ptr < mem_base.saturating_add(GUARD_WINDOW);
         #[cfg(target_pointer_width = "32")]
-        const GUARD_WINDOW: usize = usize::MAX;
-        if ptr >= mem_base && ptr < mem_base.saturating_add(GUARD_WINDOW) {
+        let in_wasm_region = ptr >= mem_base && ptr < mem_base + mem_size;
+        if in_wasm_region {
             if ptr.saturating_add(size) > mem_base + mem_size {
                 return Err(WasmError::trap("out of bounds memory access".into()));
             }

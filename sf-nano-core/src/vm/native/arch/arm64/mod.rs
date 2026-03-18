@@ -82,7 +82,7 @@ pub fn eval(
         function_trace::native_root_entry(&mut ctx, spec, backend);
     }
 
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     {
         use crate::vm::native::{runtime::context::ctx_offset, trap_signal};
         trap_signal::install_signal_handler();
@@ -93,7 +93,7 @@ pub fn eval(
 
     let status = unsafe { entry(&mut ctx, stack_base) };
 
-    #[cfg(feature = "guard-pages")]
+    #[cfg(has_guard_pages)]
     if ctx.trap_kind != 0 {
         let error = WasmError::trap("out of bounds memory access".into());
         #[cfg(feature = "function-trace")]
