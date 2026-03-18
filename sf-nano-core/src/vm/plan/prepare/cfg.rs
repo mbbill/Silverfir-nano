@@ -17,19 +17,13 @@ pub(super) fn build_block_ranges(semantic: &SemanticProgram) -> Vec<core::ops::R
     leaders[len] = true;
 
     for (index, op) in semantic.ops.iter().enumerate() {
-        let successors = semantic_successors(index, semantic.ops.len(), op);
-        // An op with exactly one successor that is index+1 is a plain
-        // fallthrough — no leader needed. Everything else (branches,
-        // multi-successor ops) marks real targets as leaders.
-        let is_plain_fallthrough = successors.len() == 1
-            && successors[0].index().as_usize() == index + 1;
-        if !is_plain_fallthrough {
-            for target in &successors {
+        if !is_plain_fallthrough(index, semantic.ops.len(), op) {
+            for_each_semantic_successor(index, semantic.ops.len(), op, |target| {
                 let target_index = target.index().as_usize();
                 if target_index < len {
                     leaders[target_index] = true;
                 }
-            }
+            });
         }
 
         if splits_after(&op.kind) && index + 1 < len {
@@ -81,7 +75,7 @@ pub(super) fn retain_reachable_blocks(
             continue;
         };
 
-        for target in semantic_successors(last_semantic, semantic.ops.len(), op) {
+        for_each_semantic_successor(last_semantic, semantic.ops.len(), op, |target| {
             let target_index = target.index().as_usize();
             if let Some(target_block) = semantic_to_block.get(target_index) {
                 let target_block = target_block.as_usize();
@@ -89,7 +83,7 @@ pub(super) fn retain_reachable_blocks(
                     pending.push(target_block);
                 }
             }
-        }
+        });
     }
 
     block_ranges
@@ -112,15 +106,17 @@ pub(super) fn build_semantic_to_block_map(
     map
 }
 
-pub(super) fn semantic_successors(
+pub(super) fn for_each_semantic_successor(
     index: usize,
     len: usize,
     op: &SemanticOp,
-) -> Vec<SemanticTarget> {
-    let mut targets = Vec::new();
-    let push_fallthrough = |targets: &mut Vec<SemanticTarget>| {
+    mut f: impl FnMut(SemanticTarget),
+) {
+    let fallthrough = || {
         if index + 1 < len {
-            targets.push(SemanticTarget::new(index + 1));
+            Some(SemanticTarget::new(index + 1))
+        } else {
+            None
         }
     };
 
@@ -130,28 +126,50 @@ pub(super) fn semantic_successors(
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {}
         SemanticOpKind::Br { target, .. } => {
-            targets.push(*target);
+            f(*target);
         }
         SemanticOpKind::BrIf { target, .. } => {
-            targets.push(*target);
-            push_fallthrough(&mut targets);
+            f(*target);
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
         }
         SemanticOpKind::BrTable { entries } => {
             for entry in entries {
-                targets.push(entry.target);
+                f(entry.target);
             }
         }
         SemanticOpKind::If { else_target, .. } => {
-            push_fallthrough(&mut targets);
-            targets.push(*else_target);
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
+            f(*else_target);
         }
         SemanticOpKind::Else { end_target } => {
-            targets.push(*end_target);
+            f(*end_target);
         }
-        _ => push_fallthrough(&mut targets),
+        _ => {
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
+        }
     }
+}
 
-    targets
+/// Returns true if the op has exactly one successor and it's the next op.
+pub(super) fn is_plain_fallthrough(index: usize, len: usize, op: &SemanticOp) -> bool {
+    match &op.kind {
+        SemanticOpKind::Primitive(crate::vm::wasm::primitive_op::PrimitiveOpKind::Unreachable)
+        | SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::Br { .. }
+        | SemanticOpKind::BrIf { .. }
+        | SemanticOpKind::BrTable { .. }
+        | SemanticOpKind::If { .. }
+        | SemanticOpKind::Else { .. } => false,
+        _ => index + 1 < len,
+    }
 }
 
 fn splits_after(kind: &SemanticOpKind) -> bool {

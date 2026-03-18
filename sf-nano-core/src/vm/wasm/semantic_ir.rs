@@ -244,12 +244,12 @@ impl SemanticProgram {
             let Some(op) = self.ops.get(index) else {
                 continue;
             };
-            for target in semantic_successors(index, self.ops.len(), op) {
+            for_each_semantic_successor(index, self.ops.len(), op, |target| {
                 let target_index = target.index().as_usize();
                 if target_index < reachable.len() && !reachable[target_index] {
                     pending.push(target_index);
                 }
-            }
+            });
         }
 
         reachable
@@ -309,11 +309,17 @@ fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<()
 }
 
 #[cfg(any(debug_assertions, test))]
-fn semantic_successors(index: usize, len: usize, op: &SemanticOp) -> Vec<SemanticTarget> {
-    let mut targets = Vec::new();
-    let push_fallthrough = |targets: &mut Vec<SemanticTarget>| {
+fn for_each_semantic_successor(
+    index: usize,
+    len: usize,
+    op: &SemanticOp,
+    mut f: impl FnMut(SemanticTarget),
+) {
+    let fallthrough = || {
         if index + 1 < len {
-            targets.push(SemanticTarget::new(index + 1));
+            Some(SemanticTarget::new(index + 1))
+        } else {
+            None
         }
     };
 
@@ -323,28 +329,34 @@ fn semantic_successors(index: usize, len: usize, op: &SemanticOp) -> Vec<Semanti
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {}
         SemanticOpKind::Br { target, .. } => {
-            targets.push(*target);
+            f(*target);
         }
         SemanticOpKind::BrIf { target, .. } => {
-            targets.push(*target);
-            push_fallthrough(&mut targets);
+            f(*target);
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
         }
         SemanticOpKind::BrTable { entries } => {
             for entry in entries {
-                targets.push(entry.target);
+                f(entry.target);
             }
         }
         SemanticOpKind::If { else_target, .. } => {
-            push_fallthrough(&mut targets);
-            targets.push(*else_target);
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
+            f(*else_target);
         }
         SemanticOpKind::Else { end_target } => {
-            targets.push(*end_target);
+            f(*end_target);
         }
-        _ => push_fallthrough(&mut targets),
+        _ => {
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
+        }
     }
-
-    targets
 }
 
 #[cfg(test)]

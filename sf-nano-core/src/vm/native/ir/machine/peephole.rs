@@ -45,25 +45,26 @@ struct TrackedLoad {
 /// cached-local registers must not be disturbed.
 pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
+    let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
     for block in &mut program.blocks {
         deduplicate_constants(block, program.first_fp_reg);
         fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
         copy_propagate(
             block,
-            program.reg_count,
             first_transient,
             program.first_fp_reg,
             program.fp_transient_count,
+            &mut cp_scratch,
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
         fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
         copy_propagate(
             block,
-            program.reg_count,
             first_transient,
             program.first_fp_reg,
             program.fp_transient_count,
+            &mut cp_scratch,
         );
     }
 }
@@ -329,36 +330,61 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
 /// Track transient register aliases within a block and rewrite later uses to
 /// the original source register. Cached-local and fixed-register writes are
 /// preserved, but their sources are still canonicalized.
+/// Reusable scratch buffers for copy_propagate to avoid per-block allocation.
+struct CopyPropagateScratch {
+    aliases: Vec<Option<MachineReg>>,
+    float_aliases: Vec<Option<MachineReg>>,
+    rewritten: Vec<MachineInst>,
+}
+
+impl CopyPropagateScratch {
+    fn new(reg_count: usize) -> Self {
+        Self {
+            aliases: vec![None; reg_count],
+            float_aliases: vec![None; reg_count],
+            rewritten: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        for a in &mut self.aliases {
+            *a = None;
+        }
+        for a in &mut self.float_aliases {
+            *a = None;
+        }
+        self.rewritten.clear();
+    }
+}
+
 fn copy_propagate(
     block: &mut MachineBlock,
-    reg_count: u16,
     first_transient: u16,
     first_fp_reg: u16,
     fp_transient_count: u16,
+    scratch: &mut CopyPropagateScratch,
 ) {
+    scratch.clear();
     let original_ops = core::mem::take(&mut block.ops);
-    let mut aliases = vec![None; reg_count as usize];
-    let mut float_aliases = vec![None; reg_count as usize];
-    let mut rewritten = Vec::with_capacity(original_ops.len());
+    scratch.rewritten.reserve(original_ops.len().saturating_sub(scratch.rewritten.capacity()));
+    let aliases = &mut scratch.aliases;
+    let float_aliases = &mut scratch.float_aliases;
+    let rewritten = &mut scratch.rewritten;
 
     for (index, mut inst) in original_ops.iter().cloned().enumerate() {
-        rewrite_sources(&mut inst.kind, &aliases);
-        rewrite_float_alias_sources(&mut inst.kind, &float_aliases);
+        rewrite_sources(&mut inst.kind, aliases);
+        rewrite_float_alias_sources(&mut inst.kind, float_aliases);
 
         if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
-            // Helpers preserve the abstract machine-register file, but they can
-            // mutate canonical frame slots that later register reloads observe.
-            // Dropping aliases here keeps the pass aligned with MachineIR's
-            // memory-visible semantics instead of assuming helper purity.
-            clear_aliases(&mut aliases);
-            clear_aliases(&mut float_aliases);
+            clear_aliases(aliases);
+            clear_aliases(float_aliases);
             rewritten.push(inst);
             continue;
         }
 
         if let Some(dst) = defined_reg(&inst.kind) {
-            kill_alias(&mut aliases, dst);
-            kill_alias(&mut float_aliases, dst);
+            kill_alias(aliases, dst);
+            kill_alias(float_aliases, dst);
         }
 
         match &inst.kind {
@@ -386,9 +412,9 @@ fn copy_propagate(
         rewritten.push(inst);
     }
 
-    rewrite_terminator_sources(&mut block.terminator, &aliases);
-    rewrite_float_alias_terminator_sources(&mut block.terminator, &float_aliases);
-    block.ops = rewritten;
+    rewrite_terminator_sources(&mut block.terminator, aliases);
+    rewrite_float_alias_terminator_sources(&mut block.terminator, float_aliases);
+    block.ops = core::mem::take(rewritten);
 }
 
 // --- helpers ---
