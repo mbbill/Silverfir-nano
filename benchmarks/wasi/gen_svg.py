@@ -95,18 +95,18 @@ INTEGER_DATA = [
     {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 238.12,  'cl': 249.26,  'v8': 201.20 }},
     {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 15.96,   'cl': 19.41,   'v8': 19.88  }},
     {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 762.89,  'cl': 736.45,  'v8': 704.01 }},
-    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3202.36, 'cl': 3455.15, 'v8': 2908.07}},
+    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3214.31, 'cl': 3455.15, 'v8': 2908.07}},
 ]
 
 LUA_DATA = [
     {'name': 'lua / fib38',     'unit': 's',     'data': {'sf': 2.351, 'cl': 12.18, 'v8': 3.14}, 'inv': True},
-    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 4645,  'cl': 2896,  'v8': 11101}},
-    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 14699, 'cl': 9616,  'v8': 30179}},
+    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 5373,  'cl': 2896,  'v8': 11101}},
+    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 15794, 'cl': 9616,  'v8': 30179}},
 ]
 
 FP_DATA = [
     {'name': 'mandelbrot', 'unit': 'ms', 'data': {'sf': 834, 'cl': 855,  'v8': 2035}, 'inv': True},
-    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 3937, 'cl': 2055, 'v8': 1947}, 'inv': True},
+    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 3688, 'cl': 2055, 'v8': 1947}, 'inv': True},
 ]
 
 MEMORY_DATA = [
