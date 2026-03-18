@@ -702,8 +702,6 @@ impl<'a> FunctionCompiler<'a> {
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        self.emit_call_depth_increment()?;
-
         // Materialize callee ID into R3
         let callee_id_reg = match callee_target {
             MachineValue::Reg(r) => map_reg(r)?,
