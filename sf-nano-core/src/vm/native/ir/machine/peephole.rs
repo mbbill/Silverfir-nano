@@ -14,13 +14,20 @@
 //!
 //! 4. **Store-to-load forwarding**: `store.u64 [addr] <- X; ...; load.u64 rY <- [addr]`
 //!    → `move rY <- X` when intervening ops cannot invalidate the exact address.
+//!
+//! 5. **Compare-and-branch fusion**: `IntCompare { dst } + Branch { Value(Reg(dst)) }`
+//!    → `Branch { IntCompare { ... } }` when the compare result register is dead in
+//!    both successor blocks. Same for FloatCompare. Eliminates the boolean
+//!    materialization (CSET on ARM64, SETCC+MOVZX on x86_64) and enables hardware
+//!    compare-and-branch fusion.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    MachineAddr, MachineBlock, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
-    MachineInstKind, MachineProgram, MachineReg, MachineTerminator, MachineValue,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge,
+    MachineFloatWidth, MachineInst, MachineInstKind, MachineProgram, MachineReg,
+    MachineTerminator, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -67,6 +74,9 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
             &mut cp_scratch,
         );
     }
+    // Compare-and-branch fusion needs cross-block liveness, so it runs after
+    // the per-block passes when the instruction stream is stable.
+    fuse_compare_branch(&mut program.blocks);
 }
 
 /// Replace duplicate constant materializations with register copies.
@@ -959,4 +969,127 @@ fn mem_width_bytes(width: super::MachineMemWidth) -> i64 {
         super::MachineMemWidth::U32 => 4,
         super::MachineMemWidth::U64 => 8,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Compare-and-branch fusion
+// ---------------------------------------------------------------------------
+
+/// Rewrite `IntCompare/FloatCompare { dst } + Branch { Value(Reg(dst)) }`
+/// into `Branch { IntCompare/FloatCompare { ... } }` when the compare result
+/// register is provably dead in both successor blocks.
+///
+/// This is a cross-block pass: it reads successor blocks to check liveness,
+/// so it must run after the per-block optimizations are done.
+fn fuse_compare_branch(blocks: &mut [MachineBlock]) {
+    for idx in 0..blocks.len() {
+        // Check the last op and the terminator of this block.
+        let last_op = match blocks[idx].ops.last() {
+            Some(op) => op,
+            None => continue,
+        };
+
+        // Terminator must be Branch { cond: Value(Reg(cond_reg)) }.
+        let (cond_reg, then_target, else_target) = match &blocks[idx].terminator {
+            MachineTerminator::Branch {
+                cond: MachineBranchCond::Value(MachineValue::Reg(r)),
+                then_edge,
+                else_edge,
+            } => (*r, then_edge.target, else_edge.target),
+            _ => continue,
+        };
+
+        // Build the fused branch condition, or skip.
+        let fused_cond = match &last_op.kind {
+            MachineInstKind::IntCompare {
+                width,
+                kind,
+                sign,
+                dst,
+                lhs,
+                rhs,
+            } if *dst == cond_reg => MachineBranchCond::IntCompare {
+                width: *width,
+                kind: *kind,
+                sign: *sign,
+                lhs: *lhs,
+                rhs: *rhs,
+            },
+            MachineInstKind::FloatCompare {
+                width,
+                kind,
+                dst,
+                lhs,
+                rhs,
+            } if *dst == cond_reg => MachineBranchCond::FloatCompare {
+                width: *width,
+                kind: *kind,
+                lhs: *lhs,
+                rhs: *rhs,
+            },
+            _ => continue,
+        };
+
+        // Reject if any edge passes dst as an arg.
+        if term_edge_uses_value(&blocks[idx].terminator, cond_reg) {
+            continue;
+        }
+
+        // Reject if dst is live-in to either successor.
+        if !reg_dead_at_block_entry(blocks, then_target, cond_reg) {
+            continue;
+        }
+        if !reg_dead_at_block_entry(blocks, else_target, cond_reg) {
+            continue;
+        }
+
+        // Safe to fuse: remove the compare op and rewrite the terminator.
+        blocks[idx].ops.pop();
+        if let MachineTerminator::Branch { cond, .. } = &mut blocks[idx].terminator {
+            *cond = fused_cond;
+        }
+    }
+}
+
+/// Check whether any edge arg in the terminator references `reg`.
+fn term_edge_uses_value(term: &MachineTerminator, reg: MachineReg) -> bool {
+    let check = |e: &MachineEdge| e.args.iter().any(|a| value_is_reg(a, reg));
+    match term {
+        MachineTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => check(then_edge) || check(else_edge),
+        MachineTerminator::Jump(edge) => check(edge),
+        MachineTerminator::JumpTable { entries, .. } => entries.iter().any(|e| check(e)),
+        _ => false,
+    }
+}
+
+/// Returns true if `reg` is provably dead at the beginning of `target`:
+/// either the block defines it before any use, the block has it as a
+/// parameter, or the block never touches it.
+pub fn reg_dead_at_block_entry(
+    blocks: &[MachineBlock],
+    target: MachineBlockId,
+    reg: MachineReg,
+) -> bool {
+    let Some(block) = blocks.get(target.as_usize()) else {
+        return false;
+    };
+    // If the target has reg as a param, it will be defined by the edge.
+    if block.params.iter().any(|p| p.reg == reg) {
+        return true;
+    }
+    // Scan ops: defined before used → dead at entry.
+    for op in &block.ops {
+        if inst_defines(&op.kind, reg) {
+            return true;
+        }
+        if count_value_uses(&op.kind, reg) > 0 {
+            return false;
+        }
+    }
+    // Reached terminator without touching reg.
+    !terminator_uses_reg(&block.terminator, reg)
 }
