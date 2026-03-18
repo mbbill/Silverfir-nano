@@ -78,14 +78,23 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     // Phase 2: Inline small leaf callees into their callers.
-    for func_idx in 0..semantics.len() {
-        if semantics[func_idx].is_none() {
-            continue;
+    // Iterate until fixed-point so that transitive chains (A→B→C) are fully
+    // resolved regardless of function index ordering.
+    loop {
+        let mut any_inlined = false;
+        for func_idx in 0..semantics.len() {
+            if semantics[func_idx].is_none() {
+                continue;
+            }
+            let mut caller = semantics[func_idx].take().unwrap();
+            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
+                any_inlined = true;
+            }
+            semantics[func_idx] = Some(caller);
         }
-        // Temporarily take the caller's program to satisfy the borrow checker.
-        let mut caller = semantics[func_idx].take().unwrap();
-        inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics);
-        semantics[func_idx] = Some(caller);
+        if !any_inlined {
+            break;
+        }
     }
 
     // Phase 3: Prepare all functions (frame layout + LIR lowering).

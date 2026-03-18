@@ -19,7 +19,7 @@ use super::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram};
 const MAX_INLINE_OPS: usize = 200;
 
 /// Maximum number of parameters for an inline candidate.
-const MAX_INLINE_PARAMS: usize = ;
+const MAX_INLINE_PARAMS: usize = 8;
 
 
 /// Analyse a callee's `SemanticProgram` and decide whether it is eligible for
