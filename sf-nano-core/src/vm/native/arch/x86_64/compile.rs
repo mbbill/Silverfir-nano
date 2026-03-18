@@ -2348,15 +2348,23 @@ impl<'a> FunctionCompiler<'a> {
     ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
+        // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
+        // already lives in a mapped FP register (not FP_SCRATCH0), reuse
+        // FP_SCRATCH0 for rhs to avoid clobbering live FP transients in
+        // FP_SCRATCH1/FP_SCRATCH2.
+        let rhs_fp_scratch = if lhs_fp != FP_SCRATCH0 as u32 {
+            FP_SCRATCH0
+        } else {
+            FP_SCRATCH2
+        };
         if matches!(rhs, MachineValue::Imm64(0)) {
-            // Zero the scratch XMM via xorpd and compare against it.
-            enc::xorpd(&mut self.text, FP_SCRATCH1 as u8, FP_SCRATCH1 as u8);
+            enc::xorpd(&mut self.text, rhs_fp_scratch as u8, rhs_fp_scratch as u8);
             match width {
-                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
-                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp_scratch as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp_scratch as u8),
             };
         } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, rhs_fp_scratch)?;
             match width {
                 MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
                 MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
@@ -2695,14 +2703,21 @@ impl<'a> FunctionCompiler<'a> {
         else_fallthrough: bool,
     ) -> Result<(), WasmError> {
         let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
+        // Same scratch selection as emit_float_compare: avoid clobbering live
+        // FP transients in FP_SCRATCH1.
+        let rhs_fp_scratch = if lhs_fp != FP_SCRATCH0 as u32 {
+            FP_SCRATCH0
+        } else {
+            FP_SCRATCH2
+        };
         if matches!(rhs, MachineValue::Imm64(0)) {
-            enc::xorpd(&mut self.text, FP_SCRATCH1 as u8, FP_SCRATCH1 as u8);
+            enc::xorpd(&mut self.text, rhs_fp_scratch as u8, rhs_fp_scratch as u8);
             match width {
-                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
-                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, FP_SCRATCH1 as u8),
+                MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp_scratch as u8),
+                MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp_scratch as u8),
             };
         } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, rhs_fp_scratch)?;
             match width {
                 MachineFloatWidth::F32 => enc::ucomiss(&mut self.text, lhs_fp as u8, rhs_fp as u8),
                 MachineFloatWidth::F64 => enc::ucomisd(&mut self.text, lhs_fp as u8, rhs_fp as u8),
