@@ -633,9 +633,27 @@ impl<'a> FunctionCompiler<'a> {
         self.current_block = Some(block.id);
         self.current_edge_target = None;
         self.reset_block_fp_state(block)?;
+
+        // Detect compare-and-branch fusion: if the last op is IntCompare whose
+        // result is only consumed by a Branch { Value(Reg(dst)) } terminator,
+        // emit CMP without CSET, then B.cond in the terminator.
+        let fused_cmp_cond =
+            compare_branch_fusion(block, &self.function.program.blocks);
+
         let mut index = 0;
         while index < block.ops.len() {
             self.current_op_index = Some(index);
+            // If this is the last op and it's the fused compare, emit CMP only (no CSET).
+            if fused_cmp_cond.is_some() && index == block.ops.len() - 1 {
+                if let MachineInstKind::IntCompare {
+                    width, lhs, rhs, ..
+                } = &block.ops[index].kind
+                {
+                    self.emit_cmp_values(*width, *lhs, *rhs)?;
+                    index += 1;
+                    continue;
+                }
+            }
             if let Some((base, imm7)) = zero_store_pair_fusion(block, index) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.text
@@ -657,7 +675,19 @@ impl<'a> FunctionCompiler<'a> {
             index += 1;
         }
         self.current_op_index = None;
-        let result = self.emit_terminator(&block.terminator, fallthrough);
+        let result = if let Some(cond) = fused_cmp_cond {
+            // Flags already set by the inline CMP. Emit B.cond directly.
+            match &block.terminator {
+                MachineTerminator::Branch {
+                    then_edge,
+                    else_edge,
+                    ..
+                } => self.emit_flags_branch(cond, then_edge, else_edge, fallthrough),
+                _ => unreachable!(),
+            }
+        } else {
+            self.emit_terminator(&block.terminator, fallthrough)
+        };
         self.current_block = None;
         result
     }
@@ -909,6 +939,41 @@ impl<'a> FunctionCompiler<'a> {
                     else_fallthrough,
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Emit a conditional branch when the CPU flags have already been set by
+    /// a preceding CMP. Only emits B.cond / B (no CMP).
+    fn emit_flags_branch(
+        &mut self,
+        cond: Cond,
+        then_edge: &crate::vm::native::ir::machine::MachineEdge,
+        else_edge: &crate::vm::native::ir::machine::MachineEdge,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
+        let then_fallthrough =
+            is_fallthrough_edge(self, then_edge.target, &then_edge.args, fallthrough);
+        let else_fallthrough =
+            is_fallthrough_edge(self, else_edge.target, &else_edge.args, fallthrough);
+        let then_label = (!then_fallthrough)
+            .then(|| self.emit_edge(then_edge.target, &then_edge.args))
+            .transpose()?;
+        let else_label = (!else_fallthrough)
+            .then(|| self.emit_edge(else_edge.target, &else_edge.args))
+            .transpose()?;
+
+        if else_fallthrough {
+            if let Some(label) = then_label {
+                self.emit_b_cond(cond, label);
+            }
+        } else if then_fallthrough {
+            if let Some(label) = else_label {
+                self.emit_b_cond(cond.invert(), label);
+            }
+        } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+            self.emit_b_cond(cond, then_label);
+            self.emit_b(else_label);
         }
         Ok(())
     }
@@ -3716,6 +3781,97 @@ fn try_imm12_u32(value: u32) -> Option<u32> {
 
 fn try_imm12_u64(value: u64) -> Option<u32> {
     (value < 4096).then_some(value as u32)
+}
+
+/// Detect when the last instruction in a block is an IntCompare or FloatCompare
+/// whose result register is only used by the branch terminator. Returns a fused
+/// `MachineBranchCond` that emits CMP+B.cond instead of CMP+CSET ... CBNZ.
+/// Returns the ARM64 condition code for a fused compare-and-branch when the
+/// last op is an IntCompare whose result is only consumed by the branch
+/// and is provably dead in both successor blocks.
+fn compare_branch_fusion(
+    block: &MachineBlock,
+    all_blocks: &[MachineBlock],
+) -> Option<Cond> {
+    let last = block.ops.last()?;
+    let MachineTerminator::Branch {
+        cond: MachineBranchCond::Value(MachineValue::Reg(cond_reg)),
+        then_edge,
+        else_edge,
+    } = &block.terminator
+    else {
+        return None;
+    };
+
+    let MachineInstKind::IntCompare {
+        kind,
+        sign,
+        dst,
+        ..
+    } = &last.kind
+    else {
+        return None;
+    };
+    if dst != cond_reg {
+        return None;
+    }
+    // Reject if any edge passes dst as an arg.
+    if term_edge_uses_reg(&block.terminator, *dst) {
+        return None;
+    }
+    // Reject if dst is live-in to either successor: scan the target block's
+    // ops and check that dst is defined before any use.
+    if !reg_dead_at_block_entry(all_blocks, then_edge.target, *dst) {
+        return None;
+    }
+    if !reg_dead_at_block_entry(all_blocks, else_edge.target, *dst) {
+        return None;
+    }
+    Some(map_int_cond(*kind, *sign))
+}
+
+/// Returns true if `reg` is provably dead at the beginning of `target`:
+/// either the block defines reg before reading it, or the block's terminator
+/// doesn't use it and the block is very short (conservative).
+fn reg_dead_at_block_entry(
+    all_blocks: &[MachineBlock],
+    target: MachineBlockId,
+    reg: MachineReg,
+) -> bool {
+    let Some(block) = all_blocks.get(target.as_usize()) else {
+        return false;
+    };
+    // If the target block has reg as a param, it's defined by the edge → dead.
+    if block.params.iter().any(|p| p.reg == reg) {
+        return true;
+    }
+    // Scan ops: if reg is defined before any use, it's dead at entry.
+    for op in &block.ops {
+        if inst_defines_reg(&op.kind, reg) {
+            return true;
+        }
+        if inst_uses_reg(&op.kind, reg) {
+            return false; // used before defined → live at entry
+        }
+    }
+    // Reached the terminator without defining or using reg. Check terminator.
+    !term_uses_reg(&block.terminator, reg)
+}
+
+/// Check whether any edge arg in the terminator references the given register.
+fn term_edge_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
+    let check_edge = |e: &crate::vm::native::ir::machine::MachineEdge| {
+        e.args.iter().any(|a| matches!(a, MachineValue::Reg(r) if *r == reg))
+    };
+    match term {
+        MachineTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => check_edge(then_edge) || check_edge(else_edge),
+        MachineTerminator::Jump(edge) => check_edge(edge),
+        _ => false,
+    }
 }
 
 /// Detect consecutive `Store { src: Imm64(0), width: U64 }` pairs with the same
