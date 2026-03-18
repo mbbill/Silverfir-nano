@@ -12,7 +12,7 @@ use crate::{
         },
         plan::{config::PlanConfig, prepare::PrepareInput, prepare_function, PreparedFunction},
         store::Store,
-        wasm::{context::CompileContext, decode},
+        wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
     },
 };
 
@@ -42,10 +42,11 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         return Ok(());
     }
 
-    let mut lowered_inputs = Vec::new();
-    let mut prepared_functions = Vec::new();
+    // Phase 1: Decode all functions to semantic IR.
+    let mut semantics: Vec<Option<SemanticProgram>> = Vec::with_capacity(module.functions.len());
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
+            semantics.push(None);
             continue;
         };
         let params = spec.func_type().params().len() as u16;
@@ -73,15 +74,37 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 err
             ))
         })?;
+        semantics.push(Some(semantic));
+    }
+
+    // Phase 2: Inline small leaf callees into their callers.
+    for func_idx in 0..semantics.len() {
+        if semantics[func_idx].is_none() {
+            continue;
+        }
+        // Temporarily take the caller's program to satisfy the borrow checker.
+        let mut caller = semantics[func_idx].take().unwrap();
+        inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics);
+        semantics[func_idx] = Some(caller);
+    }
+
+    // Phase 3: Prepare all functions (frame layout + LIR lowering).
+    let mut lowered_inputs = Vec::new();
+    let mut prepared_functions = Vec::new();
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let semantic = semantics[func_idx].as_ref().unwrap();
         let prepared =
-            prepare_function(PrepareInput { config: native_plan_config(backend) }, &semantic).map_err(
+            prepare_function(PrepareInput { config: native_plan_config(backend) }, semantic).map_err(
                 |err| {
                     WasmError::internal(alloc::format!(
                         "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
                         func_idx,
                         spec.type_index(),
-                        params,
-                        results,
+                        spec.func_type().params().len(),
+                        spec.func_type().results().len(),
                         semantic.max_stack_height,
                         semantic.ops.len(),
                         err
@@ -157,6 +180,29 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         }
         _ => None,
     };
+
+    // Record compile stats.
+    {
+        let groups = prepared_functions.len();
+        let ops: usize = prepared_functions
+            .iter()
+            .map(|(_, p)| p.lir.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
+            .sum();
+        let mut bytes = 0usize;
+        #[cfg(target_arch = "aarch64")]
+        if let Some(ref entries) = arm64_entries {
+            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+        }
+        #[cfg(target_arch = "arm")]
+        if let Some(ref entries) = armv7a_entries {
+            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(ref entries) = x86_64_entries {
+            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+        }
+        crate::vm::native::set_native_stats(groups, ops, bytes);
+    }
 
     // Write dump if SF_NATIVE_DUMP_DIR is set
     if ir_dump::dump_enabled() {

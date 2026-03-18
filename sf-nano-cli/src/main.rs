@@ -138,19 +138,12 @@ fn main() {
     #[cfg(feature = "micro-jit")]
     {
         let s = native_stats_snapshot();
-        if s.groups > 0 || s.groups_skipped > 0 {
+        if s.groups > 0 {
             let kb = s.bytes_emitted / 1024;
-            if s.groups_skipped > 0 {
-                eprintln!(
-                    "[native] {} groups ({} ops), {}KB emitted | {} groups ({} ops) skipped (buffer full)",
-                    s.groups, s.ops, kb, s.groups_skipped, s.ops_skipped
-                );
-            } else {
-                eprintln!(
-                    "[native] {} groups ({} ops), {}KB emitted",
-                    s.groups, s.ops, kb
-                );
-            }
+            eprintln!(
+                "[native] {} functions ({} ops), {}KB code",
+                s.groups, s.ops, kb
+            );
         }
     }
 

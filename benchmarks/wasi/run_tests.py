@@ -155,9 +155,16 @@ def run_test(cli, test, cli_extra=()):
     if exit_code != 0 and not pattern:
         return name, "FAIL", f"exit code {exit_code}", elapsed
 
+    # Extract [native] stats if present.
+    native_info = ""
+    for line in stderr.splitlines():
+        if line.startswith("[native]"):
+            native_info = "  " + line.strip()
+            break
+
     # Extract metric
     if pattern is None:
-        return name, "PASS", f"{elapsed:.3f}s (wall clock)", elapsed
+        return name, "PASS", f"{elapsed:.3f}s (wall clock){native_info}", elapsed
 
     text = stderr if source == "stderr" else stdout
     if multi:
@@ -167,17 +174,17 @@ def run_test(cli, test, cli_extra=()):
                 metric = ", ".join(f"{m[0]}: {m[1]} MB/s" for m in matches)
             else:
                 metric = "; ".join(m.strip() for m in matches)
-            return name, "PASS", metric, elapsed
+            return name, "PASS", f"{metric}{native_info}", elapsed
     else:
         m = re.search(pattern, text, re.MULTILINE)
         if m:
             metric = m.group(1).strip()
             if expected and metric != expected:
                 return name, "FAIL", f"expected {expected}, got {metric}", elapsed
-            return name, "PASS", metric, elapsed
+            return name, "PASS", f"{metric}{native_info}", elapsed
 
     if exit_code == 0:
-        return name, "PASS", f"{elapsed:.3f}s (no metric found)", elapsed
+        return name, "PASS", f"{elapsed:.3f}s (no metric found){native_info}", elapsed
     return name, "FAIL", f"exit code {exit_code}", elapsed
 
 
