@@ -127,16 +127,44 @@ This step should not change planning behavior yet.
 
 ## Phase 2
 
-Goal: implement correct 32-bit lowering from MachineIR to ARMv7A machine code.
+Goal: validate correct 32-bit MachineIR semantics first, then lower that
+legalized MachineIR to ARMv7A machine code.
 
-### Step 1: 32-Bit Legalization
+### Step 1: Emulator Target Modes
+
+- Keep one platform-independent MachineIR emulator backend, but expose two
+  target modes:
+  - `--emu64`: current behavior; executes the 64-bit-target MachineIR shape
+  - `--emu32`: executes optimized + legalized 32-bit-target MachineIR
+- `--emu32` must compile with a real 32-bit backend profile:
+  - `gp_reg_width = 4`
+  - the same GP / FP lane and local-cache counts used by `armv7a`
+- The point of `--emu32` is to validate legalization semantics before ARM32
+  encoding enters the picture.
+
+### Step 2: 32-Bit Legalization
 
 - Add a legalization pass for true 64-bit GP values.
 - Split block params and edge args consistently.
 - Rewrite true `i64` ops into forms legal for 32-bit backends.
 - Consume GP register-units already budgeted in phase 1.
+- Teach the emulator any new legalization-only ops so `--emu32` can execute the
+  legalized MachineIR directly.
+- Use `--emu32` as the first semantic oracle for legalization bugs.
 
-### Step 2: ARMv7A Lowering for Legalized MachineIR
+### Step 3: Legalization Validation in `--emu32`
+
+- Run spectest regularly under `--emu32`.
+- Run targeted Wasm regression cases under `--emu32`, especially:
+  - `i64` arithmetic
+  - `f64` transport / moves / returns
+  - memory load/store
+  - control flow with block params / edges / `select`
+- Treat `--emu32` as proof that the legalized MachineIR itself is correct.
+- Do not treat `--emu32` as proof that ARMv7A physical register mapping is
+  solved; that remains a separate concern for the real backend.
+
+### Step 4: ARMv7A Lowering for Legalized MachineIR
 
 - Implement pair-aware ARMv7A lowering for:
   - moves
@@ -147,14 +175,19 @@ Goal: implement correct 32-bit lowering from MachineIR to ARMv7A machine code.
   - multiply
   - conversions and reinterprets
 
-### Step 3: Independent ARMv7A Backend Fixes
+Before or during this step, resolve how legalized 64-bit GP pairs are
+represented within the current precolored GP machine-register budget. Emulator
+validation checks semantics; the real backend still needs a representable
+mapping onto ARMv7A physical registers.
+
+### Step 5: Independent ARMv7A Backend Fixes
 
 - Fix `select` aliasing / condition clobber separately from legalization.
 - Fix likely unaligned `f64` load/store SIGBUS paths.
 - Re-audit edge parallel moves and GP/FP transfer paths once machine storage
   typing lands.
 
-### Step 4: ARMv7A Validation
+### Step 6: ARMv7A Validation
 
 - Run ARMv7A native spectest regularly during bring-up.
 - Run `benchmarks/wasi/run_tests.py` regularly during bring-up.
@@ -163,6 +196,8 @@ Goal: implement correct 32-bit lowering from MachineIR to ARMv7A machine code.
 
 ### Phase 2 Exit Criteria
 
+- `--emu32` spectest passes
+- `--emu32` targeted legalization regressions pass
 - ARMv7A native spectest passes
 - ARMv7A `run_tests.py` passes
 - No known `SIGBUS` in the floating-point benchmarks
