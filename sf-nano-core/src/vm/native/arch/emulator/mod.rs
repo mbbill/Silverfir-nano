@@ -672,10 +672,12 @@ impl<'a> Emulator<'a> {
         if mem_base == 0 {
             return Ok(());
         }
-        // Guard-page reservation is 8 GB + 64 KB.  Any pointer inside that
-        // window is a wasm linear-memory access; anything outside is a
-        // frame/stack access.
+        // Guard-page reservation is 8 GB + 64 KB on 64-bit, full address
+        // space on 32-bit.
+        #[cfg(target_pointer_width = "64")]
         const GUARD_WINDOW: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
+        #[cfg(target_pointer_width = "32")]
+        const GUARD_WINDOW: usize = usize::MAX;
         if ptr >= mem_base && ptr < mem_base.saturating_add(GUARD_WINDOW) {
             if ptr.saturating_add(size) > mem_base + mem_size {
                 return Err(WasmError::trap("out of bounds memory access".into()));
