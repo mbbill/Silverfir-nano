@@ -658,6 +658,32 @@ impl<'a> Emulator<'a> {
             .wrapping_add_signed(i64::from(addr.offset))
     }
 
+    /// Check that a pointer dereference targets valid memory.  When guard-page
+    /// backing is active the MIR omits explicit bounds-check TrapIf
+    /// instructions, relying on a signal handler that the emulator does not
+    /// install.  Catch out-of-bounds wasm memory accesses here instead.
+    ///
+    /// We identify wasm-memory pointers by checking whether they fall inside
+    /// the guard-page virtual reservation (8 GB from mem0_base).  Frame/stack
+    /// pointers live in a heap Vec and never land in that range.
+    fn check_access(&self, ptr: usize, size: usize) -> Result<(), WasmError> {
+        let mem_base = self.ctx.mem0_base as usize;
+        let mem_size = self.ctx.mem0_size as usize;
+        if mem_base == 0 {
+            return Ok(());
+        }
+        // Guard-page reservation is 8 GB + 64 KB.  Any pointer inside that
+        // window is a wasm linear-memory access; anything outside is a
+        // frame/stack access.
+        const GUARD_WINDOW: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
+        if ptr >= mem_base && ptr < mem_base.saturating_add(GUARD_WINDOW) {
+            if ptr.saturating_add(size) > mem_base + mem_size {
+                return Err(WasmError::trap("out of bounds memory access".into()));
+            }
+        }
+        Ok(())
+    }
+
     fn load(
         &self,
         addr: MachineAddr,
@@ -665,6 +691,7 @@ impl<'a> Emulator<'a> {
         extension: MachineLoadExtension,
     ) -> Result<u64, WasmError> {
         let ptr = self.addr_value(addr) as *const u8;
+        self.check_access(ptr as usize, mem_width_bytes(width))?;
         let raw = unsafe {
             match width {
                 MachineMemWidth::U8 => core::ptr::read_unaligned(ptr.cast::<u8>()) as u64,
@@ -697,6 +724,7 @@ impl<'a> Emulator<'a> {
         value: u64,
     ) -> Result<(), WasmError> {
         let ptr = self.addr_value(addr) as *mut u8;
+        self.check_access(ptr as usize, mem_width_bytes(width))?;
         unsafe {
             match width {
                 MachineMemWidth::U8 => core::ptr::write_unaligned(ptr.cast::<u8>(), value as u8),
@@ -830,6 +858,15 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         MachineTrapKind::CallStackExhausted => WasmError::exhaustion("call stack exhausted".into()),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
+    }
+}
+
+fn mem_width_bytes(width: MachineMemWidth) -> usize {
+    match width {
+        MachineMemWidth::U8 => 1,
+        MachineMemWidth::U16 => 2,
+        MachineMemWidth::U32 => 4,
+        MachineMemWidth::U64 => 8,
     }
 }
 
