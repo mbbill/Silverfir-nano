@@ -636,6 +636,13 @@ impl<'a> FunctionCompiler<'a> {
         let mut index = 0;
         while index < block.ops.len() {
             self.current_op_index = Some(index);
+            if let Some((base, imm7)) = zero_store_pair_fusion(block, index) {
+                let base_reg = self.map_gp_reg(base)?;
+                self.text
+                    .emit_u32(enc::stp_64(Arm64Reg::Xzr, Arm64Reg::Xzr, base_reg, imm7));
+                index += 2;
+                continue;
+            }
             if let Some((fused, skip)) = uxtw_mem_fusion(block, index) {
                 self.emit_indexed_mem_fusion(fused)?;
                 index += 1 + skip; // skip convert + (add+load fused pair)
@@ -3709,6 +3716,45 @@ fn try_imm12_u32(value: u32) -> Option<u32> {
 
 fn try_imm12_u64(value: u64) -> Option<u32> {
     (value < 4096).then_some(value as u32)
+}
+
+/// Detect consecutive `Store { src: Imm64(0), width: U64 }` pairs with the same
+/// base register and adjacent 8-byte-aligned offsets. Returns `(base, imm7)` where
+/// imm7 is the STP signed-offset in 8-byte units for the first store.
+fn zero_store_pair_fusion(block: &MachineBlock, index: usize) -> Option<(MachineReg, i32)> {
+    let a = block.ops.get(index)?;
+    let b = block.ops.get(index + 1)?;
+    let (
+        MachineInstKind::Store {
+            addr: addr_a,
+            width: MachineMemWidth::U64,
+            src: MachineValue::Imm64(0),
+        },
+        MachineInstKind::Store {
+            addr: addr_b,
+            width: MachineMemWidth::U64,
+            src: MachineValue::Imm64(0),
+        },
+    ) = (&a.kind, &b.kind)
+    else {
+        return None;
+    };
+    if addr_a.base != addr_b.base {
+        return None;
+    }
+    if addr_b.offset != addr_a.offset + 8 {
+        return None;
+    }
+    let off_a = addr_a.offset as i64;
+    if off_a < 0 || (off_a % 8) != 0 {
+        return None;
+    }
+    let imm7 = (off_a / 8) as i32;
+    // STP signed imm7 range: -64..63
+    if !(-64..=63).contains(&imm7) {
+        return None;
+    }
+    Some((addr_a.base, imm7))
 }
 
 fn indexed_mem_fusion(block: &MachineBlock, index: usize) -> Option<IndexedMemFusion> {
