@@ -338,6 +338,70 @@ Then use:
 | `SF_FUNCTION_TRACE` | Record sparse function-boundary traces |
 | `SF_FUNCTION_TRACE_MEMORY=1` | Add memory hashing to function traces |
 
+## Cross-Architecture Testing (ARMv7)
+
+The native backend targets ARMv7-A (32-bit ARM) in addition to ARM64 and x86_64.
+To test on an Apple Silicon Mac, cross-compile and run under QEMU user-mode
+emulation inside the Colima VM.
+
+### Prerequisites
+
+```bash
+brew install colima docker qemu
+colima start
+colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+```
+
+### Step 1: Verify the environment with --emu
+
+The `--emu` flag uses the platform-independent emulator backend. It works on
+any architecture and confirms the build, the cross toolchain, and the QEMU
+setup are all functional — before introducing target-specific JIT issues.
+
+```bash
+# Cross-compile (static musl, no default features to skip guard-pages)
+cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-cli --no-default-features
+
+# Run with emulator backend via QEMU
+colima ssh -- qemu-arm-static \
+  /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
+  --emu /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
+```
+
+If this passes, the toolchain and runtime environment are working.
+
+### Step 2: Test the real ARMv7 JIT
+
+The goal is to validate the ARMv7-A native codegen, not the emulator.
+Drop `--emu` so the CLI uses the real JIT backend:
+
+```bash
+colima ssh -- qemu-arm-static \
+  /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
+  /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
+```
+
+Run spectests the same way:
+
+```bash
+cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-spectest --no-default-features
+
+colima ssh -- qemu-arm-static \
+  /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-spectest \
+  --backend native
+```
+
+### Notes
+
+- Use `--no-default-features` to disable `guard-pages` (requires 64-bit virtual
+  address space) and `micro-jit` default (re-add `--features micro-jit` if you
+  want the JIT compiled in without guard pages).
+- The binary is statically linked (musl), so no shared libraries are needed
+  inside QEMU.
+- Colima mounts the macOS home directory, so host paths work directly.
+- QEMU user-mode translates ARMv7 instructions but uses the host kernel for
+  syscalls, so mmap/mprotect behavior may differ from real hardware.
+
 ## Practical Rules
 
 - Use `base` first when you need a semantic baseline.
