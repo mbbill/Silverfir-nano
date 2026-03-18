@@ -38,6 +38,7 @@ pub(super) fn lower_block_terminator(
     extra_blocks_len: usize,
     local_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
 ) -> Result<LoweredTerminator, WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -372,7 +373,8 @@ pub(super) fn lower_block_terminator(
             params,
             results,
         } => {
-            lower_call_external(*func_idx, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_external(*func_idx, *params, *results, frame, state, skip);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -393,7 +395,8 @@ pub(super) fn lower_block_terminator(
             params,
             results,
         } => {
-            lower_call_internal(*callee, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_internal(*callee, *params, *results, frame, state, skip);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -415,7 +418,8 @@ pub(super) fn lower_block_terminator(
             params,
             results,
         } => {
-            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state, skip);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,

@@ -230,6 +230,15 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_reload_cached_locals()
     }
 
+    /// Begin a continuation block after a call, selectively skipping reloads
+    /// for cached locals that are known to be written before read.
+    pub(super) fn begin_continuation_block_selective(
+        &mut self,
+        skip_reload: Option<&[bool]>,
+    ) -> Result<(), WasmError> {
+        self.emit_reload_cached_locals_selective(skip_reload)
+    }
+
     pub(super) fn lower_inst(&mut self, inst: &LirInst) -> Result<(), WasmError> {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
@@ -558,7 +567,25 @@ impl<'a> BlockLowerContext<'a> {
     /// Reload all cached locals from the frame. Used after calls and at
     /// non-entry block boundaries where the cache may be stale.
     pub(super) fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
+        self.emit_reload_cached_locals_selective(None)
+    }
+
+    /// Reload cached locals from the frame, optionally skipping locals that
+    /// are known to be written before read at this continuation point.
+    ///
+    /// `skip_reload` is parallel to the cached_locals vec (GP then FP order).
+    /// When `skip_reload[i]` is `true`, the reload for that cached local is
+    /// elided because the local will be overwritten before anyone reads it.
+    pub(super) fn emit_reload_cached_locals_selective(
+        &mut self,
+        skip_reload: Option<&[bool]>,
+    ) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
+            if let Some(skip) = skip_reload {
+                if index < skip.len() && skip[index] {
+                    continue;
+                }
+            }
             let cached = self.cached_locals[index];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {

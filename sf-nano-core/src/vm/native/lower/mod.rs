@@ -288,6 +288,7 @@ fn lower_function(
                         func_idx,
                         args,
                         results,
+                        ..
                     } => {
                         lower.lower_call_external(*func_idx, *args, *results, sidecar)?;
                     }
@@ -295,6 +296,8 @@ fn lower_function(
                         callee,
                         args,
                         results,
+                        skip_reload,
+                        ..
                     } => {
                         let continuation = extra_block_ids.alloc();
                         let terminator =
@@ -309,19 +312,25 @@ fn lower_function(
                         )?;
                         current_block = continuation;
                         current_params = Vec::new();
-                        lower.begin_continuation_block()?;
+                        lower.begin_continuation_block_selective(Some(skip_reload))?;
                     }
                     LirBoundaryOp::CallIndirect { .. } => {
-                        let &LirBoundaryOp::CallIndirect {
+                        let LirBoundaryOp::CallIndirect {
                             type_idx,
                             table_idx,
                             index_slot,
                             args,
                             results,
+                            skip_reload,
                         } = boundary
                         else {
                             unreachable!("matched call_indirect boundary");
                         };
+                        let type_idx = *type_idx;
+                        let table_idx = *table_idx;
+                        let index_slot = *index_slot;
+                        let args = *args;
+                        let results = *results;
                         lower.ensure_no_live_values(
                             "prepared LIR call_indirect reached native lowering with live transient SSA values; values must be published before the call",
                         )?;
@@ -510,7 +519,7 @@ fn lower_function(
 
                         current_block = continuation;
                         current_params = Vec::new();
-                        lower.begin_continuation_block()?;
+                        lower.begin_continuation_block_selective(Some(skip_reload))?;
                     }
                 },
                 _ => lower.lower_inst(inst)?,

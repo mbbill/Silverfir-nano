@@ -15,14 +15,21 @@ use crate::vm::{
 
 use super::frame::FrameLayoutPlan;
 
+/// Returns `(cache_prefs, continuation_skip_reload)`.
+///
+/// `continuation_skip_reload` is a temporary consumed during prepare: one
+/// `Vec<bool>` per call site in SemanticProgram op order, parallel to the
+/// cached-local ordering (GP then FP).  Each entry is moved onto the
+/// corresponding `LirBoundaryOp::skip_reload` field and never stored
+/// persistently.
 pub fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,
     gp_slots: u8,
     fp_slots: u8,
     frame: FrameLayoutPlan,
-) -> LirLocalCachePrefs {
+) -> (LirLocalCachePrefs, Vec<Vec<bool>>) {
     if semantic.local_count == 0 {
-        return LirLocalCachePrefs::default();
+        return (LirLocalCachePrefs::default(), Vec::new());
     }
 
     let weights = local_weights(semantic);
@@ -49,7 +56,12 @@ pub fn analyze_local_cache_prefs(
             .unwrap_or(true),
     };
 
-    LirLocalCachePrefs {
+    // Compute per-call-site reload-skip sets.  The cached-local indices are
+    // GP then FP, matching the order used everywhere else.
+    let cached_local_indices: Vec<u32> = gp.iter().chain(fp.iter()).copied().collect();
+    let skip_reload = continuation_skip_reload(semantic, &cached_local_indices);
+
+    let prefs = LirLocalCachePrefs {
         gp_local_info: gp.iter().map(|idx| local_info(*idx)).collect(),
         gp_preferred_slots: gp
             .into_iter()
@@ -64,7 +76,8 @@ pub fn analyze_local_cache_prefs(
             .into_iter()
             .map(|idx| semantic.local_types[idx as usize])
             .collect(),
-    }
+    };
+    (prefs, skip_reload)
 }
 
 fn select_top_n(
@@ -315,6 +328,111 @@ fn entry_scope_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
 }
 
 
+/// For each call/call_indirect site in the function, compute which cached
+/// locals are *definitely written before read* on the straight-line path
+/// immediately following the call.  Those locals do not need reloading at the
+/// continuation because their cached-register value will be overwritten before
+/// anyone reads it.
+///
+/// The scan is intentionally conservative: it walks forward from the call site
+/// until it hits a branch, another call, a loop, or end-of-function, recording
+/// `LocalSet`/`LocalTee` as writes and `LocalGet` as reads.  Any cached local
+/// that is written before being read in that window gets `skip_reload = true`.
+///
+/// Returns one `Vec<bool>` per call site (in SemanticProgram op order), with
+/// one entry per cached local (GP then FP, same order as the preferred-slots
+/// vectors).  `true` = skip reload.
+pub fn continuation_skip_reload(
+    semantic: &SemanticProgram,
+    cached_local_indices: &[u32],
+) -> Vec<Vec<bool>> {
+    let n = cached_local_indices.len();
+    if n == 0 {
+        // No cached locals at all — return an empty skip set per call site.
+        let call_count = semantic
+            .ops
+            .iter()
+            .filter(|op| matches!(
+                op.kind,
+                SemanticOpKind::CallInternal { .. }
+                    | SemanticOpKind::CallExternal { .. }
+                    | SemanticOpKind::CallIndirect { .. }
+            ))
+            .count();
+        return alloc::vec![Vec::new(); call_count];
+    }
+
+    // Build a reverse map: wasm local index → position in cached_local_indices.
+    let max_local = cached_local_indices.iter().copied().max().unwrap_or(0) as usize;
+    let mut local_to_cache = alloc::vec![usize::MAX; max_local + 1];
+    for (pos, &idx) in cached_local_indices.iter().enumerate() {
+        local_to_cache[idx as usize] = pos;
+    }
+
+    let mut results = Vec::new();
+
+    for (op_index, op) in semantic.ops.iter().enumerate() {
+        let is_call = matches!(
+            op.kind,
+            SemanticOpKind::CallInternal { .. }
+                | SemanticOpKind::CallExternal { .. }
+                | SemanticOpKind::CallIndirect { .. }
+        );
+        if !is_call {
+            continue;
+        }
+
+        // Walk forward from the op after this call.
+        let mut written = alloc::vec![false; n];
+        let mut read = alloc::vec![false; n];
+
+        for subsequent in &semantic.ops[op_index + 1..] {
+            match subsequent.kind {
+                // Stop at control flow or another call — we can't see past these.
+                SemanticOpKind::Block { .. }
+                | SemanticOpKind::Loop { .. }
+                | SemanticOpKind::If { .. }
+                | SemanticOpKind::Else { .. }
+                | SemanticOpKind::End
+                | SemanticOpKind::Br { .. }
+                | SemanticOpKind::BrIf { .. }
+                | SemanticOpKind::BrTable { .. }
+                | SemanticOpKind::CallInternal { .. }
+                | SemanticOpKind::CallExternal { .. }
+                | SemanticOpKind::CallIndirect { .. }
+                | SemanticOpKind::ReturnVoid
+                | SemanticOpKind::ReturnOne
+                | SemanticOpKind::Return { .. }
+                | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => break,
+
+                SemanticOpKind::LocalGet { idx } => {
+                    let i = idx as usize;
+                    if i <= max_local {
+                        let pos = local_to_cache[i];
+                        if pos != usize::MAX && !written[pos] {
+                            read[pos] = true;
+                        }
+                    }
+                }
+                SemanticOpKind::LocalSet { idx } | SemanticOpKind::LocalTee { idx } => {
+                    let i = idx as usize;
+                    if i <= max_local {
+                        let pos = local_to_cache[i];
+                        if pos != usize::MAX && !read[pos] {
+                            written[pos] = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        results.push(written);
+    }
+
+    results
+}
+
 /// Intersect two def_set vecs element-wise (AND).
 fn intersect_vecs(a: &[bool], b: &[bool]) -> Vec<bool> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x && y).collect()
@@ -420,7 +538,7 @@ mod tests {
         };
 
         let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 0);
-        let prefs = analyze_local_cache_prefs(&semantic, 2, 0, frame);
+        let (prefs, _skip_reload) = analyze_local_cache_prefs(&semantic, 2, 0, frame);
         assert_eq!(
             prefs.gp_preferred_slots,
             alloc::vec![frame.local_slot(1), frame.local_slot(0)],

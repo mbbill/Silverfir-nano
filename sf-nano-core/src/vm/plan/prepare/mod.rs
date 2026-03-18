@@ -59,7 +59,7 @@ pub fn prepare_function(
         semantic.max_stack_height,
         input.config.call_scratch_slots,
     );
-    let local_cache = analyze_local_cache_prefs(
+    let (local_cache, continuation_skip_reload) = analyze_local_cache_prefs(
         semantic,
         input.config.gp_cached_locals,
         input.config.fp_cached_locals,
@@ -92,6 +92,7 @@ pub fn prepare_function(
     let original_block_count = block_ranges.len();
     let mut blocks = Vec::with_capacity(block_ranges.len());
     let mut extra_blocks = Vec::new();
+    let mut skip_reload_iter = continuation_skip_reload.into_iter();
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
@@ -113,6 +114,7 @@ pub fn prepare_function(
             extra_blocks.len(),
             local_types,
             op_result_types,
+            &mut skip_reload_iter,
         )?;
         blocks.push(LirBlock {
             id: LirTarget(block_index as u32),

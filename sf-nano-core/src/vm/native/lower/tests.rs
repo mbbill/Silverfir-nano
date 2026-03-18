@@ -4,8 +4,8 @@ use crate::vm::{
     backend::BackendConfig,
     lir::{
         ir::{
-            LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs,
-            LirProgram, LirTerminator, LirValue,
+            CachedLocalInfo, LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst, LirInstKind,
+            LirLocalCachePrefs, LirProgram, LirTerminator, LirValue,
         },
         leaf::LirLeafOp,
         target::LirTarget,
@@ -445,6 +445,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -490,6 +492,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     .expect("lowering should succeed");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    // ops[0]: entry cache init — load param from frame into cache reg
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Load {
@@ -497,6 +500,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             ..
         }
     ));
+    // ops[1]: LoadSlot reads cached local → move from cache reg
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -504,18 +508,12 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             src: MachineValue::Reg(MachineReg(4)),
         }
     ));
+    // ops[2]: I32Const(7) coalesced directly into cache reg via StoreSlot
     assert!(matches!(
         ops[2].kind,
         MachineInstKind::Move {
-            dst: MachineReg(6),
-            src: MachineValue::Imm64(7),
-        }
-    ));
-    assert!(matches!(
-        ops[3].kind,
-        MachineInstKind::Move {
             dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(6)),
+            src: MachineValue::Imm64(7),
         }
     ));
 }
@@ -673,6 +671,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
                     func_idx: 7,
                     args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 2),
                     results: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: LirTerminator::TrapUnreachable,
@@ -716,6 +715,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -740,6 +741,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                         func_idx: 7,
                         args: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::plan::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -762,8 +764,10 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     .expect("external helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 8);
+    assert_eq!(ops.len(), 7);
+    // ops[0]: entry cache init — load param from frame
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
+    // ops[1]: I64Const(9) coalesced directly into cache reg via StoreSlot
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -771,12 +775,15 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             ..
         }
     ));
-    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    // ops[2]: flush cache to frame before external call
+    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
+    // ops[3]: external call
+    assert!(matches!(ops[3].kind, MachineInstKind::CallHelper(_)));
+    // ops[4-5]: reload mem0 cache regs
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    // ops[6]: reload cached local after call
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -788,6 +795,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -833,8 +842,10 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     .expect("runtime helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 8);
+    assert_eq!(ops.len(), 7);
+    // ops[0]: entry cache init — load param from frame
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
+    // ops[1]: I64Const(5) coalesced directly into cache reg via StoreSlot
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -842,12 +853,15 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ..
         }
     ));
-    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    // ops[2]: flush cache to frame before runtime helper
+    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
+    // ops[3]: runtime helper call (memory grow)
+    assert!(matches!(ops[3].kind, MachineInstKind::CallHelper(_)));
+    // ops[4-5]: reload mem0 cache regs
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    // ops[6]: reload cached local after call
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -869,6 +883,7 @@ fn lowers_direct_local_call_with_continuation_block() {
                         caller_frame.operand_slot(0),
                         1
                     ),
+                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: LirTerminator::TrapUnreachable,
@@ -989,6 +1004,8 @@ fn flushes_cached_local_before_second_direct_call() {
             gp_preferred_slots: alloc::vec![caller_frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),
@@ -1005,6 +1022,7 @@ fn flushes_cached_local_before_second_direct_call() {
                             caller_frame.operand_slot(0),
                             1,
                         ),
+                        skip_reload: alloc::vec![],
                     }),
                 },
                 LirInst {
@@ -1030,6 +1048,7 @@ fn flushes_cached_local_before_second_direct_call() {
                             caller_frame.operand_slot(0),
                             1,
                         ),
+                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -1079,6 +1098,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert_eq!(caller_program.blocks.len(), 3);
 
     let second_call_block = &caller_program.blocks[1];
+    // ops[0]: reload cached local after first call
     assert!(matches!(
         second_call_block.ops[0].kind,
         MachineInstKind::Load {
@@ -1086,19 +1106,17 @@ fn flushes_cached_local_before_second_direct_call() {
             ..
         }
     ));
+    // ops[1]: LoadSlot coalesced with StoreSlot directly into cache reg
     assert!(matches!(
         second_call_block.ops[1].kind,
-        MachineInstKind::Load { .. }
-    ));
-    assert!(matches!(
-        second_call_block.ops[2].kind,
-        MachineInstKind::Move {
+        MachineInstKind::Load {
             dst: MachineReg(4),
             ..
         }
     ));
+    // ops[2]: flush cache to frame before second call
     assert!(matches!(
-        second_call_block.ops[3].kind,
+        second_call_block.ops[2].kind,
         MachineInstKind::Store {
             addr: crate::vm::native::ir::machine::MachineAddr {
                 base: MachineReg(1),
@@ -1127,6 +1145,8 @@ fn preserves_cached_locals_across_block_edges() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![
             LirBlock {
@@ -1190,6 +1210,7 @@ fn preserves_cached_locals_across_block_edges() {
     .expect("block-edge cache preservation lowering should succeed");
 
     let program = &lowered.module.functions[0].program;
+    // Block 0: entry init + I64Const coalesced with StoreSlot
     assert!(matches!(
         program.blocks[0].ops[0].kind,
         MachineInstKind::Load {
@@ -1197,24 +1218,19 @@ fn preserves_cached_locals_across_block_edges() {
             ..
         }
     ));
+    // I64Const(9) coalesced directly into cache reg via StoreSlot
     assert!(matches!(
         program.blocks[0].ops[1].kind,
         MachineInstKind::Move {
-            src: MachineValue::Imm64(9),
-            ..
-        }
-    ));
-    assert!(matches!(
-        program.blocks[0].ops[2].kind,
-        MachineInstKind::Move {
             dst: MachineReg(4),
-            ..
+            src: MachineValue::Imm64(9),
         }
     ));
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Jump(_)
     ));
+    // Block 1: cached local preserved across edge — no reload needed
     assert!(matches!(
         program.blocks[1].ops[0].kind,
         MachineInstKind::Move {
@@ -1250,6 +1266,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                         caller_frame.operand_slot(0),
                         1,
                     ),
+                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: LirTerminator::TrapUnreachable,
@@ -1377,6 +1394,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
                     index_slot: call_base.advance(2),
                     args: crate::vm::plan::frame::FrameSpan::new(call_base, 2),
                     results: crate::vm::plan::frame::FrameSpan::new(call_base, 1),
+                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: LirTerminator::TrapUnreachable,
@@ -2242,6 +2260,8 @@ fn f32_cached_locals_use_f32_slot_widths() {
             gp_preferred_slots: alloc::vec![],
             fp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_types: alloc::vec![ValueType::F32],
+            gp_local_info: alloc::vec![],
+            fp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),

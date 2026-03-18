@@ -258,6 +258,7 @@ pub(super) fn lower_call_external(
     results: u16,
     frame: FrameLayoutPlan,
     state: &mut BlockState,
+    skip_reload: Vec<bool>,
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(LirInst {
@@ -265,6 +266,7 @@ pub(super) fn lower_call_external(
             func_idx,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
+            skip_reload,
         }),
     });
     state.finish_boundary(params, results);
@@ -276,6 +278,7 @@ pub(super) fn lower_call_internal(
     results: u16,
     frame: FrameLayoutPlan,
     state: &mut BlockState,
+    skip_reload: Vec<bool>,
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(LirInst {
@@ -283,6 +286,7 @@ pub(super) fn lower_call_internal(
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
+            skip_reload,
         }),
     });
     state.finish_boundary(params, results);
@@ -295,6 +299,7 @@ pub(super) fn lower_call_indirect(
     results: u16,
     frame: FrameLayoutPlan,
     state: &mut BlockState,
+    skip_reload: Vec<bool>,
 ) {
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
@@ -305,6 +310,7 @@ pub(super) fn lower_call_indirect(
             index_slot: call_base.advance(params),
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
+            skip_reload,
         }),
     });
     state.finish_boundary(consumed, results);
@@ -357,6 +363,7 @@ pub(super) fn lower_block_body_op(
     values: &mut ValueAlloc,
     local_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
 ) -> Result<(), WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -386,7 +393,8 @@ pub(super) fn lower_block_body_op(
             params,
             results,
         } => {
-            lower_call_external(*func_idx, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_external(*func_idx, *params, *results, frame, state, skip);
             Ok(())
         }
         SemanticOpKind::CallInternal {
@@ -394,7 +402,8 @@ pub(super) fn lower_block_body_op(
             params,
             results,
         } => {
-            lower_call_internal(*callee, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_internal(*callee, *params, *results, frame, state, skip);
             Ok(())
         }
         SemanticOpKind::CallIndirect {
@@ -403,7 +412,8 @@ pub(super) fn lower_block_body_op(
             params,
             results,
         } => {
-            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
+            let skip = skip_reload_iter.next().unwrap_or_default();
+            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state, skip);
             Ok(())
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),

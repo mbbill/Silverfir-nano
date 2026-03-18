@@ -46,6 +46,7 @@ pub(super) fn lower_block_range(
     extra_blocks_len: usize,
     local_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
 ) -> Result<LoweredBlock, WasmError> {
     let last_index = semantic_range
         .end
@@ -60,7 +61,7 @@ pub(super) fn lower_block_range(
             let target = fallthrough_target(semantic_index, prepared.len())?;
             canonicalize_live_window_for_target(target, &mut state, frame, entry_states)?;
         }
-        lower_block_body_op(&prepared[semantic_index], semantic_index, &mut state, frame, values, local_types, op_result_types)?;
+        lower_block_body_op(&prepared[semantic_index], semantic_index, &mut state, frame, values, local_types, op_result_types, skip_reload_iter)?;
         state.validate_live_fit("block body")?;
     }
 
@@ -78,6 +79,7 @@ pub(super) fn lower_block_range(
         extra_blocks_len,
         local_types,
         op_result_types,
+        skip_reload_iter,
     )?;
     state.validate_live_fit("block terminator")?;
 

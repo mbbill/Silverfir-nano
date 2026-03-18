@@ -277,6 +277,7 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             callee,
             args,
             results,
+            ..
         } => format!(
             "call_internal f{callee} args=fp[{}..{}) results=fp[{}..{})",
             args.start.0,
@@ -288,6 +289,7 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             func_idx,
             args,
             results,
+            ..
         } => format!(
             "call_external f{func_idx} args=fp[{}..{}) results=fp[{}..{})",
             args.start.0,
@@ -301,6 +303,7 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             index_slot,
             args,
             results,
+            ..
         } => format!(
             "call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
             index_slot.0,
