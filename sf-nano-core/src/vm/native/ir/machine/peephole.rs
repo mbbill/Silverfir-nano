@@ -17,9 +17,10 @@
 //!
 //! 5. **Compare-and-branch fusion**: `IntCompare { dst } + Branch { Value(Reg(dst)) }`
 //!    → `Branch { IntCompare { ... } }` when the compare result register is dead in
-//!    both successor blocks. Same for FloatCompare. Eliminates the boolean
-//!    materialization (CSET on ARM64, SETCC+MOVZX on x86_64) and enables hardware
-//!    compare-and-branch fusion.
+//!    both successor blocks. Eliminates the boolean materialization (CSET on ARM64,
+//!    SETCC+MOVZX on x86_64) and enables hardware compare-and-branch fusion.
+//!    FloatCompare is NOT fused because x86_64 requires multi-instruction NaN
+//!    handling that cannot be expressed as a single conditional branch.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -1000,6 +1001,13 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock]) {
         };
 
         // Build the fused branch condition, or skip.
+        //
+        // Only IntCompare is fused here. FloatCompare is NOT fused because
+        // on x86_64 Wasm float comparisons require multi-instruction NaN
+        // handling (SETCC+SETNP+AND) that cannot be expressed as a single
+        // conditional branch. ARM64's FCMP condition codes handle NaN
+        // correctly with a single B.cond, but since this is a shared pass
+        // it must be safe for all backends.
         let fused_cond = match &last_op.kind {
             MachineInstKind::IntCompare {
                 width,
@@ -1012,18 +1020,6 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock]) {
                 width: *width,
                 kind: *kind,
                 sign: *sign,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
-            MachineInstKind::FloatCompare {
-                width,
-                kind,
-                dst,
-                lhs,
-                rhs,
-            } if *dst == cond_reg => MachineBranchCond::FloatCompare {
-                width: *width,
-                kind: *kind,
                 lhs: *lhs,
                 rhs: *rhs,
             },

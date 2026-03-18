@@ -633,9 +633,29 @@ impl<'a> FunctionCompiler<'a> {
         self.current_block = Some(block.id);
         self.current_edge_target = None;
         self.reset_block_fp_state(block)?;
+
+        // ARM64-specific FloatCompare-and-branch fusion. ARM64's FCMP condition
+        // codes handle NaN correctly for a single B.cond (unlike x86_64's UCOMISD
+        // which needs multi-flag checks), so this is safe as an ARM64 backend opt.
+        let fused_fcmp_cond = float_compare_branch_fusion(
+            block,
+            &self.function.program.blocks,
+        );
+
         let mut index = 0;
         while index < block.ops.len() {
             self.current_op_index = Some(index);
+            // Float compare fusion: emit FCMP only (no CSET) for the last op.
+            if fused_fcmp_cond.is_some() && index == block.ops.len() - 1 {
+                if let MachineInstKind::FloatCompare {
+                    width, lhs, rhs, ..
+                } = &block.ops[index].kind
+                {
+                    self.emit_fcmp_values(*width, *lhs, *rhs)?;
+                    index += 1;
+                    continue;
+                }
+            }
             if let Some((base, imm7)) = zero_store_pair_fusion(block, index) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.text
@@ -657,7 +677,19 @@ impl<'a> FunctionCompiler<'a> {
             index += 1;
         }
         self.current_op_index = None;
-        let result = self.emit_terminator(&block.terminator, fallthrough);
+        let result = if let Some(cond) = fused_fcmp_cond {
+            // FCMP flags already set. Emit B.cond directly.
+            match &block.terminator {
+                MachineTerminator::Branch {
+                    then_edge,
+                    else_edge,
+                    ..
+                } => self.emit_fused_cond_branch(cond, then_edge, else_edge, fallthrough),
+                _ => unreachable!(),
+            }
+        } else {
+            self.emit_terminator(&block.terminator, fallthrough)
+        };
         self.current_block = None;
         result
     }
@@ -909,6 +941,64 @@ impl<'a> FunctionCompiler<'a> {
                     else_fallthrough,
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Emit a conditional branch when the CPU flags have already been set
+    /// by a preceding CMP/FCMP.
+    fn emit_fused_cond_branch(
+        &mut self,
+        cond: Cond,
+        then_edge: &crate::vm::native::ir::machine::MachineEdge,
+        else_edge: &crate::vm::native::ir::machine::MachineEdge,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
+        let then_fallthrough =
+            is_fallthrough_edge(self, then_edge.target, &then_edge.args, fallthrough);
+        let else_fallthrough =
+            is_fallthrough_edge(self, else_edge.target, &else_edge.args, fallthrough);
+        let then_label = (!then_fallthrough)
+            .then(|| self.emit_edge(then_edge.target, &then_edge.args))
+            .transpose()?;
+        let else_label = (!else_fallthrough)
+            .then(|| self.emit_edge(else_edge.target, &else_edge.args))
+            .transpose()?;
+
+        if else_fallthrough {
+            if let Some(label) = then_label {
+                self.emit_b_cond(cond, label);
+            }
+        } else if then_fallthrough {
+            if let Some(label) = else_label {
+                self.emit_b_cond(cond.invert(), label);
+            }
+        } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+            self.emit_b_cond(cond, then_label);
+            self.emit_b(else_label);
+        }
+        Ok(())
+    }
+
+    /// Emit FCMP without CSET (for float compare-and-branch fusion).
+    fn emit_fcmp_values(
+        &mut self,
+        width: MachineFloatWidth,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
+        if matches!(rhs, MachineValue::Imm64(0)) {
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s_zero(lhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d_zero(lhs_fp)),
+            };
+        } else {
+            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+            match width {
+                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
+                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
+            };
         }
         Ok(())
     }
@@ -3720,6 +3810,43 @@ fn try_imm12_u64(value: u64) -> Option<u32> {
 
 /// Detect when the last instruction in a block is an IntCompare or FloatCompare
 /// whose result register is only used by the branch terminator. Returns a fused
+/// ARM64-specific: fuse FloatCompare + Branch into FCMP + B.cond.
+/// Safe on ARM64 because FCMP condition codes handle NaN correctly for Wasm
+/// semantics (unlike x86_64 UCOMISD which needs multi-flag checks).
+fn float_compare_branch_fusion(
+    block: &MachineBlock,
+    all_blocks: &[MachineBlock],
+) -> Option<Cond> {
+    let last = block.ops.last()?;
+    let MachineTerminator::Branch {
+        cond: MachineBranchCond::Value(MachineValue::Reg(cond_reg)),
+        then_edge,
+        else_edge,
+    } = &block.terminator
+    else {
+        return None;
+    };
+    let MachineInstKind::FloatCompare { kind, dst, .. } = &last.kind else {
+        return None;
+    };
+    if dst != cond_reg {
+        return None;
+    }
+    if crate::vm::native::ir::machine::peephole::reg_dead_at_block_entry(
+        all_blocks,
+        then_edge.target,
+        *dst,
+    ) && crate::vm::native::ir::machine::peephole::reg_dead_at_block_entry(
+        all_blocks,
+        else_edge.target,
+        *dst,
+    ) {
+        Some(map_float_cond(*kind))
+    } else {
+        None
+    }
+}
+
 /// Detect consecutive `Store { src: Imm64(0), width: U64 }` pairs with the same
 /// base register and adjacent 8-byte-aligned offsets. Returns `(base, imm7)` where
 /// imm7 is the STP signed-offset in 8-byte units for the first store.
