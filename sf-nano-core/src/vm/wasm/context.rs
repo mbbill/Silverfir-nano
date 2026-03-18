@@ -3,10 +3,13 @@
 //! This is semantic/frontend-only metadata used while decoding a function body.
 
 use crate::{
-    module::type_context::TypeContext, op_decoder::{BlockType, Immediate}, value_type::ValueType, vm::{
+    module::type_context::TypeContext,
+    op_decoder::{BlockType, Immediate},
+    value_type::ValueType,
+    vm::{
         entities::{FunctionInst, ModuleInst},
         store::Store,
-    }
+    },
 };
 
 /// Immutable decode context for one function body.

@@ -54,7 +54,8 @@ pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
             )));
         }
     }
-    if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len() {
+    if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len()
+    {
         return Err(WasmError::internal(alloc::format!(
             "LIR FP local-cache preferences contain {} slots but {} type entries",
             program.local_cache.fp_preferred_slots.len(),
@@ -118,7 +119,11 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
             }
         }
         match &block.terminator {
-            LirTerminator::Branch { cond, then_edge, else_edge } => {
+            LirTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            } => {
                 check(*cond, &alloc::format!("{bctx} Branch cond"))?;
                 validate_edge_values(then_edge, &bctx, &check)?;
                 validate_edge_values(else_edge, &bctx, &check)?;

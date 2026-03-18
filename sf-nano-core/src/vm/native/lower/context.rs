@@ -15,10 +15,10 @@ use crate::{
         },
         native::{
             ir::machine::{
-                MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineEdge,
-                MachineFloatWidth, MachineFuncId, MachineInst, MachineInstKind,
-                MachineLoadExtension, MachineMemWidth, MachineReg, MachineTerminator,
-                MachineTrapKind, MachineValue, machine_ptr_width,
+                machine_ptr_width, MachineAddr, MachineBlockId, MachineBlockParam,
+                MachineBranchCond, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst,
+                MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
+                MachineTerminator, MachineTrapKind, MachineValue,
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
@@ -84,8 +84,7 @@ impl<'a> BlockLowerContext<'a> {
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
         is_entry: bool,
-        #[cfg(has_guard_pages)]
-        guard_pages: bool,
+        #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile)?;
         let mut cached_locals = Vec::new();
@@ -456,8 +455,11 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
-        let dst =
-            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &[src_value], width)?;
+        let dst = self.alloc_float_value_reusing_dead_inputs(
+            single_result(results)?,
+            &[src_value],
+            width,
+        )?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
@@ -478,7 +480,11 @@ impl<'a> BlockLowerContext<'a> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
         let dst = if let Some(width) = convert_result_float_width(op) {
-            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &[src_value], width)?
+            self.alloc_float_value_reusing_dead_inputs(
+                single_result(results)?,
+                &[src_value],
+                width,
+            )?
         } else {
             self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?
         };
@@ -501,7 +507,7 @@ impl<'a> BlockLowerContext<'a> {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
         let on_true = self.use_value(args[0])?;
-       let on_false = self.use_value(args[1])?;
+        let on_false = self.use_value(args[1])?;
         let cond = self.use_value(args[2])?;
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, args)?;
         self.emit_machine_inst(MachineInst {
@@ -920,11 +926,9 @@ impl<'a> BlockLowerContext<'a> {
             if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
                 continue;
             }
-            if let Some(index) = self
-                .values
-                .iter()
-                .position(|entry| entry.value == *candidate && self.is_fp_reg(entry.reg) == float_width.is_some())
-            {
+            if let Some(index) = self.values.iter().position(|entry| {
+                entry.value == *candidate && self.is_fp_reg(entry.reg) == float_width.is_some()
+            }) {
                 let reg = self.values[index].reg;
                 self.values[index].value = value;
                 self.set_transient(reg, Some(value), float_width)?;
@@ -997,9 +1001,7 @@ impl<'a> BlockLowerContext<'a> {
             let start = first.0;
             let end = start + self.regfile.fp_transient_count() as u16;
             if reg.0 >= start && reg.0 < end {
-                return Ok(
-                    self.regfile.gp_transient_count() + (reg.0 - start) as usize,
-                );
+                return Ok(self.regfile.gp_transient_count() + (reg.0 - start) as usize);
             }
         }
 
@@ -1010,7 +1012,10 @@ impl<'a> BlockLowerContext<'a> {
 
     fn float_width_for_reg(&self, reg: MachineReg) -> Option<MachineFloatWidth> {
         if let Ok(index) = self.transient_index(reg) {
-            return self.transient_state.get(index).and_then(|state| state.float_width);
+            return self
+                .transient_state
+                .get(index)
+                .and_then(|state| state.float_width);
         }
         self.cached_locals
             .iter()
@@ -1025,7 +1030,7 @@ impl<'a> BlockLowerContext<'a> {
             Err(WasmError::internal(message.into()))
         }
     }
-    
+
     #[cfg(has_guard_pages)]
     pub(super) fn use_guard_pages(&self) -> bool {
         self.guard_pages
@@ -1155,7 +1160,10 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
-fn machine_block_param(reg: MachineReg, float_width: Option<MachineFloatWidth>) -> MachineBlockParam {
+fn machine_block_param(
+    reg: MachineReg,
+    float_width: Option<MachineFloatWidth>,
+) -> MachineBlockParam {
     match float_width {
         Some(width) => MachineBlockParam::fp(reg, width),
         None => MachineBlockParam::gp(reg),

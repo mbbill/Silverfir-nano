@@ -154,8 +154,8 @@ mod platform {
     #[repr(C)]
     struct Arm64ThreadState {
         x: [u64; 29], // X0-X28
-        fp: u64,       // X29
-        lr: u64,       // X30
+        fp: u64,      // X29
+        lr: u64,      // X30
         sp: u64,
         pc: u64,
         cpsr: u32,
@@ -255,9 +255,8 @@ mod platform {
     }
 
     unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let mregs = unsafe {
-            &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs)
-        };
+        let mregs =
+            unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs) };
         let pc = mregs.pc as usize;
 
         let error_ret = unsafe { lookup_return_error(pc) };
@@ -429,19 +428,17 @@ mod platform {
         arm_r8: u32,
         arm_r9: u32,
         arm_r10: u32,
-        arm_fp: u32,  // r11
-        arm_ip: u32,  // r12
-        arm_sp: u32,  // r13
-        arm_lr: u32,  // r14
-        arm_pc: u32,  // r15
+        arm_fp: u32, // r11
+        arm_ip: u32, // r12
+        arm_sp: u32, // r13
+        arm_lr: u32, // r14
+        arm_pc: u32, // r15
         arm_cpsr: u32,
         fault_address: u32,
     }
 
     unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let sc = unsafe {
-            &mut *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *mut ArmSigcontext)
-        };
+        let sc = unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *mut ArmSigcontext) };
         let pc = sc.arm_pc as usize;
 
         let error_ret = unsafe { lookup_return_error(pc) };
@@ -476,8 +473,7 @@ mod platform {
 use platform::install_platform_handler;
 
 /// Offset of the `trap_kind` field within `NativeContext`, set once at init.
-static TRAP_KIND_OFFSET: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+static TRAP_KIND_OFFSET: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// Set the byte offset of `NativeContext::trap_kind` so the signal handler
 /// can write it without knowing the struct layout at compile time.

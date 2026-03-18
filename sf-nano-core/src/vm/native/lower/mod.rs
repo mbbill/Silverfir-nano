@@ -17,30 +17,37 @@ mod tests;
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    error::WasmError, value_type::ValueType, vm::{
+    error::WasmError,
+    value_type::ValueType,
+    vm::{
         backend::BackendConfig,
         lir::{
-            ir::{LirBoundaryOp, LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue},
+            ir::{
+                LirBoundaryOp, LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue,
+            },
             slot::FrameSpan,
             validate::validate_program,
         },
-        native::{ir::{
-            machine::{
-                MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-                MachineCompareKind, MachineConstData, MachineFloatWidth, MachineFuncId,
-                MachineFunction, MachineInst, MachineInstKind, MachineLoadExtension,
-                MachineMemWidth, MachineModule, MachineProgram, MachineReg,
-                MachineTerminator, MachineTrapKind, MachineValue, machine_ptr_width,
+        native::{
+            ir::{
+                machine::{
+                    machine_ptr_width, MachineBlock, MachineBlockId, MachineBlockParam,
+                    MachineBranchCond, MachineCompareKind, MachineConstData, MachineFloatWidth,
+                    MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
+                    MachineLoadExtension, MachineMemWidth, MachineModule, MachineProgram,
+                    MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
+                },
+                runtime::{
+                    MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
+                    MachineFunctionRuntime, MachineRuntimeContract,
+                },
             },
-            runtime::{
-                MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
-                MachineFunctionRuntime, MachineRuntimeContract,
+            runtime::context::{
+                ctx_offset, function_kind, function_view_offset, NativeFunctionView,
             },
-        }, runtime::context::{
-            NativeFunctionView, ctx_offset, function_kind, function_view_offset
-        }},
+        },
         plan::frame::FrameLayoutPlan,
-    }
+    },
 };
 
 use self::{
@@ -734,10 +741,7 @@ fn target_param_regs(
     Ok(regs)
 }
 
-fn program_value_float_width(
-    program: &LirProgram,
-    value: LirValue,
-) -> Option<MachineFloatWidth> {
+fn program_value_float_width(program: &LirProgram, value: LirValue) -> Option<MachineFloatWidth> {
     program
         .value_types
         .get(value.0 as usize)

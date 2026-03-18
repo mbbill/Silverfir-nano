@@ -17,8 +17,8 @@
 
 mod cfg;
 mod inst;
-pub mod peephole;
 mod module;
+pub mod peephole;
 mod regs;
 mod types;
 mod validate;

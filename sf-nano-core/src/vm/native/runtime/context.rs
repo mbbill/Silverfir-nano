@@ -157,11 +157,7 @@ impl NativeContext {
                 let ptr = memory.memory_ptr();
                 let len = memory.memory_len();
                 NativeMemoryView {
-                    base: if len == 0 {
-                        core::ptr::null_mut()
-                    } else {
-                        ptr
-                    },
+                    base: if len == 0 { core::ptr::null_mut() } else { ptr },
                     len,
                 }
             })

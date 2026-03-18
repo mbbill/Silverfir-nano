@@ -68,13 +68,21 @@ pub fn eval(
                     arch::arm64::eval(spec, code, store, args, arch::NativeBackend::Arm64.as_str())
                 }
                 #[cfg(target_arch = "arm")]
-                arch::NativeBackend::Armv7a => {
-                    arch::armv7a::eval(spec, code, store, args, arch::NativeBackend::Armv7a.as_str())
-                }
+                arch::NativeBackend::Armv7a => arch::armv7a::eval(
+                    spec,
+                    code,
+                    store,
+                    args,
+                    arch::NativeBackend::Armv7a.as_str(),
+                ),
                 #[cfg(target_arch = "x86_64")]
-                arch::NativeBackend::X86_64 => {
-                    arch::x86_64::eval(spec, code, store, args, arch::NativeBackend::X86_64.as_str())
-                }
+                arch::NativeBackend::X86_64 => arch::x86_64::eval(
+                    spec,
+                    code,
+                    store,
+                    args,
+                    arch::NativeBackend::X86_64.as_str(),
+                ),
                 #[cfg(any(
                     debug_assertions,
                     not(any(target_arch = "aarch64", target_arch = "x86_64"))

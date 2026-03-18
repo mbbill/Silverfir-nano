@@ -3,8 +3,8 @@
 mod block;
 mod cfg;
 mod edge;
-mod optimize;
 mod ops;
+mod optimize;
 mod state;
 mod steps;
 mod terminator;
@@ -1369,10 +1369,7 @@ mod tests {
             .flat_map(|b| b.ops.iter())
             .find_map(|inst| {
                 if let LirInstKind::Value { op, results, .. } = &inst.kind {
-                    if matches!(
-                        op.primitive(),
-                        PrimitiveOpKind::Select
-                    ) {
+                    if matches!(op.primitive(), PrimitiveOpKind::Select) {
                         results.first().copied()
                     } else {
                         None

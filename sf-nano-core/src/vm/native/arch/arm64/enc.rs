@@ -785,17 +785,36 @@ pub fn eor_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
 
 /// Scalar floating-point data-processing (2 source)
 fn fp_data_proc_2src(ftype: u32, opcode: u32, rd: u32, rn: u32, rm: u32) -> u32 {
-    (0b0001_1110 << 24) | (ftype << 22) | (1 << 21) | (rm << 16) | (opcode << 12) | (0b10 << 10) | (rn << 5) | rd
+    (0b0001_1110 << 24)
+        | (ftype << 22)
+        | (1 << 21)
+        | (rm << 16)
+        | (opcode << 12)
+        | (0b10 << 10)
+        | (rn << 5)
+        | rd
 }
 
 /// Scalar floating-point data-processing (1 source)
 fn fp_data_proc_1src(ftype: u32, opcode: u32, rd: u32, rn: u32) -> u32 {
-    (0b0001_1110 << 24) | (ftype << 22) | (1 << 21) | (opcode << 15) | (0b10000 << 10) | (rn << 5) | rd
+    (0b0001_1110 << 24)
+        | (ftype << 22)
+        | (1 << 21)
+        | (opcode << 15)
+        | (0b10000 << 10)
+        | (rn << 5)
+        | rd
 }
 
 /// Floating-point comparison
 fn fp_compare(ftype: u32, rn: u32, rm: u32, opc: u32) -> u32 {
-    (0b0001_1110 << 24) | (ftype << 22) | (1 << 21) | (rm << 16) | (0b00_1000 << 10) | (rn << 5) | opc
+    (0b0001_1110 << 24)
+        | (ftype << 22)
+        | (1 << 21)
+        | (rm << 16)
+        | (0b00_1000 << 10)
+        | (rn << 5)
+        | opc
 }
 
 /// Floating-point conditional select
@@ -877,94 +896,194 @@ pub fn fmov_d(rd: u32, rn: u32) -> u32 {
 }
 
 // F32 arithmetic
-pub fn fadd_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0010, rd, rn, rm) }
-pub fn fsub_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0011, rd, rn, rm) }
-pub fn fmul_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0000, rd, rn, rm) }
-pub fn fdiv_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0001, rd, rn, rm) }
-pub fn fmin_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0101, rd, rn, rm) }
-pub fn fmax_s(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b00, 0b0100, rd, rn, rm) }
+pub fn fadd_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0010, rd, rn, rm)
+}
+pub fn fsub_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0011, rd, rn, rm)
+}
+pub fn fmul_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0000, rd, rn, rm)
+}
+pub fn fdiv_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0001, rd, rn, rm)
+}
+pub fn fmin_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0101, rd, rn, rm)
+}
+pub fn fmax_s(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b00, 0b0100, rd, rn, rm)
+}
 
 // F64 arithmetic
-pub fn fadd_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0010, rd, rn, rm) }
-pub fn fsub_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0011, rd, rn, rm) }
-pub fn fmul_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0000, rd, rn, rm) }
-pub fn fdiv_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0001, rd, rn, rm) }
-pub fn fmin_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0101, rd, rn, rm) }
-pub fn fmax_d(rd: u32, rn: u32, rm: u32) -> u32 { fp_data_proc_2src(0b01, 0b0100, rd, rn, rm) }
+pub fn fadd_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0010, rd, rn, rm)
+}
+pub fn fsub_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0011, rd, rn, rm)
+}
+pub fn fmul_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0000, rd, rn, rm)
+}
+pub fn fdiv_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0001, rd, rn, rm)
+}
+pub fn fmin_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0101, rd, rn, rm)
+}
+pub fn fmax_d(rd: u32, rn: u32, rm: u32) -> u32 {
+    fp_data_proc_2src(0b01, 0b0100, rd, rn, rm)
+}
 
 // F32 unary
-pub fn fabs_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b000001, rd, rn) }
-pub fn fneg_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b000010, rd, rn) }
-pub fn fsqrt_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b000011, rd, rn) }
-pub fn frintn_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b001000, rd, rn) }
-pub fn frintp_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b001001, rd, rn) }
-pub fn frintm_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b001010, rd, rn) }
-pub fn frintz_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b001011, rd, rn) }
+pub fn fabs_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b000001, rd, rn)
+}
+pub fn fneg_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b000010, rd, rn)
+}
+pub fn fsqrt_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b000011, rd, rn)
+}
+pub fn frintn_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b001000, rd, rn)
+}
+pub fn frintp_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b001001, rd, rn)
+}
+pub fn frintm_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b001010, rd, rn)
+}
+pub fn frintz_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b001011, rd, rn)
+}
 
 // F64 unary
-pub fn fabs_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b000001, rd, rn) }
-pub fn fneg_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b000010, rd, rn) }
-pub fn fsqrt_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b000011, rd, rn) }
-pub fn frintn_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b001000, rd, rn) }
-pub fn frintp_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b001001, rd, rn) }
-pub fn frintm_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b001010, rd, rn) }
-pub fn frintz_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b001011, rd, rn) }
+pub fn fabs_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b000001, rd, rn)
+}
+pub fn fneg_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b000010, rd, rn)
+}
+pub fn fsqrt_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b000011, rd, rn)
+}
+pub fn frintn_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b001000, rd, rn)
+}
+pub fn frintp_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b001001, rd, rn)
+}
+pub fn frintm_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b001010, rd, rn)
+}
+pub fn frintz_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b001011, rd, rn)
+}
 
 // FP compare
-pub fn fcmp_s(rn: u32, rm: u32) -> u32 { fp_compare(0b00, rn, rm, 0b00000) }
-pub fn fcmp_d(rn: u32, rm: u32) -> u32 { fp_compare(0b01, rn, rm, 0b00000) }
+pub fn fcmp_s(rn: u32, rm: u32) -> u32 {
+    fp_compare(0b00, rn, rm, 0b00000)
+}
+pub fn fcmp_d(rn: u32, rm: u32) -> u32 {
+    fp_compare(0b01, rn, rm, 0b00000)
+}
 /// FCMP Sn, #0.0
-pub fn fcmp_s_zero(rn: u32) -> u32 { fp_compare(0b00, rn, 0, 0b01000) }
+pub fn fcmp_s_zero(rn: u32) -> u32 {
+    fp_compare(0b00, rn, 0, 0b01000)
+}
 /// FCMP Dn, #0.0
-pub fn fcmp_d_zero(rn: u32) -> u32 { fp_compare(0b01, rn, 0, 0b01000) }
+pub fn fcmp_d_zero(rn: u32) -> u32 {
+    fp_compare(0b01, rn, 0, 0b01000)
+}
 
 // FP conditional select
-pub fn fcsel_s(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 { fp_csel(0b00, rd, rn, rm, cond) }
-pub fn fcsel_d(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 { fp_csel(0b01, rd, rn, rm, cond) }
+pub fn fcsel_s(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 {
+    fp_csel(0b00, rd, rn, rm, cond)
+}
+pub fn fcsel_d(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 {
+    fp_csel(0b01, rd, rn, rm, cond)
+}
 
 // FP conversion between sizes
 /// FCVT Dd, Sn (F32 -> F64)
-pub fn fcvt_d_from_s(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b00, 0b000101, rd, rn) }
+pub fn fcvt_d_from_s(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b00, 0b000101, rd, rn)
+}
 /// FCVT Sd, Dn (F64 -> F32)
-pub fn fcvt_s_from_d(rd: u32, rn: u32) -> u32 { fp_data_proc_1src(0b01, 0b000100, rd, rn) }
+pub fn fcvt_s_from_d(rd: u32, rn: u32) -> u32 {
+    fp_data_proc_1src(0b01, 0b000100, rd, rn)
+}
 
 // FP to integer conversions (truncation toward zero)
 /// FCVTZS Wd, Sn
-pub fn fcvtzs_32_s(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(0, 0b00, 0b11, 0b000, rd.idx(), rn) }
+pub fn fcvtzs_32_s(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(0, 0b00, 0b11, 0b000, rd.idx(), rn)
+}
 /// FCVTZS Xd, Sn
-pub fn fcvtzs_64_s(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(1, 0b00, 0b11, 0b000, rd.idx(), rn) }
+pub fn fcvtzs_64_s(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(1, 0b00, 0b11, 0b000, rd.idx(), rn)
+}
 /// FCVTZS Wd, Dn
-pub fn fcvtzs_32_d(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(0, 0b01, 0b11, 0b000, rd.idx(), rn) }
+pub fn fcvtzs_32_d(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(0, 0b01, 0b11, 0b000, rd.idx(), rn)
+}
 /// FCVTZS Xd, Dn
-pub fn fcvtzs_64_d(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(1, 0b01, 0b11, 0b000, rd.idx(), rn) }
+pub fn fcvtzs_64_d(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(1, 0b01, 0b11, 0b000, rd.idx(), rn)
+}
 
 /// FCVTZU Wd, Sn
-pub fn fcvtzu_32_s(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(0, 0b00, 0b11, 0b001, rd.idx(), rn) }
+pub fn fcvtzu_32_s(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(0, 0b00, 0b11, 0b001, rd.idx(), rn)
+}
 /// FCVTZU Xd, Sn
-pub fn fcvtzu_64_s(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(1, 0b00, 0b11, 0b001, rd.idx(), rn) }
+pub fn fcvtzu_64_s(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(1, 0b00, 0b11, 0b001, rd.idx(), rn)
+}
 /// FCVTZU Wd, Dn
-pub fn fcvtzu_32_d(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(0, 0b01, 0b11, 0b001, rd.idx(), rn) }
+pub fn fcvtzu_32_d(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(0, 0b01, 0b11, 0b001, rd.idx(), rn)
+}
 /// FCVTZU Xd, Dn
-pub fn fcvtzu_64_d(rd: Arm64Reg, rn: u32) -> u32 { fp_int_conv(1, 0b01, 0b11, 0b001, rd.idx(), rn) }
+pub fn fcvtzu_64_d(rd: Arm64Reg, rn: u32) -> u32 {
+    fp_int_conv(1, 0b01, 0b11, 0b001, rd.idx(), rn)
+}
 
 // Integer to FP conversions
 /// SCVTF Sd, Wn
-pub fn scvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(0, 0b00, 0b00, 0b010, rd, rn.idx()) }
+pub fn scvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b010, rd, rn.idx())
+}
 /// SCVTF Sd, Xn
-pub fn scvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(1, 0b00, 0b00, 0b010, rd, rn.idx()) }
+pub fn scvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b00, 0b00, 0b010, rd, rn.idx())
+}
 /// SCVTF Dd, Wn
-pub fn scvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(0, 0b01, 0b00, 0b010, rd, rn.idx()) }
+pub fn scvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b01, 0b00, 0b010, rd, rn.idx())
+}
 /// SCVTF Dd, Xn
-pub fn scvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(1, 0b01, 0b00, 0b010, rd, rn.idx()) }
+pub fn scvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b010, rd, rn.idx())
+}
 
 /// UCVTF Sd, Wn
-pub fn ucvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(0, 0b00, 0b00, 0b011, rd, rn.idx()) }
+pub fn ucvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b011, rd, rn.idx())
+}
 /// UCVTF Sd, Xn
-pub fn ucvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(1, 0b00, 0b00, 0b011, rd, rn.idx()) }
+pub fn ucvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b00, 0b00, 0b011, rd, rn.idx())
+}
 /// UCVTF Dd, Wn
-pub fn ucvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(0, 0b01, 0b00, 0b011, rd, rn.idx()) }
+pub fn ucvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b01, 0b00, 0b011, rd, rn.idx())
+}
 /// UCVTF Dd, Xn
-pub fn ucvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 { fp_int_conv(1, 0b01, 0b00, 0b011, rd, rn.idx()) }
+pub fn ucvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b011, rd, rn.idx())
+}
 
 // NEON instructions for popcnt
 /// FMOV Dd, Xn (same as fmov_d_from_gp but with explicit naming for NEON use)

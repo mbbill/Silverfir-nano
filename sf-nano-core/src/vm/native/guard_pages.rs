@@ -69,9 +69,7 @@ impl GuardPageMemory {
             )
         };
         if base == MAP_FAILED || base.is_null() {
-            return Err(WasmError::internal(
-                "guard-page memory: mmap failed".into(),
-            ));
+            return Err(WasmError::internal("guard-page memory: mmap failed".into()));
         }
 
         if initial_bytes > 0 {

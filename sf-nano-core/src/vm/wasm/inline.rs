@@ -21,7 +21,6 @@ const MAX_INLINE_OPS: usize = 200;
 /// Maximum number of parameters for an inline candidate.
 const MAX_INLINE_PARAMS: usize = 8;
 
-
 /// Analyse a callee's `SemanticProgram` and decide whether it is eligible for
 /// inlining. Returns `true` when the function is small and is a leaf (no
 /// calls).
@@ -71,7 +70,9 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                 | SemanticOpKind::Loop { params, results } => {
                     control.push((0, *params, *results)); // dummy
                 }
-                SemanticOpKind::If { params, results, .. } => {
+                SemanticOpKind::If {
+                    params, results, ..
+                } => {
                     control.push((0, *params, *results)); // dummy
                 }
                 SemanticOpKind::Else { .. } => {
@@ -93,10 +94,13 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
         }
 
         match &op.kind {
-            SemanticOpKind::Block { params, results } | SemanticOpKind::Loop { params, results } => {
+            SemanticOpKind::Block { params, results }
+            | SemanticOpKind::Loop { params, results } => {
                 control.push((depth - *params as i32, *params, *results));
             }
-            SemanticOpKind::If { params, results, .. } => {
+            SemanticOpKind::If {
+                params, results, ..
+            } => {
                 depth -= 1; // consume condition
                 control.push((depth - *params as i32, *params, *results));
             }
@@ -117,11 +121,19 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                 depth -= 1; // consume condition
             }
             SemanticOpKind::ReturnVoid => {
-                sites.push(ReturnSite { op_index: i, stack_drop: depth as u32, arity: 0 });
+                sites.push(ReturnSite {
+                    op_index: i,
+                    stack_drop: depth as u32,
+                    arity: 0,
+                });
                 unreachable = true;
             }
             SemanticOpKind::ReturnOne => {
-                sites.push(ReturnSite { op_index: i, stack_drop: (depth - 1) as u32, arity: 1 });
+                sites.push(ReturnSite {
+                    op_index: i,
+                    stack_drop: (depth - 1) as u32,
+                    arity: 1,
+                });
                 unreachable = true;
             }
             SemanticOpKind::Return { arity } => {
@@ -132,12 +144,18 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                 });
                 unreachable = true;
             }
-            SemanticOpKind::CallInternal { params, results, .. }
-            | SemanticOpKind::CallExternal { params, results, .. } => {
+            SemanticOpKind::CallInternal {
+                params, results, ..
+            }
+            | SemanticOpKind::CallExternal {
+                params, results, ..
+            } => {
                 depth -= *params as i32;
                 depth += *results as i32;
             }
-            SemanticOpKind::CallIndirect { params, results, .. } => {
+            SemanticOpKind::CallIndirect {
+                params, results, ..
+            } => {
                 depth -= 1; // consume table index
                 depth -= *params as i32;
                 depth += *results as i32;
@@ -198,14 +216,12 @@ pub fn inline_calls_in_function(
 }
 
 /// Replace `caller.ops[site]` (a `CallInternal`) with the inlined callee body.
-fn inline_single_call(
-    caller: &mut SemanticProgram,
-    site: usize,
-    callee: &SemanticProgram,
-) {
+fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &SemanticProgram) {
     let call_op = &caller.ops[site];
     let (call_params, call_results) = match &call_op.kind {
-        SemanticOpKind::CallInternal { params, results, .. } => (*params, *results),
+        SemanticOpKind::CallInternal {
+            params, results, ..
+        } => (*params, *results),
         _ => unreachable!("inline_single_call called on non-CallInternal"),
     };
 
@@ -245,9 +261,7 @@ fn inline_single_call(
     let has_trailing_return = matches!(
         callee.ops.last().map(|op| &op.kind),
         Some(
-            SemanticOpKind::ReturnVoid
-                | SemanticOpKind::ReturnOne
-                | SemanticOpKind::Return { .. }
+            SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. }
         )
     );
     let callee_body_len = if has_trailing_return {
@@ -374,7 +388,9 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
                 | SemanticOpKind::Loop { params, results } => {
                     control.push((0, *params, *results));
                 }
-                SemanticOpKind::If { params, results, .. } => {
+                SemanticOpKind::If {
+                    params, results, ..
+                } => {
                     control.push((0, *params, *results));
                 }
                 SemanticOpKind::Else { .. } => {
@@ -399,7 +415,9 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             | SemanticOpKind::Loop { params, results } => {
                 control.push((depth - *params as i32, *params, *results));
             }
-            SemanticOpKind::If { params, results, .. } => {
+            SemanticOpKind::If {
+                params, results, ..
+            } => {
                 depth -= 1;
                 control.push((depth - *params as i32, *params, *results));
             }
@@ -423,12 +441,18 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             SemanticOpKind::BrIf { .. } => {
                 depth -= 1;
             }
-            SemanticOpKind::CallInternal { params, results, .. }
-            | SemanticOpKind::CallExternal { params, results, .. } => {
+            SemanticOpKind::CallInternal {
+                params, results, ..
+            }
+            | SemanticOpKind::CallExternal {
+                params, results, ..
+            } => {
                 depth -= *params as i32;
                 depth += *results as i32;
             }
-            SemanticOpKind::CallIndirect { params, results, .. } => {
+            SemanticOpKind::CallIndirect {
+                params, results, ..
+            } => {
                 depth -= 1;
                 depth -= *params as i32;
                 depth += *results as i32;
@@ -452,11 +476,7 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
 
 /// Remap a single callee op: shift local indices by `local_offset` and branch
 /// targets by `target_offset`.
-fn remap_op(
-    kind: &SemanticOpKind,
-    local_offset: u16,
-    target_offset: usize,
-) -> SemanticOpKind {
+fn remap_op(kind: &SemanticOpKind, local_offset: u16, target_offset: usize) -> SemanticOpKind {
     match kind {
         // --- Local access: shift index ---
         SemanticOpKind::LocalGet { idx } => SemanticOpKind::LocalGet {
@@ -544,8 +564,7 @@ fn offset_target(target: SemanticTarget, offset: usize) -> SemanticTarget {
 fn shift_targets_after(ops: &mut [SemanticOp], after: usize, shift: i64) {
     for op in ops.iter_mut() {
         match &mut op.kind {
-            SemanticOpKind::Br { target, .. }
-            | SemanticOpKind::BrIf { target, .. } => {
+            SemanticOpKind::Br { target, .. } | SemanticOpKind::BrIf { target, .. } => {
                 *target = shift_target(*target, after, shift);
             }
             SemanticOpKind::BrTable { entries } => {

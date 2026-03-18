@@ -64,13 +64,7 @@ fn emit_rex(e: &mut X86_64TextEmitter, w: bool, reg: X86Reg, rm: X86Reg) {
 }
 
 /// Emit REX prefix for SIB addressing.
-fn emit_rex_sib(
-    e: &mut X86_64TextEmitter,
-    w: bool,
-    reg: X86Reg,
-    index: X86Reg,
-    base: X86Reg,
-) {
+fn emit_rex_sib(e: &mut X86_64TextEmitter, w: bool, reg: X86Reg, index: X86Reg, base: X86Reg) {
     let r = reg.needs_rex_ext();
     let x = index.needs_rex_ext();
     let b = base.needs_rex_ext();
@@ -226,63 +220,135 @@ fn alu_ri32(e: &mut X86_64TextEmitter, digit: u8, w: bool, dst: X86Reg, imm: i32
 }
 
 // ADD
-pub fn add_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x03, true, dst, src); }
-pub fn add_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x03, false, dst, src); }
+pub fn add_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x03, true, dst, src);
+}
+pub fn add_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x03, false, dst, src);
+}
 pub fn add_ri_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 0, true, dst, imm as i8); } else { alu_ri32(e, 0, true, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 0, true, dst, imm as i8);
+    } else {
+        alu_ri32(e, 0, true, dst, imm);
+    }
 }
 pub fn add_ri_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 0, false, dst, imm as i8); } else { alu_ri32(e, 0, false, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 0, false, dst, imm as i8);
+    } else {
+        alu_ri32(e, 0, false, dst, imm);
+    }
 }
 
 // SUB
-pub fn sub_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x2B, true, dst, src); }
-pub fn sub_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x2B, false, dst, src); }
+pub fn sub_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x2B, true, dst, src);
+}
+pub fn sub_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x2B, false, dst, src);
+}
 pub fn sub_ri_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 5, true, dst, imm as i8); } else { alu_ri32(e, 5, true, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 5, true, dst, imm as i8);
+    } else {
+        alu_ri32(e, 5, true, dst, imm);
+    }
 }
 pub fn sub_ri_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 5, false, dst, imm as i8); } else { alu_ri32(e, 5, false, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 5, false, dst, imm as i8);
+    } else {
+        alu_ri32(e, 5, false, dst, imm);
+    }
 }
 
 // AND
-pub fn and_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x23, true, dst, src); }
-pub fn and_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x23, false, dst, src); }
+pub fn and_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x23, true, dst, src);
+}
+pub fn and_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x23, false, dst, src);
+}
 pub fn and_ri_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 4, true, dst, imm as i8); } else { alu_ri32(e, 4, true, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 4, true, dst, imm as i8);
+    } else {
+        alu_ri32(e, 4, true, dst, imm);
+    }
 }
 pub fn and_ri_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 4, false, dst, imm as i8); } else { alu_ri32(e, 4, false, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 4, false, dst, imm as i8);
+    } else {
+        alu_ri32(e, 4, false, dst, imm);
+    }
 }
 
 // OR
-pub fn or_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x0B, true, dst, src); }
-pub fn or_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x0B, false, dst, src); }
+pub fn or_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x0B, true, dst, src);
+}
+pub fn or_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x0B, false, dst, src);
+}
 pub fn or_ri_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 1, true, dst, imm as i8); } else { alu_ri32(e, 1, true, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 1, true, dst, imm as i8);
+    } else {
+        alu_ri32(e, 1, true, dst, imm);
+    }
 }
 pub fn or_ri_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 1, false, dst, imm as i8); } else { alu_ri32(e, 1, false, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 1, false, dst, imm as i8);
+    } else {
+        alu_ri32(e, 1, false, dst, imm);
+    }
 }
 
 // XOR
-pub fn xor_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x33, true, dst, src); }
-pub fn xor_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) { alu_rr(e, 0x33, false, dst, src); }
+pub fn xor_rr_64(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x33, true, dst, src);
+}
+pub fn xor_rr_32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
+    alu_rr(e, 0x33, false, dst, src);
+}
 pub fn xor_ri_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 6, true, dst, imm as i8); } else { alu_ri32(e, 6, true, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 6, true, dst, imm as i8);
+    } else {
+        alu_ri32(e, 6, true, dst, imm);
+    }
 }
 pub fn xor_ri_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 6, false, dst, imm as i8); } else { alu_ri32(e, 6, false, dst, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 6, false, dst, imm as i8);
+    } else {
+        alu_ri32(e, 6, false, dst, imm);
+    }
 }
 
 // CMP
-pub fn cmp_rr_64(e: &mut X86_64TextEmitter, lhs: X86Reg, rhs: X86Reg) { alu_rr(e, 0x3B, true, lhs, rhs); }
-pub fn cmp_rr_32(e: &mut X86_64TextEmitter, lhs: X86Reg, rhs: X86Reg) { alu_rr(e, 0x3B, false, lhs, rhs); }
+pub fn cmp_rr_64(e: &mut X86_64TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    alu_rr(e, 0x3B, true, lhs, rhs);
+}
+pub fn cmp_rr_32(e: &mut X86_64TextEmitter, lhs: X86Reg, rhs: X86Reg) {
+    alu_rr(e, 0x3B, false, lhs, rhs);
+}
 pub fn cmp_ri_64(e: &mut X86_64TextEmitter, lhs: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 7, true, lhs, imm as i8); } else { alu_ri32(e, 7, true, lhs, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 7, true, lhs, imm as i8);
+    } else {
+        alu_ri32(e, 7, true, lhs, imm);
+    }
 }
 pub fn cmp_ri_32(e: &mut X86_64TextEmitter, lhs: X86Reg, imm: i32) {
-    if fits_i8(imm) { alu_ri8(e, 7, false, lhs, imm as i8); } else { alu_ri32(e, 7, false, lhs, imm); }
+    if fits_i8(imm) {
+        alu_ri8(e, 7, false, lhs, imm as i8);
+    } else {
+        alu_ri32(e, 7, false, lhs, imm);
+    }
 }
 
 // TEST
@@ -385,34 +451,74 @@ fn shift_imm(e: &mut X86_64TextEmitter, digit: u8, w: bool, dst: X86Reg, imm: u8
 }
 
 // SHL
-pub fn shl_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 4, true, dst); }
-pub fn shl_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 4, false, dst); }
-pub fn shl_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 4, true, dst, imm); }
-pub fn shl_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 4, false, dst, imm); }
+pub fn shl_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 4, true, dst);
+}
+pub fn shl_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 4, false, dst);
+}
+pub fn shl_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 4, true, dst, imm);
+}
+pub fn shl_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 4, false, dst, imm);
+}
 
 // SHR
-pub fn shr_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 5, true, dst); }
-pub fn shr_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 5, false, dst); }
-pub fn shr_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 5, true, dst, imm); }
-pub fn shr_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 5, false, dst, imm); }
+pub fn shr_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 5, true, dst);
+}
+pub fn shr_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 5, false, dst);
+}
+pub fn shr_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 5, true, dst, imm);
+}
+pub fn shr_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 5, false, dst, imm);
+}
 
 // SAR
-pub fn sar_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 7, true, dst); }
-pub fn sar_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 7, false, dst); }
-pub fn sar_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 7, true, dst, imm); }
-pub fn sar_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 7, false, dst, imm); }
+pub fn sar_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 7, true, dst);
+}
+pub fn sar_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 7, false, dst);
+}
+pub fn sar_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 7, true, dst, imm);
+}
+pub fn sar_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 7, false, dst, imm);
+}
 
 // ROL
-pub fn rol_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 0, true, dst); }
-pub fn rol_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 0, false, dst); }
-pub fn rol_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 0, true, dst, imm); }
-pub fn rol_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 0, false, dst, imm); }
+pub fn rol_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 0, true, dst);
+}
+pub fn rol_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 0, false, dst);
+}
+pub fn rol_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 0, true, dst, imm);
+}
+pub fn rol_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 0, false, dst, imm);
+}
 
 // ROR
-pub fn ror_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 1, true, dst); }
-pub fn ror_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) { shift_cl(e, 1, false, dst); }
-pub fn ror_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 1, true, dst, imm); }
-pub fn ror_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) { shift_imm(e, 1, false, dst, imm); }
+pub fn ror_cl_64(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 1, true, dst);
+}
+pub fn ror_cl_32(e: &mut X86_64TextEmitter, dst: X86Reg) {
+    shift_cl(e, 1, false, dst);
+}
+pub fn ror_imm_64(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 1, true, dst, imm);
+}
+pub fn ror_imm_32(e: &mut X86_64TextEmitter, dst: X86Reg, imm: u8) {
+    shift_imm(e, 1, false, dst, imm);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Multiply / Divide
@@ -621,8 +727,7 @@ pub fn movsxd_r64_r32(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
 /// MOVSX r32, r/m8 (sign-extend byte to 32-bit): 0F BE
 pub fn movsx_r32_r8(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
     // Must emit REX for src idx 4-7 to access low byte (SPL/BPL/SIL/DIL).
-    let need_rex =
-        dst.needs_rex_ext() || src.needs_rex_ext() || (src.idx() >= 4 && src.idx() <= 7);
+    let need_rex = dst.needs_rex_ext() || src.needs_rex_ext() || (src.idx() >= 4 && src.idx() <= 7);
     if need_rex {
         e.emit_u8(rex(false, dst.needs_rex_ext(), false, src.needs_rex_ext()));
     }
@@ -651,8 +756,7 @@ pub fn movzx_r64_r8(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
 pub fn movzx_r32_r8(e: &mut X86_64TextEmitter, dst: X86Reg, src: X86Reg) {
     // Must emit REX when src idx is 4-7 (RSP/RBP/RSI/RDI) to access the
     // low byte (SPL/BPL/SIL/DIL) instead of the legacy high byte (AH/CH/DH/BH).
-    let need_rex =
-        dst.needs_rex_ext() || src.needs_rex_ext() || (src.idx() >= 4 && src.idx() <= 7);
+    let need_rex = dst.needs_rex_ext() || src.needs_rex_ext() || (src.idx() >= 4 && src.idx() <= 7);
     if need_rex {
         e.emit_u8(rex(false, dst.needs_rex_ext(), false, src.needs_rex_ext()));
     }
@@ -801,8 +905,8 @@ pub fn store_32(e: &mut X86_64TextEmitter, base: X86Reg, disp: i32, src: X86Reg)
 /// MOV byte [base + disp], r8
 pub fn store_8(e: &mut X86_64TextEmitter, base: X86Reg, disp: i32, src: X86Reg) {
     // Need REX for extended regs or to ensure low-byte access for RSP/RBP/RSI/RDI
-    let need_rex = src.needs_rex_ext() || base.needs_rex_ext()
-        || (src.idx() >= 4 && src.idx() <= 7);
+    let need_rex =
+        src.needs_rex_ext() || base.needs_rex_ext() || (src.idx() >= 4 && src.idx() <= 7);
     if need_rex {
         e.emit_u8(rex(false, src.needs_rex_ext(), false, base.needs_rex_ext()));
     }
@@ -967,10 +1071,17 @@ pub fn store_sib_8(
     disp: i32,
     src: X86Reg,
 ) {
-    let need_rex = src.needs_rex_ext() || index.needs_rex_ext() || base.needs_rex_ext()
+    let need_rex = src.needs_rex_ext()
+        || index.needs_rex_ext()
+        || base.needs_rex_ext()
         || (src.idx() >= 4 && src.idx() <= 7);
     if need_rex {
-        e.emit_u8(rex(false, src.needs_rex_ext(), index.needs_rex_ext(), base.needs_rex_ext()));
+        e.emit_u8(rex(
+            false,
+            src.needs_rex_ext(),
+            index.needs_rex_ext(),
+            base.needs_rex_ext(),
+        ));
     }
     e.emit_u8(0x88);
     emit_modrm_sib(e, src, base, index, scale, disp);
@@ -1184,7 +1295,10 @@ fn emit_xmm_modrm_sib(
     let base3 = base.idx3();
     let index3 = index.idx3();
     let scale_bits = match scale {
-        1 => 0b00, 2 => 0b01, 4 => 0b10, 8 => 0b11,
+        1 => 0b00,
+        2 => 0b01,
+        4 => 0b10,
+        8 => 0b11,
         _ => panic!("invalid SIB scale"),
     };
     if disp == 0 && base3 != 5 {
@@ -1233,23 +1347,45 @@ pub fn movsd_rr(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
     sse_rr(e, 0xF2, 0x0F, 0x10, dst, src);
 }
 
-pub fn addsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x58, dst, src); }
-pub fn subsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x5C, dst, src); }
-pub fn mulsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x59, dst, src); }
-pub fn divsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x5E, dst, src); }
-pub fn sqrtsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x51, dst, src); }
-pub fn minsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x5D, dst, src); }
-pub fn maxsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x5F, dst, src); }
-pub fn ucomisd(e: &mut X86_64TextEmitter, lhs: Xmm, rhs: Xmm) { sse_rr(e, 0x66, 0x0F, 0x2E, lhs, rhs); }
+pub fn addsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x58, dst, src);
+}
+pub fn subsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x5C, dst, src);
+}
+pub fn mulsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x59, dst, src);
+}
+pub fn divsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x5E, dst, src);
+}
+pub fn sqrtsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x51, dst, src);
+}
+pub fn minsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x5D, dst, src);
+}
+pub fn maxsd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x5F, dst, src);
+}
+pub fn ucomisd(e: &mut X86_64TextEmitter, lhs: Xmm, rhs: Xmm) {
+    sse_rr(e, 0x66, 0x0F, 0x2E, lhs, rhs);
+}
 
 /// XORPD xmm, xmm (zero a register): 66 0F 57
-pub fn xorpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0x66, 0x0F, 0x57, dst, src); }
+pub fn xorpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0x66, 0x0F, 0x57, dst, src);
+}
 
 /// ANDPD xmm, xmm: 66 0F 54
-pub fn andpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0x66, 0x0F, 0x54, dst, src); }
+pub fn andpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0x66, 0x0F, 0x54, dst, src);
+}
 
 /// ORPD xmm, xmm: 66 0F 56
-pub fn orpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0x66, 0x0F, 0x56, dst, src); }
+pub fn orpd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0x66, 0x0F, 0x56, dst, src);
+}
 
 // --- F32 (single) arithmetic: prefix F3, 0F xx ---
 
@@ -1257,31 +1393,57 @@ pub fn movss_rr(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
     sse_rr(e, 0xF3, 0x0F, 0x10, dst, src);
 }
 
-pub fn addss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x58, dst, src); }
-pub fn subss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x5C, dst, src); }
-pub fn mulss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x59, dst, src); }
-pub fn divss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x5E, dst, src); }
-pub fn sqrtss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x51, dst, src); }
-pub fn minss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x5D, dst, src); }
-pub fn maxss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x5F, dst, src); }
-pub fn ucomiss(e: &mut X86_64TextEmitter, lhs: Xmm, rhs: Xmm) { sse_rr(e, 0, 0x0F, 0x2E, lhs, rhs); }
+pub fn addss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x58, dst, src);
+}
+pub fn subss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x5C, dst, src);
+}
+pub fn mulss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x59, dst, src);
+}
+pub fn divss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x5E, dst, src);
+}
+pub fn sqrtss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x51, dst, src);
+}
+pub fn minss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x5D, dst, src);
+}
+pub fn maxss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x5F, dst, src);
+}
+pub fn ucomiss(e: &mut X86_64TextEmitter, lhs: Xmm, rhs: Xmm) {
+    sse_rr(e, 0, 0x0F, 0x2E, lhs, rhs);
+}
 
 /// XORPS xmm, xmm (zero a register): 0F 57
-pub fn xorps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0, 0x0F, 0x57, dst, src); }
+pub fn xorps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0, 0x0F, 0x57, dst, src);
+}
 
 /// ANDPS xmm, xmm: 0F 54
-pub fn andps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0, 0x0F, 0x54, dst, src); }
+pub fn andps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0, 0x0F, 0x54, dst, src);
+}
 
 /// ORPS xmm, xmm: 0F 56
-pub fn orps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0, 0x0F, 0x56, dst, src); }
+pub fn orps(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0, 0x0F, 0x56, dst, src);
+}
 
 // --- FP conversions ---
 
 /// CVTSD2SS xmm, xmm (F64 -> F32): F2 0F 5A
-pub fn cvtsd2ss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF2, 0x0F, 0x5A, dst, src); }
+pub fn cvtsd2ss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF2, 0x0F, 0x5A, dst, src);
+}
 
 /// CVTSS2SD xmm, xmm (F32 -> F64): F3 0F 5A
-pub fn cvtss2sd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) { sse_rr(e, 0xF3, 0x0F, 0x5A, dst, src); }
+pub fn cvtss2sd(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm) {
+    sse_rr(e, 0xF3, 0x0F, 0x5A, dst, src);
+}
 
 /// CVTSI2SD xmm, r32 (i32 -> f64): F2 0F 2A
 pub fn cvtsi2sd_r32(e: &mut X86_64TextEmitter, dst: Xmm, src: X86Reg) {
@@ -1519,9 +1681,9 @@ pub fn roundss(e: &mut X86_64TextEmitter, dst: Xmm, src: Xmm, mode: u8) {
 
 /// ROUNDSD/SS mode constants.
 pub const ROUND_NEAREST: u8 = 0x08; // 0 + inexact suppression
-pub const ROUND_FLOOR: u8 = 0x09;   // 1 + inexact suppression
-pub const ROUND_CEIL: u8 = 0x0A;    // 2 + inexact suppression
-pub const ROUND_TRUNC: u8 = 0x0B;   // 3 + inexact suppression
+pub const ROUND_FLOOR: u8 = 0x09; // 1 + inexact suppression
+pub const ROUND_CEIL: u8 = 0x0A; // 2 + inexact suppression
+pub const ROUND_TRUNC: u8 = 0x0B; // 3 + inexact suppression
 
 // --- FP negate/abs via bit manipulation with RIP-relative constants ---
 

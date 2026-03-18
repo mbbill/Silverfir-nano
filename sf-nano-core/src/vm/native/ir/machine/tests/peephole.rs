@@ -786,7 +786,12 @@ fn preserves_moves_into_fp_cached_locals() {
         first_fp_reg: 11,
         reg_count: 15,
         fp_transient_count: 2,
-        fp_reg_init_widths: vec![None, None, Some(crate::vm::native::ir::machine::MachineFloatWidth::F32), Some(crate::vm::native::ir::machine::MachineFloatWidth::F32)],
+        fp_reg_init_widths: vec![
+            None,
+            None,
+            Some(crate::vm::native::ir::machine::MachineFloatWidth::F32),
+            Some(crate::vm::native::ir::machine::MachineFloatWidth::F32),
+        ],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
             params: Vec::new(),

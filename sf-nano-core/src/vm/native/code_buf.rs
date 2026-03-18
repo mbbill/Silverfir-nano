@@ -53,12 +53,18 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(all(target_os = "linux", not(any(target_arch = "aarch64", target_arch = "arm"))))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "aarch64", target_arch = "arm"))
+))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(all(target_os = "linux", not(any(target_arch = "aarch64", target_arch = "arm"))))]
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "aarch64", target_arch = "arm"))
+))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };

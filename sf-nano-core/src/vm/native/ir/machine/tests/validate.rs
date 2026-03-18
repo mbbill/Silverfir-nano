@@ -1,9 +1,9 @@
 use alloc::{vec, vec::Vec};
 
 use crate::vm::native::ir::machine::{
-    MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId,
-    MachineEdge, MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule,
-    MachineProgram, MachineReg, MachineTerminator, MachineValue,
+    MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId, MachineEdge,
+    MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
+    MachineReg, MachineTerminator, MachineValue,
 };
 use crate::vm::native::ir::runtime::{MachineExternBinding, MachineHelperSymbol};
 

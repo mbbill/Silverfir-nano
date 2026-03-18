@@ -43,11 +43,7 @@ use crate::{
     },
 };
 
-use super::{
-    emit::Arm32TextEmitter,
-    enc,
-    reg::Arm32Reg,
-};
+use super::{emit::Arm32TextEmitter, enc, reg::Arm32Reg};
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
 
@@ -205,6 +201,7 @@ pub(super) fn emit_shared_epilogue(text: &mut Arm32TextEmitter) {
     // VPOP {D8-D15}
     text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
     // POP {R4-R11, PC} — loading PC from the saved LR effectively returns
-    let pop_mask = callee_saved_gp_mask() & !(1 << Arm32Reg::R14.idx()) | (1 << Arm32Reg::R15.idx());
+    let pop_mask =
+        callee_saved_gp_mask() & !(1 << Arm32Reg::R14.idx()) | (1 << Arm32Reg::R15.idx());
     text.emit_u32(enc::pop(pop_mask));
 }

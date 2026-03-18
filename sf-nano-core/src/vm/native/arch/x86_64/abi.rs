@@ -46,10 +46,7 @@ use crate::{
     },
 };
 
-use super::{
-    emit::X86_64TextEmitter,
-    reg::X86Reg,
-};
+use super::{emit::X86_64TextEmitter, reg::X86Reg};
 
 pub(super) const SCRATCH0: X86Reg = X86Reg::RAX;
 pub(super) const SCRATCH1: X86Reg = X86Reg::R11;
@@ -68,8 +65,7 @@ const FP_TRANSIENT_REGS: [u32; 6] = [0, 1, 2, 3, 4, 5];
 const FP_LOCAL_CACHE_REGS: [u32; 10] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /// Total FP machine-register capacity.
-pub(super) const FP_MACHINE_REG_COUNT: usize =
-    FP_TRANSIENT_REGS.len() + FP_LOCAL_CACHE_REGS.len();
+pub(super) const FP_MACHINE_REG_COUNT: usize = FP_TRANSIENT_REGS.len() + FP_LOCAL_CACHE_REGS.len();
 
 // Compile-time check: transients + cache = 16 XMM regs.
 const _: () = assert!(
@@ -97,12 +93,12 @@ const DYNAMIC_REGS: [X86Reg; 9] = [
 /// Callee-saved GP registers we must push/pop in prologue/epilogue.
 /// These are all the callee-saved regs we use: fixed + cached locals.
 const CALLEE_SAVED_GP_REGS: [X86Reg; 6] = [
-    X86Reg::RBX,  // MACHINE_CTX_REG
-    X86Reg::RBP,  // MACHINE_FP_REG
-    X86Reg::R12,  // MACHINE_MEM0_BASE_REG
-    X86Reg::R13,  // MACHINE_MEM0_SIZE_REG
-    X86Reg::R14,  // GP local cache
-    X86Reg::R15,  // GP local cache
+    X86Reg::RBX, // MACHINE_CTX_REG
+    X86Reg::RBP, // MACHINE_FP_REG
+    X86Reg::R12, // MACHINE_MEM0_BASE_REG
+    X86Reg::R13, // MACHINE_MEM0_SIZE_REG
+    X86Reg::R14, // GP local cache
+    X86Reg::R15, // GP local cache
 ];
 
 // No callee-saved FP regs on System V AMD64.

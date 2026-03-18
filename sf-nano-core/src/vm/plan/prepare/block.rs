@@ -61,7 +61,16 @@ pub(super) fn lower_block_range(
             let target = fallthrough_target(semantic_index, prepared.len())?;
             canonicalize_live_window_for_target(target, &mut state, frame, entry_states)?;
         }
-        lower_block_body_op(&prepared[semantic_index], semantic_index, &mut state, frame, values, local_types, op_result_types, skip_reload_iter)?;
+        lower_block_body_op(
+            &prepared[semantic_index],
+            semantic_index,
+            &mut state,
+            frame,
+            values,
+            local_types,
+            op_result_types,
+            skip_reload_iter,
+        )?;
         state.validate_live_fit("block body")?;
     }
 

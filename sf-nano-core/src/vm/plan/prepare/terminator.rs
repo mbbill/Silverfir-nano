@@ -241,10 +241,8 @@ pub(super) fn lower_block_terminator(
                 let then_block_id = crate::vm::lir::target::LirTarget(
                     (original_block_count + extra_blocks_len) as u32,
                 );
-                let payload_types: alloc::vec::Vec<_> = payload
-                    .iter()
-                    .map(|v| values.value_type(*v))
-                    .collect();
+                let payload_types: alloc::vec::Vec<_> =
+                    payload.iter().map(|v| values.value_type(*v)).collect();
                 let then_params = values.many_typed(&payload_types);
                 let payload_span = branch_payload(frame, state.height(), *stack_drop, *arity)
                     .ok_or_else(|| {
@@ -521,7 +519,8 @@ pub(super) fn canonicalize_live_window_for_target(
     let target_entry = entry_states
         .get(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
-    if target_entry.stack_height != state.height() || target_entry.spill_depth <= state.spill_depth()
+    if target_entry.stack_height != state.height()
+        || target_entry.spill_depth <= state.spill_depth()
     {
         return Ok(());
     }

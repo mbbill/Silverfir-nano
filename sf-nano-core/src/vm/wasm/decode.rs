@@ -787,11 +787,8 @@ impl<'a> DecodeContext<'a> {
                     self.handle_primitive(PrimitiveOpKind::RefFunc {
                         func_idx: *func_idx,
                     });
-                    let func_type_idx = self
-                        .compile
-                        .store
-                        .function(*func_idx as usize)
-                        .type_index();
+                    let func_type_idx =
+                        self.compile.store.function(*func_idx as usize).type_index();
                     let ty = ValueType::Ref(crate::value_type::RefType::new(
                         false,
                         crate::value_type::HeapType::Concrete(func_type_idx),

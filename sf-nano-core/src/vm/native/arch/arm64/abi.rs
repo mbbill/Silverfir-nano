@@ -59,11 +59,7 @@ use crate::{
     },
 };
 
-use super::{
-    emit::Arm64TextEmitter,
-    enc,
-    reg::Arm64Reg,
-};
+use super::{emit::Arm64TextEmitter, enc, reg::Arm64Reg};
 
 pub(super) const SCRATCH0: Arm64Reg = Arm64Reg::X16;
 pub(super) const SCRATCH1: Arm64Reg = Arm64Reg::X17;
@@ -96,8 +92,8 @@ const FP_TRANSIENT_REGS: [u32; 10] = [3, 4, 5, 6, 7, 16, 17, 18, 19, 20];
 /// `analyze_local_cache_prefs` sorts locals by usage weight, so the hottest
 /// locals naturally land in the first (callee-saved) slots.
 const FP_LOCAL_CACHE_REGS: [u32; 19] = [
-    8, 9, 10, 11, 12, 13, 14, 15,                    // callee-saved (D8-D15)
-    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,      // caller-saved (D21-D31)
+    8, 9, 10, 11, 12, 13, 14, 15, // callee-saved (D8-D15)
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, // caller-saved (D21-D31)
 ];
 
 /// Total FP machine-register capacity: transients first, then cached locals.
@@ -152,8 +148,7 @@ const CALLEE_SAVED_GP_PAIRS: [(Arm64Reg, Arm64Reg); 6] = [
 const CALLEE_SAVED_FP_REGS: [u32; 8] = [8, 9, 10, 11, 12, 13, 14, 15];
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 const STACK_ALIGNMENT_BYTES: u32 = 16;
-const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
-    CALLEE_SAVED_GP_PAIRS.len() as u32 * (2 * STACK_SLOT_BYTES);
+const CALLEE_SAVED_GP_FRAME_SIZE: u32 = CALLEE_SAVED_GP_PAIRS.len() as u32 * (2 * STACK_SLOT_BYTES);
 const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
 const CALLEE_SAVED_FP_FRAME_SIZE: u32 = CALLEE_SAVED_FP_REGS.len() as u32 * STACK_SLOT_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: u32 = align_up_u32(

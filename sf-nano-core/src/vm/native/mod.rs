@@ -53,7 +53,10 @@ pub fn native_stats_snapshot() -> NativeStatsSnapshot {
 
 #[inline]
 pub fn native_stats() -> (usize, usize) {
-    (STATS_GROUPS.load(Ordering::Relaxed), STATS_OPS.load(Ordering::Relaxed))
+    (
+        STATS_GROUPS.load(Ordering::Relaxed),
+        STATS_OPS.load(Ordering::Relaxed),
+    )
 }
 
 #[inline]

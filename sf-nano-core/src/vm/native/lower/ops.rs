@@ -5,13 +5,18 @@ use crate::{
     vm::{
         entities::global_offset,
         lir::{ir::LirValue, leaf::LirLeafOp},
-        native::{ir::machine::{
-            MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp,
-            MachineFloatWidth, MachineInst, MachineInstKind, MachineLoadExtension,
-            MachineMemWidth, MachineTerminator, MachineTrapKind, MachineValue, machine_ptr_width,
-        }, runtime::context::{
-            NativeMemoryView, NativeTableView, ctx_offset, globals_view_offset, memory_view_offset, table_view_offset
-        }},
+        native::{
+            ir::machine::{
+                machine_ptr_width, MachineBlockId, MachineBranchCond, MachineCompareKind,
+                MachineConvertOp, MachineFloatWidth, MachineInst, MachineInstKind,
+                MachineLoadExtension, MachineMemWidth, MachineTerminator, MachineTrapKind,
+                MachineValue,
+            },
+            runtime::context::{
+                ctx_offset, globals_view_offset, memory_view_offset, table_view_offset,
+                NativeMemoryView, NativeTableView,
+            },
+        },
         wasm::primitive_op::PrimitiveOpKind,
     },
 };
@@ -386,7 +391,8 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 dst
             };
-            let residual = self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let residual =
+                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
             self.emit_machine_ops(self.lower_mem0_load_continuation(
                 addr32,
                 residual,
@@ -435,13 +441,11 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.borrow_free_transients(1)?[0]
             };
-            let residual = self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
-            self.emit_machine_ops(self.lower_mem0_store_continuation(
-                addr32,
-                residual,
-                src,
-                spec.width,
-            )?);
+            let residual =
+                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            self.emit_machine_ops(
+                self.lower_mem0_store_continuation(addr32, residual, src, spec.width)?,
+            );
         } else {
             let scratch = self.borrow_free_transients(2)?;
             let addr32 = scratch[0];

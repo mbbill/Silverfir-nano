@@ -12,8 +12,9 @@ use crate::vm::{
     },
     native::{
         ir::machine::{
-            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind, MachineMemWidth,
-            MachineIntBinaryOp, MachineModule, MachineReg, MachineTerminator, MachineValue,
+            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind,
+            MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg, MachineTerminator,
+            MachineValue,
         },
         ir::runtime::MachineHelperSymbol,
         lower::{lower_module, LowerFunctionInput, LowerModuleInput},
@@ -445,7 +446,10 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
@@ -715,7 +719,10 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
@@ -795,7 +802,10 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
@@ -1004,7 +1014,10 @@ fn flushes_cached_local_before_second_direct_call() {
             gp_preferred_slots: alloc::vec![caller_frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![LirBlock {
@@ -1145,7 +1158,10 @@ fn preserves_cached_locals_across_block_edges() {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_slots: alloc::vec![],
             fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![
@@ -1729,7 +1745,10 @@ fn lowers_i32_load_with_inline_trap_if() {
 
     let program = &lowered.module.functions[0].program;
     assert_eq!(program.blocks.len(), 1);
-    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Return
+    ));
     let ops = &program.blocks[0].ops;
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
@@ -1852,7 +1871,7 @@ fn threads_live_transients_through_split_continuation_params() {
                 LirInst {
                     kind: LirInstKind::Value {
                         op: LirLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
-                        .unwrap(),
+                            .unwrap(),
                         args: alloc::vec![LirValue(0)],
                         results: alloc::vec![LirValue(2)],
                     },
@@ -1982,7 +2001,10 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
 
     let program = &lowered.module.functions[0].program;
     assert_eq!(program.blocks.len(), 1);
-    assert!(matches!(program.blocks[0].terminator, MachineTerminator::Return));
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Return
+    ));
     assert!(program.blocks[0].ops.iter().any(|inst| {
         matches!(
             inst.kind,
@@ -2261,7 +2283,10 @@ fn f32_cached_locals_use_f32_slot_widths() {
             fp_preferred_slots: alloc::vec![frame.local_slot(0)],
             fp_preferred_types: alloc::vec![ValueType::F32],
             gp_local_info: alloc::vec![],
-            fp_local_info: alloc::vec![CachedLocalInfo { is_param: true, reads_before_write: true }],
+            fp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
         },
         blocks: alloc::vec![LirBlock {
             id: LirTarget(0),

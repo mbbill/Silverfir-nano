@@ -6,8 +6,8 @@ use crate::{
         native::{
             arch,
             code::{CompiledNativeModule, NativeCode, NativeCodeCache},
-            ir_dump,
             ir::machine::MachineFuncId,
+            ir_dump,
             lower::{lower_module, LowerFunctionInput, LowerModuleInput},
         },
         plan::{config::PlanConfig, prepare::PrepareInput, prepare_function, PreparedFunction},
@@ -150,7 +150,8 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         #[cfg(has_guard_pages)]
         use_guard_pages,
     })?;
-    let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT + backend.gp_local_cache_count as u16;
+    let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT
+        + backend.gp_local_cache_count as u16;
     lowered.module.optimize(first_transient);
 
     // Collect LIR for dump before moving lowered data
@@ -200,15 +201,24 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let mut bytes = 0usize;
         #[cfg(target_arch = "aarch64")]
         if let Some(ref entries) = arm64_entries {
-            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+            bytes = entries
+                .iter()
+                .filter_map(|e| e.as_ref().map(|e| e.text_len))
+                .sum();
         }
         #[cfg(target_arch = "arm")]
         if let Some(ref entries) = armv7a_entries {
-            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+            bytes = entries
+                .iter()
+                .filter_map(|e| e.as_ref().map(|e| e.text_len))
+                .sum();
         }
         #[cfg(target_arch = "x86_64")]
         if let Some(ref entries) = x86_64_entries {
-            bytes = entries.iter().filter_map(|e| e.as_ref().map(|e| e.text_len)).sum();
+            bytes = entries
+                .iter()
+                .filter_map(|e| e.as_ref().map(|e| e.text_len))
+                .sum();
         }
         crate::vm::native::set_native_stats(groups, ops, bytes);
     }
@@ -226,9 +236,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                         entry.as_ref().map(|e| {
                             let ptr = e.entry as *const u8;
                             let len = e.text_len;
-                            (idx as u32, unsafe {
-                                core::slice::from_raw_parts(ptr, len)
-                            })
+                            (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
                         })
                     })
                     .collect()
@@ -368,7 +376,10 @@ mod tests {
         ))]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
-            Rc::new(FunctionType::new(vec![ValueType::F64], vec![ValueType::F64])),
+            Rc::new(FunctionType::new(
+                vec![ValueType::F64],
+                vec![ValueType::F64],
+            )),
             0,
         );
         spec.set_code((&[0x20, 0x00, 0x0b][..]).into());

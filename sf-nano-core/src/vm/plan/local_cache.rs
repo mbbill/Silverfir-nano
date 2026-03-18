@@ -68,10 +68,7 @@ pub fn analyze_local_cache_prefs(
             .map(|idx| frame.local_slot(idx as u16))
             .collect(),
         fp_local_info: fp.iter().map(|idx| local_info(*idx)).collect(),
-        fp_preferred_slots: fp
-            .iter()
-            .map(|idx| frame.local_slot(*idx as u16))
-            .collect(),
+        fp_preferred_slots: fp.iter().map(|idx| frame.local_slot(*idx as u16)).collect(),
         fp_preferred_types: fp
             .into_iter()
             .map(|idx| semantic.local_types[idx as usize])
@@ -80,11 +77,7 @@ pub fn analyze_local_cache_prefs(
     (prefs, skip_reload)
 }
 
-fn select_top_n(
-    weights: &[u64],
-    count: usize,
-    eligible: impl Fn(usize) -> bool,
-) -> Vec<u32> {
+fn select_top_n(weights: &[u64], count: usize, eligible: impl Fn(usize) -> bool) -> Vec<u32> {
     if count == 0 {
         return Vec::new();
     }
@@ -327,7 +320,6 @@ fn entry_scope_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
     reads_init
 }
 
-
 /// For each call/call_indirect site in the function, compute which cached
 /// locals are *definitely written before read* on the straight-line path
 /// immediately following the call.  Those locals do not need reloading at the
@@ -352,12 +344,14 @@ pub fn continuation_skip_reload(
         let call_count = semantic
             .ops
             .iter()
-            .filter(|op| matches!(
-                op.kind,
-                SemanticOpKind::CallInternal { .. }
-                    | SemanticOpKind::CallExternal { .. }
-                    | SemanticOpKind::CallIndirect { .. }
-            ))
+            .filter(|op| {
+                matches!(
+                    op.kind,
+                    SemanticOpKind::CallInternal { .. }
+                        | SemanticOpKind::CallExternal { .. }
+                        | SemanticOpKind::CallIndirect { .. }
+                )
+            })
             .count();
         return alloc::vec![Vec::new(); call_count];
     }
@@ -453,11 +447,7 @@ fn intersect_all(paths: &[&[bool]], n: usize) -> Vec<bool> {
 }
 
 /// Merge fallthrough (if reachable) with branch paths at a Block's End.
-fn merge_paths(
-    fallthrough: Option<&[bool]>,
-    branches: Option<&[bool]>,
-    n: usize,
-) -> Vec<bool> {
+fn merge_paths(fallthrough: Option<&[bool]>, branches: Option<&[bool]>, n: usize) -> Vec<bool> {
     match (fallthrough, branches) {
         (Some(ft), Some(br)) => intersect_vecs(ft, br),
         (Some(ft), None) => ft.to_vec(),
@@ -465,7 +455,6 @@ fn merge_paths(
         (None, None) => alloc::vec![false; n],
     }
 }
-
 
 fn local_weights(semantic: &SemanticProgram) -> Vec<u64> {
     let mut weights = alloc::vec![0u64; semantic.local_count as usize];

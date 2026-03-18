@@ -26,9 +26,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge,
-    MachineFloatWidth, MachineInst, MachineInstKind, MachineProgram, MachineReg,
-    MachineTerminator, MachineValue,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth,
+    MachineInst, MachineInstKind, MachineProgram, MachineReg, MachineTerminator, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -56,7 +55,12 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
     for block in &mut program.blocks {
         deduplicate_constants(block, program.first_fp_reg);
-        fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
+        fold_constants(
+            block,
+            first_transient,
+            program.first_fp_reg,
+            fp_transient_end,
+        );
         copy_propagate(
             block,
             first_transient,
@@ -66,7 +70,12 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
-        fold_constants(block, first_transient, program.first_fp_reg, fp_transient_end);
+        fold_constants(
+            block,
+            first_transient,
+            program.first_fp_reg,
+            fp_transient_end,
+        );
         copy_propagate(
             block,
             first_transient,
@@ -127,8 +136,9 @@ fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
                 let (d, b, w) = (*dst, *bits, *width);
                 // Skip zero: fcmp d, #0.0 is free when folded as Imm64(0).
                 if b != 0 {
-                    if let Some(&(_, _, prev)) =
-                        fp_consts.iter().find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
+                    if let Some(&(_, _, prev)) = fp_consts
+                        .iter()
+                        .find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
                     {
                         inst.kind = MachineInstKind::Move {
                             dst: d,
@@ -377,7 +387,11 @@ fn copy_propagate(
 ) {
     scratch.clear();
     let original_ops = core::mem::take(&mut block.ops);
-    scratch.rewritten.reserve(original_ops.len().saturating_sub(scratch.rewritten.capacity()));
+    scratch.rewritten.reserve(
+        original_ops
+            .len()
+            .saturating_sub(scratch.rewritten.capacity()),
+    );
     let aliases = &mut scratch.aliases;
     let float_aliases = &mut scratch.float_aliases;
     let rewritten = &mut scratch.rewritten;
@@ -514,8 +528,7 @@ fn terminator_uses_reg(term: &super::MachineTerminator, reg: MachineReg) -> bool
                 || edge_uses_reg(else_edge, reg)
         }
         super::MachineTerminator::JumpTable { index, entries } => {
-            value_is_reg(index, reg)
-                || entries.iter().any(|e| edge_uses_reg(e, reg))
+            value_is_reg(index, reg) || entries.iter().any(|e| edge_uses_reg(e, reg))
         }
         super::MachineTerminator::CallDirect {
             callee_frame_base, ..
@@ -601,8 +614,12 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
 /// Replace one occurrence of `Reg(old)` with `new_val` in an instruction's sources.
 fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: MachineValue) {
     match kind {
-        MachineInstKind::Move { src, .. } => { try_replace(src, old, new_val); }
-        MachineInstKind::IntUnary { src, .. } => { try_replace(src, old, new_val); }
+        MachineInstKind::Move { src, .. } => {
+            try_replace(src, old, new_val);
+        }
+        MachineInstKind::IntUnary { src, .. } => {
+            try_replace(src, old, new_val);
+        }
         MachineInstKind::IntBinary { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
@@ -613,7 +630,9 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
                 try_replace(rhs, old, new_val);
             }
         }
-        MachineInstKind::FloatUnary { src, .. } => { try_replace(src, old, new_val); }
+        MachineInstKind::FloatUnary { src, .. } => {
+            try_replace(src, old, new_val);
+        }
         MachineInstKind::FloatBinary { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
@@ -624,8 +643,12 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
                 try_replace(rhs, old, new_val);
             }
         }
-        MachineInstKind::Convert { src, .. } => { try_replace(src, old, new_val); }
-        MachineInstKind::Store { src, .. } => { try_replace(src, old, new_val); }
+        MachineInstKind::Convert { src, .. } => {
+            try_replace(src, old, new_val);
+        }
+        MachineInstKind::Store { src, .. } => {
+            try_replace(src, old, new_val);
+        }
         MachineInstKind::Select {
             on_true,
             on_false,

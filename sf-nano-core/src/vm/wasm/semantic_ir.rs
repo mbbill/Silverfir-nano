@@ -188,7 +188,8 @@ impl SemanticProgram {
             if *op_idx >= len {
                 return Err(WasmError::internal(alloc::format!(
                     "op_result_types entry for op index {} is out of range (ops len={})",
-                    op_idx, len,
+                    op_idx,
+                    len,
                 )));
             }
             if let Some(op) = self.ops.get(*op_idx) {

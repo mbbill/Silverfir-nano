@@ -134,9 +134,7 @@ impl MemInst {
 
     /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
     #[cfg(has_guard_pages)]
-    pub fn new_guarded(
-        limits: Limits,
-    ) -> Result<Self, crate::error::WasmError> {
+    pub fn new_guarded(limits: Limits) -> Result<Self, crate::error::WasmError> {
         let guard = crate::vm::native::guard_pages::GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
             data: Vec::new(),

@@ -220,10 +220,7 @@ mod tests {
             slot::FrameSlot,
             target::LirTarget,
         },
-        plan::{
-            frame::plan_frame_layout,
-            prepare::optimize::optimize_lir,
-        },
+        plan::{frame::plan_frame_layout, prepare::optimize::optimize_lir},
         wasm::primitive_op::PrimitiveOpKind,
     };
 

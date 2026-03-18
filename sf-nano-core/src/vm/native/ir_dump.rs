@@ -87,13 +87,29 @@ pub fn write_module_dump(
         if !dump_enabled() {
             return Ok(());
         }
-        write_dump_impl(module_name, function_count, lir_inputs, machine_module, runtime, code_slices, debug_regions_by_func)
-            .map_err(|err| WasmError::internal(format!("failed to write native dump: {err}")))
+        write_dump_impl(
+            module_name,
+            function_count,
+            lir_inputs,
+            machine_module,
+            runtime,
+            code_slices,
+            debug_regions_by_func,
+        )
+        .map_err(|err| WasmError::internal(format!("failed to write native dump: {err}")))
     }
 
     #[cfg(not(any(feature = "std", feature = "wasi", test)))]
     {
-        let _ = (module_name, function_count, lir_inputs, machine_module, runtime, code_slices, debug_regions_by_func);
+        let _ = (
+            module_name,
+            function_count,
+            lir_inputs,
+            machine_module,
+            runtime,
+            code_slices,
+            debug_regions_by_func,
+        );
         Ok(())
     }
 }
@@ -132,8 +148,10 @@ fn write_dump_impl(
 
     // Regions table (per-block granularity)
     let _ = writeln!(index, "[regions]");
-    let regions_by_func: alloc::collections::BTreeMap<u32, &[DebugRegion]> =
-        debug_regions_by_func.iter().map(|d| (d.func_idx, d.regions.as_slice())).collect();
+    let regions_by_func: alloc::collections::BTreeMap<u32, &[DebugRegion]> = debug_regions_by_func
+        .iter()
+        .map(|d| (d.func_idx, d.regions.as_slice()))
+        .collect();
     for (func_idx, file_off, len) in &code_offsets {
         if let Some(regions) = regions_by_func.get(func_idx) {
             for region in *regions {
@@ -157,14 +175,28 @@ fn write_dump_impl(
     // Call-link layout
     let _ = writeln!(index, "[call_link]");
     let _ = writeln!(index, "slot_count={}", runtime.call_link.slot_count);
-    let _ = writeln!(index, "continuation_offset={}", runtime.call_link.continuation_offset);
-    let _ = writeln!(index, "caller_frame_offset={}", runtime.call_link.caller_frame_offset);
-    let _ = writeln!(index, "caller_result_base_offset={}", runtime.call_link.caller_result_base_offset);
+    let _ = writeln!(
+        index,
+        "continuation_offset={}",
+        runtime.call_link.continuation_offset
+    );
+    let _ = writeln!(
+        index,
+        "caller_frame_offset={}",
+        runtime.call_link.caller_frame_offset
+    );
+    let _ = writeln!(
+        index,
+        "caller_result_base_offset={}",
+        runtime.call_link.caller_result_base_offset
+    );
     let _ = writeln!(index);
 
     // Per-function sections
-    let lir_by_func: alloc::collections::BTreeMap<u32, &LirProgram> =
-        lir_inputs.iter().map(|entry| (entry.func_idx, entry.lir)).collect();
+    let lir_by_func: alloc::collections::BTreeMap<u32, &LirProgram> = lir_inputs
+        .iter()
+        .map(|entry| (entry.func_idx, entry.lir))
+        .collect();
 
     for func in &machine_module.functions {
         let func_idx = func.id.0;
@@ -175,10 +207,18 @@ fn write_dump_impl(
             let _ = writeln!(index, "frame_prefix_slots={}", rt.frame_prefix_slots);
             let _ = writeln!(index, "total_frame_slots={}", rt.total_frame_slots);
             if let Some(cs) = rt.call_scratch {
-                let _ = writeln!(index, "call_scratch=base:{} slots:{}", cs.base_slot, cs.slots);
+                let _ = writeln!(
+                    index,
+                    "call_scratch=base:{} slots:{}",
+                    cs.base_slot, cs.slots
+                );
             }
             if let Some(rr) = rt.return_results {
-                let _ = writeln!(index, "return_results=base:{} slots:{}", rr.base_slot, rr.slots);
+                let _ = writeln!(
+                    index,
+                    "return_results=base:{} slots:{}",
+                    rr.base_slot, rr.slots
+                );
             }
         }
 
@@ -250,7 +290,11 @@ fn render_lir_block(out: &mut String, block: &LirBlock) {
     for (i, inst) in block.ops.iter().enumerate() {
         let _ = writeln!(out, "    {i:02}: {}", render_lir_inst(&inst.kind));
     }
-    let _ = writeln!(out, "    term: {}", render_lir_terminator(&block.terminator));
+    let _ = writeln!(
+        out,
+        "    term: {}",
+        render_lir_terminator(&block.terminator)
+    );
 }
 
 fn render_lir_inst(kind: &LirInstKind) -> String {
@@ -344,7 +388,11 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
 fn render_lir_terminator(term: &LirTerminator) -> String {
     match term {
         LirTerminator::Goto(edge) => {
-            format!("goto b{} [{}]", edge.target.0, render_lir_bindings(&edge.bindings))
+            format!(
+                "goto b{} [{}]",
+                edge.target.0,
+                render_lir_bindings(&edge.bindings)
+            )
         }
         LirTerminator::Branch {
             cond,
@@ -359,18 +407,11 @@ fn render_lir_terminator(term: &LirTerminator) -> String {
             render_lir_bindings(&else_edge.bindings),
         ),
         LirTerminator::BrTable { index, entries } => {
-            let targets: Vec<String> = entries
-                .iter()
-                .map(|e| format!("b{}", e.target.0))
-                .collect();
+            let targets: Vec<String> = entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("br_table v{} [{}]", index.0, targets.join(", "))
         }
         LirTerminator::Return { results } => match results {
-            Some(span) => format!(
-                "return fp[{}..{})",
-                span.start.0,
-                span.start.0 + span.count
-            ),
+            Some(span) => format!("return fp[{}..{})", span.start.0, span.start.0 + span.count),
             None => "return void".into(),
         },
         LirTerminator::TrapUnreachable => "trap_unreachable".into(),
@@ -453,13 +494,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             dst,
             src,
         } => {
-            format!(
-                "{}.{:?} r{} <- {}",
-                iw(width),
-                op,
-                dst.0,
-                mval(src)
-            )
+            format!("{}.{:?} r{} <- {}", iw(width), op, dst.0, mval(src))
         }
         MachineInstKind::IntBinary {
             width,
@@ -556,7 +591,10 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             format!("trap_if {:?} {}", kind, render_branch_cond(cond))
         }
         MachineInstKind::CallHelper(call) => {
-            format!("call_helper extern={} const={}", call.target.0, call.metadata.0)
+            format!(
+                "call_helper extern={} const={}",
+                call.target.0, call.metadata.0
+            )
         }
     }
 }
@@ -579,10 +617,7 @@ fn render_machine_term(term: &MachineTerminator) -> String {
             medge_args(&else_edge.args),
         ),
         MachineTerminator::JumpTable { index, entries } => {
-            let targets: Vec<String> = entries
-                .iter()
-                .map(|e| format!("b{}", e.target.0))
-                .collect();
+            let targets: Vec<String> = entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("jump_table {} [{}]", mval(index), targets.join(", "))
         }
         MachineTerminator::CallDirect {
@@ -638,13 +673,7 @@ fn render_branch_cond(cond: &MachineBranchCond) -> String {
             kind,
             lhs,
             rhs,
-        } => format!(
-            "{}.cmp.{:?} {} {}",
-            fw(width),
-            kind,
-            mval(lhs),
-            mval(rhs)
-        ),
+        } => format!("{}.cmp.{:?} {} {}", fw(width), kind, mval(lhs), mval(rhs)),
     }
 }
 

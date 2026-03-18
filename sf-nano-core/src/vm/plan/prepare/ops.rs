@@ -86,7 +86,10 @@ pub(super) fn lower_primitive(
         ValueType::I64 // unused — no LirValue created
     } else if matches!(kind, PrimitiveOpKind::Select) {
         let ty = args.first().map(|v| values.value_type(*v));
-        debug_assert!(ty.is_some(), "select has no on_true operand to derive type from");
+        debug_assert!(
+            ty.is_some(),
+            "select has no on_true operand to derive type from"
+        );
         ty.unwrap_or(ValueType::I64)
     } else if let Some(ty) = primitive_op::result_type(kind) {
         ty
@@ -103,9 +106,7 @@ pub(super) fn lower_primitive(
         ty.unwrap_or(ValueType::I64)
     };
     state.consume_top(pop as usize)?;
-    let results: alloc::vec::Vec<_> = (0..push)
-        .map(|_| values.fresh_typed(result_ty))
-        .collect();
+    let results: alloc::vec::Vec<_> = (0..push).map(|_| values.fresh_typed(result_ty)).collect();
     state.ops.push(LirInst {
         kind: LirInstKind::Value {
             op: LirLeafOp::from_primitive(kind.clone())
@@ -385,9 +386,13 @@ pub(super) fn lower_block_body_op(
                 lower_primitive(kind, semantic_index, state, values, op_result_types)
             }
         }
-        SemanticOpKind::LocalGet { idx } => lower_local_get(*idx, state, frame, values, local_types),
+        SemanticOpKind::LocalGet { idx } => {
+            lower_local_get(*idx, state, frame, values, local_types)
+        }
         SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame),
-        SemanticOpKind::LocalTee { idx } => lower_local_tee(*idx, state, frame, values, local_types),
+        SemanticOpKind::LocalTee { idx } => {
+            lower_local_tee(*idx, state, frame, values, local_types)
+        }
         SemanticOpKind::CallExternal {
             func_idx,
             params,

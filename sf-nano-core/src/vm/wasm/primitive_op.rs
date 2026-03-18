@@ -323,14 +323,14 @@ pub fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueTyp
         | PrimitiveOpKind::I64Eqz => ValueType::I32,
 
         // i32 unary
-        PrimitiveOpKind::I32Clz
-        | PrimitiveOpKind::I32Ctz
-        | PrimitiveOpKind::I32Popcnt => ValueType::I32,
+        PrimitiveOpKind::I32Clz | PrimitiveOpKind::I32Ctz | PrimitiveOpKind::I32Popcnt => {
+            ValueType::I32
+        }
 
         // i64 unary
-        PrimitiveOpKind::I64Clz
-        | PrimitiveOpKind::I64Ctz
-        | PrimitiveOpKind::I64Popcnt => ValueType::I64,
+        PrimitiveOpKind::I64Clz | PrimitiveOpKind::I64Ctz | PrimitiveOpKind::I64Popcnt => {
+            ValueType::I64
+        }
 
         // f32 unary
         PrimitiveOpKind::F32Abs
@@ -389,8 +389,7 @@ pub fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueTyp
         | PrimitiveOpKind::F64ReinterpretI64 => ValueType::F64,
 
         // Extensions
-        PrimitiveOpKind::I32Extend8S
-        | PrimitiveOpKind::I32Extend16S => ValueType::I32,
+        PrimitiveOpKind::I32Extend8S | PrimitiveOpKind::I32Extend16S => ValueType::I32,
         PrimitiveOpKind::I64Extend8S
         | PrimitiveOpKind::I64Extend16S
         | PrimitiveOpKind::I64Extend32S => ValueType::I64,

@@ -74,7 +74,12 @@ struct JitDumpWriter {
 #[cfg(any(feature = "wasi", feature = "std", test))]
 impl JitDumpWriter {
     fn new(mut file: File, pid: u32) -> io::Result<Self> {
-        write_file_header(&mut file, pid, monotonic_timestamp_nanos(), elf_machine_arch())?;
+        write_file_header(
+            &mut file,
+            pid,
+            monotonic_timestamp_nanos(),
+            elf_machine_arch(),
+        )?;
         file.flush()?;
         Ok(Self {
             file,
@@ -84,7 +89,12 @@ impl JitDumpWriter {
         })
     }
 
-    fn write_code_load(&mut self, function_name: &str, code_addr: u64, code_bytes: &[u8]) -> io::Result<()> {
+    fn write_code_load(
+        &mut self,
+        function_name: &str,
+        code_addr: u64,
+        code_bytes: &[u8],
+    ) -> io::Result<()> {
         let code_index = self.next_code_index;
         self.next_code_index += 1;
         write_code_load_record(
@@ -213,7 +223,10 @@ fn open_tracking_file(path: &Path) -> io::Result<File> {
 #[cfg(any(feature = "wasi", feature = "std", test))]
 #[cfg(target_family = "unix")]
 unsafe extern "C" {
-    fn fopen(path: *const core::ffi::c_char, mode: *const core::ffi::c_char) -> *mut core::ffi::c_void;
+    fn fopen(
+        path: *const core::ffi::c_char,
+        mode: *const core::ffi::c_char,
+    ) -> *mut core::ffi::c_void;
     fn fileno(stream: *mut core::ffi::c_void) -> i32;
 }
 

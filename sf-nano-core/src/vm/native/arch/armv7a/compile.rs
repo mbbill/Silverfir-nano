@@ -3,21 +3,18 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-
     error::WasmError,
     vm::{
         entities::ModuleInst,
         native::{
             code::{Armv7aCodePtr, Armv7aRootEntry, CompiledNativeModule},
             ir::machine::{
-                MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam,
-                MachineBranchCond, MachineCompareKind, MachineConvertOp,
-                MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
-                MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
-                MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-                MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-                MachineTerminator, MachineTrapKind, MachineValue,
-                MACHINE_CTX_REG, MACHINE_FP_REG,
+                MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
+                MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
+                MachineFloatWidth, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
+                MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+                MachineMemWidth, MachineReg, MachineSign, MachineTerminator, MachineTrapKind,
+                MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
             },
             runtime::context::ctx_offset,
             runtime::helpers::resolve_helper_entry,
@@ -27,14 +24,12 @@ use crate::{
 
 use super::{
     abi::{
-        emit_shared_epilogue, emit_shared_prologue, is_fp_machine_reg, map_fixed_reg,
-        map_reg, fp_machine_reg, max_gp_mapped_regs, max_total_machine_regs,
-        FP_SCRATCH0, SCRATCH0,
+        emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, is_fp_machine_reg,
+        map_fixed_reg, map_reg, max_gp_mapped_regs, max_total_machine_regs, FP_SCRATCH0, SCRATCH0,
     },
-    armv7a_f32_trunc_i64s, armv7a_f32_trunc_i64u, armv7a_f64_trunc_i64s,
-    armv7a_f64_trunc_i64u, armv7a_i64s_to_f32, armv7a_i64s_to_f64,
-    armv7a_i64u_to_f32, armv7a_i64u_to_f64, armv7a_raise_trap, armv7a_sdiv,
-    armv7a_udiv,
+    armv7a_f32_trunc_i64s, armv7a_f32_trunc_i64u, armv7a_f64_trunc_i64s, armv7a_f64_trunc_i64u,
+    armv7a_i64s_to_f32, armv7a_i64s_to_f64, armv7a_i64u_to_f32, armv7a_i64u_to_f64,
+    armv7a_raise_trap, armv7a_sdiv, armv7a_udiv,
     emit::Arm32TextEmitter,
     enc::{self, Cond},
     reg::Arm32Reg,
@@ -58,8 +53,6 @@ fn patch_movw_movt(text: &mut Arm32TextEmitter, movw_offset: usize, addr: u32) {
     text.patch_u32(movw_offset, enc::movw(rd, addr as u16));
     text.patch_u32(movw_offset + 4, enc::movt(rd, (addr >> 16) as u16));
 }
-
-
 
 // ─── Label & fixup types ────────────────────────────────────────────────────
 
@@ -457,12 +450,14 @@ impl<'a> FunctionCompiler<'a> {
                     let hi = (value >> 32) as u32;
                     self.emit_load_u32(Arm32Reg::R0, lo);
                     self.emit_load_u32(Arm32Reg::R1, hi);
-                    self.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                    self.text
+                        .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                 }
                 ParallelSource::GpTemp => {
                     // SCRATCH0 (GP) → FP D-reg
                     self.emit_load_u32(Arm32Reg::R1, 0);
-                    self.text.emit_u32(enc::vmov_d_rr(dd, SCRATCH0, Arm32Reg::R1));
+                    self.text
+                        .emit_u32(enc::vmov_d_rr(dd, SCRATCH0, Arm32Reg::R1));
                 }
                 ParallelSource::FpTemp => {
                     self.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
@@ -491,7 +486,8 @@ impl<'a> FunctionCompiler<'a> {
                 }
                 ParallelSource::FpTemp => {
                     // FP temp → GP: extract low 32 bits from FP_SCRATCH0
-                    self.text.emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, FP_SCRATCH0));
+                    self.text
+                        .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, FP_SCRATCH0));
                 }
             }
         }
@@ -542,10 +538,8 @@ impl<'a> FunctionCompiler<'a> {
             WasmError::internal("armv7a direct call requires callee call scratch".into())
         })?;
         let call_link = self.compiled.runtime().call_link;
-        let continuation_slot =
-            call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
-        let caller_frame_slot =
-            call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
+        let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
+        let caller_frame_slot = call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
         let caller_result_base_slot =
             call_scratch.base_slot + (call_link.caller_result_base_offset / 8) as u16;
         let callee_total = callee_runtime.total_frame_slots;
@@ -593,10 +587,8 @@ impl<'a> FunctionCompiler<'a> {
 
         // Load callee entry (patchable) and jump
         let callee_patch = self.emit_patchable_addr(SCRATCH0);
-        self.text.emit_u32(enc::mov_reg(
-            map_fixed_reg(MACHINE_FP_REG),
-            callee_fp,
-        ));
+        self.text
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
         self.text.emit_u32(enc::bx(SCRATCH0));
 
         // Record patches
@@ -618,10 +610,8 @@ impl<'a> FunctionCompiler<'a> {
             WasmError::internal("armv7a local return requires call scratch".into())
         })?;
         let call_link = self.compiled.runtime().call_link;
-        let continuation_slot =
-            call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
-        let caller_frame_slot =
-            call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
+        let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
+        let caller_frame_slot = call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
         let caller_result_base_slot =
             call_scratch.base_slot + (call_link.caller_result_base_offset / 8) as u16;
 
@@ -658,22 +648,16 @@ impl<'a> FunctionCompiler<'a> {
                     fp_reg,
                     (results.base_slot as i32 + index) * 8,
                 ));
-                self.text.emit_u32(enc::str_imm(
-                    Arm32Reg::R1,
-                    Arm32Reg::R0,
-                    index * 8,
-                ));
+                self.text
+                    .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::R0, index * 8));
                 // Copy high word too (64-bit slots)
                 self.text.emit_u32(enc::ldr_imm(
                     Arm32Reg::R1,
                     fp_reg,
                     (results.base_slot as i32 + index) * 8 + 4,
                 ));
-                self.text.emit_u32(enc::str_imm(
-                    Arm32Reg::R1,
-                    Arm32Reg::R0,
-                    index * 8 + 4,
-                ));
+                self.text
+                    .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::R0, index * 8 + 4));
             }
         }
 
@@ -711,7 +695,8 @@ impl<'a> FunctionCompiler<'a> {
             }
         };
         if callee_id_reg != Arm32Reg::R3 {
-            self.text.emit_u32(enc::mov_reg(Arm32Reg::R3, callee_id_reg));
+            self.text
+                .emit_u32(enc::mov_reg(Arm32Reg::R3, callee_id_reg));
         }
 
         // Load function info table base (patchable)
@@ -720,21 +705,24 @@ impl<'a> FunctionCompiler<'a> {
 
         // Each Arm32FunctionInfo is 16 bytes (4 x u32).
         // Compute entry address: table_base + callee_id * 16
-        self.text.emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
-        self.text.emit_u32(enc::add_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
+        self.text
+            .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
+        self.text
+            .emit_u32(enc::add_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
 
         // Load function info fields:
         // [+0] entry (u32), [+4] total_frame_bytes (u32),
         // [+8] frame_prefix_slots (u32), [+12] call_scratch_base_slot (u32)
-        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, SCRATCH0, 0));  // entry
-        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, SCRATCH0, 4));  // total_frame_bytes
-        // R2 = frame_prefix_slots (not needed for zero-out in current impl)
+        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, SCRATCH0, 0)); // entry
+        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, SCRATCH0, 4)); // total_frame_bytes
+                                                                     // R2 = frame_prefix_slots (not needed for zero-out in current impl)
         self.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, SCRATCH0, 12)); // call_scratch_base_slot
 
         let callee_fp = map_reg(callee_frame_base)?;
 
         // Stack overflow check: callee_fp + total_frame_bytes > stack_end?
-        self.text.emit_u32(enc::add_reg(SCRATCH0, callee_fp, Arm32Reg::R1));
+        self.text
+            .emit_u32(enc::add_reg(SCRATCH0, callee_fp, Arm32Reg::R1));
         self.text.emit_u32(enc::ldr_imm(
             Arm32Reg::R3,
             map_fixed_reg(MACHINE_CTX_REG),
@@ -744,8 +732,10 @@ impl<'a> FunctionCompiler<'a> {
         self.emit_branch(BranchFixupKind::BCond(Cond::Hi), self.stack_overflow_label);
 
         // Compute call_scratch absolute byte offset: call_scratch_base_slot * 8
-        self.text.emit_u32(enc::lsl_imm(Arm32Reg::R2, Arm32Reg::R2, 3));
-        self.text.emit_u32(enc::add_reg(Arm32Reg::R2, callee_fp, Arm32Reg::R2));
+        self.text
+            .emit_u32(enc::lsl_imm(Arm32Reg::R2, Arm32Reg::R2, 3));
+        self.text
+            .emit_u32(enc::add_reg(Arm32Reg::R2, callee_fp, Arm32Reg::R2));
 
         // Store continuation address (patchable)
         let call_link = self.compiled.runtime().call_link;
@@ -789,10 +779,8 @@ impl<'a> FunctionCompiler<'a> {
         ));
 
         // Set FP to callee frame base and jump to callee entry
-        self.text.emit_u32(enc::mov_reg(
-            map_fixed_reg(MACHINE_FP_REG),
-            callee_fp,
-        ));
+        self.text
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
         self.text.emit_u32(enc::bx(Arm32Reg::R0));
 
         // Record continuation patch
@@ -841,18 +829,16 @@ pub fn compile_module(
 
     let mut internal_entry_addrs = Vec::with_capacity(artifacts.len());
     for (i, base_offset) in base_offsets.iter().enumerate() {
-        internal_entry_addrs
-            .push(unsafe { base_ptr.add(*base_offset + artifacts[i].internal_entry_offset) }
-                as usize);
+        internal_entry_addrs.push(unsafe {
+            base_ptr.add(*base_offset + artifacts[i].internal_entry_offset)
+        } as usize);
     }
 
     for (func_idx, runtime) in compiled.runtime().functions.iter().enumerate() {
         let info = Arm32FunctionInfo {
-            entry: *internal_entry_addrs
-                .get(func_idx)
-                .ok_or_else(|| {
-                    WasmError::internal("armv7a function entry is out of range".into())
-                })? as u32,
+            entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
+                WasmError::internal("armv7a function entry is out of range".into())
+            })? as u32,
             total_frame_bytes: u32::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u32::from(runtime.frame_prefix_slots),
             call_scratch_base_slot: u32::from(
@@ -873,8 +859,7 @@ pub fn compile_module(
         let function_base = base_offsets[index];
         // Patch local pointers (continuation addresses, jump table entries)
         for patch in &artifact.local_ptr_patches {
-            let target_addr =
-                unsafe { base_ptr.add(function_base + patch.target_offset) } as u32;
+            let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as u32;
             patch_movw_movt(&mut artifact.text, patch.movw_offset, target_addr);
         }
         // Patch direct call targets (callee internal entry addresses)
@@ -888,8 +873,7 @@ pub fn compile_module(
         }
         // Patch function table references
         for &movw_offset in &artifact.function_table_patches {
-            let table_addr =
-                unsafe { base_ptr.add(function_info_table_offset) } as u32;
+            let table_addr = unsafe { base_ptr.add(function_info_table_offset) } as u32;
             patch_movw_movt(&mut artifact.text, movw_offset, table_addr);
         }
     }
@@ -935,15 +919,9 @@ pub fn compile_module(
                     let region_start = unsafe { func_base.add(region.offset) };
                     let code_bytes =
                         unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                    let symbol = alloc::format!(
-                        "jit::{}::func{}::{}",
-                        module_name, func_idx, region.label
-                    );
-                    crate::vm::native::profiler::record_function(
-                        region_start,
-                        code_bytes,
-                        &symbol,
-                    );
+                    let symbol =
+                        alloc::format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
+                    crate::vm::native::profiler::record_function(region_start, code_bytes, &symbol);
                 }
             }
         }
@@ -1094,11 +1072,9 @@ fn compile_function(
     let mut local_ptr_patches = fc.resolved_ptr_patches;
     local_ptr_patches.reserve(fc.local_ptr_patches.len());
     for patch in fc.local_ptr_patches {
-        let target_offset = fc.labels[patch.target_label]
-            .offset
-            .ok_or_else(|| {
-                WasmError::internal("armv7a local continuation label is unresolved".into())
-            })?;
+        let target_offset = fc.labels[patch.target_label].offset.ok_or_else(|| {
+            WasmError::internal("armv7a local continuation label is unresolved".into())
+        })?;
         local_ptr_patches.push(LocalPtrPatch {
             movw_offset: patch.movw_offset,
             target_offset,
@@ -1120,10 +1096,7 @@ fn compile_function(
 
 // ─── Instruction compilation ────────────────────────────────────────────────
 
-fn compile_inst(
-    fc: &mut FunctionCompiler<'_>,
-    inst: &MachineInst,
-) -> Result<(), WasmError> {
+fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(), WasmError> {
     match &inst.kind {
         MachineInstKind::Move { dst, src } => {
             let dst_is_fp = is_fp_machine_reg(*dst);
@@ -1157,7 +1130,8 @@ fn compile_inst(
                         let hi = (*imm >> 32) as u32;
                         fc.emit_load_u32(Arm32Reg::R0, lo);
                         fc.emit_load_u32(Arm32Reg::R1, hi);
-                        fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                        fc.text
+                            .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                     }
                 }
             } else if src_is_fp {
@@ -1204,7 +1178,8 @@ fn compile_inst(
                     let hi = (*bits >> 32) as u32;
                     fc.emit_load_u32(Arm32Reg::R0, lo);
                     fc.emit_load_u32(Arm32Reg::R1, hi);
-                    fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                    fc.text
+                        .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                 }
             }
         }
@@ -1224,7 +1199,12 @@ fn compile_inst(
             }
         }
 
-        MachineInstKind::Load { dst, addr, width, extension } => {
+        MachineInstKind::Load {
+            dst,
+            addr,
+            width,
+            extension,
+        } => {
             compile_load(fc, *dst, addr, *width, *extension)?;
         }
 
@@ -1232,27 +1212,62 @@ fn compile_inst(
             compile_store(fc, addr, *width, src)?;
         }
 
-        MachineInstKind::IntBinary { width, op, dst, lhs, rhs } => {
+        MachineInstKind::IntBinary {
+            width,
+            op,
+            dst,
+            lhs,
+            rhs,
+        } => {
             compile_int_binary(fc, *width, *op, *dst, lhs, rhs)?;
         }
 
-        MachineInstKind::IntUnary { width, op, dst, src } => {
+        MachineInstKind::IntUnary {
+            width,
+            op,
+            dst,
+            src,
+        } => {
             compile_int_unary(fc, *width, *op, *dst, src)?;
         }
 
-        MachineInstKind::IntCompare { width, kind, sign, dst, lhs, rhs } => {
+        MachineInstKind::IntCompare {
+            width,
+            kind,
+            sign,
+            dst,
+            lhs,
+            rhs,
+        } => {
             compile_int_compare(fc, *width, *kind, *sign, *dst, lhs, rhs)?;
         }
 
-        MachineInstKind::FloatBinary { width, op, dst, lhs, rhs } => {
+        MachineInstKind::FloatBinary {
+            width,
+            op,
+            dst,
+            lhs,
+            rhs,
+        } => {
             compile_float_binary(fc, *width, *op, *dst, lhs, rhs)?;
         }
 
-        MachineInstKind::FloatUnary { width, op, dst, src } => {
+        MachineInstKind::FloatUnary {
+            width,
+            op,
+            dst,
+            src,
+        } => {
             compile_float_unary(fc, *width, *op, *dst, src)?;
         }
 
-        MachineInstKind::FloatCompare { width, kind, dst, lhs, rhs } => {
+        MachineInstKind::FloatCompare {
+            width,
+            kind,
+            dst,
+            lhs,
+            rhs,
+        } => {
             compile_float_compare(fc, *width, *kind, *dst, lhs, rhs)?;
         }
 
@@ -1260,7 +1275,12 @@ fn compile_inst(
             compile_convert(fc, *op, *dst, src)?;
         }
 
-        MachineInstKind::Select { dst, on_true, on_false, cond } => {
+        MachineInstKind::Select {
+            dst,
+            on_true,
+            on_false,
+            cond,
+        } => {
             compile_select(fc, *dst, cond, on_true, on_false)?;
         }
 
@@ -1326,26 +1346,22 @@ fn compile_load(
     // GP destination: use LDR/LDRB/LDRH etc.
     let dst_hw = map_reg(dst)?;
     match width {
-        MachineMemWidth::U8 => {
-            match extension {
-                MachineLoadExtension::SignExtend => {
-                    fc.text.emit_u32(enc::ldrsb_imm(dst_hw, base_hw, offset));
-                }
-                _ => {
-                    fc.text.emit_u32(enc::ldrb_imm(dst_hw, base_hw, offset));
-                }
+        MachineMemWidth::U8 => match extension {
+            MachineLoadExtension::SignExtend => {
+                fc.text.emit_u32(enc::ldrsb_imm(dst_hw, base_hw, offset));
             }
-        }
-        MachineMemWidth::U16 => {
-            match extension {
-                MachineLoadExtension::SignExtend => {
-                    fc.text.emit_u32(enc::ldrsh_imm(dst_hw, base_hw, offset));
-                }
-                _ => {
-                    fc.text.emit_u32(enc::ldrh_imm(dst_hw, base_hw, offset));
-                }
+            _ => {
+                fc.text.emit_u32(enc::ldrb_imm(dst_hw, base_hw, offset));
             }
-        }
+        },
+        MachineMemWidth::U16 => match extension {
+            MachineLoadExtension::SignExtend => {
+                fc.text.emit_u32(enc::ldrsh_imm(dst_hw, base_hw, offset));
+            }
+            _ => {
+                fc.text.emit_u32(enc::ldrh_imm(dst_hw, base_hw, offset));
+            }
+        },
         MachineMemWidth::U32 => {
             fc.text.emit_u32(enc::ldr_imm(dst_hw, base_hw, offset));
         }
@@ -1423,7 +1439,8 @@ fn compile_store(
             // Store low word, then zero high word
             fc.text.emit_u32(enc::str_imm(src_hw, base_hw, offset));
             fc.emit_load_u32(SCRATCH0, 0);
-            fc.text.emit_u32(enc::str_imm(SCRATCH0, base_hw, offset + 4));
+            fc.text
+                .emit_u32(enc::str_imm(SCRATCH0, base_hw, offset + 4));
         }
     }
     Ok(())
@@ -1450,36 +1467,32 @@ fn compile_int_binary(
     };
 
     match op {
-        MachineIntBinaryOp::Add => {
-            match rhs {
-                MachineValue::Imm64(imm) => {
-                    if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
-                        fc.text.emit_u32(enc::add_imm(dst_hw, lhs_hw, imm8, rot));
-                    } else {
-                        fc.emit_load_u32(SCRATCH0, *imm as u32);
-                        fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, SCRATCH0));
-                    }
-                }
-                MachineValue::Reg(r) => {
-                    fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, map_reg(*r)?));
+        MachineIntBinaryOp::Add => match rhs {
+            MachineValue::Imm64(imm) => {
+                if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
+                    fc.text.emit_u32(enc::add_imm(dst_hw, lhs_hw, imm8, rot));
+                } else {
+                    fc.emit_load_u32(SCRATCH0, *imm as u32);
+                    fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, SCRATCH0));
                 }
             }
-        }
-        MachineIntBinaryOp::Sub => {
-            match rhs {
-                MachineValue::Imm64(imm) => {
-                    if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
-                        fc.text.emit_u32(enc::sub_imm(dst_hw, lhs_hw, imm8, rot));
-                    } else {
-                        fc.emit_load_u32(SCRATCH0, *imm as u32);
-                        fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, SCRATCH0));
-                    }
-                }
-                MachineValue::Reg(r) => {
-                    fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, map_reg(*r)?));
+            MachineValue::Reg(r) => {
+                fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, map_reg(*r)?));
+            }
+        },
+        MachineIntBinaryOp::Sub => match rhs {
+            MachineValue::Imm64(imm) => {
+                if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
+                    fc.text.emit_u32(enc::sub_imm(dst_hw, lhs_hw, imm8, rot));
+                } else {
+                    fc.emit_load_u32(SCRATCH0, *imm as u32);
+                    fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, SCRATCH0));
                 }
             }
-        }
+            MachineValue::Reg(r) => {
+                fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, map_reg(*r)?));
+            }
+        },
         MachineIntBinaryOp::Mul => {
             let rhs_hw = match rhs {
                 MachineValue::Reg(r) => map_reg(*r)?,
@@ -1687,15 +1700,18 @@ fn compile_int_binary(
             emit_shared_epilogue(&mut fc.text);
             fc.bind_label(ok);
             // rem = lhs - (lhs / rhs) * rhs
-            fc.text.emit_u32(enc::push((1 << lhs_hw.idx()) | (1 << rhs_hw.idx())));
+            fc.text
+                .emit_u32(enc::push((1 << lhs_hw.idx()) | (1 << rhs_hw.idx())));
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, lhs_hw));
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, rhs_hw));
             fc.emit_load_addr(SCRATCH0, armv7a_udiv as usize);
             fc.text.emit_u32(enc::blx_reg(SCRATCH0));
             // R0 = quotient. Restore lhs, rhs
             fc.text.emit_u32(enc::pop((1 << 2) | (1 << 3))); // R2=lhs, R3=rhs
-            fc.text.emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
-            fc.text.emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
+            fc.text
+                .emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
         }
         MachineIntBinaryOp::RemS => {
             // Similar to RemU but signed, and no overflow trap for remainder
@@ -1720,16 +1736,19 @@ fn compile_int_binary(
             // INT_MIN % -1 == 0 in wasm (no trap, just returns 0)
             // rem = num - (num / den) * den — this naturally gives 0
             // Save lhs and rhs, call sdiv, compute remainder
-            fc.text.emit_u32(enc::push((1 << lhs_hw.idx()) | (1 << rhs_hw.idx())));
+            fc.text
+                .emit_u32(enc::push((1 << lhs_hw.idx()) | (1 << rhs_hw.idx())));
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, lhs_hw));
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, rhs_hw));
             fc.emit_load_addr(SCRATCH0, armv7a_sdiv as usize);
             fc.text.emit_u32(enc::blx_reg(SCRATCH0));
             // R0 = quotient. Restore lhs, rhs
             fc.text.emit_u32(enc::pop((1 << 2) | (1 << 3))); // R2=lhs, R3=rhs
-            // rem = lhs - quotient * rhs: MLS dst, R0, R3, R2
-            fc.text.emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
-            fc.text.emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
+                                                             // rem = lhs - quotient * rhs: MLS dst, R0, R3, R2
+            fc.text
+                .emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
         }
     }
 
@@ -1761,7 +1780,15 @@ fn compile_int_unary(
             fc.text.emit_u32(enc::cmp_imm(src_hw, 0, 0));
             // MOV{EQ} dst, #1
             let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-            fc.text.emit_u32(enc::dp_imm_cond(Cond::Eq, 0b1101, false, dst_hw, Arm32Reg::R0, imm8, rot));
+            fc.text.emit_u32(enc::dp_imm_cond(
+                Cond::Eq,
+                0b1101,
+                false,
+                dst_hw,
+                Arm32Reg::R0,
+                imm8,
+                rot,
+            ));
         }
         MachineIntUnaryOp::Clz => {
             fc.text.emit_u32(enc::clz(dst_hw, src_hw));
@@ -1778,12 +1805,14 @@ fn compile_int_unary(
             // x = x - ((x >> 1) & 0x55555555)
             fc.text.emit_u32(enc::lsr_imm(SCRATCH0, src_hw, 1));
             fc.emit_load_u32(Arm32Reg::R3, 0x55555555);
-            fc.text.emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
             fc.text.emit_u32(enc::sub_reg(dst_hw, src_hw, SCRATCH0));
             // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
             fc.emit_load_u32(Arm32Reg::R3, 0x33333333);
             fc.text.emit_u32(enc::lsr_imm(SCRATCH0, dst_hw, 2));
-            fc.text.emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
             fc.text.emit_u32(enc::and_reg(dst_hw, dst_hw, Arm32Reg::R3));
             fc.text.emit_u32(enc::add_reg(dst_hw, dst_hw, SCRATCH0));
             // x = (x + (x >> 4)) & 0x0F0F0F0F
@@ -1815,7 +1844,12 @@ fn compile_int_unary(
 /// RBIT Rd, Rm (reverse bits, ARMv6T2+)
 fn rbit(dst: Arm32Reg, src: Arm32Reg) -> u32 {
     // RBIT: cond 0110 1111 1111 Rd 1111 0011 Rm
-    enc::cond_bits(Cond::Al) | (0b01101111 << 20) | (0b1111 << 16) | ((dst.idx()) << 12) | (0b11110011 << 4) | src.idx()
+    enc::cond_bits(Cond::Al)
+        | (0b01101111 << 20)
+        | (0b1111 << 16)
+        | ((dst.idx()) << 12)
+        | (0b11110011 << 4)
+        | src.idx()
 }
 
 // ─── Float ALU ──────────────────────────────────────────────────────────────
@@ -1832,14 +1866,12 @@ fn fp_reg_from_value(val: &MachineValue) -> Result<MachineReg, WasmError> {
 /// Map a machine FP register to its VFP D-register number.
 fn map_fp_dreg(reg: MachineReg) -> Result<u32, WasmError> {
     let gp_base = max_gp_mapped_regs();
-    let fp_idx = (reg.0 as usize)
-        .checked_sub(gp_base)
-        .ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "armv7a: expected FP register, got GP machine reg {}",
-                reg.0
-            ))
-        })?;
+    let fp_idx = (reg.0 as usize).checked_sub(gp_base).ok_or_else(|| {
+        WasmError::invalid(alloc::format!(
+            "armv7a: expected FP register, got GP machine reg {}",
+            reg.0
+        ))
+    })?;
     fp_machine_reg(fp_idx).ok_or_else(|| {
         WasmError::invalid(alloc::format!(
             "armv7a: FP machine reg index {} out of range",
@@ -1875,14 +1907,30 @@ fn compile_float_binary(
     let dm = fp_machine_reg(rhs_idx).unwrap();
 
     match (width, op) {
-        (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => { fc.text.emit_u32(enc::vadd_d(dd, dn, dm)); }
-        (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => { fc.text.emit_u32(enc::vsub_d(dd, dn, dm)); }
-        (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => { fc.text.emit_u32(enc::vmul_d(dd, dn, dm)); }
-        (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => { fc.text.emit_u32(enc::vdiv_d(dd, dn, dm)); }
-        (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => { fc.text.emit_u32(enc::vadd_s(dd * 2, dn * 2, dm * 2)); }
-        (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => { fc.text.emit_u32(enc::vsub_s(dd * 2, dn * 2, dm * 2)); }
-        (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => { fc.text.emit_u32(enc::vmul_s(dd * 2, dn * 2, dm * 2)); }
-        (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => { fc.text.emit_u32(enc::vdiv_s(dd * 2, dn * 2, dm * 2)); }
+        (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => {
+            fc.text.emit_u32(enc::vadd_d(dd, dn, dm));
+        }
+        (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => {
+            fc.text.emit_u32(enc::vsub_d(dd, dn, dm));
+        }
+        (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => {
+            fc.text.emit_u32(enc::vmul_d(dd, dn, dm));
+        }
+        (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => {
+            fc.text.emit_u32(enc::vdiv_d(dd, dn, dm));
+        }
+        (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
+            fc.text.emit_u32(enc::vadd_s(dd * 2, dn * 2, dm * 2));
+        }
+        (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => {
+            fc.text.emit_u32(enc::vsub_s(dd * 2, dn * 2, dm * 2));
+        }
+        (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => {
+            fc.text.emit_u32(enc::vmul_s(dd * 2, dn * 2, dm * 2));
+        }
+        (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => {
+            fc.text.emit_u32(enc::vdiv_s(dd * 2, dn * 2, dm * 2));
+        }
 
         // Min/Max: compare, handle NaN, select
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Min) => {
@@ -1899,7 +1947,9 @@ fn compile_float_binary(
             // MI = lhs < rhs → lhs; GT = lhs > rhs → rhs; EQ = equal, pick rhs for -0 handling
             // Use VBSL or conditional: select lhs if MI, else rhs
             // Simplest: if lhs < rhs then dd=dn else dd=dm
-            if dd != dm { fc.text.emit_u32(enc::vmov_d(dd, dm)); }
+            if dd != dm {
+                fc.text.emit_u32(enc::vmov_d(dd, dm));
+            }
             fc.text.emit_u32(enc::vcmp_d(dn, dm));
             fc.text.emit_u32(enc::vmrs_apsr());
             // If MI (lhs < rhs), overwrite with lhs
@@ -1918,7 +1968,9 @@ fn compile_float_binary(
             let done = fc.alloc_label(LabelKind::Block);
             fc.emit_branch(BranchFixupKind::B, done);
             fc.bind_label(no_nan);
-            if dd != dm { fc.text.emit_u32(enc::vmov_d(dd, dm)); }
+            if dd != dm {
+                fc.text.emit_u32(enc::vmov_d(dd, dm));
+            }
             fc.text.emit_u32(enc::vcmp_d(dn, dm));
             fc.text.emit_u32(enc::vmrs_apsr());
             let skip = fc.alloc_label(LabelKind::Block);
@@ -1928,7 +1980,9 @@ fn compile_float_binary(
             fc.bind_label(done);
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Min) => {
-            let sdd = dd * 2; let sdn = dn * 2; let sdm = dm * 2;
+            let sdd = dd * 2;
+            let sdn = dn * 2;
+            let sdm = dm * 2;
             fc.text.emit_u32(enc::vcmp_s(sdn, sdm));
             fc.text.emit_u32(enc::vmrs_apsr());
             let no_nan = fc.alloc_label(LabelKind::Block);
@@ -1937,7 +1991,9 @@ fn compile_float_binary(
             let done = fc.alloc_label(LabelKind::Block);
             fc.emit_branch(BranchFixupKind::B, done);
             fc.bind_label(no_nan);
-            if sdd != sdm { fc.text.emit_u32(enc::vmov_s(sdd, sdm)); }
+            if sdd != sdm {
+                fc.text.emit_u32(enc::vmov_s(sdd, sdm));
+            }
             fc.text.emit_u32(enc::vcmp_s(sdn, sdm));
             fc.text.emit_u32(enc::vmrs_apsr());
             let skip = fc.alloc_label(LabelKind::Block);
@@ -1947,7 +2003,9 @@ fn compile_float_binary(
             fc.bind_label(done);
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Max) => {
-            let sdd = dd * 2; let sdn = dn * 2; let sdm = dm * 2;
+            let sdd = dd * 2;
+            let sdn = dn * 2;
+            let sdm = dm * 2;
             fc.text.emit_u32(enc::vcmp_s(sdn, sdm));
             fc.text.emit_u32(enc::vmrs_apsr());
             let no_nan = fc.alloc_label(LabelKind::Block);
@@ -1956,7 +2014,9 @@ fn compile_float_binary(
             let done = fc.alloc_label(LabelKind::Block);
             fc.emit_branch(BranchFixupKind::B, done);
             fc.bind_label(no_nan);
-            if sdd != sdm { fc.text.emit_u32(enc::vmov_s(sdd, sdm)); }
+            if sdd != sdm {
+                fc.text.emit_u32(enc::vmov_s(sdd, sdm));
+            }
             fc.text.emit_u32(enc::vcmp_s(sdn, sdm));
             fc.text.emit_u32(enc::vmrs_apsr());
             let skip = fc.alloc_label(LabelKind::Block);
@@ -1969,23 +2029,34 @@ fn compile_float_binary(
         // Copysign: take magnitude from lhs, sign from rhs
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Copysign) => {
             // Extract sign bit of rhs (bit 63) into R0
-            fc.text.emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, dm));
+            fc.text
+                .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, dm));
             // R1 has the high word with the sign bit
             // Extract magnitude of lhs
-            fc.text.emit_u32(enc::vmov_rr_d(Arm32Reg::R2, Arm32Reg::R3, dn));
+            fc.text
+                .emit_u32(enc::vmov_rr_d(Arm32Reg::R2, Arm32Reg::R3, dn));
             // Clear sign bit of lhs high word, insert sign bit from rhs
-            fc.text.emit_u32(enc::bic_imm(Arm32Reg::R3, Arm32Reg::R3, 0x80, 2)); // BIC R3, R3, #0x80000000
-            fc.text.emit_u32(enc::and_imm(Arm32Reg::R1, Arm32Reg::R1, 0x80, 2)); // AND R1, R1, #0x80000000
-            fc.text.emit_u32(enc::orr_reg(Arm32Reg::R3, Arm32Reg::R3, Arm32Reg::R1));
-            fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R2, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::bic_imm(Arm32Reg::R3, Arm32Reg::R3, 0x80, 2)); // BIC R3, R3, #0x80000000
+            fc.text
+                .emit_u32(enc::and_imm(Arm32Reg::R1, Arm32Reg::R1, 0x80, 2)); // AND R1, R1, #0x80000000
+            fc.text
+                .emit_u32(enc::orr_reg(Arm32Reg::R3, Arm32Reg::R3, Arm32Reg::R1));
+            fc.text
+                .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R2, Arm32Reg::R3));
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Copysign) => {
-            let sdn = dn * 2; let sdm = dm * 2; let sdd = dd * 2;
+            let sdn = dn * 2;
+            let sdm = dm * 2;
+            let sdd = dd * 2;
             fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, sdn)); // lhs bits
             fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R1, sdm)); // rhs bits
-            fc.text.emit_u32(enc::bic_imm(Arm32Reg::R0, Arm32Reg::R0, 0x80, 2)); // clear sign
-            fc.text.emit_u32(enc::and_imm(Arm32Reg::R1, Arm32Reg::R1, 0x80, 2)); // extract sign
-            fc.text.emit_u32(enc::orr_reg(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R1));
+            fc.text
+                .emit_u32(enc::bic_imm(Arm32Reg::R0, Arm32Reg::R0, 0x80, 2)); // clear sign
+            fc.text
+                .emit_u32(enc::and_imm(Arm32Reg::R1, Arm32Reg::R1, 0x80, 2)); // extract sign
+            fc.text
+                .emit_u32(enc::orr_reg(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R1));
             fc.text.emit_u32(enc::vmov_s_r(sdd, Arm32Reg::R0));
         }
     }
@@ -2001,26 +2072,39 @@ fn compile_float_unary(
 ) -> Result<(), WasmError> {
     let src_reg = fp_reg_from_value(src)?;
     let gp_base = max_gp_mapped_regs();
-    let dst_idx = (dst.0 as usize).checked_sub(gp_base).ok_or_else(|| {
-        WasmError::invalid("armv7a: float unary dst is not FP".into())
-    })?;
-    let src_idx = (src_reg.0 as usize).checked_sub(gp_base).ok_or_else(|| {
-        WasmError::invalid("armv7a: float unary src is not FP".into())
-    })?;
+    let dst_idx = (dst.0 as usize)
+        .checked_sub(gp_base)
+        .ok_or_else(|| WasmError::invalid("armv7a: float unary dst is not FP".into()))?;
+    let src_idx = (src_reg.0 as usize)
+        .checked_sub(gp_base)
+        .ok_or_else(|| WasmError::invalid("armv7a: float unary src is not FP".into()))?;
     let dd = fp_machine_reg(dst_idx).unwrap();
     let dm = fp_machine_reg(src_idx).unwrap();
 
     match (width, op) {
-        (MachineFloatWidth::F64, MachineFloatUnaryOp::Abs) => { fc.text.emit_u32(enc::vabs_d(dd, dm)); }
-        (MachineFloatWidth::F64, MachineFloatUnaryOp::Neg) => { fc.text.emit_u32(enc::vneg_d(dd, dm)); }
-        (MachineFloatWidth::F64, MachineFloatUnaryOp::Sqrt) => { fc.text.emit_u32(enc::vsqrt_d(dd, dm)); }
-        (MachineFloatWidth::F32, MachineFloatUnaryOp::Abs) => { fc.text.emit_u32(enc::vabs_s(dd * 2, dm * 2)); }
-        (MachineFloatWidth::F32, MachineFloatUnaryOp::Neg) => { fc.text.emit_u32(enc::vneg_s(dd * 2, dm * 2)); }
-        (MachineFloatWidth::F32, MachineFloatUnaryOp::Sqrt) => { fc.text.emit_u32(enc::vsqrt_s(dd * 2, dm * 2)); }
+        (MachineFloatWidth::F64, MachineFloatUnaryOp::Abs) => {
+            fc.text.emit_u32(enc::vabs_d(dd, dm));
+        }
+        (MachineFloatWidth::F64, MachineFloatUnaryOp::Neg) => {
+            fc.text.emit_u32(enc::vneg_d(dd, dm));
+        }
+        (MachineFloatWidth::F64, MachineFloatUnaryOp::Sqrt) => {
+            fc.text.emit_u32(enc::vsqrt_d(dd, dm));
+        }
+        (MachineFloatWidth::F32, MachineFloatUnaryOp::Abs) => {
+            fc.text.emit_u32(enc::vabs_s(dd * 2, dm * 2));
+        }
+        (MachineFloatWidth::F32, MachineFloatUnaryOp::Neg) => {
+            fc.text.emit_u32(enc::vneg_s(dd * 2, dm * 2));
+        }
+        (MachineFloatWidth::F32, MachineFloatUnaryOp::Sqrt) => {
+            fc.text.emit_u32(enc::vsqrt_s(dd * 2, dm * 2));
+        }
         _ => {
             return Err(WasmError::invalid(alloc::format!(
                 "armv7a: unsupported float unary op {:?} {:?}",
-                width, op
+                width,
+                op
             )));
         }
     }
@@ -2043,8 +2127,12 @@ fn compile_float_compare(
     let rhs_d = fp_machine_reg((rhs_reg.0 as usize).checked_sub(gp_base).unwrap()).unwrap();
 
     match width {
-        MachineFloatWidth::F64 => { fc.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d)); }
-        MachineFloatWidth::F32 => { fc.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2)); }
+        MachineFloatWidth::F64 => {
+            fc.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d));
+        }
+        MachineFloatWidth::F32 => {
+            fc.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2));
+        }
     }
     fc.text.emit_u32(enc::vmrs_apsr());
 
@@ -2059,7 +2147,15 @@ fn compile_float_compare(
 
     fc.emit_load_u32(dst_hw, 0);
     let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-    fc.text.emit_u32(enc::dp_imm_cond(cond, 0b1101, false, dst_hw, Arm32Reg::R0, imm8, rot));
+    fc.text.emit_u32(enc::dp_imm_cond(
+        cond,
+        0b1101,
+        false,
+        dst_hw,
+        Arm32Reg::R0,
+        imm8,
+        rot,
+    ));
     Ok(())
 }
 
@@ -2413,7 +2509,8 @@ fn compile_convert(
                 MachineValue::Imm64(v) => {
                     fc.emit_load_u32(Arm32Reg::R0, *v as u32);
                     fc.emit_load_u32(Arm32Reg::R1, (*v >> 32) as u32);
-                    fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                    fc.text
+                        .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                 }
             }
         }
@@ -2459,7 +2556,9 @@ fn compile_select(
         match false_val {
             MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
                 let sd = map_fp_dreg(*r)?;
-                if dd != sd { fc.text.emit_u32(enc::vmov_d(dd, sd)); }
+                if dd != sd {
+                    fc.text.emit_u32(enc::vmov_d(dd, sd));
+                }
             }
             MachineValue::Reg(r) => {
                 let src = map_reg(*r)?;
@@ -2469,7 +2568,8 @@ fn compile_select(
             MachineValue::Imm64(v) => {
                 fc.emit_load_u32(Arm32Reg::R0, *v as u32);
                 fc.emit_load_u32(Arm32Reg::R1, (*v >> 32) as u32);
-                fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                fc.text
+                    .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
             }
         }
         fc.emit_branch(BranchFixupKind::B, done_label);
@@ -2479,7 +2579,9 @@ fn compile_select(
         match true_val {
             MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
                 let sd = map_fp_dreg(*r)?;
-                if dd != sd { fc.text.emit_u32(enc::vmov_d(dd, sd)); }
+                if dd != sd {
+                    fc.text.emit_u32(enc::vmov_d(dd, sd));
+                }
             }
             MachineValue::Reg(r) => {
                 let src = map_reg(*r)?;
@@ -2489,7 +2591,8 @@ fn compile_select(
             MachineValue::Imm64(v) => {
                 fc.emit_load_u32(Arm32Reg::R0, *v as u32);
                 fc.emit_load_u32(Arm32Reg::R1, (*v >> 32) as u32);
-                fc.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                fc.text
+                    .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
             }
         }
         fc.bind_label(done_label);
@@ -2542,7 +2645,8 @@ fn compile_select(
         }
         MachineValue::Imm64(v) => {
             fc.emit_load_u32(SCRATCH0, *v as u32);
-            fc.text.emit_u32(enc::mov_reg_cond(Cond::Ne, dst_hw, SCRATCH0));
+            fc.text
+                .emit_u32(enc::mov_reg_cond(Cond::Ne, dst_hw, SCRATCH0));
         }
     }
 
@@ -2577,7 +2681,11 @@ fn compile_int_compare(
             if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                 fc.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
             } else {
-                let tmp = if lhs_hw == SCRATCH0 { Arm32Reg::R3 } else { SCRATCH0 };
+                let tmp = if lhs_hw == SCRATCH0 {
+                    Arm32Reg::R3
+                } else {
+                    SCRATCH0
+                };
                 fc.emit_load_u32(tmp, *v as u32);
                 fc.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
             }
@@ -2599,7 +2707,15 @@ fn compile_int_compare(
 
     fc.emit_load_u32(dst_hw, 0);
     let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-    fc.text.emit_u32(enc::dp_imm_cond(cond, 0b1101, false, dst_hw, Arm32Reg::R0, imm8, rot));
+    fc.text.emit_u32(enc::dp_imm_cond(
+        cond,
+        0b1101,
+        false,
+        dst_hw,
+        Arm32Reg::R0,
+        imm8,
+        rot,
+    ));
     Ok(())
 }
 
@@ -2635,9 +2751,17 @@ fn compile_call_helper(
     fc: &mut FunctionCompiler<'_>,
     call: &crate::vm::native::ir::machine::MachineHelperCall,
 ) -> Result<(), WasmError> {
-    let binding = fc.compiled.module().externs.get(call.target.0 as usize).ok_or_else(|| {
-        WasmError::internal(alloc::format!("armv7a: extern id {} not found", call.target.0))
-    })?;
+    let binding = fc
+        .compiled
+        .module()
+        .externs
+        .get(call.target.0 as usize)
+        .ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "armv7a: extern id {} not found",
+                call.target.0
+            ))
+        })?;
     let metadata = fc
         .compiled
         .const_ptr(call.metadata)
@@ -2691,7 +2815,11 @@ fn compile_terminator(
             fc.emit_branch(BranchFixupKind::B, label);
         }
 
-        MachineTerminator::Branch { cond, then_edge, else_edge } => {
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
             let then_label = fc.emit_edge(then_edge.target, &then_edge.args)?;
             let else_label = fc.emit_edge(else_edge.target, &else_edge.args)?;
 
@@ -2758,7 +2886,8 @@ fn compile_terminator(
             fc.emit_load_u32(Arm32Reg::R3, max_idx);
             fc.text.emit_u32(enc::cmp_reg(index_hw, Arm32Reg::R3));
             // If index > max, use max (conditional move)
-            fc.text.emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, Arm32Reg::R3));
+            fc.text
+                .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, Arm32Reg::R3));
 
             // Emit edge stubs and collect their labels
             let mut edge_label_ids = Vec::with_capacity(entries.len());
@@ -2806,7 +2935,13 @@ fn compile_branch_condition(
             Ok(Cond::Ne)
         }
 
-        MachineBranchCond::IntCompare { width, kind, sign, lhs, rhs } => {
+        MachineBranchCond::IntCompare {
+            width,
+            kind,
+            sign,
+            lhs,
+            rhs,
+        } => {
             let lhs_hw = match lhs {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
@@ -2823,7 +2958,11 @@ fn compile_branch_condition(
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                         fc.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
                     } else {
-                        let tmp = if lhs_hw == SCRATCH0 { Arm32Reg::R3 } else { SCRATCH0 };
+                        let tmp = if lhs_hw == SCRATCH0 {
+                            Arm32Reg::R3
+                        } else {
+                            SCRATCH0
+                        };
                         fc.emit_load_u32(tmp, *v as u32);
                         fc.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
                     }
@@ -2844,7 +2983,12 @@ fn compile_branch_condition(
             })
         }
 
-        MachineBranchCond::FloatCompare { width, kind, lhs, rhs } => {
+        MachineBranchCond::FloatCompare {
+            width,
+            kind,
+            lhs,
+            rhs,
+        } => {
             let lhs_reg = fp_reg_from_value(lhs)?;
             let rhs_reg = fp_reg_from_value(rhs)?;
             let gp_base = max_gp_mapped_regs();
@@ -2852,8 +2996,12 @@ fn compile_branch_condition(
             let rhs_d = fp_machine_reg((rhs_reg.0 as usize).checked_sub(gp_base).unwrap()).unwrap();
 
             match width {
-                MachineFloatWidth::F64 => { fc.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d)); }
-                MachineFloatWidth::F32 => { fc.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2)); }
+                MachineFloatWidth::F64 => {
+                    fc.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d));
+                }
+                MachineFloatWidth::F32 => {
+                    fc.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2));
+                }
             }
             fc.text.emit_u32(enc::vmrs_apsr());
 

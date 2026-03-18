@@ -580,9 +580,7 @@ fn memory_copy_helper(
         };
         let src_len = src_mem.memory_len();
         let dst_len = dst_mem.memory_len();
-        if src.saturating_add(size) > src_len
-            || dst.saturating_add(size) > dst_len
-        {
+        if src.saturating_add(size) > src_len || dst.saturating_add(size) > dst_len {
             return Err(trap_error("out of bounds memory access"));
         }
         let src_slice = unsafe { core::slice::from_raw_parts(src_mem.memory_ptr(), src_len) };

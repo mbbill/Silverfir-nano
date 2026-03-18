@@ -246,8 +246,7 @@ impl BlockState {
 
     fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
         let (gp_live, fp_live) = count_live_banks(&self.live_types);
-        if gp_live > self.gp_transient_limit as usize
-            || fp_live > self.fp_transient_limit as usize
+        if gp_live > self.gp_transient_limit as usize || fp_live > self.fp_transient_limit as usize
         {
             return Err(WasmError::internal(alloc::format!(
                 "prepared LIR exceeds configured transient bank budget during {context}: gp live {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
@@ -259,9 +258,7 @@ impl BlockState {
                 self.spill_depth,
             )));
         }
-        if self.live.len()
-            > self.gp_transient_limit as usize + self.fp_transient_limit as usize
-        {
+        if self.live.len() > self.gp_transient_limit as usize + self.fp_transient_limit as usize {
             return Err(WasmError::internal(alloc::format!(
                 "prepared LIR exceeds configured transient width during {context}: live window {} > total limit {} (stack_height={}, spill_depth={})",
                 self.live.len(),

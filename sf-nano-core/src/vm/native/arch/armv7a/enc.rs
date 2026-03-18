@@ -105,18 +105,65 @@ fn dp_reg(cond: Cond, opcode: u32, s: bool, dst: Arm32Reg, lhs: Arm32Reg, rhs: A
 }
 
 /// Generic data-processing instruction with immediate: <op>{S} Rd, Rn, #imm
-fn dp_imm(cond: Cond, opcode: u32, s: bool, dst: Arm32Reg, lhs: Arm32Reg, imm8: u32, rotate: u32) -> u32 {
-    cond_bits(cond) | (1 << 25) | (opcode << 21) | if s { 1 << 20 } else { 0 } | rn(lhs) | rd(dst) | imm12(imm8, rotate)
+fn dp_imm(
+    cond: Cond,
+    opcode: u32,
+    s: bool,
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    imm8: u32,
+    rotate: u32,
+) -> u32 {
+    cond_bits(cond)
+        | (1 << 25)
+        | (opcode << 21)
+        | if s { 1 << 20 } else { 0 }
+        | rn(lhs)
+        | rd(dst)
+        | imm12(imm8, rotate)
 }
 
 /// Data-processing with register shift: <op> Rd, Rn, Rm, <shift> Rs
-fn dp_reg_shift(cond: Cond, opcode: u32, s: bool, dst: Arm32Reg, lhs: Arm32Reg, shift_rm: Arm32Reg, shift_type: u32, shift_rs: Arm32Reg) -> u32 {
-    cond_bits(cond) | (opcode << 21) | if s { 1 << 20 } else { 0 } | rn(lhs) | rd(dst) | rs(shift_rs) | (shift_type << 5) | (1 << 4) | rm(shift_rm)
+fn dp_reg_shift(
+    cond: Cond,
+    opcode: u32,
+    s: bool,
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    shift_rm: Arm32Reg,
+    shift_type: u32,
+    shift_rs: Arm32Reg,
+) -> u32 {
+    cond_bits(cond)
+        | (opcode << 21)
+        | if s { 1 << 20 } else { 0 }
+        | rn(lhs)
+        | rd(dst)
+        | rs(shift_rs)
+        | (shift_type << 5)
+        | (1 << 4)
+        | rm(shift_rm)
 }
 
 /// Data-processing with immediate shift: <op> Rd, Rn, Rm, <shift> #imm5
-fn dp_imm_shift(cond: Cond, opcode: u32, s: bool, dst: Arm32Reg, lhs: Arm32Reg, shift_rm: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    cond_bits(cond) | (opcode << 21) | if s { 1 << 20 } else { 0 } | rn(lhs) | rd(dst) | ((shift_imm & 0x1F) << 7) | (shift_type << 5) | rm(shift_rm)
+fn dp_imm_shift(
+    cond: Cond,
+    opcode: u32,
+    s: bool,
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    shift_rm: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    cond_bits(cond)
+        | (opcode << 21)
+        | if s { 1 << 20 } else { 0 }
+        | rn(lhs)
+        | rd(dst)
+        | ((shift_imm & 0x1F) << 7)
+        | (shift_type << 5)
+        | rm(shift_rm)
 }
 
 // ─── Arithmetic ─────────────────────────────────────────────────────────────
@@ -388,14 +435,26 @@ pub fn mul(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
 #[inline]
 pub fn umull(dst_lo: Arm32Reg, dst_hi: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
     // UMULL: cond 0000 100S RdHi RdLo Rs 1001 Rm
-    cond_bits(Cond::Al) | (0b0000100 << 21) | (dst_hi.idx() << 16) | rd(dst_lo) | rs(rhs) | (0b1001 << 4) | rm(lhs)
+    cond_bits(Cond::Al)
+        | (0b0000100 << 21)
+        | (dst_hi.idx() << 16)
+        | rd(dst_lo)
+        | rs(rhs)
+        | (0b1001 << 4)
+        | rm(lhs)
 }
 
 /// SMULL RdLo, RdHi, Rm, Rs (signed 32x32→64)
 #[inline]
 pub fn smull(dst_lo: Arm32Reg, dst_hi: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
     // SMULL: cond 0000 110S RdHi RdLo Rs 1001 Rm
-    cond_bits(Cond::Al) | (0b0000110 << 21) | (dst_hi.idx() << 16) | rd(dst_lo) | rs(rhs) | (0b1001 << 4) | rm(lhs)
+    cond_bits(Cond::Al)
+        | (0b0000110 << 21)
+        | (dst_hi.idx() << 16)
+        | rd(dst_lo)
+        | rs(rhs)
+        | (0b1001 << 4)
+        | rm(lhs)
 }
 
 // ─── CLZ ────────────────────────────────────────────────────────────────────
@@ -414,7 +473,14 @@ pub fn clz(dst: Arm32Reg, src: Arm32Reg) -> u32 {
 pub fn ldr_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let u = if offset >= 0 { 1u32 } else { 0 };
     let abs_offset = offset.unsigned_abs() & 0xFFF;
-    cond_bits(Cond::Al) | (0b01 << 26) | (1 << 24) | (u << 23) | (1 << 20) | rn(base) | rd(dst) | abs_offset
+    cond_bits(Cond::Al)
+        | (0b01 << 26)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | abs_offset
 }
 
 /// STR Rd, [Rn, #offset] (word store)
@@ -430,7 +496,15 @@ pub fn str_imm(src: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
 pub fn ldrb_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let u = if offset >= 0 { 1u32 } else { 0 };
     let abs_offset = offset.unsigned_abs() & 0xFFF;
-    cond_bits(Cond::Al) | (0b01 << 26) | (1 << 24) | (u << 23) | (1 << 22) | (1 << 20) | rn(base) | rd(dst) | abs_offset
+    cond_bits(Cond::Al)
+        | (0b01 << 26)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | abs_offset
 }
 
 /// STRB Rd, [Rn, #offset] (byte store)
@@ -438,7 +512,14 @@ pub fn ldrb_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
 pub fn strb_imm(src: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let u = if offset >= 0 { 1u32 } else { 0 };
     let abs_offset = offset.unsigned_abs() & 0xFFF;
-    cond_bits(Cond::Al) | (0b01 << 26) | (1 << 24) | (u << 23) | (1 << 22) | rn(base) | rd(src) | abs_offset
+    cond_bits(Cond::Al)
+        | (0b01 << 26)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | rn(base)
+        | rd(src)
+        | abs_offset
 }
 
 /// LDRH Rd, [Rn, #offset] (halfword load, zero-extend; immediate 8-bit offset)
@@ -449,7 +530,16 @@ pub fn ldrh_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
     // Encoding: cond 000P U1W0 Rn Rd imm4H 1011 imm4L
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | (1 << 20) | rn(base) | rd(dst) | (imm_hi << 8) | (0b1011 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | (imm_hi << 8)
+        | (0b1011 << 4)
+        | imm_lo
 }
 
 /// STRH Rd, [Rn, #offset] (halfword store; immediate 8-bit offset)
@@ -459,7 +549,15 @@ pub fn strh_imm(src: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = offset.unsigned_abs() & 0xFF;
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | rn(base) | rd(src) | (imm_hi << 8) | (0b1011 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | rn(base)
+        | rd(src)
+        | (imm_hi << 8)
+        | (0b1011 << 4)
+        | imm_lo
 }
 
 /// LDRSB Rd, [Rn, #offset] (signed byte load; imm 8-bit offset)
@@ -469,7 +567,16 @@ pub fn ldrsb_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = offset.unsigned_abs() & 0xFF;
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | (1 << 20) | rn(base) | rd(dst) | (imm_hi << 8) | (0b1101 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | (imm_hi << 8)
+        | (0b1101 << 4)
+        | imm_lo
 }
 
 /// LDRSH Rd, [Rn, #offset] (signed halfword load; imm 8-bit offset)
@@ -479,7 +586,16 @@ pub fn ldrsh_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = offset.unsigned_abs() & 0xFF;
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | (1 << 20) | rn(base) | rd(dst) | (imm_hi << 8) | (0b1111 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | (imm_hi << 8)
+        | (0b1111 << 4)
+        | imm_lo
 }
 
 // ─── Load / Store (register offset) ────────────────────────────────────────
@@ -487,7 +603,14 @@ pub fn ldrsh_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
 /// LDR Rd, [Rn, Rm] (word load, register offset)
 #[inline]
 pub fn ldr_reg(dst: Arm32Reg, base: Arm32Reg, index: Arm32Reg) -> u32 {
-    cond_bits(Cond::Al) | (0b011 << 25) | (1 << 24) | (1 << 23) | (1 << 20) | rn(base) | rd(dst) | rm(index)
+    cond_bits(Cond::Al)
+        | (0b011 << 25)
+        | (1 << 24)
+        | (1 << 23)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | rm(index)
 }
 
 /// STR Rd, [Rn, Rm] (word store, register offset)
@@ -499,7 +622,15 @@ pub fn str_reg(src: Arm32Reg, base: Arm32Reg, index: Arm32Reg) -> u32 {
 /// LDR Rd, [Rn, Rm, LSL #shift]
 #[inline]
 pub fn ldr_reg_lsl(dst: Arm32Reg, base: Arm32Reg, index: Arm32Reg, shift: u32) -> u32 {
-    cond_bits(Cond::Al) | (0b011 << 25) | (1 << 24) | (1 << 23) | (1 << 20) | rn(base) | rd(dst) | ((shift & 0x1F) << 7) | rm(index)
+    cond_bits(Cond::Al)
+        | (0b011 << 25)
+        | (1 << 24)
+        | (1 << 23)
+        | (1 << 20)
+        | rn(base)
+        | rd(dst)
+        | ((shift & 0x1F) << 7)
+        | rm(index)
 }
 
 // ─── 64-bit Load / Store (LDRD/STRD) ───────────────────────────────────────
@@ -512,7 +643,15 @@ pub fn ldrd_imm(dst_even: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
     // LDRD: cond 000P U1W0 Rn Rt imm4H 1101 imm4L
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | rn(base) | rd(dst_even) | (imm_hi << 8) | (0b1101 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | rn(base)
+        | rd(dst_even)
+        | (imm_hi << 8)
+        | (0b1101 << 4)
+        | imm_lo
 }
 
 /// STRD Rt, Rt2, [Rn, #offset] (store doubleword; Rt must be even, Rt2 = Rt+1)
@@ -523,7 +662,15 @@ pub fn strd_imm(src_even: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
     let imm_hi = (abs_off >> 4) & 0xF;
     let imm_lo = abs_off & 0xF;
     // STRD: cond 000P U1W0 Rn Rt imm4H 1111 imm4L
-    cond_bits(Cond::Al) | (1 << 24) | (u << 23) | (1 << 22) | rn(base) | rd(src_even) | (imm_hi << 8) | (0b1111 << 4) | imm_lo
+    cond_bits(Cond::Al)
+        | (1 << 24)
+        | (u << 23)
+        | (1 << 22)
+        | rn(base)
+        | rd(src_even)
+        | (imm_hi << 8)
+        | (0b1111 << 4)
+        | imm_lo
 }
 
 // ─── Push / Pop (STMDB/LDMIA with SP) ──────────────────────────────────────
@@ -586,26 +733,46 @@ pub fn blx_reg(reg: Arm32Reg) -> u32 {
 #[inline]
 pub fn sxtb(dst: Arm32Reg, src: Arm32Reg) -> u32 {
     // SXTB: cond 0110 1010 1111 Rd 0000 0111 Rm
-    cond_bits(Cond::Al) | (0b01101010 << 20) | (0b1111 << 16) | rd(dst) | (0b00000111 << 4) | rm(src)
+    cond_bits(Cond::Al)
+        | (0b01101010 << 20)
+        | (0b1111 << 16)
+        | rd(dst)
+        | (0b00000111 << 4)
+        | rm(src)
 }
 
 /// SXTH Rd, Rm (sign-extend halfword to 32 bits)
 #[inline]
 pub fn sxth(dst: Arm32Reg, src: Arm32Reg) -> u32 {
     // SXTH: cond 0110 1011 1111 Rd 0000 0111 Rm
-    cond_bits(Cond::Al) | (0b01101011 << 20) | (0b1111 << 16) | rd(dst) | (0b00000111 << 4) | rm(src)
+    cond_bits(Cond::Al)
+        | (0b01101011 << 20)
+        | (0b1111 << 16)
+        | rd(dst)
+        | (0b00000111 << 4)
+        | rm(src)
 }
 
 /// UXTB Rd, Rm (zero-extend byte)
 #[inline]
 pub fn uxtb(dst: Arm32Reg, src: Arm32Reg) -> u32 {
-    cond_bits(Cond::Al) | (0b01101110 << 20) | (0b1111 << 16) | rd(dst) | (0b00000111 << 4) | rm(src)
+    cond_bits(Cond::Al)
+        | (0b01101110 << 20)
+        | (0b1111 << 16)
+        | rd(dst)
+        | (0b00000111 << 4)
+        | rm(src)
 }
 
 /// UXTH Rd, Rm (zero-extend halfword)
 #[inline]
 pub fn uxth(dst: Arm32Reg, src: Arm32Reg) -> u32 {
-    cond_bits(Cond::Al) | (0b01101111 << 20) | (0b1111 << 16) | rd(dst) | (0b00000111 << 4) | rm(src)
+    cond_bits(Cond::Al)
+        | (0b01101111 << 20)
+        | (0b1111 << 16)
+        | rd(dst)
+        | (0b00000111 << 4)
+        | rm(src)
 }
 
 // ─── VFP (floating point) ───────────────────────────────────────────────────
@@ -617,7 +784,15 @@ pub fn vldr_d(dd: u32, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = (offset.unsigned_abs() / 4) & 0xFF;
     let d = (dd >> 4) & 1;
     let vd = dd & 0xF;
-    cond_bits(Cond::Al) | (0b1101 << 24) | (u << 23) | (d << 22) | (1 << 20) | rn(base) | (vd << 12) | (0b1011 << 8) | abs_off
+    cond_bits(Cond::Al)
+        | (0b1101 << 24)
+        | (u << 23)
+        | (d << 22)
+        | (1 << 20)
+        | rn(base)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | abs_off
 }
 
 /// VSTR.64 Dd, [Rn, #offset]
@@ -627,7 +802,14 @@ pub fn vstr_d(dd: u32, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = (offset.unsigned_abs() / 4) & 0xFF;
     let d = (dd >> 4) & 1;
     let vd = dd & 0xF;
-    cond_bits(Cond::Al) | (0b1101 << 24) | (u << 23) | (d << 22) | rn(base) | (vd << 12) | (0b1011 << 8) | abs_off
+    cond_bits(Cond::Al)
+        | (0b1101 << 24)
+        | (u << 23)
+        | (d << 22)
+        | rn(base)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | abs_off
 }
 
 /// VLDR.32 Sd, [Rn, #offset] (load single; offset in 4-byte units, ±1020)
@@ -637,7 +819,15 @@ pub fn vldr_s(sd: u32, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = (offset.unsigned_abs() / 4) & 0xFF;
     let d = sd & 1;
     let vd = (sd >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b1101 << 24) | (u << 23) | (d << 22) | (1 << 20) | rn(base) | (vd << 12) | (0b1010 << 8) | abs_off
+    cond_bits(Cond::Al)
+        | (0b1101 << 24)
+        | (u << 23)
+        | (d << 22)
+        | (1 << 20)
+        | rn(base)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | abs_off
 }
 
 /// VSTR.32 Sd, [Rn, #offset]
@@ -647,7 +837,14 @@ pub fn vstr_s(sd: u32, base: Arm32Reg, offset: i32) -> u32 {
     let abs_off = (offset.unsigned_abs() / 4) & 0xFF;
     let d = sd & 1;
     let vd = (sd >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b1101 << 24) | (u << 23) | (d << 22) | rn(base) | (vd << 12) | (0b1010 << 8) | abs_off
+    cond_bits(Cond::Al)
+        | (0b1101 << 24)
+        | (u << 23)
+        | (d << 22)
+        | rn(base)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | abs_off
 }
 
 /// VMOV Dd, Dm (double register copy)
@@ -658,7 +855,14 @@ pub fn vmov_d(dst: u32, src: u32) -> u32 {
     let m_src = (src >> 4) & 1;
     let vm = src & 0xF;
     // VMOV.F64: cond 1110 1D11 0000 Vd 1011 01M0 Vm
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d_dst << 22) | (0b110000 << 16) | (vd << 12) | (0b10110100 << 4) | (m_src << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d_dst << 22)
+        | (0b110000 << 16)
+        | (vd << 12)
+        | (0b10110100 << 4)
+        | (m_src << 5)
+        | vm
 }
 
 /// VMOV Sd, Sm (single register copy)
@@ -669,7 +873,14 @@ pub fn vmov_s(dst: u32, src: u32) -> u32 {
     let m_src = src & 1;
     let vm = (src >> 1) & 0xF;
     // VMOV.F32: cond 1110 1D11 0000 Vd 1010 01M0 Vm
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d_dst << 22) | (0b110000 << 16) | (vd << 12) | (0b10100100 << 4) | (m_src << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d_dst << 22)
+        | (0b110000 << 16)
+        | (vd << 12)
+        | (0b10100100 << 4)
+        | (m_src << 5)
+        | vm
 }
 
 /// VMOV Rd, Sn (move single VFP to GP reg)
@@ -678,7 +889,14 @@ pub fn vmov_r_s(dst: Arm32Reg, sn: u32) -> u32 {
     let n = sn & 1;
     let vn = (sn >> 1) & 0xF;
     // VMOV Rt, Sn: cond 1110 000 1 Vn Rt 1010 N001 0000
-    cond_bits(Cond::Al) | (0b1110 << 24) | (1 << 20) | (vn << 16) | rd(dst) | (0b1010 << 8) | (n << 7) | (1 << 4)
+    cond_bits(Cond::Al)
+        | (0b1110 << 24)
+        | (1 << 20)
+        | (vn << 16)
+        | rd(dst)
+        | (0b1010 << 8)
+        | (n << 7)
+        | (1 << 4)
 }
 
 /// VMOV Sn, Rd (move GP reg to single VFP)
@@ -686,7 +904,13 @@ pub fn vmov_r_s(dst: Arm32Reg, sn: u32) -> u32 {
 pub fn vmov_s_r(sn: u32, src: Arm32Reg) -> u32 {
     let n = sn & 1;
     let vn = (sn >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b1110 << 24) | (vn << 16) | rd(src) | (0b1010 << 8) | (n << 7) | (1 << 4)
+    cond_bits(Cond::Al)
+        | (0b1110 << 24)
+        | (vn << 16)
+        | rd(src)
+        | (0b1010 << 8)
+        | (n << 7)
+        | (1 << 4)
 }
 
 /// VMOV Rd, Rd2, Dm (move double VFP to two GP regs)
@@ -695,7 +919,14 @@ pub fn vmov_rr_d(dst_lo: Arm32Reg, dst_hi: Arm32Reg, dm: u32) -> u32 {
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
     // VMOV Rt, Rt2, Dm: cond 1100 0101 Rt2 Rt 1011 00M1 Vm
-    cond_bits(Cond::Al) | (0b11000101 << 20) | (dst_hi.idx() << 16) | rd(dst_lo) | (0b1011 << 8) | (m << 5) | (1 << 4) | vm
+    cond_bits(Cond::Al)
+        | (0b11000101 << 20)
+        | (dst_hi.idx() << 16)
+        | rd(dst_lo)
+        | (0b1011 << 8)
+        | (m << 5)
+        | (1 << 4)
+        | vm
 }
 
 /// VMOV Dm, Rd, Rd2 (move two GP regs to double VFP)
@@ -704,7 +935,14 @@ pub fn vmov_d_rr(dm: u32, src_lo: Arm32Reg, src_hi: Arm32Reg) -> u32 {
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
     // VMOV Dm, Rt, Rt2: cond 1100 0100 Rt2 Rt 1011 00M1 Vm
-    cond_bits(Cond::Al) | (0b11000100 << 20) | (src_hi.idx() << 16) | rd(src_lo) | (0b1011 << 8) | (m << 5) | (1 << 4) | vm
+    cond_bits(Cond::Al)
+        | (0b11000100 << 20)
+        | (src_hi.idx() << 16)
+        | rd(src_lo)
+        | (0b1011 << 8)
+        | (m << 5)
+        | (1 << 4)
+        | vm
 }
 
 /// VFP double-precision binary op helper.
@@ -715,7 +953,17 @@ fn vfp_d_binary(opcode_hi: u32, opcode_lo: u32, dd: u32, dn: u32, dm: u32) -> u3
     let vn = dn & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11100 << 23) | (d << 22) | (opcode_hi << 20) | (vn << 16) | (vd << 12) | (0b1011 << 8) | (n << 7) | (opcode_lo << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11100 << 23)
+        | (d << 22)
+        | (opcode_hi << 20)
+        | (vn << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (n << 7)
+        | (opcode_lo << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VFP single-precision binary op helper.
@@ -726,20 +974,36 @@ fn vfp_s_binary(opcode_hi: u32, opcode_lo: u32, sd: u32, sn: u32, sm: u32) -> u3
     let vn = (sn >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11100 << 23) | (d << 22) | (opcode_hi << 20) | (vn << 16) | (vd << 12) | (0b1010 << 8) | (n << 7) | (opcode_lo << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11100 << 23)
+        | (d << 22)
+        | (opcode_hi << 20)
+        | (vn << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (n << 7)
+        | (opcode_lo << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VADD.F64 Dd, Dn, Dm
 #[inline]
-pub fn vadd_d(dd: u32, dn: u32, dm: u32) -> u32 { vfp_d_binary(0b11, 0b0, dd, dn, dm) }
+pub fn vadd_d(dd: u32, dn: u32, dm: u32) -> u32 {
+    vfp_d_binary(0b11, 0b0, dd, dn, dm)
+}
 
 /// VSUB.F64 Dd, Dn, Dm
 #[inline]
-pub fn vsub_d(dd: u32, dn: u32, dm: u32) -> u32 { vfp_d_binary(0b11, 0b1, dd, dn, dm) }
+pub fn vsub_d(dd: u32, dn: u32, dm: u32) -> u32 {
+    vfp_d_binary(0b11, 0b1, dd, dn, dm)
+}
 
 /// VMUL.F64 Dd, Dn, Dm
 #[inline]
-pub fn vmul_d(dd: u32, dn: u32, dm: u32) -> u32 { vfp_d_binary(0b10, 0b0, dd, dn, dm) }
+pub fn vmul_d(dd: u32, dn: u32, dm: u32) -> u32 {
+    vfp_d_binary(0b10, 0b0, dd, dn, dm)
+}
 
 /// VDIV.F64 Dd, Dn, Dm
 #[inline]
@@ -750,20 +1014,35 @@ pub fn vdiv_d(dd: u32, dn: u32, dm: u32) -> u32 {
     let vn = dn & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b00 << 20) | (vn << 16) | (vd << 12) | (0b1011 << 8) | (n << 7) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b00 << 20)
+        | (vn << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (n << 7)
+        | (m << 5)
+        | vm
 }
 
 /// VADD.F32 Sd, Sn, Sm
 #[inline]
-pub fn vadd_s(sd: u32, sn: u32, sm: u32) -> u32 { vfp_s_binary(0b11, 0b0, sd, sn, sm) }
+pub fn vadd_s(sd: u32, sn: u32, sm: u32) -> u32 {
+    vfp_s_binary(0b11, 0b0, sd, sn, sm)
+}
 
 /// VSUB.F32 Sd, Sn, Sm
 #[inline]
-pub fn vsub_s(sd: u32, sn: u32, sm: u32) -> u32 { vfp_s_binary(0b11, 0b1, sd, sn, sm) }
+pub fn vsub_s(sd: u32, sn: u32, sm: u32) -> u32 {
+    vfp_s_binary(0b11, 0b1, sd, sn, sm)
+}
 
 /// VMUL.F32 Sd, Sn, Sm
 #[inline]
-pub fn vmul_s(sd: u32, sn: u32, sm: u32) -> u32 { vfp_s_binary(0b10, 0b0, sd, sn, sm) }
+pub fn vmul_s(sd: u32, sn: u32, sm: u32) -> u32 {
+    vfp_s_binary(0b10, 0b0, sd, sn, sm)
+}
 
 /// VDIV.F32 Sd, Sn, Sm
 #[inline]
@@ -774,7 +1053,16 @@ pub fn vdiv_s(dd: u32, dn: u32, dm: u32) -> u32 {
     let vn = (dn >> 1) & 0xF;
     let m = dm & 1;
     let vm = (dm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b00 << 20) | (vn << 16) | (vd << 12) | (0b1010 << 8) | (n << 7) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b00 << 20)
+        | (vn << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (n << 7)
+        | (m << 5)
+        | vm
 }
 
 /// VSQRT.F64 Dd, Dm
@@ -784,7 +1072,15 @@ pub fn vsqrt_d(dd: u32, dm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110001 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110001 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VSQRT.F32 Sd, Sm
@@ -794,7 +1090,15 @@ pub fn vsqrt_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110001 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110001 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VNEG.F64 Dd, Dm
@@ -804,7 +1108,15 @@ pub fn vneg_d(dd: u32, dm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110001 << 16) | (vd << 12) | (0b1011 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110001 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VNEG.F32 Sd, Sm
@@ -814,7 +1126,15 @@ pub fn vneg_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110001 << 16) | (vd << 12) | (0b1010 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110001 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VABS.F64 Dd, Dm
@@ -824,7 +1144,15 @@ pub fn vabs_d(dd: u32, dm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110000 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110000 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VABS.F32 Sd, Sm
@@ -834,7 +1162,15 @@ pub fn vabs_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110000 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110000 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCMP.F64 Dd, Dm
@@ -844,7 +1180,15 @@ pub fn vcmp_d(dd: u32, dm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110100 << 16) | (vd << 12) | (0b1011 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110100 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCMP.F32 Sd, Sm
@@ -854,14 +1198,27 @@ pub fn vcmp_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110100 << 16) | (vd << 12) | (0b1010 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110100 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VMRS APSR_nzcv, FPSCR (move VFP flags to ARM condition flags)
 #[inline]
 pub fn vmrs_apsr() -> u32 {
     // VMRS APSR_nzcv, FPSCR: cond 1110 1111 0001 1111 1010 0001 0000
-    cond_bits(Cond::Al) | (0b11101111 << 20) | (0b0001 << 16) | (0b1111 << 12) | (0b1010 << 8) | (0b00010000)
+    cond_bits(Cond::Al)
+        | (0b11101111 << 20)
+        | (0b0001 << 16)
+        | (0b1111 << 12)
+        | (0b1010 << 8)
+        | (0b00010000)
 }
 
 /// VCVT.F64.F32 Dd, Sm (single to double)
@@ -871,7 +1228,15 @@ pub fn vcvt_d_s(dd: u32, sm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110111 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110111 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.F32.F64 Sd, Dm (double to single)
@@ -881,7 +1246,15 @@ pub fn vcvt_s_d(sd: u32, dm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b110111 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b110111 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.S32.F64 Sd, Dm (double to signed int, round toward zero)
@@ -891,7 +1264,15 @@ pub fn vcvt_s32_d(sd: u32, dm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111101 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111101 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.U32.F64 Sd, Dm (double to unsigned int, round toward zero)
@@ -901,7 +1282,15 @@ pub fn vcvt_u32_d(sd: u32, dm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = (dm >> 4) & 1;
     let vm = dm & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111100 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111100 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.S32.F32 Sd, Sm (single to signed int, round toward zero)
@@ -911,7 +1300,15 @@ pub fn vcvt_s32_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111101 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111101 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.U32.F32 Sd, Sm (single to unsigned int, round toward zero)
@@ -921,7 +1318,15 @@ pub fn vcvt_u32_s(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111100 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111100 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.F64.S32 Dd, Sm (signed int to double)
@@ -931,7 +1336,15 @@ pub fn vcvt_d_s32(dd: u32, sm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111000 << 16) | (vd << 12) | (0b1011 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111000 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.F64.U32 Dd, Sm (unsigned int to double)
@@ -941,7 +1354,15 @@ pub fn vcvt_d_u32(dd: u32, sm: u32) -> u32 {
     let vd = dd & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111000 << 16) | (vd << 12) | (0b1011 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111000 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.F32.S32 Sd, Sm (signed int to single)
@@ -951,7 +1372,15 @@ pub fn vcvt_s_s32(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111000 << 16) | (vd << 12) | (0b1010 << 8) | (0b01 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111000 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b01 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// VCVT.F32.U32 Sd, Sm (unsigned int to single)
@@ -961,12 +1390,28 @@ pub fn vcvt_s_u32(sd: u32, sm: u32) -> u32 {
     let vd = (sd >> 1) & 0xF;
     let m = sm & 1;
     let vm = (sm >> 1) & 0xF;
-    cond_bits(Cond::Al) | (0b11101 << 23) | (d << 22) | (0b111000 << 16) | (vd << 12) | (0b1010 << 8) | (0b11 << 6) | (m << 5) | vm
+    cond_bits(Cond::Al)
+        | (0b11101 << 23)
+        | (d << 22)
+        | (0b111000 << 16)
+        | (vd << 12)
+        | (0b1010 << 8)
+        | (0b11 << 6)
+        | (m << 5)
+        | vm
 }
 
 /// Conditional data-processing with immediate.
 #[inline]
-pub fn dp_imm_cond(cond: Cond, opcode: u32, s: bool, dst: Arm32Reg, lhs: Arm32Reg, imm8: u32, rotate: u32) -> u32 {
+pub fn dp_imm_cond(
+    cond: Cond,
+    opcode: u32,
+    s: bool,
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    imm8: u32,
+    rotate: u32,
+) -> u32 {
     dp_imm(cond, opcode, s, dst, lhs, imm8, rotate)
 }
 
@@ -989,7 +1434,13 @@ pub fn bkpt(imm: u16) -> u32 {
 pub fn vpush_d(first_d: u32, count: u32) -> u32 {
     let d = (first_d >> 4) & 1;
     let vd = first_d & 0xF;
-    cond_bits(Cond::Al) | (0b11010 << 23) | (d << 22) | (0b101101 << 16) | (vd << 12) | (0b1011 << 8) | (count * 2)
+    cond_bits(Cond::Al)
+        | (0b11010 << 23)
+        | (d << 22)
+        | (0b101101 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (count * 2)
 }
 
 /// VPOP {Dd-D(d+n-1)} (pop consecutive D registers)
@@ -997,5 +1448,11 @@ pub fn vpush_d(first_d: u32, count: u32) -> u32 {
 pub fn vpop_d(first_d: u32, count: u32) -> u32 {
     let d = (first_d >> 4) & 1;
     let vd = first_d & 0xF;
-    cond_bits(Cond::Al) | (0b11001 << 23) | (d << 22) | (0b111101 << 16) | (vd << 12) | (0b1011 << 8) | (count * 2)
+    cond_bits(Cond::Al)
+        | (0b11001 << 23)
+        | (d << 22)
+        | (0b111101 << 16)
+        | (vd << 12)
+        | (0b1011 << 8)
+        | (count * 2)
 }
