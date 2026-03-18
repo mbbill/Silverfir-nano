@@ -91,17 +91,17 @@ def make_svg(title, subtitle, benchmarks, filename):
 # ══════════════════════════════════════════════════
 
 INTEGER_DATA = [
-    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 32010,   'cl': 14669,   'v8': 37869  }},
-    {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 238.12,  'cl': 249.26,  'v8': 201.20 }},
-    {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 15.96,   'cl': 19.41,   'v8': 19.88  }},
+    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 32110,   'cl': 14669,   'v8': 37869  }},
+    {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 255.75,  'cl': 249.26,  'v8': 201.20 }},
+    {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 16.44,   'cl': 19.41,   'v8': 19.88  }},
     {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 762.89,  'cl': 736.45,  'v8': 704.01 }},
     {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3214.31, 'cl': 3455.15, 'v8': 2908.07}},
 ]
 
 LUA_DATA = [
     {'name': 'lua / fib38',     'unit': 's',     'data': {'sf': 2.351, 'cl': 12.18, 'v8': 3.14}, 'inv': True},
-    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 5373,  'cl': 2896,  'v8': 11101}},
-    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 15794, 'cl': 9616,  'v8': 30179}},
+    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 5378,  'cl': 2896,  'v8': 11101}},
+    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 16039, 'cl': 9616,  'v8': 30179}},
 ]
 
 FP_DATA = [
