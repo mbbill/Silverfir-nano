@@ -96,6 +96,7 @@ pub(crate) fn eval_root_with_context(
         WasmError::internal("native entry function is missing machine code".into())
     })?;
     let address_space = EmulatorAddressSpace::new(compiled, fp, ctx.stack_end);
+    address_space.validate_runtime_shape(ctx)?;
     let runtime_base = address_space.runtime_base_value(ctx);
     let fp_base = address_space.frame_base_value(fp)?;
     let mem0_base = address_space.mem0_base_value(ctx);
@@ -604,6 +605,7 @@ impl<'a> Emulator<'a> {
         let entry = resolve_helper_entry(binding.symbol);
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeHelperStatus::Ok as u32 {
+            self.address_space.validate_runtime_shape(self.ctx)?;
             return Ok(());
         }
         Err(self
@@ -626,10 +628,14 @@ impl<'a> Emulator<'a> {
             .clone();
         let mut values = Vec::with_capacity(edge.args.len());
         for value in &edge.args {
-            values.push(self.read_value(*value)?);
+            values.push((self.read_value(*value)?, self.value_addr_kind(*value)));
         }
-        for (param, value) in target_params.into_iter().zip(values.into_iter()) {
-            self.write_reg(param.reg, value)?;
+        for (param, (value, kind)) in target_params.into_iter().zip(values.into_iter()) {
+            let kind = match fixed_reg_addr_kind(param.reg) {
+                RegAddrKind::Unknown => kind,
+                fixed => fixed,
+            };
+            self.write_reg_with_kind(param.reg, value, kind)?;
         }
         self.block_id = edge.target;
         Ok(())
@@ -2015,26 +2021,31 @@ fn trunc_sat_f64_to_i64_u(bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String, vec};
+    use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
 
-    use super::eval;
+    use super::{eval, Emulator, EmulatorAddressSpace, RegAddrKind};
     use crate::{
         error::WasmError,
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            entities::{Caller, FunctionInst, MemInst, ModuleInst},
+            entities::{Caller, FunctionInst, MemInst, ModuleInst, TableInst},
             native::{
                 arch::{
                     backend_mode_test_lock, set_reference_backend, set_reference_backend_mode,
-                    ReferenceBackendMode,
+                    NativeBackend, ReferenceBackendMode,
                 },
                 build::ensure_module_compiled,
+                code::CompiledNativeModule,
                 ir::machine::{
-                    MachineBranchCond, MachineCompareKind, MachineInstKind, MachineIntWidth,
-                    MachineSign, MachineTrapKind, MachineValue,
+                    MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
+                    MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
+                    MachineInstKind, MachineIntWidth, MachineProgram, MachineReg, MachineSign,
+                    MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+                    MACHINE_MEM0_BASE_REG,
                 },
+                ir::runtime::MachineRuntimeContract,
             },
             runtime,
             store::Store,
@@ -2193,6 +2204,88 @@ mod tests {
     }
 
     #[test]
+    fn jump_to_edge_preserves_mem0_provenance_for_block_params() {
+        let compiled = Rc::new(
+            CompiledNativeModule::new(
+                NativeBackend::Reference,
+                super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                crate::vm::native::ir::machine::MachineModule {
+                    functions: vec![MachineFunction {
+                        id: MachineFuncId(0),
+                        program: MachineProgram {
+                            entry: MachineBlockId(0),
+                            first_fp_reg: MACHINE_FIXED_REG_COUNT + 1,
+                            reg_count: MACHINE_FIXED_REG_COUNT + 1,
+                            fp_transient_count: 0,
+                            fp_reg_init_widths: Vec::new(),
+                            blocks: vec![
+                                MachineBlock {
+                                    id: MachineBlockId(0),
+                                    params: Vec::new(),
+                                    ops: Vec::new(),
+                                    terminator: MachineTerminator::Jump(MachineEdge {
+                                        target: MachineBlockId(1),
+                                        args: vec![MachineValue::Reg(MACHINE_MEM0_BASE_REG)],
+                                    }),
+                                },
+                                MachineBlock {
+                                    id: MachineBlockId(1),
+                                    params: vec![MachineBlockParam::gp_word(MachineReg(
+                                        MACHINE_FIXED_REG_COUNT,
+                                    ))],
+                                    ops: Vec::new(),
+                                    terminator: MachineTerminator::Return,
+                                },
+                            ],
+                        },
+                    }],
+                    consts: Vec::new(),
+                    externs: Vec::new(),
+                },
+                MachineRuntimeContract::default(),
+            )
+            .expect("compiled machine module"),
+        );
+
+        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::new(vec![])));
+        let mut ctx = crate::vm::native::runtime::context::NativeContext::new(
+            (&mut store) as *mut Store,
+            core::ptr::null_mut(),
+        );
+        let mut emulator = Emulator {
+            ctx: &mut ctx,
+            compiled: &compiled,
+            root_frame: core::ptr::null_mut(),
+            func_id: MachineFuncId(0),
+            block_id: MachineBlockId(0),
+            fp: core::ptr::null_mut(),
+            regs: super::init_entry_regs(
+                &compiled,
+                MACHINE_FIXED_REG_COUNT + 1,
+                0,
+                0,
+                0x4000_0000,
+                64,
+            ),
+            addr_kinds: super::init_entry_addr_kinds(MACHINE_FIXED_REG_COUNT + 1),
+            call_stack: Vec::new(),
+            address_space: EmulatorAddressSpace::Host,
+        };
+
+        emulator
+            .jump_to_edge(&MachineEdge {
+                target: MachineBlockId(1),
+                args: vec![MachineValue::Reg(MACHINE_MEM0_BASE_REG)],
+            })
+            .expect("jump to edge");
+
+        assert_eq!(
+            emulator.reg_addr_kind(MachineReg(MACHINE_FIXED_REG_COUNT)),
+            RegAddrKind::Mem0
+        );
+    }
+
+    #[test]
     fn runtime_eval_emu32_traps_on_recursive_call_exhaustion() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
@@ -2212,6 +2305,65 @@ mod tests {
         let error =
             runtime::eval(func_ref, &mut store, &[]).expect_err("recursive call should exhaust");
         assert_eq!(error.message(), "call stack exhausted");
+    }
+
+    #[test]
+    fn runtime_eval_emu32_rejects_more_than_eight_memories() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
+        spec.set_code((&[0x41, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        for _ in 0..9 {
+            module
+                .memories
+                .push(native_test_memory(Limits::new(0, Some(1)).unwrap()));
+        }
+        let mut store = Store::new(module);
+        let func_ptr = &store.module().functions[0] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let error = runtime::eval(func_ref, &mut store, &[])
+            .expect_err("emu32 should reject synthetic address-space memory overlap");
+        assert!(error
+            .message()
+            .contains("emu32 synthetic address space supports at most 8 memories"));
+    }
+
+    #[test]
+    fn runtime_eval_emu32_rejects_more_than_sixteen_tables() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
+        spec.set_code((&[0x41, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        for _ in 0..17 {
+            module.tables.push(TableInst::new(
+                Limits::new(0, Some(1)).unwrap(),
+                ValueType::funcref(),
+            ));
+        }
+        let mut store = Store::new(module);
+        let func_ptr = &store.module().functions[0] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let error = runtime::eval(func_ref, &mut store, &[])
+            .expect_err("emu32 should reject synthetic address-space table overlap");
+        assert!(error
+            .message()
+            .contains("emu32 synthetic address space supports at most 16 tables"));
     }
 
     #[test]

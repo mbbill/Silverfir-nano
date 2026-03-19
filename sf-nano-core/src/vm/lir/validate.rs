@@ -267,7 +267,7 @@ fn validate_cached_slot_value_type(
             value.0,
         )));
     };
-    if value_type_storage_class(cached_ty) != value_type_storage_class(value_ty) {
+    if !cached_slot_value_type_matches(role, value_ty, cached_ty) {
         return Err(WasmError::internal(alloc::format!(
             "b{block_idx} op {op_idx} {role} for cached local slot {:?} uses value {:?} ({:?}), but cache metadata says {:?}",
             slot,
@@ -280,12 +280,11 @@ fn validate_cached_slot_value_type(
 }
 
 #[cfg(any(debug_assertions, test))]
-fn value_type_storage_class(ty: ValueType) -> u8 {
-    match ty {
-        ValueType::F32 => 1,
-        ValueType::F64 => 2,
-        ValueType::I64 => 3,
-        _ => 4,
+fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: ValueType) -> bool {
+    match role {
+        "StoreSlot src" => value_ty.is_compatible_with(&cached_ty),
+        "LoadSlot dst" => cached_ty.is_compatible_with(&value_ty),
+        _ => value_ty == cached_ty,
     }
 }
 
@@ -597,5 +596,38 @@ mod tests {
         };
 
         validate_program(&program).expect("ref subtypes share the same GP-word cached-local class");
+    }
+
+    #[test]
+    fn rejects_cached_local_gp_word_type_mismatch_between_ref_and_i32() {
+        let value0 = LirValue(0);
+        let program = LirProgram {
+            entry: LirTarget(0),
+            local_cache: LirLocalCachePrefs {
+                gp_preferred_slots: alloc::vec![FrameSlot(0)],
+                gp_preferred_types: alloc::vec![crate::value_type::ValueType::funcref()],
+                fp_preferred_slots: Vec::new(),
+                fp_preferred_types: Vec::new(),
+                gp_local_info: Vec::new(),
+                fp_local_info: Vec::new(),
+            },
+            blocks: alloc::vec![crate::vm::lir::ir::LirBlock {
+                id: LirTarget(0),
+                params: Vec::new(),
+                ops: alloc::vec![LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: FrameSlot(0),
+                        src: value0,
+                    },
+                }],
+                terminator: crate::vm::lir::ir::LirTerminator::Return { results: None },
+            }],
+            value_types: alloc::vec![crate::value_type::ValueType::I32],
+        };
+
+        let error = validate_program(&program).expect_err("validation should fail");
+        assert!(error.message().contains(
+            "StoreSlot src for cached local slot FrameSlot(0) uses value LirValue(0) (I32), but cache metadata says Ref"
+        ));
     }
 }

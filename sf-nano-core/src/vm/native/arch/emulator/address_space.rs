@@ -25,6 +25,15 @@ const MEMORY_BASE_32: u64 = 0x4000_0000;
 const MEMORY_WINDOW_32: u64 = 0x1000_0000;
 const TABLE_ELEMENTS_BASE_32: u64 = 0xC000_0000;
 const TABLE_ELEMENTS_WINDOW_32: u64 = 0x0400_0000;
+const MEMORY_VIEWS_WINDOW_32: u64 = TABLE_VIEWS_BASE_32 - MEMORY_VIEWS_BASE_32;
+const TABLE_VIEWS_WINDOW_32: u64 = FUNCTION_VIEWS_BASE_32 - TABLE_VIEWS_BASE_32;
+const FUNCTION_VIEWS_WINDOW_32: u64 = GLOBALS_BASE_32 - FUNCTION_VIEWS_BASE_32;
+const GLOBALS_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBALS_BASE_32;
+const TYPE_CANON_WINDOW_32: u64 = MEMORY_BASE_32 - TYPE_CANON_BASE_32;
+const MAX_MEMORY_COUNT_32: usize =
+    ((TABLE_ELEMENTS_BASE_32 - MEMORY_BASE_32) / MEMORY_WINDOW_32) as usize;
+const MAX_TABLE_COUNT_32: usize =
+    (((1u64 << 32) - TABLE_ELEMENTS_BASE_32) / TABLE_ELEMENTS_WINDOW_32) as usize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EmulatorAddressSpace {
@@ -83,6 +92,14 @@ impl EmulatorAddressSpace {
         match self {
             Self::Host => Ok(addr as *mut u64),
             Self::Target32(space) => Ok(space.host_stack_ptr(addr)?.cast::<u64>()),
+        }
+    }
+
+    #[inline]
+    pub(super) fn validate_runtime_shape(self, ctx: &NativeContext) -> Result<(), WasmError> {
+        match self {
+            Self::Host => Ok(()),
+            Self::Target32(space) => space.validate_runtime_shape(ctx),
         }
     }
 
@@ -148,6 +165,93 @@ impl Target32AddressSpace {
     #[inline]
     fn stack_end(self) -> u64 {
         self.stack_base + u64::from(self.stack_len_bytes)
+    }
+
+    fn validate_runtime_shape(self, ctx: &NativeContext) -> Result<(), WasmError> {
+        ensure_window_fits(
+            "emu32 synthetic memory-view metadata",
+            checked_region_bytes(
+                "emu32 synthetic memory-view metadata",
+                ctx.memory_views_len,
+                self.layout.pointer_len_view.stride as usize,
+            )?,
+            MEMORY_VIEWS_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            "emu32 synthetic table-view metadata",
+            checked_region_bytes(
+                "emu32 synthetic table-view metadata",
+                ctx.table_views_len,
+                self.layout.pointer_len_view.stride as usize,
+            )?,
+            TABLE_VIEWS_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            "emu32 synthetic function-view metadata",
+            checked_region_bytes(
+                "emu32 synthetic function-view metadata",
+                ctx.function_views_len,
+                self.layout.function_view.stride as usize,
+            )?,
+            FUNCTION_VIEWS_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            "emu32 synthetic globals metadata",
+            checked_region_bytes(
+                "emu32 synthetic globals metadata",
+                ctx.globals_view.len,
+                core::mem::size_of::<GlobalInst>(),
+            )?,
+            GLOBALS_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            "emu32 synthetic type-canon metadata",
+            checked_region_bytes(
+                "emu32 synthetic type-canon metadata",
+                ctx.type_canon_len,
+                core::mem::size_of::<u32>(),
+            )?,
+            TYPE_CANON_WINDOW_32,
+        )?;
+
+        if ctx.memory_views_len > MAX_MEMORY_COUNT_32 {
+            return Err(WasmError::internal(alloc::format!(
+                "emu32 synthetic address space supports at most {} memories, found {}",
+                MAX_MEMORY_COUNT_32,
+                ctx.memory_views_len,
+            )));
+        }
+        for mem_index in 0..ctx.memory_views_len {
+            let view = unsafe { *ctx.memory_views_base.add(mem_index) };
+            ensure_window_fits(
+                &alloc::format!("emu32 synthetic memory {} contents", mem_index),
+                view.len,
+                MEMORY_WINDOW_32,
+            )?;
+        }
+
+        if ctx.table_views_len > MAX_TABLE_COUNT_32 {
+            return Err(WasmError::internal(alloc::format!(
+                "emu32 synthetic address space supports at most {} tables, found {}",
+                MAX_TABLE_COUNT_32,
+                ctx.table_views_len,
+            )));
+        }
+        for table_index in 0..ctx.table_views_len {
+            let view = unsafe { *ctx.table_views_base.add(table_index) };
+            let table_bytes = checked_region_bytes(
+                &alloc::format!("emu32 synthetic table {} contents", table_index),
+                view.elements_len,
+                self.layout.ref_handle_stride as usize,
+            )?;
+            ensure_window_fits(
+                &alloc::format!("emu32 synthetic table {} contents", table_index),
+                table_bytes,
+                TABLE_ELEMENTS_WINDOW_32,
+            )?;
+        }
+
+        Ok(())
     }
 
     #[inline]
@@ -760,6 +864,25 @@ impl Target32AddressSpace {
             MachineMemWidth::U64 => value,
         })
     }
+}
+
+fn checked_region_bytes(label: &str, count: usize, stride: usize) -> Result<usize, WasmError> {
+    count.checked_mul(stride).ok_or_else(|| {
+        WasmError::internal(alloc::format!(
+            "{label} size overflowed usize during emu32 validation"
+        ))
+    })
+}
+
+fn ensure_window_fits(label: &str, bytes: usize, window_bytes: u64) -> Result<(), WasmError> {
+    if u64::try_from(bytes).unwrap_or(u64::MAX) > window_bytes {
+        return Err(WasmError::internal(alloc::format!(
+            "{label} requires {} bytes, but emu32 reserves only {} bytes",
+            bytes,
+            window_bytes,
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
