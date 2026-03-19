@@ -23,7 +23,7 @@ use crate::{
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
-            runtime::context::ctx_offset,
+            runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
         },
         plan::frame::FrameLayoutPlan,
     },
@@ -276,18 +276,30 @@ impl<'a> BlockLowerContext<'a> {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
                 let dst_reg = self.alloc_slot_load_value(*dst)?;
-                let width = lir_value_slot_mem_width(self.program, *dst, self.gp_reg_width);
+                let ty = lir_value_storage_type(self.program, *dst);
+                let width = canonical_value_mem_width_for_value(self.program, *dst);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
+                    let cached = self.cached_locals[cached_index];
+                    if cached.ty != ty {
+                        return Err(WasmError::internal(alloc::format!(
+                            "typed LIR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
+                            slot,
+                            ty,
+                            dst,
+                            cached.ty,
+                        )));
+                    }
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
-                            ty: self.cached_locals[cached_index].ty,
+                            ty: cached.ty,
                             dst: dst_reg,
-                            src: MachineValue::Reg(self.cached_locals[cached_index].reg),
+                            src: MachineValue::Reg(cached.reg),
                         },
                     });
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Load {
+                            ty,
                             dst: dst_reg,
                             addr: self.frame_addr(*slot)?,
                             width,
@@ -298,13 +310,24 @@ impl<'a> BlockLowerContext<'a> {
             }
             LirInstKind::StoreSlot { slot, src } => {
                 let src_reg = self.use_value(*src)?;
-                let width = lir_value_slot_mem_width(self.program, *src, self.gp_reg_width);
+                let ty = lir_value_storage_type(self.program, *src);
+                let width = canonical_value_mem_width_for_value(self.program, *src);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
-                    let cache_reg = self.cached_locals[cached_index].reg;
+                    let cached = self.cached_locals[cached_index];
+                    if cached.ty != ty {
+                        return Err(WasmError::internal(alloc::format!(
+                            "typed LIR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
+                            slot,
+                            ty,
+                            src,
+                            cached.ty,
+                        )));
+                    }
+                    let cache_reg = cached.reg;
                     if !self.try_coalesce_last_dst(*src, src_reg, cache_reg) {
                         self.emit_machine_inst(MachineInst {
                             kind: MachineInstKind::Move {
-                                ty: self.cached_locals[cached_index].ty,
+                                ty: cached.ty,
                                 dst: cache_reg,
                                 src: MachineValue::Reg(src_reg),
                             },
@@ -313,6 +336,7 @@ impl<'a> BlockLowerContext<'a> {
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
+                            ty,
                             addr: self.frame_addr(*slot)?,
                             width,
                             src: MachineValue::Reg(src_reg),
@@ -633,9 +657,10 @@ impl<'a> BlockLowerContext<'a> {
             let cached = self.cached_locals[index];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    ty: cached.ty,
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,
-                    width: cached_local_mem_width(cached, self.gp_reg_width),
+                    width: canonical_cached_local_mem_width(cached),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -643,8 +668,13 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    /// Initialize cached locals at function entry. Uses analysis info to avoid
-    /// unnecessary frame loads for non-parameter locals.
+    /// Initialize cached locals at function entry.
+    ///
+    /// Cached locals are modeled as persistent machine registers across the
+    /// function CFG, so every cached register must start with a defined value.
+    /// Entry-scope `reads_before_write` is still useful for selective reloads
+    /// around calls, but it is not strong enough to leave the cached register
+    /// itself undefined at function entry.
     fn emit_entry_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
             let cached = self.cached_locals[index];
@@ -652,15 +682,18 @@ impl<'a> BlockLowerContext<'a> {
                 // Argument — caller wrote a real value, must load from frame.
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: cached.ty,
                         dst: cached.reg,
                         addr: self.frame_addr(cached.slot)?,
-                        width: cached_local_mem_width(cached, self.gp_reg_width),
+                        width: canonical_cached_local_mem_width(cached),
                         extension: MachineLoadExtension::None,
                     },
                 });
-            } else if cached.info.reads_before_write {
-                // Non-param local that may be read before written — zero the
-                // register (wasm locals are initialized to zero).
+            } else {
+                // Wasm locals start at zero, and cached locals stay live as
+                // machine registers across blocks, so non-params must be
+                // materialized here even if the entry block will overwrite
+                // them later.
                 if let Some(width) = cached.ty.float_width() {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::FloatConst {
@@ -679,7 +712,6 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             }
-            // else: non-param, written before read — skip entirely.
         }
         Ok(())
     }
@@ -689,8 +721,9 @@ impl<'a> BlockLowerContext<'a> {
             let cached = self.cached_locals[index];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
+                    ty: cached.ty,
                     addr: self.frame_addr(cached.slot)?,
-                    width: cached_local_mem_width(cached, self.gp_reg_width),
+                    width: canonical_cached_local_mem_width(cached),
                     src: MachineValue::Reg(cached.reg),
                 },
             });
@@ -701,16 +734,18 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn emit_reload_mem0_cache_regs(&mut self) {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: self.regfile.mem0_base(),
-                addr: self.runtime_addr(ctx_offset::MEM0_BASE),
+                addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: self.regfile.mem0_size(),
-                addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
+                addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -807,8 +842,16 @@ impl<'a> BlockLowerContext<'a> {
         )
     }
 
-    pub(super) fn slot_mem_width_for_value(&self, value: LirValue) -> MachineMemWidth {
-        lir_value_slot_mem_width(self.program, value, self.gp_reg_width)
+    pub(super) fn canonical_value_mem_width_for_value(&self, value: LirValue) -> MachineMemWidth {
+        canonical_value_mem_width_for_value(self.program, value)
+    }
+
+    pub(super) fn canonical_gp_word_mem_width(&self) -> MachineMemWidth {
+        canonical_storage_mem_width(MachineStorageType::GpWord)
+    }
+
+    pub(super) fn value_storage_type(&self, value: LirValue) -> MachineStorageType {
+        lir_value_storage_type(self.program, value)
     }
 
     pub(super) fn alloc_float_value(
@@ -1117,6 +1160,10 @@ impl<'a> BlockLowerContext<'a> {
         self.gp_reg_width
     }
 
+    pub(super) fn runtime_abi_layout(&self) -> NativeRuntimeAbiLayout {
+        native_runtime_abi_layout(self.gp_reg_width)
+    }
+
     pub(super) fn gp_word_mem_width(&self) -> MachineMemWidth {
         gp_reg_mem_width(self.gp_reg_width)
     }
@@ -1175,6 +1222,7 @@ impl<'a> BlockLowerContext<'a> {
     /// Only safe when:
     /// - src is a transient defined by the immediately preceding instruction
     /// - src and target are in the same register bank
+    /// - src and target use the same machine storage type
     /// - the last instruction doesn't also read target_reg (would clobber input)
     fn try_coalesce_last_dst(
         &mut self,
@@ -1189,6 +1237,9 @@ impl<'a> BlockLowerContext<'a> {
             return false;
         }
         if !self.is_transient_reg(src_reg) {
+            return false;
+        }
+        if self.storage_type_for_reg(src_reg) != self.storage_type_for_reg(target_reg) {
             return false;
         }
         // The value must have 0 remaining uses after this store consumes it.
@@ -1257,16 +1308,17 @@ fn gp_reg_int_width(gp_reg_width: u8) -> MachineIntWidth {
     machine_word_int_width(gp_reg_width)
 }
 
-fn storage_type_mem_width(ty: MachineStorageType, gp_reg_width: u8) -> MachineMemWidth {
+fn canonical_storage_mem_width(ty: MachineStorageType) -> MachineMemWidth {
     match ty {
-        MachineStorageType::GpWord => gp_reg_mem_width(gp_reg_width),
-        MachineStorageType::GpI64 | MachineStorageType::Fp64 => MachineMemWidth::U64,
+        MachineStorageType::GpWord | MachineStorageType::GpI64 | MachineStorageType::Fp64 => {
+            MachineMemWidth::U64
+        }
         MachineStorageType::Fp32 => MachineMemWidth::U32,
     }
 }
 
-fn cached_local_mem_width(cached: CachedLocal, gp_reg_width: u8) -> MachineMemWidth {
-    storage_type_mem_width(cached.ty, gp_reg_width)
+fn canonical_cached_local_mem_width(cached: CachedLocal) -> MachineMemWidth {
+    canonical_storage_mem_width(cached.ty)
 }
 
 fn lir_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStorageType {
@@ -1278,12 +1330,8 @@ fn lir_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStora
         .unwrap_or(MachineStorageType::GpWord)
 }
 
-fn lir_value_slot_mem_width(
-    program: &LirProgram,
-    value: LirValue,
-    gp_reg_width: u8,
-) -> MachineMemWidth {
-    storage_type_mem_width(lir_value_storage_type(program, value), gp_reg_width)
+fn canonical_value_mem_width_for_value(program: &LirProgram, value: LirValue) -> MachineMemWidth {
+    canonical_storage_mem_width(lir_value_storage_type(program, value))
 }
 
 fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {
@@ -1306,6 +1354,14 @@ fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
+        MachineInstKind::IntMulWide { .. } => None,
+        MachineInstKind::Int64PairUnary { .. } => None,
+        MachineInstKind::Int64PairDivRem { .. } => None,
+        MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::ConvertFloatToI64Pair { .. } => None,
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
+        MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
@@ -1325,11 +1381,50 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
+            visit_value_reg(src_lo, &mut visit);
+            visit_value_reg(src_hi, &mut visit);
+        }
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            visit_value_reg(lhs_lo, &mut visit);
+            visit_value_reg(lhs_hi, &mut visit);
+            visit_value_reg(rhs_lo, &mut visit);
+            visit_value_reg(rhs_hi, &mut visit);
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            visit_value_reg(lhs_lo, &mut visit);
+            visit_value_reg(lhs_hi, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
+            visit_value_reg(src_lo, &mut visit);
+            visit_value_reg(src_hi, &mut visit);
+        }
+        MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => {
+            visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            visit_value_reg(src_lo, &mut visit);
+            visit_value_reg(src_hi, &mut visit);
         }
         MachineInstKind::Select {
             on_true,
@@ -1441,6 +1536,18 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -1459,9 +1566,28 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => is(src),
         MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => is(lhs_lo) || is(lhs_hi) || is(rhs),
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
+        MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => is(src),
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
         MachineInstKind::Select {
             on_true,
             on_false,
@@ -1487,6 +1613,14 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst = new_dst,
+        MachineInstKind::IntMulWide { .. }
+        | MachineInstKind::Int64PairUnary { .. }
+        | MachineInstKind::Int64PairDivRem { .. }
+        | MachineInstKind::Int64PairShift { .. }
+        | MachineInstKind::ConvertFloatToI64Pair { .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { .. } => {}
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst = new_dst,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => {}

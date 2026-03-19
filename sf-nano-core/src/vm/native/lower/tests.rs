@@ -13,9 +13,9 @@ use crate::vm::{
     },
     native::{
         ir::machine::{
-            MachineBlockId, MachineFloatWidth, MachineFunction, MachineInstKind,
-            MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg, MachineStorageType,
-            MachineTerminator, MachineValue,
+            MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
+            MachineInstKind, MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg,
+            MachineStorageType, MachineTerminator, MachineValue,
         },
         ir::runtime::MachineHelperSymbol,
         lower::{lower_module, LowerFunctionInput, LowerModuleInput},
@@ -1275,6 +1275,69 @@ fn preserves_cached_locals_across_block_edges() {
 }
 
 #[test]
+fn rejects_cache_store_with_incompatible_gp_storage_types() {
+    use crate::value_type::ValueType;
+
+    let frame = plan_frame_layout(1, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_types: alloc::vec![ValueType::I32],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: false,
+                reads_before_write: false,
+            }],
+            fp_local_info: alloc::vec![],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I64],
+    };
+
+    let err = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(1, 4, 0, 2, 4),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect_err("typed i64 store into cached i32 local must be rejected");
+
+    let message = alloc::format!("{err}");
+    assert!(
+        message.contains("StoreSlot src for cached local slot FrameSlot(0)")
+            || message.contains("typed LIR store to cached local slot"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
@@ -1708,6 +1771,80 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
 }
 
 #[test]
+fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let slot = frame.local_slot(0);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot,
+                        src: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot,
+                        dst: LirValue(1),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                        args: alloc::vec![LirValue(1)],
+                        results: alloc::vec![],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I32, ValueType::I32],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit GP-word slot accesses should use canonical slot width");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Store {
+            width: MachineMemWidth::U64,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[2].kind,
+        MachineInstKind::Load {
+            width: MachineMemWidth::U64,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn lowers_global_get_and_set_without_helpers() {
     let frame = plan_frame_layout(0, 1, 2);
     let lir = LirProgram {
@@ -2002,6 +2139,178 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
             ..
         }
     )));
+}
+
+#[test]
+fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                            offset: 1,
+                            memidx: 0,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit memory lowering should emit wraparound traps");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    let mut saw_offset_wrap = false;
+    let mut saw_access_wrap = false;
+    for inst in ops {
+        if let MachineInstKind::TrapIf {
+            cond:
+                crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                    kind: MachineCompareKind::Lt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    rhs: MachineValue::Imm64(value),
+                    ..
+                },
+            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
+        } = &inst.kind
+        {
+            if *value == 1 {
+                saw_offset_wrap = true;
+            }
+            if *value == 4 {
+                saw_access_wrap = true;
+            }
+        }
+    }
+    assert!(saw_offset_wrap, "missing offset wraparound trap");
+    assert!(saw_access_wrap, "missing access-size wraparound trap");
+}
+
+#[cfg(has_guard_pages)]
+#[test]
+fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_pages() {
+    let frame = plan_frame_layout(0, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x8877_6655_4433_2211,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Store {
+                            offset: 0,
+                            memidx: 0,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0), LirValue(1)],
+                        results: alloc::vec![],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        use_guard_pages: true,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit multiword mem0 access should keep explicit bounds checks");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    let mut saw_access_wrap = false;
+    let mut saw_bounds_trap = false;
+    for inst in ops {
+        if let MachineInstKind::TrapIf {
+            cond:
+                crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                    kind: MachineCompareKind::Lt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    rhs: MachineValue::Imm64(value),
+                    ..
+                },
+            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
+        } = &inst.kind
+        {
+            if *value == 8 {
+                saw_access_wrap = true;
+            }
+        }
+        if let MachineInstKind::TrapIf {
+            cond:
+                crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                    kind: MachineCompareKind::Gt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    ..
+                },
+            kind: crate::vm::native::ir::machine::MachineTrapKind::MemoryOutOfBounds,
+        } = &inst.kind
+        {
+            saw_bounds_trap = true;
+        }
+    }
+    assert!(saw_access_wrap, "missing 32-bit multiword wraparound trap");
+    assert!(saw_bounds_trap, "missing explicit mem0 bounds trap");
 }
 
 #[test]

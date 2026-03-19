@@ -114,12 +114,13 @@ pub fn eval(
     }
 
     let results_len = func_type.results().len();
-    let mut out = InterpreterStack::with_exact_capacity(results_len);
-    unsafe {
-        for index in 0..results_len {
-            out.push(*stack_base.add(index));
-        }
-    }
+    let out = unsafe {
+        crate::vm::native::runtime::collect_native_results_from_stack(
+            stack_base,
+            func_type.results(),
+            compiled.backend().gp_unit_bytes,
+        )
+    };
     #[cfg(feature = "function-trace")]
     {
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };

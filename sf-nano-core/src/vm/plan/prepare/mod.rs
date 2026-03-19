@@ -115,6 +115,7 @@ pub fn prepare_function(
             original_block_count,
             extra_blocks.len(),
             local_types,
+            &semantic.result_types,
             op_result_types,
             &mut skip_reload_iter,
         )?;
@@ -196,7 +197,11 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![crate::value_type::ValueType::I32],
+            )]),
         };
 
         let prepared = prepare_function(
@@ -251,6 +256,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::from([(
                 1usize,
                 alloc::vec![ValueType::funcref()],
@@ -303,7 +309,11 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![crate::value_type::ValueType::I32],
+            )]),
         };
 
         let prepared = prepare_function(
@@ -356,6 +366,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -420,6 +431,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -474,7 +486,11 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![crate::value_type::ValueType::I32],
+            )]),
         };
 
         let prepared = prepare_function(
@@ -553,7 +569,11 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([
+                (0usize, alloc::vec![crate::value_type::ValueType::I32]),
+                (2usize, alloc::vec![crate::value_type::ValueType::I32]),
+            ]),
         };
 
         let prepared = prepare_function(
@@ -627,6 +647,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::I64, ValueType::I64, ValueType::I64],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::from([(
                 2usize,
                 alloc::vec![ValueType::I64, ValueType::I32],
@@ -689,6 +710,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -764,7 +786,7 @@ mod tests {
                 },
                 SemanticOp {
                     kind: SemanticOpKind::Else {
-                        end_target: crate::vm::wasm::common::SemanticTarget::new(8),
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(7),
                     },
                 },
                 SemanticOp {
@@ -781,6 +803,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -832,6 +855,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -891,6 +915,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -992,6 +1017,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1064,6 +1090,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1141,6 +1168,7 @@ mod tests {
             max_stack_height: 16,
             ops,
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1179,6 +1207,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1234,6 +1263,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1289,6 +1319,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1375,6 +1406,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1425,6 +1457,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1519,7 +1552,11 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                2usize,
+                alloc::vec![ValueType::F64],
+            )]),
         };
 
         let prepared = prepare_function(
@@ -1547,5 +1584,151 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
+        use crate::value_type::ValueType;
+
+        let semantic = SemanticProgram {
+            params: 2,
+            results: 1,
+            local_count: 2,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 1,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(6),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::RefNull),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::RefIsNull),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::funcref(), ValueType::I32],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([
+                (2usize, alloc::vec![ValueType::funcref()]),
+                (4usize, alloc::vec![ValueType::funcref()]),
+            ]),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("typed ref.is_null pipeline should succeed");
+
+        let ref_is_null_arg = prepared
+            .lir
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find_map(|inst| {
+                let LirInstKind::Value { op, args, .. } = &inst.kind else {
+                    return None;
+                };
+                matches!(op.primitive(), PrimitiveOpKind::RefIsNull)
+                    .then(|| args.first().copied())
+                    .flatten()
+            })
+            .expect("ref.is_null instruction must exist");
+        let arg_ty = prepared.lir.value_types[ref_is_null_arg.0 as usize];
+        assert_eq!(
+            arg_ty,
+            ValueType::funcref(),
+            "ref.is_null operand must keep funcref type across if/else, got {:?}",
+            arg_ty,
+        );
+    }
+
+    #[test]
+    fn prepares_result_if_with_returning_arms_without_typed_stack_mismatch() {
+        use crate::value_type::ValueType;
+
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: crate::vm::wasm::common::SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 7 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: crate::vm::wasm::common::SemanticTarget::new(7),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 8 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+            ],
+            local_types: alloc::vec![ValueType::I32],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![ValueType::I32],
+            )]),
+        };
+
+        let prepared = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new(0, 4, 0, 2, 3),
+            },
+            &semantic,
+        )
+        .expect("result if with returning arms should prepare cleanly");
+
+        assert!(prepared.lir.blocks.iter().any(|block| matches!(
+            block.terminator,
+            crate::vm::lir::ir::LirTerminator::Return { .. }
+        )));
     }
 }

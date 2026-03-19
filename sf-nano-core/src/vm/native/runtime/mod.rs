@@ -1,3 +1,4 @@
+use crate::value_type::ValueType;
 use crate::{
     error::WasmError,
     vm::{
@@ -11,6 +12,24 @@ use crate::{
 
 pub mod context;
 pub mod helpers;
+pub mod layout;
+
+#[inline]
+pub(crate) unsafe fn collect_native_results_from_stack(
+    stack_base: *const u64,
+    result_types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> InterpreterStack {
+    let mut out = InterpreterStack::with_exact_capacity(result_types.len());
+    for (index, ty) in result_types.iter().enumerate() {
+        let mut raw = unsafe { *stack_base.add(index) };
+        if gp_unit_bytes == 4 && matches!(ty, ValueType::Ref(_)) && raw == u64::from(u32::MAX) {
+            raw = usize::MAX as u64;
+        }
+        out.push(raw);
+    }
+    out
+}
 
 pub fn eval(
     func_inst: &FunctionInst,

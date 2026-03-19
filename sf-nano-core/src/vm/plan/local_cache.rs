@@ -617,6 +617,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -647,6 +648,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::I64, ValueType::I64],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 

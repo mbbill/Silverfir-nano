@@ -758,12 +758,18 @@ impl<'a> FunctionCompiler<'a> {
                 self.emit_addr_into(self.map_gp_reg(*dst)?, *addr)
             }
             MachineInstKind::Load {
+                ty: _,
                 dst,
                 addr,
                 width,
                 extension,
             } => self.emit_load(*dst, *addr, *width, *extension),
-            MachineInstKind::Store { addr, width, src } => self.emit_store(*addr, *width, *src),
+            MachineInstKind::Store {
+                ty: _,
+                addr,
+                width,
+                src,
+            } => self.emit_store(*addr, *width, *src),
             MachineInstKind::IntUnary {
                 width,
                 op,
@@ -777,6 +783,18 @@ impl<'a> FunctionCompiler<'a> {
                 lhs,
                 rhs,
             } => self.emit_int_binary(*width, *op, *dst, *lhs, *rhs),
+            MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
+                "arm64 backend received IntMulWide; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairUnary { .. } => Err(WasmError::internal(
+                "arm64 backend received Int64PairUnary; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairDivRem { .. } => Err(WasmError::internal(
+                "arm64 backend received Int64PairDivRem; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairShift { .. } => Err(WasmError::internal(
+                "arm64 backend received Int64PairShift; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
             MachineInstKind::IntCompare {
                 width,
                 kind,
@@ -818,6 +836,18 @@ impl<'a> FunctionCompiler<'a> {
                 rhs,
             } => self.emit_float_compare(*width, *kind, *dst, *lhs, *rhs),
             MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
+            MachineInstKind::ConvertI64PairToFloat { .. } => Err(WasmError::internal(
+                "arm64 backend received ConvertI64PairToFloat; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::ConvertFloatToI64Pair { .. } => Err(WasmError::internal(
+                "arm64 backend received ConvertFloatToI64Pair; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::ReinterpretF64ToI64Pair { .. } => Err(WasmError::internal(
+                "arm64 backend received ReinterpretF64ToI64Pair; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::ReinterpretI64PairToF64 { .. } => Err(WasmError::internal(
+                "arm64 backend received ReinterpretI64PairToF64; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
         }
     }
 
@@ -4204,11 +4234,13 @@ fn zero_store_pair_fusion(block: &MachineBlock, index: usize) -> Option<(Machine
             addr: addr_a,
             width: MachineMemWidth::U64,
             src: MachineValue::Imm64(0),
+            ..
         },
         MachineInstKind::Store {
             addr: addr_b,
             width: MachineMemWidth::U64,
             src: MachineValue::Imm64(0),
+            ..
         },
     ) = (&a.kind, &b.kind)
     else {
@@ -4253,6 +4285,7 @@ fn indexed_mem_fusion(block: &MachineBlock, index: usize) -> Option<IndexedMemFu
             addr,
             width,
             extension,
+            ..
         } if addr.base == add_dst && addr.offset == 0 => {
             if dst == add_dst || !reg_value_live_after(later_ops, &block.terminator, add_dst) {
                 Some(IndexedMemFusion::Load {
@@ -4268,11 +4301,12 @@ fn indexed_mem_fusion(block: &MachineBlock, index: usize) -> Option<IndexedMemFu
                 None
             }
         }
-        MachineInstKind::Store { addr, width, src }
-            if addr.base == add_dst
-                && addr.offset == 0
-                && !value_is_reg(src, add_dst)
-                && !reg_value_live_after(later_ops, &block.terminator, add_dst) =>
+        MachineInstKind::Store {
+            addr, width, src, ..
+        } if addr.base == add_dst
+            && addr.offset == 0
+            && !value_is_reg(src, add_dst)
+            && !reg_value_live_after(later_ops, &block.terminator, add_dst) =>
         {
             Some(IndexedMemFusion::Store {
                 base,
@@ -4390,6 +4424,18 @@ fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -4406,10 +4452,40 @@ fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => value_is_reg(*src, reg),
         MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg)
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
+            value_is_reg(*src_lo, reg) || value_is_reg(*src_hi, reg)
+        }
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            value_is_reg(*lhs_lo, reg)
+                || value_is_reg(*lhs_hi, reg)
+                || value_is_reg(*rhs_lo, reg)
+                || value_is_reg(*rhs_hi, reg)
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => value_is_reg(*lhs_lo, reg) || value_is_reg(*lhs_hi, reg) || value_is_reg(*rhs, reg),
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
+            value_is_reg(*src_lo, reg) || value_is_reg(*src_hi, reg)
+        }
+        MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => value_is_reg(*src, reg),
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            value_is_reg(*src_lo, reg) || value_is_reg(*src_hi, reg)
         }
         MachineInstKind::Select {
             on_true,
@@ -4602,6 +4678,7 @@ mod tests {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                         dst: MachineReg(6),
                         addr: crate::vm::native::ir::machine::MachineAddr {
                             base: MachineReg(6),
@@ -4646,6 +4723,7 @@ mod tests {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                         addr: crate::vm::native::ir::machine::MachineAddr {
                             base: MachineReg(6),
                             offset: 0,
@@ -4678,6 +4756,7 @@ mod tests {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                         addr: crate::vm::native::ir::machine::MachineAddr {
                             base: MachineReg(6),
                             offset: 0,
@@ -4749,6 +4828,7 @@ mod tests {
                         },
                         MachineInst {
                             kind: MachineInstKind::Store {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::Fp32,
                                 addr: crate::vm::native::ir::machine::MachineAddr {
                                     base: crate::vm::native::ir::machine::MACHINE_FP_REG,
                                     offset: 0,
@@ -4952,6 +5032,7 @@ mod tests {
                         },
                         MachineInst {
                             kind: MachineInstKind::Store {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 addr: crate::vm::native::ir::machine::MachineAddr {
                                     base: crate::vm::native::ir::machine::MACHINE_FP_REG,
                                     offset: 0,
@@ -5038,6 +5119,7 @@ mod tests {
                     params: vec![],
                     ops: vec![MachineInst {
                         kind: MachineInstKind::Store {
+                            ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                             addr: crate::vm::native::ir::machine::MachineAddr {
                                 base: crate::vm::native::ir::machine::MACHINE_FP_REG,
                                 offset: 0,
@@ -5356,6 +5438,7 @@ mod tests {
                         },
                         MachineInst {
                             kind: MachineInstKind::Store {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 addr: crate::vm::native::ir::machine::MachineAddr {
                                     base: crate::vm::native::ir::machine::MACHINE_FP_REG,
                                     offset: 0,

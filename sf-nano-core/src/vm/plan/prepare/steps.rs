@@ -59,6 +59,8 @@ struct ControlFrame {
     /// Else can restore the correct param types after the then-arm may
     /// have overwritten them.
     param_types: Vec<ValueType>,
+    /// Result types for the control merge shape.
+    result_types: Vec<ValueType>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +76,7 @@ struct PrepareState {
 }
 
 impl PrepareState {
-    fn new(results: u16, local_types: Vec<ValueType>) -> Self {
+    fn new(results: u16, local_types: Vec<ValueType>, result_types: Vec<ValueType>) -> Self {
         Self {
             height: 0,
             spill_depth: 0,
@@ -86,6 +88,7 @@ impl PrepareState {
                 results,
                 entered_unreachable: false,
                 param_types: Vec::new(),
+                result_types: normalized_result_types(results, Some(result_types.as_slice())),
             }],
             type_stack: Vec::new(),
             local_types,
@@ -93,11 +96,11 @@ impl PrepareState {
     }
 
     fn mark_unreachable(&mut self) {
-        if let Some(frame) = self.control.last() {
-            let target = frame.start_height.saturating_add(frame.results) as usize;
-            self.height = target as u16;
+        if let Some(frame) = self.control.last().cloned() {
+            self.height = frame.start_height.saturating_add(frame.results);
             self.spill_depth = self.height;
-            self.type_stack.truncate(target);
+            self.type_stack.truncate(frame.start_height as usize);
+            self.type_stack.extend_from_slice(&frame.result_types);
         }
         self.unreachable = true;
     }
@@ -137,6 +140,18 @@ impl PrepareState {
                 .collect()
         }
     }
+
+    fn validate_type_stack(&self, context: &str) -> Result<(), WasmError> {
+        if self.type_stack.len() == self.height as usize {
+            return Ok(());
+        }
+        Err(WasmError::internal(alloc::format!(
+            "prepared type stack length {} does not match conceptual height {} during {}",
+            self.type_stack.len(),
+            self.height,
+            context,
+        )))
+    }
 }
 
 pub(super) fn prepare_semantic_ops<'a>(
@@ -144,11 +159,16 @@ pub(super) fn prepare_semantic_ops<'a>(
     frame: FrameLayoutPlan,
     config: PlanConfig,
 ) -> Result<PreparedStream<'a>, WasmError> {
-    let mut state = PrepareState::new(semantic.results, semantic.local_types.clone());
+    let mut state = PrepareState::new(
+        semantic.results,
+        semantic.local_types.clone(),
+        semantic.result_types.clone(),
+    );
     let mut entry_states = Vec::with_capacity(semantic.ops.len());
     let mut ops = Vec::with_capacity(semantic.ops.len());
 
     for (op_index, semantic_op) in semantic.ops.iter().enumerate() {
+        state.validate_type_stack(&alloc::format!("entry to semantic op {}", op_index))?;
         let live_count = state.height.saturating_sub(state.spill_depth);
         let live_types = if state.unreachable {
             Vec::new()
@@ -170,11 +190,16 @@ pub(super) fn prepare_semantic_ops<'a>(
             config.fp_transient_budget,
             &semantic.op_result_types,
         );
+        state.validate_type_stack(&alloc::format!(
+            "prefix planning for semantic op {}",
+            op_index
+        ))?;
         ops.push(PreparedOp {
             semantic: semantic_op,
             prefix,
         });
         apply_semantic_effect(semantic_op, op_index, &semantic.op_result_types, &mut state);
+        state.validate_type_stack(&alloc::format!("effect of semantic op {}", op_index))?;
     }
 
     Ok(PreparedStream { ops, entry_states })
@@ -363,6 +388,7 @@ fn apply_semantic_effect(
                 results: *results,
                 entered_unreachable: state.unreachable,
                 param_types,
+                result_types: control_result_types(*results, op_index, op_result_types),
             });
         }
         SemanticOpKind::If {
@@ -391,6 +417,7 @@ fn apply_semantic_effect(
                 results: *results,
                 entered_unreachable,
                 param_types,
+                result_types: control_result_types(*results, op_index, op_result_types),
             });
         }
         SemanticOpKind::Else { .. } => {
@@ -435,7 +462,8 @@ fn apply_semantic_effect(
                         ControlFrameKind::Function => end_height,
                         ControlFrameKind::Structured => frame.start_height,
                     };
-                    state.type_stack.truncate(end_height as usize);
+                    state.type_stack.truncate(frame.start_height as usize);
+                    state.type_stack.extend_from_slice(&frame.result_types);
                     state.unreachable = false;
                 }
             }
@@ -526,6 +554,36 @@ fn push_result_types(
             type_stack.push(ValueType::I64);
         }
     }
+}
+
+fn normalized_result_types(results: u16, result_types: Option<&[ValueType]>) -> Vec<ValueType> {
+    if results == 0 {
+        return Vec::new();
+    }
+    if let Some(types) = result_types {
+        if types.is_empty() {
+            return alloc::vec![ValueType::I64; results as usize];
+        }
+        debug_assert_eq!(
+            types.len(),
+            results as usize,
+            "result type metadata has {} entries but control result arity is {}",
+            types.len(),
+            results,
+        );
+        if types.len() == results as usize {
+            return types.to_vec();
+        }
+    }
+    alloc::vec![ValueType::I64; results as usize]
+}
+
+fn control_result_types(
+    results: u16,
+    op_index: usize,
+    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+) -> Vec<ValueType> {
+    normalized_result_types(results, op_result_types.get(&op_index).map(Vec::as_slice))
 }
 
 fn apply_stack_effect_typed(state: &mut PrepareState, pop: u16, push: u16, result_ty: ValueType) {

@@ -45,6 +45,7 @@ pub(super) fn lower_block_range(
     original_block_count: usize,
     extra_blocks_len: usize,
     local_types: &[ValueType],
+    result_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
     skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
 ) -> Result<LoweredBlock, WasmError> {
@@ -87,6 +88,7 @@ pub(super) fn lower_block_range(
         original_block_count,
         extra_blocks_len,
         local_types,
+        result_types,
         op_result_types,
         skip_reload_iter,
     )?;

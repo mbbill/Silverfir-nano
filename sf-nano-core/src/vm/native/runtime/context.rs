@@ -3,10 +3,9 @@
 //! This is the runtime object that native lowering targets. It stays local to
 //! the native runtime boundary rather than becoming part of the generic VM API.
 //!
-//! NOTE: The current native ABI and shared MachineIR use a 64-bit machine
-//! model. Lowering reads pointer-like fields and cached lengths/counts through
-//! `U64` accesses, so 32-bit targets would need an explicit pointer-width
-//! abstraction instead of reusing this layout as-is.
+//! NOTE: This Rust struct follows the host compiler ABI. Shared lowering and
+//! the emulator must use the explicit target-side layout helpers in
+//! [`super::layout`] rather than assuming these host offsets/strides directly.
 
 use alloc::vec::Vec;
 

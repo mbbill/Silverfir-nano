@@ -2,6 +2,8 @@
 //!
 //! This is semantic/frontend-only metadata used while decoding a function body.
 
+use alloc::vec::Vec;
+
 use crate::{
     module::type_context::TypeContext,
     op_decoder::{BlockType, Immediate},
@@ -24,6 +26,8 @@ pub struct CompileContext<'a> {
     /// Per-local value types (params ++ non-param locals).
     /// When empty, the decode stage will not propagate type info.
     pub local_types: &'a [ValueType],
+    /// Function result types in signature order.
+    pub result_types: &'a [ValueType],
 }
 
 impl<'a> CompileContext<'a> {
@@ -44,18 +48,20 @@ impl<'a> CompileContext<'a> {
             local_count,
             results,
             local_types: &[],
+            result_types: &[],
         }
     }
 
     #[inline]
-    pub const fn with_local_types(
+    pub const fn with_value_types(
         types: &'a TypeContext,
         store: &'a Store,
         module: &'a ModuleInst,
         params: u16,
         local_count: u16,
         results: u16,
-        local_types: &'a [crate::value_type::ValueType],
+        local_types: &'a [ValueType],
+        result_types: &'a [ValueType],
     ) -> Self {
         Self {
             types,
@@ -65,6 +71,7 @@ impl<'a> CompileContext<'a> {
             local_count,
             results,
             local_types,
+            result_types,
         }
     }
 
@@ -86,6 +93,27 @@ impl<'a> CompileContext<'a> {
         match imm {
             Immediate::Block(block_type) => self.resolve_block_type(block_type),
             _ => (0, 0),
+        }
+    }
+
+    #[inline]
+    pub fn resolve_block_result_types(&self, block_type: &BlockType) -> Vec<ValueType> {
+        match block_type {
+            BlockType::Empty => Vec::new(),
+            BlockType::ValueType(value_type) => alloc::vec![*value_type],
+            BlockType::TypeIndex(idx) => self
+                .types
+                .get(*idx as u32)
+                .map(|ty| ty.results().to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    #[inline]
+    pub fn resolve_block_result_types_from_imm(&self, imm: &Immediate) -> Vec<ValueType> {
+        match imm {
+            Immediate::Block(block_type) => self.resolve_block_result_types(block_type),
+            _ => Vec::new(),
         }
     }
 

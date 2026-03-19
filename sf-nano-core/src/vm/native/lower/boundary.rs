@@ -80,6 +80,7 @@ impl<'a> BlockLowerContext<'a> {
         for slot in args.count..callee_runtime.frame_prefix_slots {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpI64,
                     addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
                     width: crate::vm::native::ir::machine::MachineMemWidth::U64,
                     src: MachineValue::Imm64(0),
@@ -289,6 +290,7 @@ impl<'a> BlockLowerContext<'a> {
         let call_link = self.call_link_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                 addr: self.frame_region_addr(
                     callee_frame_base,
                     call_scratch,
@@ -300,6 +302,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                 addr: self.frame_region_addr(
                     callee_frame_base,
                     call_scratch,
@@ -311,6 +314,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                 addr: self.frame_region_addr(
                     callee_frame_base,
                     call_scratch,

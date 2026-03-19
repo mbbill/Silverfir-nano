@@ -61,9 +61,16 @@ pub enum MachineFloatWidth {
 
 /// Storage class carried by a machine register or generic move/select.
 ///
-/// `GpWord` is one native GP register wide for the selected backend. It is
-/// used for pointer-width values plus non-float scalar values that do not need
-/// true 64-bit GP arithmetic on 32-bit targets.
+/// This is intentionally about register occupancy, not the full semantic Wasm
+/// type:
+/// - `GpWord` means "one native GP register wide on this target"
+/// - `GpI64` means "a true 64-bit GP integer value"
+///
+/// On 64-bit targets, many semantic `i32` values still live in `GpWord`
+/// storage and use `MachineIntWidth::I32` on the consuming instruction. The
+/// backend may encode those ops using a 32-bit subregister view such as
+/// `eax`/`rax` or `w0`/`x0`, but that is still one physical GP register slot,
+/// not a separate storage class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MachineStorageType {
     GpWord,

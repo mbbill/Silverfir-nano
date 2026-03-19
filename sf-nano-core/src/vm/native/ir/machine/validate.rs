@@ -106,13 +106,17 @@ impl MachineProgram {
                 self.validate_reg(*dst)?;
                 self.validate_addr(*addr)?;
             }
-            MachineInstKind::Load { dst, addr, .. } => {
+            MachineInstKind::Load { ty, dst, addr, .. } => {
                 self.validate_reg(*dst)?;
                 self.validate_addr(*addr)?;
+                self.validate_reg_storage_type(*dst, *ty)?;
             }
-            MachineInstKind::Store { addr, src, .. } => {
+            MachineInstKind::Store { ty, addr, src, .. } => {
                 self.validate_addr(*addr)?;
                 self.validate_value(*src)?;
+                if let MachineValue::Reg(src_reg) = src {
+                    self.validate_reg_storage_type(*src_reg, *ty)?;
+                }
             }
             MachineInstKind::IntUnary { dst, src, .. }
             | MachineInstKind::FloatUnary { dst, src, .. }
@@ -127,10 +131,215 @@ impl MachineProgram {
                 self.validate_value(*lhs)?;
                 self.validate_value(*rhs)?;
             }
+            MachineInstKind::IntMulWide {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+                ..
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine IntMulWide requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
+            MachineInstKind::Int64PairDivRem {
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+                ..
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*lhs_lo)?;
+                self.validate_value(*lhs_hi)?;
+                self.validate_value(*rhs_lo)?;
+                self.validate_value(*rhs_hi)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine Int64PairDivRem requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
+            MachineInstKind::Int64PairUnary {
+                op,
+                dst_lo,
+                dst_hi,
+                src_lo,
+                src_hi,
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*src_lo)?;
+                self.validate_value(*src_hi)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if !matches!(
+                    op,
+                    super::types::MachineIntUnaryOp::Clz
+                        | super::types::MachineIntUnaryOp::Ctz
+                        | super::types::MachineIntUnaryOp::Popcnt
+                ) {
+                    return Err(WasmError::internal(
+                        "machine Int64PairUnary requires a supported i64 unary op".into(),
+                    ));
+                }
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine Int64PairUnary requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
+            MachineInstKind::Int64PairShift {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs,
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*lhs_lo)?;
+                self.validate_value(*lhs_hi)?;
+                self.validate_value(*rhs)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if !matches!(
+                    op,
+                    super::types::MachineIntBinaryOp::Shl
+                        | super::types::MachineIntBinaryOp::ShrS
+                        | super::types::MachineIntBinaryOp::ShrU
+                        | super::types::MachineIntBinaryOp::Rotl
+                        | super::types::MachineIntBinaryOp::Rotr
+                ) {
+                    return Err(WasmError::internal(
+                        "machine Int64PairShift requires a shift/rotate op".into(),
+                    ));
+                }
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine Int64PairShift requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
             MachineInstKind::FloatCompare { dst, lhs, rhs, .. } => {
                 self.validate_reg(*dst)?;
                 self.validate_value(*lhs)?;
                 self.validate_value(*rhs)?;
+            }
+            MachineInstKind::ConvertI64PairToFloat {
+                width,
+                dst,
+                src_lo,
+                src_hi,
+                ..
+            } => {
+                self.validate_reg(*dst)?;
+                self.validate_value(*src_lo)?;
+                self.validate_value(*src_hi)?;
+                self.validate_reg_storage_type(
+                    *dst,
+                    match width {
+                        super::types::MachineFloatWidth::F32 => MachineStorageType::Fp32,
+                        super::types::MachineFloatWidth::F64 => MachineStorageType::Fp64,
+                    },
+                )?;
+            }
+            MachineInstKind::ConvertFloatToI64Pair {
+                op,
+                dst_lo,
+                dst_hi,
+                src,
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*src)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if !matches!(
+                    op,
+                    super::types::MachineConvertOp::I64TruncF32S
+                        | super::types::MachineConvertOp::I64TruncF32U
+                        | super::types::MachineConvertOp::I64TruncF64S
+                        | super::types::MachineConvertOp::I64TruncF64U
+                        | super::types::MachineConvertOp::I64TruncSatF32S
+                        | super::types::MachineConvertOp::I64TruncSatF32U
+                        | super::types::MachineConvertOp::I64TruncSatF64S
+                        | super::types::MachineConvertOp::I64TruncSatF64U
+                ) {
+                    return Err(WasmError::internal(
+                        "machine ConvertFloatToI64Pair requires an i64 trunc/trunc_sat op".into(),
+                    ));
+                }
+                if let MachineValue::Reg(src_reg) = src {
+                    self.validate_reg_storage_type(
+                        *src_reg,
+                        match op {
+                            super::types::MachineConvertOp::I64TruncF32S
+                            | super::types::MachineConvertOp::I64TruncF32U
+                            | super::types::MachineConvertOp::I64TruncSatF32S
+                            | super::types::MachineConvertOp::I64TruncSatF32U => {
+                                MachineStorageType::Fp32
+                            }
+                            _ => MachineStorageType::Fp64,
+                        },
+                    )?;
+                }
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine ConvertFloatToI64Pair requires distinct low/high destinations"
+                            .into(),
+                    ));
+                }
+            }
+            MachineInstKind::ReinterpretF64ToI64Pair {
+                dst_lo,
+                dst_hi,
+                src,
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*src)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if let MachineValue::Reg(src_reg) = src {
+                    self.validate_reg_storage_type(*src_reg, MachineStorageType::Fp64)?;
+                }
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine ReinterpretF64ToI64Pair requires distinct low/high destinations"
+                            .into(),
+                    ));
+                }
+            }
+            MachineInstKind::ReinterpretI64PairToF64 {
+                dst,
+                src_lo,
+                src_hi,
+            } => {
+                self.validate_reg(*dst)?;
+                self.validate_value(*src_lo)?;
+                self.validate_value(*src_hi)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::Fp64)?;
+                if let MachineValue::Reg(src_lo_reg) = src_lo {
+                    self.validate_reg_storage_type(*src_lo_reg, MachineStorageType::GpWord)?;
+                }
+                if let MachineValue::Reg(src_hi_reg) = src_hi {
+                    self.validate_reg_storage_type(*src_hi_reg, MachineStorageType::GpWord)?;
+                }
             }
             MachineInstKind::Select {
                 ty,

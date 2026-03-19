@@ -40,6 +40,7 @@ struct TrackedStore {
 #[derive(Clone, Copy)]
 struct TrackedLoad {
     addr: MachineAddr,
+    ty: MachineStorageType,
     width: super::MachineMemWidth,
     extension: super::MachineLoadExtension,
     reg: MachineReg,
@@ -67,6 +68,7 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width
             first_transient,
             program.first_fp_reg,
             program.fp_transient_count,
+            gp_reg_width,
             &mut cp_scratch,
         );
         forward_stored_values(block, program.first_fp_reg);
@@ -82,6 +84,7 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width
             first_transient,
             program.first_fp_reg,
             program.fp_transient_count,
+            gp_reg_width,
             &mut cp_scratch,
         );
     }
@@ -232,6 +235,7 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
 
         match &mut inst.kind {
             MachineInstKind::Load {
+                ty,
                 dst,
                 addr,
                 width: super::MachineMemWidth::U64,
@@ -245,17 +249,20 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 {
                     if matches!(src, MachineValue::Reg(src_reg) if src_reg == *dst) {
                         keep_inst = false;
-                    } else if let Some(ty) = rewrite_move_storage_type(
-                        *dst,
-                        src,
-                        super::MachineMemWidth::U64,
-                        first_fp_reg,
-                    ) {
-                        inst.kind = MachineInstKind::Move { ty, dst: *dst, src };
+                    } else if let Some(move_ty) =
+                        rewrite_move_storage_type(*dst, src, *ty, first_fp_reg)
+                    {
+                        inst.kind = MachineInstKind::Move {
+                            ty: move_ty,
+                            dst: *dst,
+                            src,
+                        };
                     }
                 }
             }
-            MachineInstKind::Store { addr, width, src } => {
+            MachineInstKind::Store {
+                addr, width, src, ..
+            } => {
                 tracked.retain(|entry| {
                     !addrs_overlap(entry.addr, super::MachineMemWidth::U64, *addr, *width)
                 });
@@ -296,6 +303,7 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
 
         match &inst.kind {
             MachineInstKind::Load {
+                ty,
                 dst,
                 addr,
                 width,
@@ -306,6 +314,7 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
                     .rev()
                     .find(|entry| {
                         entry.addr == *addr
+                            && entry.ty == *ty
                             && entry.width == *width
                             && entry.extension == *extension
                     })
@@ -313,15 +322,16 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 {
                     if src_reg == *dst {
                         keep_inst = false;
-                    } else if let Some(ty) = rewrite_move_storage_type(
+                    } else if let Some(move_ty) = rewrite_move_storage_type(
                         *dst,
                         MachineValue::Reg(src_reg),
-                        *width,
+                        *ty,
                         first_fp_reg,
                     ) {
-                        rewrite_load = Some((*dst, src_reg, ty));
+                        rewrite_load = Some((*dst, src_reg, move_ty));
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
+                            ty: *ty,
                             width: *width,
                             extension: *extension,
                             reg: *dst,
@@ -330,6 +340,7 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 } else {
                     produced_load = Some(TrackedLoad {
                         addr: *addr,
+                        ty: *ty,
                         width: *width,
                         extension: *extension,
                         reg: *dst,
@@ -401,6 +412,7 @@ fn copy_propagate(
     first_transient: u16,
     first_fp_reg: u16,
     fp_transient_count: u16,
+    gp_reg_width: u8,
     scratch: &mut CopyPropagateScratch,
 ) {
     scratch.clear();
@@ -432,14 +444,15 @@ fn copy_propagate(
 
         match &inst.kind {
             MachineInstKind::Move {
+                ty,
                 dst,
                 src: MachineValue::Reg(src),
-                ..
             } => {
                 if *dst == *src {
                     continue;
                 }
                 if is_transient_reg(*dst, first_transient, first_fp_reg, fp_transient_count)
+                    && (gp_reg_width != 4 || ty.is_fp())
                     && same_reg_bank(*dst, *src, first_fp_reg)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
@@ -489,6 +502,18 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -509,6 +534,14 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
+        MachineInstKind::IntMulWide { .. } => None,
+        MachineInstKind::Int64PairUnary { .. } => None,
+        MachineInstKind::Int64PairDivRem { .. } => None,
+        MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::ConvertFloatToI64Pair { .. } => None,
+        MachineInstKind::ConvertI64PairToFloat { dst, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
+        MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
@@ -601,6 +634,36 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
             f(lhs);
             f(rhs);
         }
+        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
+            f(src_lo);
+            f(src_hi);
+        }
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs_lo);
+            f(rhs_hi);
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs);
+        }
         MachineInstKind::IntCompare { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
@@ -615,6 +678,16 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
             f(rhs);
         }
         MachineInstKind::Convert { src, .. } => f(src),
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
+            f(src_lo);
+            f(src_hi);
+        }
+        MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => f(src),
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            f(src_lo);
+            f(src_hi);
+        }
         MachineInstKind::Select {
             on_true,
             on_false,
@@ -644,6 +717,43 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
                 try_replace(rhs, old, new_val);
             }
         }
+        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            if !try_replace(lhs, old, new_val) {
+                try_replace(rhs, old, new_val);
+            }
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
+            if !try_replace(src_lo, old, new_val) {
+                try_replace(src_hi, old, new_val);
+            }
+        }
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            if !try_replace(lhs_lo, old, new_val) {
+                if !try_replace(lhs_hi, old, new_val) {
+                    if !try_replace(rhs_lo, old, new_val) {
+                        try_replace(rhs_hi, old, new_val);
+                    }
+                }
+            }
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            if !try_replace(lhs_lo, old, new_val) {
+                if !try_replace(lhs_hi, old, new_val) {
+                    try_replace(rhs, old, new_val);
+                }
+            }
+        }
         MachineInstKind::IntCompare { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
@@ -664,6 +774,20 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
         }
         MachineInstKind::Convert { src, .. } => {
             try_replace(src, old, new_val);
+        }
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
+            if !try_replace(src_lo, old, new_val) {
+                try_replace(src_hi, old, new_val);
+            }
+        }
+        MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => {
+            try_replace(src, old, new_val);
+        }
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            if !try_replace(src_lo, old, new_val) {
+                try_replace(src_hi, old, new_val);
+            }
         }
         MachineInstKind::Store { src, .. } => {
             try_replace(src, old, new_val);
@@ -699,7 +823,14 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         MachineInstKind::Move { src, .. }
         | MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
-        | MachineInstKind::Convert { src, .. } => rewrite_value(src, aliases),
+        | MachineInstKind::Convert { src, .. }
+        | MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => rewrite_value(src, aliases),
+        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            rewrite_value(src_lo, aliases);
+            rewrite_value(src_hi, aliases);
+        }
         MachineInstKind::FloatConst { .. } => {}
         MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => {
             rewrite_addr(addr, aliases);
@@ -709,10 +840,37 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(src, aliases);
         }
         MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
+        MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            rewrite_value(lhs_lo, aliases);
+            rewrite_value(lhs_hi, aliases);
+            rewrite_value(rhs_lo, aliases);
+            rewrite_value(rhs_hi, aliases);
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
+            rewrite_value(src_lo, aliases);
+            rewrite_value(src_hi, aliases);
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            rewrite_value(lhs_lo, aliases);
+            rewrite_value(lhs_hi, aliases);
             rewrite_value(rhs, aliases);
         }
         MachineInstKind::Select {
@@ -958,18 +1116,13 @@ fn move_rewrite_supported(dst: MachineReg, src: MachineValue, first_fp_reg: u16)
 fn rewrite_move_storage_type(
     dst: MachineReg,
     src: MachineValue,
-    width: super::MachineMemWidth,
+    ty: MachineStorageType,
     first_fp_reg: u16,
 ) -> Option<MachineStorageType> {
-    let dst_is_fp = dst.0 >= first_fp_reg;
-    let src_is_fp = matches!(src, MachineValue::Reg(src_reg) if src_reg.0 >= first_fp_reg);
-    match (dst_is_fp, src_is_fp, width) {
-        (true, _, super::MachineMemWidth::U32) => Some(MachineStorageType::Fp32),
-        (true, _, super::MachineMemWidth::U64) => Some(MachineStorageType::Fp64),
-        (false, true, super::MachineMemWidth::U32) => Some(MachineStorageType::GpWord),
-        (false, true, super::MachineMemWidth::U64) => Some(MachineStorageType::GpI64),
-        _ => None,
+    if (dst.0 >= first_fp_reg) != ty.is_fp() {
+        return None;
     }
+    move_rewrite_supported(dst, src, first_fp_reg).then_some(ty)
 }
 
 fn can_elide_reg_move(

@@ -42,8 +42,9 @@ use crate::{
                     MachineFunctionRuntime, MachineRuntimeContract,
                 },
             },
-            runtime::context::{
-                ctx_offset, function_kind, function_view_offset, NativeFunctionView,
+            runtime::{
+                context::function_kind,
+                layout::{function_view_abi_layout, native_runtime_abi_layout},
             },
         },
         plan::frame::FrameLayoutPlan,
@@ -824,33 +825,37 @@ fn emit_call_indirect_bounds_check_setup(
     table_idx: u32,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<(), WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
     let index = lower.transient_reg(0)?;
     let table_views = lower.transient_reg(1)?;
     let table_len = lower.transient_reg(2)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: index,
             addr: lower.frame_addr(index_slot)?,
-            width: lower.gp_word_mem_width(),
+            width: lower.canonical_gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: table_views,
-            addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+            addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
             width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: table_len,
             addr: indexed_const_addr(
                 table_views,
                 table_idx,
-                core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
-                crate::vm::native::runtime::context::table_view_offset::ELEMENTS_LEN,
+                runtime_layout.pointer_len_view.stride as usize,
+                runtime_layout.pointer_len_view.len_offset,
             )?,
             width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
@@ -864,34 +869,38 @@ fn build_call_indirect_checked_block(
     table_idx: u32,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
     let index = lower.transient_reg(0)?;
     let table_base = lower.transient_reg(1)?;
     let func_idx = lower.transient_reg(2)?;
     Ok(vec![
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: index,
                 addr: lower.frame_addr(index_slot)?,
-                width: lower.gp_word_mem_width(),
+                width: lower.canonical_gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_base,
-                addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
                 width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: indexed_const_addr(
                     table_base,
                     table_idx,
-                    core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
-                    crate::vm::native::runtime::context::table_view_offset::ELEMENTS_BASE,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.base_offset,
                 )?,
                 width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
@@ -903,7 +912,7 @@ fn build_call_indirect_checked_block(
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: index,
                 lhs: MachineValue::Reg(index),
-                rhs: MachineValue::Imm64(core::mem::size_of::<crate::vm::value::RefHandle>() as u64),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
             },
         },
         MachineInst {
@@ -917,6 +926,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: func_idx,
                 addr: crate::vm::native::ir::machine::MachineAddr {
                     base: table_base,
@@ -928,15 +938,17 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
                 addr: lower.frame_addr(index_slot)?,
-                width: lower.gp_word_mem_width(),
+                width: lower.canonical_gp_word_mem_width(),
                 src: MachineValue::Reg(func_idx),
             },
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_base,
-                addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_LEN),
+                addr: lower.runtime_addr(runtime_layout.context.function_views_len_offset),
                 width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -949,6 +961,8 @@ fn build_call_indirect_type_check_block(
     expected_type_idx: u32,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
+    let function_view_layout = function_view_abi_layout();
+    let runtime_layout = lower.runtime_abi_layout();
     let actual_type = lower.transient_reg(0)?;
     let function_views = lower.transient_reg(1)?;
     let scaled_index = lower.transient_reg(2)?;
@@ -959,21 +973,23 @@ fn build_call_indirect_type_check_block(
         scaled_index,
         function_views,
         scaled_index,
-        function_view_offset::TYPE_CANON,
+        function_view_layout.type_canon_offset,
         MachineMemWidth::U32,
         MachineLoadExtension::ZeroExtend,
         actual_type,
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: function_views,
-            addr: lower.runtime_addr(ctx_offset::TYPE_CANON_BASE),
+            addr: lower.runtime_addr(runtime_layout.context.type_canon_base_offset),
             width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: expected_type,
             addr: indexed_const_addr(
                 function_views,
@@ -992,6 +1008,7 @@ fn build_call_indirect_dispatch_block(
     lower: &BlockLowerContext<'_>,
     index_slot: crate::vm::plan::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
+    let function_view_layout = function_view_abi_layout();
     let kind = lower.transient_reg(0)?;
     let function_views = lower.transient_reg(1)?;
     let scaled_index = lower.transient_reg(2)?;
@@ -1002,17 +1019,18 @@ fn build_call_indirect_dispatch_block(
         scaled_index,
         function_views,
         scaled_index,
-        function_view_offset::KIND,
+        function_view_layout.kind_offset,
         MachineMemWidth::U32,
         MachineLoadExtension::ZeroExtend,
         kind,
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst: local_target,
             addr: crate::vm::native::ir::machine::MachineAddr {
                 base: function_views,
-                offset: function_view_offset::LOCAL_TARGET as i32,
+                offset: function_view_layout.local_target_offset as i32,
             },
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
@@ -1056,12 +1074,14 @@ fn dynamic_function_view_load(
     field_extension: MachineLoadExtension,
     dst: MachineReg,
 ) -> Result<Vec<MachineInst>, WasmError> {
+    let runtime_layout = native_runtime_abi_layout(lower.gp_reg_width());
     Ok(vec![
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: func_idx_dst,
                 addr: lower.frame_addr(index_slot)?,
-                width: lower.gp_word_mem_width(),
+                width: lower.canonical_gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -1078,13 +1098,14 @@ fn dynamic_function_view_load(
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: scaled_index_reg,
                 lhs: MachineValue::Reg(scaled_index_reg),
-                rhs: MachineValue::Imm64(core::mem::size_of::<NativeFunctionView>() as u64),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.function_view.stride)),
             },
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: base_reg,
-                addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_BASE),
+                addr: lower.runtime_addr(runtime_layout.context.function_views_base_offset),
                 width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -1100,6 +1121,7 @@ fn dynamic_function_view_load(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst,
                 addr: crate::vm::native::ir::machine::MachineAddr {
                     base: base_reg,

@@ -9,13 +9,10 @@ use crate::{
             ir::machine::{
                 machine_ptr_width, MachineBlockId, MachineBranchCond, MachineCompareKind,
                 MachineConvertOp, MachineFloatWidth, MachineInst, MachineInstKind,
-                MachineLoadExtension, MachineMemWidth, MachineTerminator, MachineTrapKind,
-                MachineValue,
+                MachineLoadExtension, MachineMemWidth, MachineStorageType, MachineTerminator,
+                MachineTrapKind, MachineValue,
             },
-            runtime::context::{
-                ctx_offset, globals_view_offset, memory_view_offset, table_view_offset,
-                NativeMemoryView, NativeTableView,
-            },
+            runtime::layout::native_runtime_abi_layout,
         },
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -165,23 +162,26 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         } else {
+            let runtime_layout = self.runtime_abi_layout();
             let temp = self.borrow_free_transients(1)?[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
                     dst: temp,
-                    addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
+                    addr: self.runtime_addr(runtime_layout.context.memory_views_base_offset),
                     width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
                     dst,
                     addr: self.indexed_addr(
                         temp,
                         mem_idx,
-                        core::mem::size_of::<NativeMemoryView>(),
-                        memory_view_offset::LEN,
+                        runtime_layout.pointer_len_view.stride as usize,
+                        runtime_layout.pointer_len_view.len_offset,
                     )?,
                     width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
@@ -203,18 +203,22 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let dst = self.alloc_result_value(result)?;
-        let width = self.slot_mem_width_for_value(result);
+        let ty = self.value_storage_type(result);
+        let width = self.canonical_value_mem_width_for_value(result);
         let base = self.borrow_free_transients(1)?[0];
+        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty,
                 dst,
                 addr: self.indexed_addr(
                     base,
@@ -232,18 +236,22 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
-        let width = self.slot_mem_width_for_value(src_value);
+        let ty = self.value_storage_type(src_value);
+        let width = self.canonical_value_mem_width_for_value(src_value);
         let base = self.borrow_free_transients(1)?[0];
+        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
+                ty,
                 addr: self.indexed_addr(
                     base,
                     idx,
@@ -260,22 +268,25 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_table_size(&mut self, table_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         let table_views = self.borrow_free_transients(1)?[0];
+        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_views,
-                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
                     table_views,
                     table_idx,
-                    core::mem::size_of::<NativeTableView>(),
-                    table_view_offset::ELEMENTS_LEN,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.len_offset,
                 )?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
@@ -372,11 +383,11 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
-        let fp_load_usable = spec.float_width.is_some()
+        let fp_load_usable = spec.ty.float_width().is_some()
             && (spec.memidx != 0
                 || self.dead_value_reg(addr_value).is_some()
                 || self.borrow_free_transients(1).is_ok());
-        let dst = if let Some(width) = spec.float_width.filter(|_| fp_load_usable) {
+        let dst = if let Some(width) = spec.ty.float_width().filter(|_| fp_load_usable) {
             self.alloc_float_value(single_result(results)?, width)?
         } else {
             self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &[addr_value])?
@@ -398,6 +409,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr32,
                 residual,
                 dst,
+                spec.ty,
                 spec.width,
                 spec.extension,
             )?);
@@ -418,7 +430,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr32,
                 memory_view,
                 residual,
-                Some((dst, spec.width, spec.extension)),
+                Some((dst, spec.ty, spec.width, spec.extension)),
                 None,
             )?);
         }
@@ -445,7 +457,7 @@ impl<'a> BlockLowerContext<'a> {
             let residual =
                 self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
             self.emit_machine_ops(
-                self.lower_mem0_store_continuation(addr32, residual, src, spec.width)?,
+                self.lower_mem0_store_continuation(addr32, residual, src, spec.ty, spec.width)?,
             );
         } else {
             let scratch = self.borrow_free_transients(2)?;
@@ -465,7 +477,7 @@ impl<'a> BlockLowerContext<'a> {
                 memory_view,
                 residual,
                 None,
-                Some((src, spec.width)),
+                Some((src, spec.ty, spec.width)),
             )?);
         }
         Ok(LeafLowering::InPlace)
@@ -483,6 +495,7 @@ impl<'a> BlockLowerContext<'a> {
         scratch: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<u32, WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
+        self.emit_word_add_immediate_wrap_trap_if(addr32, offset);
         self.emit_memory_len_load(memidx, scratch)?;
         if access_bytes == 0 {
             self.emit_machine_inst(MachineInst {
@@ -510,6 +523,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
+            self.emit_word_add_immediate_wrap_trap_if(check_reg, access_bytes);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -533,6 +547,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
+            self.emit_word_add_immediate_wrap_trap_if(addr32, access_bytes);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -562,8 +577,9 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<u32, WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
+        self.emit_word_add_immediate_wrap_trap_if(addr32, offset);
         #[cfg(has_guard_pages)]
-        if self.use_guard_pages() {
+        if self.use_guard_pages() && !self.needs_explicit_multiword_gp_bounds_check(access_bytes) {
             return Ok(0);
         }
         if access_bytes == 0 {
@@ -592,6 +608,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(access_bytes as u64),
                 },
             });
+            self.emit_word_add_immediate_wrap_trap_if(check_reg, access_bytes);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -617,6 +634,7 @@ impl<'a> BlockLowerContext<'a> {
                     rhs: MachineValue::Imm64(check_addend),
                 },
             });
+            self.emit_word_add_immediate_wrap_trap_if(addr32, access_bytes);
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
@@ -641,10 +659,15 @@ impl<'a> BlockLowerContext<'a> {
         access_bytes: u32,
         load_dst: Option<(
             crate::vm::native::ir::machine::MachineReg,
+            MachineStorageType,
             MachineMemWidth,
             MachineLoadExtension,
         )>,
-        store_src: Option<(crate::vm::native::ir::machine::MachineReg, MachineMemWidth)>,
+        store_src: Option<(
+            crate::vm::native::ir::machine::MachineReg,
+            MachineStorageType,
+            MachineMemWidth,
+        )>,
     ) -> Result<Vec<MachineInst>, WasmError> {
         let mut ops = Vec::new();
         if access_bytes != 0 {
@@ -674,9 +697,10 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Reg(addr32),
             },
         });
-        if let Some((dst, width, extension)) = load_dst {
+        if let Some((dst, ty, width, extension)) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    ty,
                     dst,
                     addr: crate::vm::native::ir::machine::MachineAddr {
                         base: scratch,
@@ -687,9 +711,10 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
-        if let Some((src, width)) = store_src {
+        if let Some((src, ty, width)) = store_src {
             ops.push(MachineInst {
                 kind: MachineInstKind::Store {
+                    ty,
                     addr: crate::vm::native::ir::machine::MachineAddr {
                         base: scratch,
                         offset: 0,
@@ -707,6 +732,7 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
         access_bytes: u32,
         dst: crate::vm::native::ir::machine::MachineReg,
+        ty: MachineStorageType,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<Vec<MachineInst>, WasmError> {
@@ -733,6 +759,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                ty,
                 dst,
                 addr: crate::vm::native::ir::machine::MachineAddr {
                     base: addr32,
@@ -750,6 +777,7 @@ impl<'a> BlockLowerContext<'a> {
         addr32: crate::vm::native::ir::machine::MachineReg,
         access_bytes: u32,
         src: crate::vm::native::ir::machine::MachineReg,
+        ty: MachineStorageType,
         width: MachineMemWidth,
     ) -> Result<Vec<MachineInst>, WasmError> {
         let mut ops = Vec::new();
@@ -775,6 +803,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Store {
+                ty,
                 addr: crate::vm::native::ir::machine::MachineAddr {
                     base: addr32,
                     offset: 0,
@@ -812,22 +841,25 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
+        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_len,
-                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: table_len,
                 addr: self.indexed_addr(
                     table_len,
                     table_idx,
-                    core::mem::size_of::<NativeTableView>(),
-                    table_view_offset::ELEMENTS_LEN,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.len_offset,
                 )?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
@@ -879,22 +911,25 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
+        let runtime_layout = self.runtime_abi_layout();
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: scratch,
-                addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
+                addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst: scratch,
                 addr: self.indexed_addr(
                     scratch,
                     table_idx,
-                    core::mem::size_of::<NativeTableView>(),
-                    table_view_offset::ELEMENTS_BASE,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.base_offset,
                 )?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
@@ -906,7 +941,7 @@ impl<'a> BlockLowerContext<'a> {
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: index64,
                 lhs: MachineValue::Reg(index64),
-                rhs: MachineValue::Imm64(core::mem::size_of::<crate::vm::value::RefHandle>() as u64),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
             },
         });
         ops.push(MachineInst {
@@ -921,6 +956,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(dst) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
                     dst,
                     addr: crate::vm::native::ir::machine::MachineAddr {
                         base: scratch,
@@ -934,6 +970,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(src) = store_src {
             ops.push(MachineInst {
                 kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
                     addr: crate::vm::native::ir::machine::MachineAddr {
                         base: scratch,
                         offset: 0,
@@ -983,6 +1020,33 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[inline]
+    fn needs_explicit_multiword_gp_bounds_check(&self, access_bytes: u32) -> bool {
+        self.gp_reg_width() == 4 && access_bytes > u32::from(self.gp_reg_width())
+    }
+
+    fn emit_word_add_immediate_wrap_trap_if(
+        &mut self,
+        sum: crate::vm::native::ir::machine::MachineReg,
+        addend: u32,
+    ) {
+        if self.gp_reg_width() != 4 || addend == 0 {
+            return;
+        }
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::MemoryOutOfBounds,
+                cond: MachineBranchCond::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Lt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(sum),
+                    rhs: MachineValue::Imm64(addend as u64),
+                },
+            },
+        });
+    }
+
     fn emit_memory_len_load(
         &mut self,
         memidx: u32,
@@ -1001,20 +1065,22 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst,
-                addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
+                addr: self.runtime_addr(self.runtime_abi_layout().context.memory_views_base_offset),
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
                     dst,
                     memidx,
-                    core::mem::size_of::<NativeMemoryView>(),
-                    memory_view_offset::LEN,
+                    self.runtime_abi_layout().pointer_len_view.stride as usize,
+                    self.runtime_abi_layout().pointer_len_view.len_offset,
                 )?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
@@ -1278,9 +1344,9 @@ fn machine_convert(
 struct MemoryLoadSpec {
     memidx: u32,
     offset: u32,
+    ty: MachineStorageType,
     width: MachineMemWidth,
     extension: MachineLoadExtension,
-    float_width: Option<MachineFloatWidth>,
 }
 
 impl MemoryLoadSpec {
@@ -1294,6 +1360,7 @@ impl MemoryLoadSpec {
 struct MemoryStoreSpec {
     memidx: u32,
     offset: u32,
+    ty: MachineStorageType,
     width: MachineMemWidth,
 }
 
@@ -1311,100 +1378,100 @@ fn machine_load(primitive: &PrimitiveOpKind) -> Option<MemoryLoadSpec> {
         P::I32Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         P::I64Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U64,
             extension: MachineLoadExtension::None,
-            float_width: None,
         },
         P::F32Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::Fp32,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: Some(MachineFloatWidth::F32),
         },
         P::F64Load { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::Fp64,
             width: MachineMemWidth::U64,
             extension: MachineLoadExtension::None,
-            float_width: Some(MachineFloatWidth::F64),
         },
         P::I32Load8S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::SignExtend,
-            float_width: None,
         },
         P::I32Load8U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         P::I32Load16S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::SignExtend,
-            float_width: None,
         },
         P::I32Load16U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         P::I64Load8S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::SignExtend,
-            float_width: None,
         },
         P::I64Load8U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U8,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         P::I64Load16S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::SignExtend,
-            float_width: None,
         },
         P::I64Load16U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U16,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         P::I64Load32S { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::SignExtend,
-            float_width: None,
         },
         P::I64Load32U { offset, memidx } => MemoryLoadSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U32,
             extension: MachineLoadExtension::ZeroExtend,
-            float_width: None,
         },
         _ => return None,
     })
@@ -1417,46 +1484,55 @@ fn machine_store(primitive: &PrimitiveOpKind) -> Option<MemoryStoreSpec> {
         P::I32Store { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U32,
         },
         P::I64Store { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U64,
         },
         P::F32Store { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::Fp32,
             width: MachineMemWidth::U32,
         },
         P::F64Store { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::Fp64,
             width: MachineMemWidth::U64,
         },
         P::I32Store8 { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U8,
         },
         P::I32Store16 { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U16,
         },
         P::I64Store8 { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U8,
         },
         P::I64Store16 { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U16,
         },
         P::I64Store32 { offset, memidx } => MemoryStoreSpec {
             memidx: *memidx,
             offset: *offset,
+            ty: MachineStorageType::GpI64,
             width: MachineMemWidth::U32,
         },
         _ => return None,
@@ -1514,6 +1590,7 @@ fn emit_memory_base_load_ops(
     dst: crate::vm::native::ir::machine::MachineReg,
     gp_reg_width: u8,
 ) -> Result<(), WasmError> {
+    let runtime_layout = native_runtime_abi_layout(gp_reg_width);
     if memidx == 0 {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
@@ -1527,10 +1604,11 @@ fn emit_memory_base_load_ops(
 
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst,
             addr: crate::vm::native::ir::machine::MachineAddr {
                 base: runtime_base,
-                offset: ctx_offset::MEMORY_VIEWS_BASE as i32,
+                offset: runtime_layout.context.memory_views_base_offset as i32,
             },
             width: machine_ptr_width(gp_reg_width),
             extension: MachineLoadExtension::None,
@@ -1538,13 +1616,14 @@ fn emit_memory_base_load_ops(
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
             dst,
             addr: crate::vm::native::ir::machine::MachineAddr {
                 base: dst,
                 offset: indexed_field_offset(
                     memidx,
-                    core::mem::size_of::<NativeMemoryView>(),
-                    memory_view_offset::BASE,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.base_offset,
                 )?,
             },
             width: machine_ptr_width(gp_reg_width),

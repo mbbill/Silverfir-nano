@@ -37,6 +37,7 @@ pub(super) fn lower_block_terminator(
     original_block_count: usize,
     extra_blocks_len: usize,
     local_types: &[ValueType],
+    result_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
     skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
 ) -> Result<LoweredTerminator, WasmError> {
@@ -438,13 +439,13 @@ pub(super) fn lower_block_terminator(
         })),
         SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(LirTerminator::Return {
             results: {
-                canonicalize_return_results(state, frame, values, 1);
+                canonicalize_return_results(state, frame, values, 1, result_types);
                 return_results(frame, 1)
             },
         })),
         SemanticOpKind::Return { arity } => Ok(LoweredTerminator::new(LirTerminator::Return {
             results: {
-                canonicalize_return_results(state, frame, values, *arity);
+                canonicalize_return_results(state, frame, values, *arity, result_types);
                 return_results(frame, *arity)
             },
         })),
@@ -615,6 +616,7 @@ fn canonicalize_return_results(
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
     arity: u16,
+    result_types: &[ValueType],
 ) {
     if arity == 0 {
         return;
@@ -627,13 +629,7 @@ fn canonicalize_return_results(
     }
 
     for offset in 0..arity as usize {
-        // These temporaries are typed I64 because function result types
-        // are not threaded into return canonicalization. They are
-        // immediately consumed by the following StoreSlot, so they stay
-        // in GP regardless of the actual result type. This is a raw bit
-        // copy and is correct, but float return values will not benefit
-        // from FP-bank residency during this shuffle.
-        let value = values.fresh();
+        let value = values.fresh_typed(result_types.get(offset).copied().unwrap_or(ValueType::I64));
         state.ops.push(crate::vm::lir::ir::LirInst {
             kind: crate::vm::lir::ir::LirInstKind::LoadSlot {
                 slot: src.advance(offset as u16),

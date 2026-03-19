@@ -108,12 +108,29 @@ pub struct SemanticProgram {
     /// When non-empty, `local_types.len() == local_count`.
     /// When empty, downstream consumers should treat all values as untyped.
     pub local_types: Vec<ValueType>,
-    /// Per-op result types for calls and block-type-producing ops.
+    /// Function result types in signature order.
+    ///
+    /// When non-empty, `result_types.len() == results`.
+    pub result_types: Vec<ValueType>,
+    /// Per-op result types for dynamic producers and structured control signatures.
     ///
     /// Maps semantic op index to result value types for ops that push
     /// results whose types are not deterministic from the opcode alone
     /// (calls, blocks with multi-value signatures, etc.).
     pub op_result_types: BTreeMap<usize, Vec<ValueType>>,
+}
+
+pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
+    match kind {
+        SemanticOpKind::CallExternal { results, .. }
+        | SemanticOpKind::CallInternal { results, .. }
+        | SemanticOpKind::CallIndirect { results, .. } => Some(*results as usize),
+        SemanticOpKind::Block { results, .. }
+        | SemanticOpKind::Loop { results, .. }
+        | SemanticOpKind::If { results, .. } => Some(*results as usize),
+        SemanticOpKind::Primitive(kind) => Some(super::primitive_op::stack_effect(kind).1 as usize),
+        _ => None,
+    }
 }
 
 impl SemanticProgram {
@@ -182,6 +199,13 @@ impl SemanticProgram {
                 self.local_count,
             )));
         }
+        if !self.result_types.is_empty() && self.result_types.len() != self.results as usize {
+            return Err(WasmError::internal(alloc::format!(
+                "semantic result_types length {} does not match result arity {}",
+                self.result_types.len(),
+                self.results,
+            )));
+        }
 
         // Validate op_result_types indices are in range and match arity.
         for (op_idx, result_types) in &self.op_result_types {
@@ -193,19 +217,11 @@ impl SemanticProgram {
                 )));
             }
             if let Some(op) = self.ops.get(*op_idx) {
-                let expected_results = match &op.kind {
-                    SemanticOpKind::CallExternal { results, .. }
-                    | SemanticOpKind::CallInternal { results, .. }
-                    | SemanticOpKind::CallIndirect { results, .. } => *results as usize,
-                    SemanticOpKind::Primitive(kind) => {
-                        super::primitive_op::stack_effect(kind).1 as usize
-                    }
-                    _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "op_result_types entry at op {} attached to a non-producing op",
-                            op_idx,
-                        )));
-                    }
+                let Some(expected_results) = semantic_op_result_arity(&op.kind) else {
+                    return Err(WasmError::internal(alloc::format!(
+                        "op_result_types entry at op {} attached to a non-producing op",
+                        op_idx,
+                    )));
                 };
                 if result_types.len() != expected_results {
                     return Err(WasmError::internal(alloc::format!(
@@ -375,6 +391,7 @@ mod tests {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -399,6 +416,7 @@ mod tests {
                 },
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -419,6 +437,7 @@ mod tests {
                 kind: SemanticOpKind::ReturnVoid,
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -428,5 +447,54 @@ mod tests {
         assert!(error
             .message()
             .contains("does not match function result arity"));
+    }
+
+    #[test]
+    fn accepts_structured_control_result_types() {
+        let semantic = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: SemanticTarget::new(4),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: SemanticTarget::new(6),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::I32],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![ValueType::I32],
+            )]),
+        };
+
+        semantic
+            .validate()
+            .expect("if result type metadata should be accepted");
     }
 }

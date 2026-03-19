@@ -111,12 +111,13 @@ pub fn eval(
     }
 
     let results_len = func_type.results().len();
-    let mut out = InterpreterStack::with_exact_capacity(results_len);
-    unsafe {
-        for index in 0..results_len {
-            out.push(*stack_base.add(index));
-        }
-    }
+    let out = unsafe {
+        crate::vm::native::runtime::collect_native_results_from_stack(
+            stack_base,
+            func_type.results(),
+            compiled.backend().gp_unit_bytes,
+        )
+    };
     #[cfg(feature = "function-trace")]
     {
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
@@ -217,6 +218,10 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn runtime_eval_executes_block_like_empty_function() {
+        let _lock = crate::vm::native::arch::backend_mode_test_lock()
+            .lock()
+            .expect("backend mode test lock");
+        crate::vm::native::arch::set_reference_backend(false).expect("reset reference backend");
         let ty = Rc::new(FunctionType::new(vec![], vec![]));
         let types = TypeContext::new(vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
@@ -255,6 +260,10 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn runtime_eval_call_dummy_returns_result() {
         use crate::value_type::ValueType;
+        let _lock = crate::vm::native::arch::backend_mode_test_lock()
+            .lock()
+            .expect("backend mode test lock");
+        crate::vm::native::arch::set_reference_backend(false).expect("reset reference backend");
         // Types: 0 = () -> (), 1 = () -> (i32)
         let void_ty = Rc::new(FunctionType::new(vec![], vec![]));
         let i32_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));

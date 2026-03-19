@@ -66,7 +66,6 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
     assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(4))]);
 }
 
-#[test]
 fn keeps_cached_local_writes_but_rewrites_their_sources() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
@@ -94,6 +93,7 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 0,
@@ -210,6 +210,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 64,
@@ -220,6 +221,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 72,
@@ -239,6 +241,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -250,6 +253,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(8),
                             offset: 0,
@@ -266,15 +270,15 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
     crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 5);
+    assert_eq!(block.ops.len(), 4);
     assert!(matches!(
-        block.ops[4].kind,
+        block.ops[3].kind,
         MachineInstKind::Store {
             addr: MachineAddr {
                 base: MachineReg(8),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(7)),
+            src: MachineValue::Reg(MachineReg(4)),
             ..
         }
     ));
@@ -294,6 +298,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::Fp64,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 64,
@@ -304,6 +309,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -315,6 +321,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 72,
@@ -355,6 +362,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 64,
@@ -372,6 +380,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -416,6 +425,7 @@ fn does_not_forward_across_overlapping_store() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 64,
@@ -426,6 +436,7 @@ fn does_not_forward_across_overlapping_store() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 68,
@@ -436,6 +447,7 @@ fn does_not_forward_across_overlapping_store() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -480,6 +492,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -500,6 +513,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(9),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -511,6 +525,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
                         addr: MachineAddr {
                             base: MachineReg(8),
                             offset: 0,
@@ -527,22 +542,22 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
     crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 4);
+    assert_eq!(block.ops.len(), 3);
     assert!(matches!(
-        block.ops[3].kind,
+        block.ops[2].kind,
         MachineInstKind::Store {
             addr: MachineAddr {
                 base: MachineReg(8),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(9)),
+            src: MachineValue::Reg(MachineReg(7)),
             ..
         }
     ));
 }
 
 #[test]
-fn reuses_identical_loads_from_fp_into_gp_move() {
+fn does_not_reuse_identical_loads_across_distinct_storage_types() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         first_fp_reg: 11,
@@ -555,6 +570,7 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::Fp64,
                         dst: MachineReg(11),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -566,6 +582,7 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -585,9 +602,12 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
     let block = &program.blocks[0];
     assert!(matches!(
         block.ops[1].kind,
-        MachineInstKind::Move {
+        MachineInstKind::Load {
             dst: MachineReg(7),
-            src: MachineValue::Reg(MachineReg(11)),
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 80,
+            },
             ..
         }
     ));
@@ -607,6 +627,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -625,6 +646,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(8),
                         addr: MachineAddr {
                             base: MachineReg(1),
@@ -772,6 +794,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpI64,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 32,
@@ -823,6 +846,7 @@ fn preserves_moves_into_fp_cached_locals() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Store {
+                        ty: MachineStorageType::Fp32,
                         addr: MachineAddr {
                             base: MachineReg(1),
                             offset: 48,

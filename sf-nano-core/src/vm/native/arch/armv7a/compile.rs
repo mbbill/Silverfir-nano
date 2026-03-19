@@ -1200,6 +1200,7 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
         }
 
         MachineInstKind::Load {
+            ty: _,
             dst,
             addr,
             width,
@@ -1208,7 +1209,12 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
             compile_load(fc, *dst, addr, *width, *extension)?;
         }
 
-        MachineInstKind::Store { addr, width, src } => {
+        MachineInstKind::Store {
+            ty: _,
+            addr,
+            width,
+            src,
+        } => {
             compile_store(fc, addr, *width, src)?;
         }
 
@@ -1220,6 +1226,30 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
             rhs,
         } => {
             compile_int_binary(fc, *width, *op, *dst, lhs, rhs)?;
+        }
+
+        MachineInstKind::IntMulWide { .. } => {
+            return Err(WasmError::internal(
+                "armv7a IntMulWide lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::Int64PairUnary { .. } => {
+            return Err(WasmError::internal(
+                "armv7a Int64PairUnary lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::Int64PairDivRem { .. } => {
+            return Err(WasmError::internal(
+                "armv7a Int64PairDivRem lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::Int64PairShift { .. } => {
+            return Err(WasmError::internal(
+                "armv7a Int64PairShift lowering is not implemented yet".into(),
+            ));
         }
 
         MachineInstKind::IntUnary {
@@ -1273,6 +1303,30 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
 
         MachineInstKind::Convert { op, dst, src } => {
             compile_convert(fc, *op, *dst, src)?;
+        }
+
+        MachineInstKind::ConvertI64PairToFloat { .. } => {
+            return Err(WasmError::internal(
+                "armv7a ConvertI64PairToFloat lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::ConvertFloatToI64Pair { .. } => {
+            return Err(WasmError::internal(
+                "armv7a ConvertFloatToI64Pair lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::ReinterpretF64ToI64Pair { .. } => {
+            return Err(WasmError::internal(
+                "armv7a ReinterpretF64ToI64Pair lowering is not implemented yet".into(),
+            ));
+        }
+
+        MachineInstKind::ReinterpretI64PairToF64 { .. } => {
+            return Err(WasmError::internal(
+                "armv7a ReinterpretI64PairToF64 lowering is not implemented yet".into(),
+            ));
         }
 
         MachineInstKind::Select {

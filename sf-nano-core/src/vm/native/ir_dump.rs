@@ -469,21 +469,34 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             format!("lea r{} <- {}", dst.0, maddr(addr))
         }
         MachineInstKind::Load {
+            ty,
             dst,
             addr,
             width,
             extension,
         } => {
             format!(
-                "load.{}{} r{} <- [{}]",
+                "load.{}.{}{} r{} <- [{}]",
+                sty(ty),
                 mwidth(width),
                 mext(extension),
                 dst.0,
                 maddr(addr)
             )
         }
-        MachineInstKind::Store { addr, width, src } => {
-            format!("store.{} [{}] <- {}", mwidth(width), maddr(addr), mval(src))
+        MachineInstKind::Store {
+            ty,
+            addr,
+            width,
+            src,
+        } => {
+            format!(
+                "store.{}.{} [{}] <- {}",
+                sty(ty),
+                mwidth(width),
+                maddr(addr),
+                mval(src)
+            )
         }
         MachineInstKind::IntUnary {
             width,
@@ -506,6 +519,81 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 op,
                 dst.0,
                 mval(lhs),
+                mval(rhs)
+            )
+        }
+        MachineInstKind::IntMulWide {
+            sign,
+            dst_lo,
+            dst_hi,
+            lhs,
+            rhs,
+        } => {
+            format!(
+                "i32.mul_wide.{:?} r{},r{} <- {} {}",
+                sign,
+                dst_lo.0,
+                dst_hi.0,
+                mval(lhs),
+                mval(rhs)
+            )
+        }
+        MachineInstKind::Int64PairDivRem {
+            sign,
+            rem,
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+        } => {
+            format!(
+                "i64pair.{}.{} r{},r{} <- ({}, {}) ({}, {})",
+                if *rem { "rem" } else { "div" },
+                match sign {
+                    crate::vm::native::ir::machine::MachineSign::Signed => "s",
+                    crate::vm::native::ir::machine::MachineSign::Unsigned => "u",
+                },
+                dst_lo.0,
+                dst_hi.0,
+                mval(lhs_lo),
+                mval(lhs_hi),
+                mval(rhs_lo),
+                mval(rhs_hi)
+            )
+        }
+        MachineInstKind::Int64PairUnary {
+            op,
+            dst_lo,
+            dst_hi,
+            src_lo,
+            src_hi,
+        } => {
+            format!(
+                "i64pair.{:?} r{},r{} <- ({}, {})",
+                op,
+                dst_lo.0,
+                dst_hi.0,
+                mval(src_lo),
+                mval(src_hi)
+            )
+        }
+        MachineInstKind::Int64PairShift {
+            op,
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs,
+        } => {
+            format!(
+                "i64pair.{:?} r{},r{} <- ({}, {}) {}",
+                op,
+                dst_lo.0,
+                dst_hi.0,
+                mval(lhs_lo),
+                mval(lhs_hi),
                 mval(rhs)
             )
         }
@@ -569,6 +657,54 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         }
         MachineInstKind::Convert { op, dst, src } => {
             format!("cvt.{:?} r{} <- {}", op, dst.0, mval(src))
+        }
+        MachineInstKind::ConvertI64PairToFloat {
+            width,
+            sign,
+            dst,
+            src_lo,
+            src_hi,
+        } => {
+            format!(
+                "cvt.{:?}.{:?} r{} <- ({}, {})",
+                width,
+                sign,
+                dst.0,
+                mval(src_lo),
+                mval(src_hi)
+            )
+        }
+        MachineInstKind::ConvertFloatToI64Pair {
+            op,
+            dst_lo,
+            dst_hi,
+            src,
+        } => {
+            format!("cvt.{:?} r{},r{} <- {}", op, dst_lo.0, dst_hi.0, mval(src))
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair {
+            dst_lo,
+            dst_hi,
+            src,
+        } => {
+            format!(
+                "reinterpret.f64->i64pair r{},r{} <- {}",
+                dst_lo.0,
+                dst_hi.0,
+                mval(src)
+            )
+        }
+        MachineInstKind::ReinterpretI64PairToF64 {
+            dst,
+            src_lo,
+            src_hi,
+        } => {
+            format!(
+                "reinterpret.i64pair->f64 r{} <- ({}, {})",
+                dst.0,
+                mval(src_lo),
+                mval(src_hi)
+            )
         }
         MachineInstKind::Select {
             ty,

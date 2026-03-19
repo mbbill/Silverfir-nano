@@ -29,6 +29,7 @@ mod tests;
 
 pub use cfg::*;
 pub use inst::*;
+pub(crate) use legalize::*;
 pub use module::*;
 pub use regs::*;
 pub use types::*;

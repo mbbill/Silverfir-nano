@@ -31,6 +31,19 @@ pub struct MachineInst {
 /// Straight-line machine instruction vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineInstKind {
+    /// Copy-like transfer.
+    ///
+    /// For GP storage classes, move-like operations define width adaptation in
+    /// the obvious low-word way:
+    /// - `GpWord -> GpI64` zero-extends
+    /// - `GpI64 -> GpWord` truncates to the low word
+    ///
+    /// This is about register occupancy, not a separate `i32` register bank.
+    /// On 64-bit targets, semantic `i32` values still typically use `GpWord`
+    /// storage and rely on the consuming instruction's `MachineIntWidth::I32`
+    /// to select a 32-bit ALU form.
+    ///
+    /// Signed widening remains an explicit `Convert`.
     Move {
         ty: MachineStorageType,
         dst: MachineReg,
@@ -46,12 +59,14 @@ pub enum MachineInstKind {
         addr: MachineAddr,
     },
     Load {
+        ty: MachineStorageType,
         dst: MachineReg,
         addr: MachineAddr,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     },
     Store {
+        ty: MachineStorageType,
         addr: MachineAddr,
         width: MachineMemWidth,
         src: MachineValue,
@@ -69,6 +84,60 @@ pub enum MachineInstKind {
         lhs: MachineValue,
         rhs: MachineValue,
     },
+    /// Full-width product of two native-word integer operands.
+    ///
+    /// This is introduced by the 32-bit legalizer to model the one primitive
+    /// existing MachineIR cannot express with plain i32 ops: `32x32 -> 64`
+    /// multiply. Inputs are native-word GP values; outputs are the low/high
+    /// word halves of the product.
+    IntMulWide {
+        sign: MachineSign,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    /// 64-bit div/rem over legalized 32-bit GP register pairs.
+    ///
+    /// This is introduced by the 32-bit legalizer for ops that are awkward to
+    /// express as short carry chains. Inputs and outputs are split low/high
+    /// GP-word halves.
+    Int64PairDivRem {
+        sign: MachineSign,
+        rem: bool,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    },
+    /// 64-bit unary integer op over legalized 32-bit GP register pairs.
+    ///
+    /// This currently covers the i64 operations whose result is still i64 but
+    /// whose implementation is much simpler to keep as an explicit pair-aware
+    /// semantic op during 32-bit bringup.
+    Int64PairUnary {
+        op: MachineIntUnaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
+    },
+    /// 64-bit shift/rotate over legalized 32-bit GP register pairs.
+    ///
+    /// This is another 32-bit legalizer bridge op. The value being shifted is
+    /// split into low/high GP-word halves, while the shift count is already
+    /// reduced to the low native word because Wasm shift counts only observe
+    /// the low 6 bits for i64 operations.
+    Int64PairShift {
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs: MachineValue,
+    },
     IntCompare {
         width: MachineIntWidth,
         kind: MachineCompareKind,
@@ -76,6 +145,40 @@ pub enum MachineInstKind {
         dst: MachineReg,
         lhs: MachineValue,
         rhs: MachineValue,
+    },
+    /// 64-bit integer to float conversion from legalized GP register pairs.
+    ///
+    /// Like `Int64PairDivRem`, this is a legalizer-only bridge op for 32-bit
+    /// targets until the backend has native pair-aware lowering.
+    ConvertI64PairToFloat {
+        width: MachineFloatWidth,
+        sign: MachineSign,
+        dst: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
+    },
+    /// Float-to-i64 conversion into a legalized GP-word pair.
+    ///
+    /// The `op` is one of the i64 trunc/trunc_sat families. Keeping the exact
+    /// conversion opcode here preserves its trapping vs saturating semantics in
+    /// the shared 32-bit emulator.
+    ConvertFloatToI64Pair {
+        op: MachineConvertOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src: MachineValue,
+    },
+    /// Raw bit reinterpret from one fp64 value into a legalized i64 pair.
+    ReinterpretF64ToI64Pair {
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src: MachineValue,
+    },
+    /// Raw bit reinterpret from a legalized i64 pair into one fp64 value.
+    ReinterpretI64PairToF64 {
+        dst: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
     },
     FloatUnary {
         width: MachineFloatWidth,

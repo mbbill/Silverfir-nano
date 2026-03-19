@@ -58,7 +58,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         local_types.extend_from_slice(spec.locals());
         let semantic = decode::decode_to_semantic_ir(
             spec.code(),
-            CompileContext::with_local_types(
+            CompileContext::with_value_types(
                 &module.types,
                 store,
                 module,
@@ -66,6 +66,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 local_count,
                 results,
                 &local_types,
+                spec.func_type().results(),
             ),
         )
         .map_err(|err| {

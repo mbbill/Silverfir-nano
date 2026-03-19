@@ -228,18 +228,14 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     // --- Allocate new locals for the callee's params + locals ---
     let local_offset = caller.local_count;
     let callee_total_locals = callee.local_count;
+    let caller_local_count_before = caller.local_count;
     caller.local_count += callee_total_locals;
-    // Extend local_types if the caller tracks them.
-    if !caller.local_types.is_empty() {
-        if callee.local_types.is_empty() {
-            // Callee has no type info — fill with I64 as a safe default.
-            for _ in 0..callee_total_locals {
-                caller.local_types.push(ValueType::I64);
-            }
-        } else {
-            caller.local_types.extend_from_slice(&callee.local_types);
-        }
-    }
+    merge_inlined_local_types(
+        caller,
+        caller_local_count_before,
+        callee,
+        callee_total_locals,
+    );
 
     // --- Build the replacement op sequence ---
     //
@@ -344,8 +340,10 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     // --- Patch op_result_types keys ---
     // 1. Remove the entry for the old CallInternal (now replaced by Block).
     // 2. Shift entries with key > site by the insertion delta.
-    // 3. Copy callee's op_result_types with target_offset applied.
+    // 3. Reattach the old call's result types to the new wrapper Block.
+    // 4. Copy callee's op_result_types with target_offset applied.
     {
+        let wrapper_result_types = caller.op_result_types.get(&site).cloned();
         let shifted: Vec<_> = caller
             .op_result_types
             .iter()
@@ -363,6 +361,9 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
         for (k, v) in shifted {
             caller.op_result_types.insert(k, v);
         }
+        if let Some(wrapper_result_types) = wrapper_result_types {
+            caller.op_result_types.insert(site, wrapper_result_types);
+        }
         // Transfer callee's op_result_types (for multi-value blocks etc.)
         for (&k, v) in &callee.op_result_types {
             if k < callee_body_len {
@@ -372,6 +373,34 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     }
 
     // max_stack_height is recomputed by the caller after all sites are inlined.
+}
+
+fn merge_inlined_local_types(
+    caller: &mut SemanticProgram,
+    caller_local_count_before: u16,
+    callee: &SemanticProgram,
+    callee_total_locals: u16,
+) {
+    if callee_total_locals == 0 {
+        return;
+    }
+
+    if !caller.local_types.is_empty() {
+        if callee.local_types.is_empty() {
+            // Callee has no type info — preserve the caller's typed state with
+            // a conservative fallback for the appended locals.
+            caller
+                .local_types
+                .extend((0..callee_total_locals).map(|_| ValueType::I64));
+        } else {
+            caller.local_types.extend_from_slice(&callee.local_types);
+        }
+        return;
+    }
+
+    if caller_local_count_before == 0 && !callee.local_types.is_empty() {
+        caller.local_types = callee.local_types.clone();
+    }
 }
 
 /// Walk the semantic ops and compute the true max operand stack height.
@@ -592,5 +621,129 @@ fn shift_target(target: SemanticTarget, after: usize, shift: i64) -> SemanticTar
         SemanticTarget::new((idx as i64 + shift) as usize)
     } else {
         target
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_preserves_wrapper_block_result_types() {
+        let mut caller = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::CallInternal {
+                        callee: 1,
+                        params: 0,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                0usize,
+                alloc::vec![ValueType::I32],
+            )]),
+        };
+        let callee = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 7 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        inline_single_call(&mut caller, 0, &callee);
+
+        assert!(matches!(
+            caller.ops.first().map(|op| &op.kind),
+            Some(SemanticOpKind::Block {
+                params: 0,
+                results: 1
+            })
+        ));
+        assert_eq!(
+            caller.op_result_types.get(&0),
+            Some(&alloc::vec![ValueType::I32]),
+            "wrapper Block must keep the inlined call's result types",
+        );
+    }
+
+    #[test]
+    fn inline_adopts_typed_callee_locals_for_zero_local_caller() {
+        let mut caller = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::CallInternal {
+                        callee: 1,
+                        params: 1,
+                        results: 1,
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![ValueType::I32],
+            )]),
+        };
+        let callee = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 1,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::I32],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        inline_single_call(&mut caller, 1, &callee);
+
+        assert_eq!(caller.local_count, 1);
+        assert_eq!(caller.local_types, alloc::vec![ValueType::I32]);
     }
 }

@@ -8,11 +8,15 @@ use crate::vm::{
 
 pub(super) fn optimize_lir(program: &mut LirProgram, frame: FrameLayoutPlan) {
     for block in &mut program.blocks {
-        forward_slot_values(block, frame);
+        forward_slot_values(block, frame, &program.value_types);
     }
 }
 
-fn forward_slot_values(block: &mut LirBlock, frame: FrameLayoutPlan) {
+fn forward_slot_values(
+    block: &mut LirBlock,
+    frame: FrameLayoutPlan,
+    value_types: &[crate::value_type::ValueType],
+) {
     let alias_len = max_value_index(block)
         .map(|value| value.0 as usize + 1)
         .unwrap_or(0);
@@ -32,8 +36,11 @@ fn forward_slot_values(block: &mut LirBlock, frame: FrameLayoutPlan) {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
                 if let Some(src) = slot_values.get(slot.0 as usize).copied().flatten() {
-                    if can_forward_load(src, *dst, &last_uses) {
-                        aliases[dst.0 as usize] = Some(resolve_alias(src, &aliases));
+                    let resolved_src = resolve_alias(src, &aliases);
+                    if can_forward_load(resolved_src, *dst, &last_uses)
+                        && can_forward_load_type(resolved_src, *dst, value_types)
+                    {
+                        aliases[dst.0 as usize] = Some(resolved_src);
                         continue;
                     }
                 }
@@ -156,6 +163,20 @@ fn can_forward_load(src: LirValue, dst: LirValue, last_uses: &[Option<u32>]) -> 
     dst_last_use <= src_last_use
 }
 
+fn can_forward_load_type(
+    src: LirValue,
+    dst: LirValue,
+    value_types: &[crate::value_type::ValueType],
+) -> bool {
+    match (
+        value_types.get(src.0 as usize).copied(),
+        value_types.get(dst.0 as usize).copied(),
+    ) {
+        (Some(src_ty), Some(dst_ty)) => src_ty == dst_ty,
+        _ => true,
+    }
+}
+
 fn rewrite_inst_uses(kind: &mut LirInstKind, aliases: &[Option<LirValue>]) {
     match kind {
         LirInstKind::Value { args, .. } => {
@@ -213,6 +234,7 @@ fn resolve_alias(value: LirValue, aliases: &[Option<LirValue>]) -> LirValue {
 mod tests {
     use alloc::vec::Vec;
 
+    use crate::value_type::ValueType;
     use crate::vm::{
         lir::{
             ir::{LirBlock, LirInstKind, LirProgram, LirTerminator, LirValue},
@@ -365,6 +387,61 @@ mod tests {
                 terminator: LirTerminator::Return { results: None },
             }],
             value_types: alloc::vec![],
+        };
+
+        optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
+
+        let block = &program.blocks[0];
+        assert!(matches!(block.ops[2].kind, LirInstKind::LoadSlot { .. }));
+        assert!(matches!(
+            &block.ops[3].kind,
+            LirInstKind::Value {
+                args,
+                ..
+            } if args == &alloc::vec![LirValue(1)]
+        ));
+    }
+
+    #[test]
+    fn does_not_forward_slot_reload_across_mismatched_value_types() {
+        let mut program = LirProgram {
+            entry: LirTarget(0),
+            local_cache: Default::default(),
+            blocks: alloc::vec![LirBlock {
+                id: LirTarget(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    crate::vm::lir::ir::LirInst {
+                        kind: LirInstKind::Value {
+                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                                .unwrap(),
+                            args: Vec::new(),
+                            results: alloc::vec![LirValue(0)],
+                        },
+                    },
+                    crate::vm::lir::ir::LirInst {
+                        kind: LirInstKind::StoreSlot {
+                            slot: FrameSlot(0),
+                            src: LirValue(0),
+                        },
+                    },
+                    crate::vm::lir::ir::LirInst {
+                        kind: LirInstKind::LoadSlot {
+                            slot: FrameSlot(0),
+                            dst: LirValue(1),
+                        },
+                    },
+                    crate::vm::lir::ir::LirInst {
+                        kind: LirInstKind::Value {
+                            op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                            args: alloc::vec![LirValue(1)],
+                            results: Vec::new(),
+                        },
+                    },
+                ],
+                terminator: LirTerminator::Return { results: None },
+            }],
+            value_types: alloc::vec![ValueType::I32, ValueType::I64],
         };
 
         optimize_lir(&mut program, plan_frame_layout(1, 2, 0));

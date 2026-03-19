@@ -6,7 +6,6 @@ use crate::vm::backend::BackendConfig;
 pub mod arm64;
 #[cfg(target_arch = "arm")]
 pub mod armv7a;
-mod budget_presets;
 pub mod emulator;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
@@ -246,14 +245,25 @@ pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
 }
 
 #[cfg(test)]
+pub(crate) fn backend_mode_test_lock() -> &'static std::sync::Mutex<()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        backend_display_name, compile_backend_config, set_reference_backend_mode, NativeBackend,
-        ReferenceBackendMode,
+        backend_display_name, backend_mode_test_lock, compile_backend_config,
+        set_reference_backend_mode, NativeBackend, ReferenceBackendMode,
     };
 
     #[test]
     fn reference_backend_mode_bool_alias_defaults_to_emu64_budget() {
+        let _lock = backend_mode_test_lock()
+            .lock()
+            .expect("backend mode test lock");
         set_reference_backend_mode(ReferenceBackendMode::Disabled).expect("reset reference mode");
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 8);
@@ -261,7 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn reference_backend_mode_emu32_uses_armv7a_budget() {
+    fn reference_backend_mode_emu32_uses_its_own_32bit_budget() {
+        let _lock = backend_mode_test_lock()
+            .lock()
+            .expect("backend mode test lock");
         set_reference_backend_mode(ReferenceBackendMode::Emu32).expect("enable emu32");
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 4);

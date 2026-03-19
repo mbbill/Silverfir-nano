@@ -632,12 +632,18 @@ impl<'a> FunctionCompiler<'a> {
             }
             MachineInstKind::Lea { dst, addr } => self.emit_lea(*dst, *addr),
             MachineInstKind::Load {
+                ty: _,
                 dst,
                 addr,
                 width,
                 extension,
             } => self.emit_load(*dst, *addr, *width, *extension),
-            MachineInstKind::Store { addr, width, src } => self.emit_store(*addr, *width, *src),
+            MachineInstKind::Store {
+                ty: _,
+                addr,
+                width,
+                src,
+            } => self.emit_store(*addr, *width, *src),
             MachineInstKind::IntUnary {
                 width,
                 op,
@@ -651,6 +657,18 @@ impl<'a> FunctionCompiler<'a> {
                 lhs,
                 rhs,
             } => self.emit_int_binary(*width, *op, *dst, *lhs, *rhs),
+            MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
+                "x86_64 backend received IntMulWide; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairUnary { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64PairUnary; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairDivRem { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64PairDivRem; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairShift { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64PairShift; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
             MachineInstKind::IntCompare {
                 width,
                 kind,
@@ -692,6 +710,18 @@ impl<'a> FunctionCompiler<'a> {
                 rhs,
             } => self.emit_float_compare(*width, *kind, *dst, *lhs, *rhs),
             MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
+            MachineInstKind::ConvertI64PairToFloat { .. } => Err(WasmError::internal(
+                "x86_64 backend received ConvertI64PairToFloat; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::ConvertFloatToI64Pair { .. } => Err(WasmError::internal(
+                "x86_64 backend received ConvertFloatToI64Pair; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::ReinterpretF64ToI64Pair { .. } => Err(WasmError::internal(
+                "x86_64 backend received ReinterpretF64ToI64Pair; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::ReinterpretI64PairToF64 { .. } => Err(WasmError::internal(
+                "x86_64 backend received ReinterpretI64PairToF64; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
         }
     }
 
