@@ -670,12 +670,25 @@ impl<'a> BlockLowerContext<'a> {
 
     /// Initialize cached locals at function entry.
     ///
-    /// Cached locals are modeled as persistent machine registers across the
-    /// function CFG, so every cached register must start with a defined value.
-    /// Entry-scope `reads_before_write` is still useful for selective reloads
-    /// around calls, but it is not strong enough to leave the cached register
-    /// itself undefined at function entry.
+    /// Parameters are loaded from the frame (the caller already wrote them).
+    /// Non-parameter locals that may be read before written need a zero
+    /// materialisation (Wasm locals start at zero).  Locals that are
+    /// *definitely* written before any read can be left undefined — the
+    /// `reads_before_write` analysis in `local_cache.rs` is a whole-function
+    /// dataflow pass that is sound for this purpose.
+    ///
+    /// **32-bit exception (`gp_reg_width == 4`):** all non-param cached
+    /// locals must be zero-initialised unconditionally.  The 32-bit
+    /// legalization pass (`legalize.rs`) runs a storage-flow analysis that
+    /// tracks the *type* of every register (`GpWord` vs `GpI64`) at every
+    /// program point so it can decide which operations to split into hi/lo
+    /// pairs.  `save_all_cached_locals` (emitted before calls) stores every
+    /// cached local to the frame; if a register is still `Undefined` the
+    /// legalizer cannot determine its type and the analysis correctly
+    /// rejects it.  On 64-bit targets this is a non-issue because all GP
+    /// registers have a single width.
     fn emit_entry_cached_locals(&mut self) -> Result<(), WasmError> {
+        let must_zero_all = self.gp_reg_width == 4;
         for index in 0..self.cached_locals.len() {
             let cached = self.cached_locals[index];
             if cached.info.is_param {
@@ -689,11 +702,10 @@ impl<'a> BlockLowerContext<'a> {
                         extension: MachineLoadExtension::None,
                     },
                 });
-            } else {
-                // Wasm locals start at zero, and cached locals stay live as
-                // machine registers across blocks, so non-params must be
-                // materialized here even if the entry block will overwrite
-                // them later.
+            } else if must_zero_all || cached.info.reads_before_write {
+                // Non-param local that may be read before written (or 32-bit
+                // target requiring type-defined registers) — zero the
+                // register (Wasm locals are initialised to zero).
                 if let Some(width) = cached.ty.float_width() {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::FloatConst {
@@ -712,6 +724,7 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             }
+            // else: non-param, written before read — skip entirely.
         }
         Ok(())
     }

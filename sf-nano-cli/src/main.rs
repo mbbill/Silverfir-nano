@@ -154,10 +154,9 @@ fn main() {
     {
         let s = native_stats_snapshot();
         if s.groups > 0 {
-            let kb = s.bytes_emitted / 1024;
             eprintln!(
-                "[native] {} functions ({} ops), {}KB code",
-                s.groups, s.ops, kb
+                "[native] {} functions ({} ops), {}B code",
+                s.groups, s.ops, s.bytes_emitted
             );
         }
     }
