@@ -7,7 +7,7 @@ use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
     active_runtime_engine, reset_native_runtime_state, set_backend_mode, set_reference_backend,
-    BackendMode,
+    set_reference_backend_mode, BackendMode, ReferenceBackendMode,
 };
 use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
 use structopt::StructOpt;
@@ -38,6 +38,14 @@ struct Cli {
     /// Use the debug-only native emulator backend
     #[structopt(long = "emu")]
     emu: bool,
+
+    /// Use the debug-only native emulator backend with a 64-bit target profile
+    #[structopt(long = "emu64", conflicts_with_all = &["emu", "emu32"])]
+    emu64: bool,
+
+    /// Use the debug-only native emulator backend with a 32-bit target profile
+    #[structopt(long = "emu32", conflicts_with_all = &["emu", "emu64"])]
+    emu32: bool,
 }
 
 fn main() {
@@ -53,7 +61,18 @@ fn main() {
         });
         set_backend_mode(mode);
     }
-    if let Err(err) = set_reference_backend(args.emu) {
+    let reference_mode = if args.emu || args.emu64 {
+        ReferenceBackendMode::Emu64
+    } else if args.emu32 {
+        ReferenceBackendMode::Emu32
+    } else {
+        ReferenceBackendMode::Disabled
+    };
+    if let Err(err) = if args.emu {
+        set_reference_backend(true)
+    } else {
+        set_reference_backend_mode(reference_mode)
+    } {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }

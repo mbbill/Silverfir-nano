@@ -24,7 +24,8 @@ pub const fn native_plan_config(backend: crate::vm::backend::BackendConfig) -> P
 pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
         .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
-    let backend = arch::compile_backend_config(active_backend);
+    let backend = arch::active_backend_config()
+        .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
     let module = store.module();
     let all_compiled = module
         .functions

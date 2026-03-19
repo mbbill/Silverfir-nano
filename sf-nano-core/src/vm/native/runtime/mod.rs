@@ -48,7 +48,10 @@ pub fn eval(
             let active_backend = arch::active_native_backend().map_err(|err| {
                 WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
             })?;
-            let active_config = arch::compile_backend_config(active_backend);
+            let active_config = arch::active_backend_config().map_err(|err| {
+                WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
+            })?;
+            let backend_name = arch::backend_display_name(active_backend);
             let needs_compile = spec
                 .get_native_code()
                 .map(|code| {
@@ -87,13 +90,9 @@ pub fn eval(
                     debug_assertions,
                     not(any(target_arch = "aarch64", target_arch = "x86_64"))
                 ))]
-                arch::NativeBackend::Reference => arch::emulator::eval(
-                    spec,
-                    code,
-                    store,
-                    args,
-                    arch::NativeBackend::Reference.as_str(),
-                ),
+                arch::NativeBackend::Reference => {
+                    arch::emulator::eval(spec, code, store, args, backend_name)
+                }
             }
         }
     }

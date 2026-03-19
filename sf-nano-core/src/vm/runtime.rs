@@ -9,6 +9,23 @@ use crate::vm::value::Value;
 use crate::vm::interp;
 #[cfg(feature = "micro-jit")]
 use crate::vm::native;
+#[cfg(feature = "micro-jit")]
+pub use crate::vm::native::arch::ReferenceBackendMode;
+#[cfg(not(feature = "micro-jit"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceBackendMode {
+    Disabled,
+    Emu64,
+    Emu32,
+}
+
+#[cfg(not(feature = "micro-jit"))]
+impl ReferenceBackendMode {
+    #[inline]
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEngine {
@@ -37,7 +54,7 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
             #[cfg(feature = "micro-jit")]
             {
                 Ok(RuntimeEngine::MicroJit(
-                    native::arch::active_native_backend()?.as_str(),
+                    native::arch::active_native_backend_name()?,
                 ))
             }
 
@@ -59,6 +76,22 @@ pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
     #[cfg(not(feature = "micro-jit"))]
     {
         if enabled {
+            Err("reference backend requires micro-jit")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
+    #[cfg(feature = "micro-jit")]
+    {
+        native::arch::set_reference_backend_mode(mode)
+    }
+
+    #[cfg(not(feature = "micro-jit"))]
+    {
+        if mode.is_enabled() {
             Err("reference backend requires micro-jit")
         } else {
             Ok(())

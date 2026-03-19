@@ -48,7 +48,10 @@ pub use vm::native::{
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
-pub use vm::runtime::{active_runtime_engine, set_reference_backend, RuntimeEngine};
+pub use vm::runtime::{
+    active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
+    RuntimeEngine,
+};
 pub use vm::value::Value;
 
 /// Reset process-global native runtime state that does not track module
