@@ -61,8 +61,9 @@ pub fn prepare_function(
     );
     let (local_cache, continuation_skip_reload) = analyze_local_cache_prefs(
         semantic,
-        input.config.gp_cached_locals,
-        input.config.fp_cached_locals,
+        input.config.gp_unit_bytes,
+        input.config.gp_local_cache_budget,
+        input.config.fp_local_cache_budget,
         frame,
     );
     let prepared = prepare_semantic_ops(semantic, frame, input.config)?;
@@ -98,8 +99,9 @@ pub fn prepare_function(
         let state = BlockState::from_entry(
             &prepared.entry_states[semantic_range.start],
             &params,
-            input.config.gp_lir_lanes,
-            input.config.fp_lir_lanes,
+            input.config.gp_unit_bytes,
+            input.config.gp_transient_budget,
+            input.config.fp_transient_budget,
         )?;
         let block = lower_block_range(
             semantic_range.clone(),
@@ -158,7 +160,7 @@ mod tests {
         lir::ir::{LirBoundaryOp, LirInstKind},
         plan::{
             config::PlanConfig,
-            prepare::{prepare_function, PrepareInput},
+            prepare::{prepare_function, PrepareInput, PreparedFunction},
         },
         wasm::{
             primitive_op::PrimitiveOpKind,
@@ -1251,6 +1253,79 @@ mod tests {
                 ty,
             );
         }
+    }
+
+    #[test]
+    fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 1,
+            local_count: 0,
+            max_stack_height: 4,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 2 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 3 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 4 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Add),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let prepared_64 = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new_with_gp_unit_bytes(0, 6, 0, 0, 3, 8),
+            },
+            &semantic,
+        )
+        .expect("64-bit gp pressure preparation should succeed");
+        let prepared_32 = prepare_function(
+            PrepareInput {
+                config: PlanConfig::new_with_gp_unit_bytes(0, 6, 0, 0, 3, 4),
+            },
+            &semantic,
+        )
+        .expect("32-bit gp pressure preparation should succeed");
+
+        let count_loads = |prepared: &PreparedFunction| {
+            prepared
+                .lir
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .filter(|inst| matches!(inst.kind, LirInstKind::LoadSlot { .. }))
+                .count()
+        };
+
+        assert_eq!(
+            count_loads(&prepared_64),
+            0,
+            "four i64 values should fit in six 64-bit GP lanes without spilling",
+        );
+        assert!(
+            count_loads(&prepared_32) >= 1,
+            "four i64 values should require a spill/fill under a six-register 32-bit GP budget",
+        );
     }
 
     #[test]

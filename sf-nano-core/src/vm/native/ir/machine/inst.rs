@@ -4,7 +4,7 @@ use super::types::{
     MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIntBinaryOp,
     MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineSign, MachineValue,
+    MachineSign, MachineStorageType, MachineValue,
 };
 
 /// Helper call that falls through in the same function.
@@ -32,6 +32,7 @@ pub struct MachineInst {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineInstKind {
     Move {
+        ty: MachineStorageType,
         dst: MachineReg,
         src: MachineValue,
     },
@@ -102,6 +103,7 @@ pub enum MachineInstKind {
         src: MachineValue,
     },
     Select {
+        ty: MachineStorageType,
         dst: MachineReg,
         on_true: MachineValue,
         on_false: MachineValue,

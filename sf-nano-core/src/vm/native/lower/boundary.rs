@@ -69,7 +69,7 @@ impl<'a> BlockLowerContext<'a> {
         // prefix, so arguments are already in place when control transfers.
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: callee_frame_base,
                 lhs: MachineValue::Reg(self.frame_base_reg()),
@@ -294,7 +294,7 @@ impl<'a> BlockLowerContext<'a> {
                     call_scratch,
                     call_link.continuation_offset,
                 )?,
-                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 src: MachineValue::Imm64(continuation.0 as u64),
             },
         });
@@ -305,7 +305,7 @@ impl<'a> BlockLowerContext<'a> {
                     call_scratch,
                     call_link.caller_frame_offset,
                 )?,
-                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 src: MachineValue::Reg(self.frame_base_reg()),
             },
         });
@@ -316,7 +316,7 @@ impl<'a> BlockLowerContext<'a> {
                     call_scratch,
                     call_link.caller_result_base_offset,
                 )?,
-                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 src: MachineValue::Imm64(caller_result_base),
             },
         });

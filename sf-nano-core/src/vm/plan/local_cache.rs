@@ -5,6 +5,7 @@
 
 use alloc::vec::Vec;
 
+use crate::value_type::ValueType;
 use crate::vm::{
     lir::ir::{CachedLocalInfo, LirLocalCachePrefs},
     wasm::{
@@ -24,8 +25,9 @@ use super::frame::FrameLayoutPlan;
 /// persistently.
 pub fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,
-    gp_slots: u8,
-    fp_slots: u8,
+    gp_unit_bytes: u8,
+    gp_budget_units: u8,
+    fp_budget_units: u8,
     frame: FrameLayoutPlan,
 ) -> (LirLocalCachePrefs, Vec<Vec<bool>>) {
     if semantic.local_count == 0 {
@@ -35,13 +37,24 @@ pub fn analyze_local_cache_prefs(
     let weights = local_weights(semantic);
     let entry_reads_before_write = entry_scope_reads_before_write(semantic);
 
-    let gp = select_top_n(&weights, gp_slots as usize, |idx| {
-        semantic
-            .local_types
-            .get(idx)
-            .map_or(true, |ty| !ty.is_float())
-    });
-    let fp = select_top_n(&weights, fp_slots as usize, |idx| {
+    let gp = select_with_budget(
+        &weights,
+        gp_budget_units as usize,
+        |idx| {
+            semantic
+                .local_types
+                .get(idx)
+                .map_or(true, |ty| !ty.is_float())
+        },
+        |idx| {
+            semantic
+                .local_types
+                .get(idx)
+                .copied()
+                .map_or(1, |ty| gp_value_budget_units(ty, gp_unit_bytes))
+        },
+    );
+    let fp = select_top_n(&weights, fp_budget_units as usize, |idx| {
         semantic
             .local_types
             .get(idx)
@@ -63,9 +76,16 @@ pub fn analyze_local_cache_prefs(
 
     let prefs = LirLocalCachePrefs {
         gp_local_info: gp.iter().map(|idx| local_info(*idx)).collect(),
-        gp_preferred_slots: gp
-            .into_iter()
-            .map(|idx| frame.local_slot(idx as u16))
+        gp_preferred_slots: gp.iter().map(|idx| frame.local_slot(*idx as u16)).collect(),
+        gp_preferred_types: gp
+            .iter()
+            .map(|idx| {
+                semantic
+                    .local_types
+                    .get(*idx as usize)
+                    .copied()
+                    .unwrap_or(ValueType::I32)
+            })
             .collect(),
         fp_local_info: fp.iter().map(|idx| local_info(*idx)).collect(),
         fp_preferred_slots: fp.iter().map(|idx| frame.local_slot(*idx as u16)).collect(),
@@ -112,6 +132,79 @@ fn select_top_n(weights: &[u64], count: usize, eligible: impl Fn(usize) -> bool)
     best.into_iter()
         .filter_map(|entry| entry.map(|(idx, _)| idx))
         .collect()
+}
+
+fn select_with_budget(
+    weights: &[u64],
+    budget: usize,
+    eligible: impl Fn(usize) -> bool,
+    cost: impl Fn(usize) -> usize,
+) -> Vec<u32> {
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    let mut best: Vec<Option<(u64, Vec<u32>)>> = alloc::vec![None; budget + 1];
+    best[0] = Some((0, Vec::new()));
+
+    for (idx, &weight) in weights.iter().enumerate() {
+        if weight == 0 || !eligible(idx) {
+            continue;
+        }
+        let item_cost = cost(idx);
+        if item_cost == 0 || item_cost > budget {
+            continue;
+        }
+
+        for used in (item_cost..=budget).rev() {
+            let Some((base_weight, base_items)) = best[used - item_cost].clone() else {
+                continue;
+            };
+            let mut candidate_items = base_items;
+            candidate_items.push(idx as u32);
+            let candidate = (base_weight + weight, candidate_items);
+            if select_state_better(&candidate, best[used].as_ref()) {
+                best[used] = Some(candidate);
+            }
+        }
+    }
+
+    let selected = best
+        .iter()
+        .filter_map(|entry| entry.as_ref())
+        .max_by(|lhs, rhs| compare_selection_state(lhs, rhs))
+        .map(|(_, items)| items.clone())
+        .unwrap_or_default();
+
+    let mut ranked = selected;
+    ranked.sort_by(|lhs, rhs| {
+        let lhs_weight = weights[*lhs as usize];
+        let rhs_weight = weights[*rhs as usize];
+        rhs_weight.cmp(&lhs_weight).then_with(|| lhs.cmp(rhs))
+    });
+    ranked
+}
+
+fn select_state_better(candidate: &(u64, Vec<u32>), current: Option<&(u64, Vec<u32>)>) -> bool {
+    current.is_none_or(|existing| compare_selection_state(candidate, existing).is_gt())
+}
+
+fn compare_selection_state(lhs: &(u64, Vec<u32>), rhs: &(u64, Vec<u32>)) -> core::cmp::Ordering {
+    lhs.0
+        .cmp(&rhs.0)
+        .then_with(|| rhs.1.len().cmp(&lhs.1.len()))
+        .then_with(|| rhs.1.cmp(&lhs.1))
+}
+
+#[inline]
+fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
+    match ty {
+        ValueType::I64 => {
+            let width = usize::from(gp_unit_bytes.max(1));
+            8usize.div_ceil(width)
+        }
+        _ => 1,
+    }
 }
 
 /// For each local, determine whether its initial zero value may be observed
@@ -499,6 +592,7 @@ fn loop_weight(depth: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::analyze_local_cache_prefs;
+    use crate::value_type::ValueType;
     use crate::vm::{
         plan::frame::plan_frame_layout,
         wasm::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
@@ -527,10 +621,46 @@ mod tests {
         };
 
         let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 0);
-        let (prefs, _skip_reload) = analyze_local_cache_prefs(&semantic, 2, 0, frame);
+        let (prefs, _skip_reload) = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
         assert_eq!(
             prefs.gp_preferred_slots,
             alloc::vec![frame.local_slot(1), frame.local_slot(0)],
+        );
+    }
+
+    #[test]
+    fn i64_locals_consume_two_gp_cache_units_on_32_bit() {
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 2,
+            max_stack_height: 0,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 1 },
+                },
+            ],
+            local_types: alloc::vec![ValueType::I64, ValueType::I64],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+
+        let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 0);
+        let (prefs_64, _skip_reload) = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
+        let (prefs_32, _skip_reload) = analyze_local_cache_prefs(&semantic, 4, 2, 0, frame);
+
+        assert_eq!(
+            prefs_64.gp_preferred_slots,
+            alloc::vec![frame.local_slot(1), frame.local_slot(0)],
+        );
+        assert_eq!(
+            prefs_32.gp_preferred_slots,
+            alloc::vec![frame.local_slot(1)]
         );
     }
 }

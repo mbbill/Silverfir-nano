@@ -59,6 +59,35 @@ pub enum MachineFloatWidth {
     F64,
 }
 
+/// Storage class carried by a machine register or generic move/select.
+///
+/// `GpWord` is one native GP register wide for the selected backend. It is
+/// used for pointer-width values plus non-float scalar values that do not need
+/// true 64-bit GP arithmetic on 32-bit targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MachineStorageType {
+    GpWord,
+    GpI64,
+    Fp32,
+    Fp64,
+}
+
+impl MachineStorageType {
+    #[inline]
+    pub const fn is_fp(self) -> bool {
+        matches!(self, Self::Fp32 | Self::Fp64)
+    }
+
+    #[inline]
+    pub const fn float_width(self) -> Option<MachineFloatWidth> {
+        match self {
+            Self::Fp32 => Some(MachineFloatWidth::F32),
+            Self::Fp64 => Some(MachineFloatWidth::F64),
+            Self::GpWord | Self::GpI64 => None,
+        }
+    }
+}
+
 /// Width of one memory access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MachineMemWidth {
@@ -68,17 +97,27 @@ pub enum MachineMemWidth {
     U64,
 }
 
-/// Returns the `MachineMemWidth` matching the target pointer size.
+/// Returns the `MachineMemWidth` matching the selected backend GP register
+/// width.
 ///
-/// Used by the lowering pipeline for loads/stores of pointer-width fields
-/// (pointers, `usize`) from `NativeContext` and related ABI structs.
-/// On 64-bit targets this is `U64`; on 32-bit targets it is `U32`.
+/// Shared lowering must key off the backend ABI it is targeting, not the host
+/// compiler's `usize`, because armv7a lowering runs on 64-bit hosts.
 #[inline]
-pub const fn machine_ptr_width() -> MachineMemWidth {
-    if core::mem::size_of::<usize>() == 8 {
-        MachineMemWidth::U64
-    } else {
-        MachineMemWidth::U32
+pub const fn machine_ptr_width(gp_reg_width: u8) -> MachineMemWidth {
+    match gp_reg_width {
+        4 => MachineMemWidth::U32,
+        8 => MachineMemWidth::U64,
+        _ => panic!("unsupported GP register width"),
+    }
+}
+
+/// Returns the scalar integer width matching one native GP register.
+#[inline]
+pub const fn machine_word_int_width(gp_reg_width: u8) -> MachineIntWidth {
+    match gp_reg_width {
+        4 => MachineIntWidth::I32,
+        8 => MachineIntWidth::I64,
+        _ => panic!("unsupported GP register width"),
     }
 }
 

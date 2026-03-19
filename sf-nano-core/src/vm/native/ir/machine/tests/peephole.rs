@@ -3,7 +3,7 @@ use alloc::{vec, vec::Vec};
 use crate::vm::native::ir::machine::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
     MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
-    MachineTerminator, MachineValue,
+    MachineStorageType, MachineTerminator, MachineValue,
 };
 
 #[test]
@@ -21,6 +21,7 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
                 ops: alloc::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             src: MachineValue::Reg(MachineReg(4)),
                         },
@@ -41,14 +42,14 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp(MachineReg(7))],
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))],
                 ops: Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -79,12 +80,14 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(4)),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(5),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
@@ -104,7 +107,7 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -113,6 +116,7 @@ fn keeps_cached_local_writes_but_rewrites_their_sources() {
         MachineInstKind::Move {
             dst: MachineReg(5),
             src: MachineValue::Reg(MachineReg(4)),
+            ..
         }
     ));
     assert!(matches!(
@@ -138,24 +142,28 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(4),
                         src: MachineValue::Imm64(0),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(5),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(5),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Select {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         on_true: MachineValue::Reg(MachineReg(7)),
                         on_false: MachineValue::Reg(MachineReg(5)),
@@ -167,7 +175,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -175,6 +183,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         MachineInstKind::Move {
             dst: MachineReg(7),
             src: MachineValue::Imm64(5),
+            ..
         }
     ));
     assert!(matches!(
@@ -254,18 +263,18 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 4);
+    assert_eq!(block.ops.len(), 5);
     assert!(matches!(
-        block.ops[3].kind,
+        block.ops[4].kind,
         MachineInstKind::Store {
             addr: MachineAddr {
                 base: MachineReg(8),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(4)),
+            src: MachineValue::Reg(MachineReg(7)),
             ..
         }
     ));
@@ -319,7 +328,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -327,6 +336,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
         MachineInstKind::Move {
             dst: MachineReg(7),
             src: MachineValue::Reg(MachineReg(11)),
+            ..
         }
     ));
 }
@@ -355,6 +365,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(4),
                         src: MachineValue::Imm64(0),
                     },
@@ -375,7 +386,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -439,7 +450,7 @@ fn does_not_forward_across_overlapping_store() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -513,18 +524,18 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 3);
+    assert_eq!(block.ops.len(), 4);
     assert!(matches!(
-        block.ops[2].kind,
+        block.ops[3].kind,
         MachineInstKind::Store {
             addr: MachineAddr {
                 base: MachineReg(8),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(7)),
+            src: MachineValue::Reg(MachineReg(9)),
             ..
         }
     ));
@@ -569,7 +580,7 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -577,6 +588,7 @@ fn reuses_identical_loads_from_fp_into_gp_move() {
         MachineInstKind::Move {
             dst: MachineReg(7),
             src: MachineValue::Reg(MachineReg(11)),
+            ..
         }
     ));
 }
@@ -606,6 +618,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(0),
                     },
@@ -626,7 +639,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -656,12 +669,14 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(5)),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
                         dst: MachineReg(5),
                         src: MachineValue::Imm64(0),
                     },
@@ -674,7 +689,7 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -682,6 +697,7 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
         MachineInstKind::Move {
             dst: MachineReg(7),
             src: MachineValue::Reg(MachineReg(5)),
+            ..
         }
     ));
     let MachineTerminator::Jump(edge) = &block.terminator else {
@@ -704,6 +720,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpI64,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(10)),
                     },
@@ -722,7 +739,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -748,6 +765,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpI64,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(10)),
                     },
@@ -767,7 +785,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -798,6 +816,7 @@ fn preserves_moves_into_fp_cached_locals() {
             ops: alloc::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: MachineStorageType::Fp32,
                         dst: MachineReg(13),
                         src: MachineValue::Reg(MachineReg(11)),
                     },
@@ -817,7 +836,7 @@ fn preserves_moves_into_fp_cached_locals() {
         }],
     };
 
-    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7);
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 8);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -826,12 +845,155 @@ fn preserves_moves_into_fp_cached_locals() {
         MachineInstKind::Move {
             dst: MachineReg(13),
             src: MachineValue::Reg(MachineReg(11)),
+            ..
         }
     ));
     assert!(matches!(
         block.ops[1].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(13)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 9,
+        reg_count: 9,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        kind: crate::vm::native::ir::machine::MachineCompareKind::Eq,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                }],
+                terminator: MachineTerminator::Branch {
+                    cond: crate::vm::native::ir::machine::MachineBranchCond::Value(
+                        MachineValue::Reg(MachineReg(7)),
+                    ),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 4);
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::IntCompare {
+            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            dst: MachineReg(7),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.terminator,
+        MachineTerminator::Branch {
+            cond: crate::vm::native::ir::machine::MachineBranchCond::Value(MachineValue::Reg(
+                MachineReg(7)
+            )),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn still_fuses_i32_compare_branch_on_32_bit_targets() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 9,
+        reg_count: 9,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                        kind: crate::vm::native::ir::machine::MachineCompareKind::Eq,
+                        sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                }],
+                terminator: MachineTerminator::Branch {
+                    cond: crate::vm::native::ir::machine::MachineBranchCond::Value(
+                        MachineValue::Reg(MachineReg(7)),
+                    ),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 4);
+
+    let block = &program.blocks[0];
+    assert!(block.ops.is_empty());
+    assert!(matches!(
+        block.terminator,
+        MachineTerminator::Branch {
+            cond: crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I32,
+                kind: crate::vm::native::ir::machine::MachineCompareKind::Eq,
+                ..
+            },
             ..
         }
     ));

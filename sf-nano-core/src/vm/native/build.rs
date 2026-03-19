@@ -151,8 +151,11 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         use_guard_pages,
     })?;
     let first_transient = crate::vm::native::ir::machine::MACHINE_FIXED_REG_COUNT
-        + backend.gp_local_cache_count as u16;
-    lowered.module.optimize(first_transient);
+        + backend.gp_local_cache_budget as u16;
+    lowered
+        .module
+        .optimize(first_transient, backend.gp_unit_bytes);
+    lowered.module.legalize(backend.gp_unit_bytes)?;
 
     // Collect LIR for dump before moving lowered data
     let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions

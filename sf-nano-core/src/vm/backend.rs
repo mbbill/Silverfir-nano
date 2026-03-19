@@ -20,35 +20,83 @@ pub enum BackendKind {
 /// view regs).
 ///
 /// Different layers consume different subsets of this budget:
-/// - planning/LIR shapes the live transient window from `gp_lane_count`/`fp_lane_count`
-/// - native lowering maps `gp_local_cache_count`/`fp_local_cache_count` onto cache regs
-/// - backends may also repurpose cache or lane regs for other temporary work
+/// - planning/LIR shapes the live transient window from
+///   `gp_transient_budget`/`fp_transient_budget`
+/// - native lowering maps `gp_local_cache_budget`/`fp_local_cache_budget`
+///   onto cache regs
+/// - backends may also repurpose cache or transient regs for other temporary
+///   work
 ///   when they can prove the owning values are not live
 ///
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackendConfig {
-    pub gp_local_cache_count: u8,
-    pub gp_lane_count: u8,
-    pub fp_local_cache_count: u8,
-    pub fp_lane_count: u8,
+    /// Size in bytes of one GP budget unit on the target backend.
+    ///
+    /// This is separate from the frame-slot contract. Wasm values still
+    /// occupy one canonical 8-byte slot in the native frame. The planner uses
+    /// this to turn semantic values into GP budget-unit costs.
+    ///
+    /// There is intentionally no matching `fp_unit_bytes` field today:
+    /// across the currently supported backends, both `f32` and `f64` consume
+    /// exactly one FP register budget unit.
+    pub gp_unit_bytes: u8,
+    pub gp_local_cache_budget: u8,
+    pub gp_transient_budget: u8,
+    pub fp_local_cache_budget: u8,
+    pub fp_transient_budget: u8,
 }
 
 impl BackendConfig {
     #[inline]
     pub const fn new(
-        gp_local_cache_count: u8,
-        gp_lane_count: u8,
-        fp_local_cache_count: u8,
-        fp_lane_count: u8,
+        gp_local_cache_budget: u8,
+        gp_transient_budget: u8,
+        fp_local_cache_budget: u8,
+        fp_transient_budget: u8,
+    ) -> Self {
+        Self::new_with_gp_unit_bytes(
+            gp_local_cache_budget,
+            gp_transient_budget,
+            fp_local_cache_budget,
+            fp_transient_budget,
+            core::mem::size_of::<usize>() as u8,
+        )
+    }
+
+    #[inline]
+    pub const fn new_with_gp_unit_bytes(
+        gp_local_cache_budget: u8,
+        gp_transient_budget: u8,
+        fp_local_cache_budget: u8,
+        fp_transient_budget: u8,
+        gp_unit_bytes: u8,
     ) -> Self {
         Self {
-            gp_local_cache_count,
-            gp_lane_count,
-            fp_local_cache_count,
-            fp_lane_count,
+            gp_unit_bytes,
+            gp_local_cache_budget,
+            gp_transient_budget,
+            fp_local_cache_budget,
+            fp_transient_budget,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackendConfig;
+
+    #[test]
+    fn backend_config_defaults_gp_unit_bytes_to_host_word_size() {
+        let config = BackendConfig::new(1, 2, 3, 4);
+        assert_eq!(config.gp_unit_bytes as usize, core::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn backend_config_keeps_explicit_gp_unit_bytes() {
+        let config = BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4);
+        assert_eq!(config.gp_unit_bytes, 4);
     }
 }
 

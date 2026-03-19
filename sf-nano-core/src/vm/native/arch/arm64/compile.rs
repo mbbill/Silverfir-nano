@@ -13,9 +13,9 @@ use crate::{
                     MachineFloatUnaryOp, MachineFloatWidth, MachineFunction, MachineInst,
                     MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
                     MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg, MachineSign,
-                    MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-                    MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
-                    MACHINE_MEM0_SIZE_REG,
+                    MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+                    MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+                    MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
                 },
                 runtime::MachineHelperSymbol,
             },
@@ -720,7 +720,7 @@ impl<'a> FunctionCompiler<'a> {
             self.fp_reg_widths[i] = None;
         }
         for param in &block.params {
-            if let Some(width) = param.float_width {
+            if let Some(width) = param.ty.float_width() {
                 self.set_fp_reg_width(param.reg, width)?;
             }
         }
@@ -750,7 +750,7 @@ impl<'a> FunctionCompiler<'a> {
 
     fn emit_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { dst, src } => self.emit_move(*dst, *src),
+            MachineInstKind::Move { dst, src, ty } => self.emit_move(*ty, *dst, *src),
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.emit_float_const(*width, *dst, *bits)
             }
@@ -786,11 +786,13 @@ impl<'a> FunctionCompiler<'a> {
                 rhs,
             } => self.emit_int_compare(*width, *kind, *sign, *dst, *lhs, *rhs),
             MachineInstKind::Select {
+                ty,
                 dst,
                 on_true,
                 on_false,
                 cond,
-            } => self.emit_select(*dst, *on_true, *on_false, *cond),
+                ..
+            } => self.emit_select(*ty, *dst, *on_true, *on_false, *cond),
             MachineInstKind::TrapIf { kind, cond } => self.emit_trap_if(*kind, cond),
             MachineInstKind::CallHelper(call) => {
                 self.emit_call_helper(call.target.0 as usize, call.metadata.0 as usize)
@@ -1478,13 +1480,26 @@ impl<'a> FunctionCompiler<'a> {
         alloc::format!("unknown location")
     }
 
-    fn emit_move(&mut self, dst: MachineReg, src: MachineValue) -> Result<(), WasmError> {
-        if self.is_fp_reg(dst) {
+    fn emit_move(
+        &mut self,
+        ty: MachineStorageType,
+        dst: MachineReg,
+        src: MachineValue,
+    ) -> Result<(), WasmError> {
+        if let Some(width) = ty.float_width() {
             let dst_fp = self.map_fp_reg(dst)?;
             match src {
                 MachineValue::Reg(src_reg) if self.is_fp_reg(src_reg) => {
                     let src_fp = self.map_fp_reg(src_reg)?;
-                    let width = self.fp_reg_width(src_reg)?;
+                    let src_width = self.fp_reg_width(src_reg)?;
+                    if src_width != width {
+                        return Err(WasmError::invalid(alloc::format!(
+                            "arm64 typed float move width mismatch: dst expects {:?}, src {} is {:?}",
+                            width,
+                            src_reg.0,
+                            src_width,
+                        )));
+                    }
                     if dst_fp != src_fp {
                         self.text.emit_u32(match width {
                             MachineFloatWidth::F32 => enc::fmov_s(dst_fp, src_fp),
@@ -1496,20 +1511,20 @@ impl<'a> FunctionCompiler<'a> {
                 }
                 MachineValue::Reg(src_reg) => {
                     let src_gp = self.map_gp_reg(src_reg)?;
-                    let width = self.fp_reg_width(dst)?;
                     self.text.emit_u32(match width {
                         MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, src_gp),
                         MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, src_gp),
                     });
+                    self.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
                 MachineValue::Imm64(value) => {
-                    let width = self.fp_reg_width(dst)?;
                     self.materialize_u64(SCRATCH0, value);
                     self.text.emit_u32(match width {
                         MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, SCRATCH0),
                         MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, SCRATCH0),
                     });
+                    self.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
             }
@@ -2181,27 +2196,52 @@ impl<'a> FunctionCompiler<'a> {
 
     fn emit_select(
         &mut self,
+        ty: MachineStorageType,
         dst: MachineReg,
         on_true: MachineValue,
         on_false: MachineValue,
         cond: MachineValue,
     ) -> Result<(), WasmError> {
-        let dst = self.map_gp_reg(dst)?;
-        match cond {
-            MachineValue::Imm64(value) => {
-                let selected = if value != 0 { on_true } else { on_false };
-                return self.emit_move(inv_map_reg(dst), selected);
+        if let Some(width) = ty.float_width() {
+            match cond {
+                MachineValue::Imm64(value) => {
+                    let selected = if value != 0 { on_true } else { on_false };
+                    return self.emit_move(ty, dst, selected);
+                }
+                MachineValue::Reg(reg) => {
+                    let true_fp =
+                        self.prepare_float_operand(width, on_true, SCRATCH0, FP_SCRATCH0)?;
+                    let false_fp =
+                        self.prepare_float_operand(width, on_false, SCRATCH1, FP_SCRATCH1)?;
+                    let dst_fp = self.map_fp_reg(dst)?;
+                    self.text
+                        .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                    self.text.emit_u32(match width {
+                        MachineFloatWidth::F32 => enc::fcsel_s(dst_fp, true_fp, false_fp, Cond::Ne),
+                        MachineFloatWidth::F64 => enc::fcsel_d(dst_fp, true_fp, false_fp, Cond::Ne),
+                    });
+                    self.set_fp_reg_width(dst, width)?;
+                    Ok(())
+                }
             }
-            MachineValue::Reg(reg) => {
-                self.text
-                    .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+        } else {
+            let dst = self.map_gp_reg(dst)?;
+            match cond {
+                MachineValue::Imm64(value) => {
+                    let selected = if value != 0 { on_true } else { on_false };
+                    return self.emit_move(ty, inv_map_reg(dst), selected);
+                }
+                MachineValue::Reg(reg) => {
+                    self.text
+                        .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                }
             }
+            let true_reg = self.materialize_value(SCRATCH0, on_true)?;
+            let false_reg = self.materialize_value(SCRATCH1, on_false)?;
+            self.text
+                .emit_u32(enc::csel_64(dst, true_reg, false_reg, Cond::Ne));
+            Ok(())
         }
-        let true_reg = self.materialize_value(SCRATCH0, on_true)?;
-        let false_reg = self.materialize_value(SCRATCH1, on_false)?;
-        self.text
-            .emit_u32(enc::csel_64(dst, true_reg, false_reg, Cond::Ne));
-        Ok(())
     }
 
     fn emit_call_helper(&mut self, extern_idx: usize, const_idx: usize) -> Result<(), WasmError> {
@@ -2918,9 +2958,9 @@ impl<'a> FunctionCompiler<'a> {
                 self.emit_source_move(dst, src)?;
                 continue;
             };
-            if dst.float_width.is_some() {
+            if dst.ty.is_fp() {
                 let dst_fp = self.map_fp_reg(dst.reg)?;
-                let width = dst.float_width.expect("FP param width");
+                let width = dst.ty.float_width().expect("FP param width");
                 self.text.emit_u32(match width {
                     MachineFloatWidth::F32 => enc::fmov_s(FP_SCRATCH2, dst_fp),
                     MachineFloatWidth::F64 => enc::fmov_d(FP_SCRATCH2, dst_fp),
@@ -2940,8 +2980,8 @@ impl<'a> FunctionCompiler<'a> {
             }
             for (_, source) in pending.iter_mut() {
                 if matches!(*source, ParallelSource::Reg { reg, .. } if reg == dst.reg) {
-                    *source = if dst.float_width.is_some() {
-                        ParallelSource::FpTemp(dst.float_width.expect("FP temp width"))
+                    *source = if dst.ty.is_fp() {
+                        ParallelSource::FpTemp(dst.ty.float_width().expect("FP temp width"))
                     } else {
                         ParallelSource::GpTemp
                     };
@@ -2961,7 +3001,7 @@ impl<'a> FunctionCompiler<'a> {
                 reg: src_reg,
                 float_width: src_float_width,
             } => {
-                if let Some(width) = dst.float_width {
+                if let Some(width) = dst.ty.float_width() {
                     let dst_fp = self.map_fp_reg(dst.reg)?;
                     if self.is_fp_reg(src_reg) {
                         let src_fp = self.map_fp_reg(src_reg)?;
@@ -2997,7 +3037,7 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             ParallelSource::Imm(value) => {
-                if let Some(width) = dst.float_width {
+                if let Some(width) = dst.ty.float_width() {
                     let dst_fp = self.map_fp_reg(dst.reg)?;
                     self.materialize_u64(SCRATCH0, value);
                     self.text.emit_u32(match width {
@@ -4648,6 +4688,7 @@ mod tests {
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                         dst: MachineReg(8),
                         src: MachineValue::Reg(MachineReg(6)),
                     },
@@ -4679,6 +4720,7 @@ mod tests {
                     ops: vec![
                         MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 dst: MachineReg(4),
                                 src: MachineValue::Imm64(0x3f800000),
                             },
@@ -4887,12 +4929,14 @@ mod tests {
                     ops: vec![
                         MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 dst: MachineReg(4),
                                 src: MachineValue::Imm64(40),
                             },
                         },
                         MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 dst: MachineReg(5),
                                 src: MachineValue::Imm64(2),
                             },
@@ -5305,6 +5349,7 @@ mod tests {
                     ops: vec![
                         MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 dst: MachineReg(4),
                                 src: MachineValue::Imm64(9),
                             },
@@ -5557,6 +5602,7 @@ mod tests {
                         params: vec![],
                         ops: vec![MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                                 dst: MachineReg(4),
                                 src: MachineValue::Reg(
                                     crate::vm::native::ir::machine::MACHINE_FP_REG,

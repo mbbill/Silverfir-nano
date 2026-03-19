@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-use super::state::EntryState;
+use super::state::{count_live_bank_budget_units, gp_value_budget_units, EntryState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PrepAction {
@@ -165,8 +165,9 @@ pub(super) fn prepare_semantic_ops<'a>(
             op_index,
             &mut state,
             frame,
-            config.gp_lir_lanes,
-            config.fp_lir_lanes,
+            config.gp_unit_bytes,
+            config.gp_transient_budget,
+            config.fp_transient_budget,
             &semantic.op_result_types,
         );
         ops.push(PreparedOp {
@@ -184,8 +185,9 @@ fn plan_prefix(
     op_index: usize,
     state: &mut PrepareState,
     frame: FrameLayoutPlan,
-    gp_lanes: u8,
-    fp_lanes: u8,
+    gp_unit_bytes: u8,
+    gp_transient_budget: u8,
+    fp_transient_budget: u8,
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) -> Vec<PrepAction> {
     let mut prefix = Vec::new();
@@ -214,8 +216,9 @@ fn plan_prefix(
                         &mut prefix,
                         state,
                         frame,
-                        gp_lanes,
-                        fp_lanes,
+                        gp_unit_bytes,
+                        gp_transient_budget,
+                        fp_transient_budget,
                         pop as u16,
                         push as u16,
                         push_ty.unwrap_or(ValueType::I64),
@@ -226,7 +229,17 @@ fn plan_prefix(
         }
         SemanticOpKind::LocalGet { idx } => {
             let push_ty = state.local_type(*idx);
-            spill_before_result_push(&mut prefix, state, frame, gp_lanes, fp_lanes, 0, 1, push_ty);
+            spill_before_result_push(
+                &mut prefix,
+                state,
+                frame,
+                gp_unit_bytes,
+                gp_transient_budget,
+                fp_transient_budget,
+                0,
+                1,
+                push_ty,
+            );
         }
         SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {
             fill_for_operands(&mut prefix, state, frame, 1);
@@ -533,13 +546,14 @@ fn spill_before_result_push(
     prefix: &mut Vec<PrepAction>,
     state: &mut PrepareState,
     frame: FrameLayoutPlan,
-    gp_lanes: u8,
-    fp_lanes: u8,
+    gp_unit_bytes: u8,
+    gp_transient_budget: u8,
+    fp_transient_budget: u8,
     pop: u16,
     push: u16,
     push_ty: ValueType,
 ) {
-    if state.unreachable || push == 0 || (gp_lanes == 0 && fp_lanes == 0) {
+    if state.unreachable || push == 0 || (gp_transient_budget == 0 && fp_transient_budget == 0) {
         return;
     }
     // Spill from the bottom of the live window until the post-op live suffix
@@ -550,21 +564,17 @@ fn spill_before_result_push(
         let post_height = state.height.saturating_sub(pop);
         let live_start = state.spill_depth as usize;
         let live_end = post_height as usize;
-        let (mut gp_live, mut fp_live) =
-            count_live_banks(state.type_stack.get(live_start..live_end).unwrap_or(&[]), 0);
+        let (mut gp_live, mut fp_live) = count_live_bank_budget_units(
+            state.type_stack.get(live_start..live_end).unwrap_or(&[]),
+            gp_unit_bytes,
+        );
         if push_ty.is_float() {
-            fp_live = fp_live.saturating_add(push);
+            fp_live = fp_live.saturating_add(push as usize);
         } else {
-            gp_live = gp_live.saturating_add(push);
+            gp_live = gp_live
+                .saturating_add(push as usize * gp_value_budget_units(push_ty, gp_unit_bytes));
         }
-        let post_live_count = post_height
-            .saturating_sub(state.spill_depth)
-            .saturating_add(push);
-        let combined_limit = (gp_lanes as u16).saturating_add(fp_lanes as u16);
-        if gp_live <= gp_lanes as u16
-            && fp_live <= fp_lanes as u16
-            && post_live_count <= combined_limit
-        {
+        if gp_live <= gp_transient_budget as usize && fp_live <= fp_transient_budget as usize {
             return;
         }
         if state.spill_depth >= post_height {
@@ -576,19 +586,6 @@ fn spill_before_result_push(
         )));
         state.spill_depth += 1;
     }
-}
-
-fn count_live_banks(type_stack: &[ValueType], live_start: usize) -> (u16, u16) {
-    let mut gp: u16 = 0;
-    let mut fp: u16 = 0;
-    for ty in type_stack.get(live_start..).unwrap_or(&[]) {
-        if ty.is_float() {
-            fp += 1;
-        } else {
-            gp += 1;
-        }
-    }
-    (gp, fp)
 }
 
 fn primitive_result_type(

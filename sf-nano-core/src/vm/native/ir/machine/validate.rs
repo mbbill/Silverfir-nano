@@ -5,7 +5,7 @@ use super::inst::{MachineInst, MachineInstKind};
 use super::module::{MachineModule, MachineProgram};
 use super::types::{
     MachineAddr, MachineBlockId, MachineConstId, MachineExternId, MachineFuncId, MachineReg,
-    MachineValue,
+    MachineStorageType, MachineValue,
 };
 
 type ValidateResult = Result<(), WasmError>;
@@ -75,17 +75,11 @@ impl MachineProgram {
     #[cfg(any(debug_assertions, test))]
     fn validate_param(&self, param: MachineBlockParam) -> ValidateResult {
         self.validate_reg(param.reg)?;
-        if self.is_fp_reg(param.reg) {
-            if param.float_width.is_none() {
-                return Err(WasmError::internal(alloc::format!(
-                    "machine FP block param {} is missing its float width",
-                    param.reg.0,
-                )));
-            }
-        } else if param.float_width.is_some() {
+        if self.is_fp_reg(param.reg) != param.ty.is_fp() {
             return Err(WasmError::internal(alloc::format!(
-                "machine GP block param {} must not declare an FP width",
+                "machine block param {} has mismatched storage type {:?} for its register bank",
                 param.reg.0,
+                param.ty,
             )));
         }
         Ok(())
@@ -94,9 +88,10 @@ impl MachineProgram {
     #[cfg(any(debug_assertions, test))]
     fn validate_inst(&self, inst: &MachineInst) -> ValidateResult {
         match &inst.kind {
-            MachineInstKind::Move { dst, src } => {
+            MachineInstKind::Move { ty, dst, src } => {
                 self.validate_reg(*dst)?;
                 self.validate_value(*src)?;
+                self.validate_reg_storage_type(*dst, *ty)?;
             }
             MachineInstKind::FloatConst { dst, .. } => {
                 self.validate_reg(*dst)?;
@@ -138,6 +133,7 @@ impl MachineProgram {
                 self.validate_value(*rhs)?;
             }
             MachineInstKind::Select {
+                ty,
                 dst,
                 on_true,
                 on_false,
@@ -147,6 +143,7 @@ impl MachineProgram {
                 self.validate_value(*on_true)?;
                 self.validate_value(*on_false)?;
                 self.validate_value(*cond)?;
+                self.validate_reg_storage_type(*dst, *ty)?;
             }
             MachineInstKind::TrapIf { cond, .. } => {
                 self.validate_branch_cond(*cond)?;
@@ -275,6 +272,18 @@ impl MachineProgram {
                 "machine first_fp_reg {} exceeds declared register count {}",
                 self.first_fp_reg,
                 self.reg_count,
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_reg_storage_type(&self, reg: MachineReg, ty: MachineStorageType) -> ValidateResult {
+        if self.is_fp_reg(reg) != ty.is_fp() {
+            return Err(WasmError::internal(alloc::format!(
+                "machine register {} has storage type {:?} in the wrong bank",
+                reg.0,
+                ty,
             )));
         }
         Ok(())

@@ -246,7 +246,7 @@ impl<'a> Emulator<'a> {
 
     fn execute_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { dst, src } => {
+            MachineInstKind::Move { dst, src, .. } => {
                 let value = self.read_value(*src)?;
                 self.write_reg(*dst, value)?;
             }
@@ -355,6 +355,7 @@ impl<'a> Emulator<'a> {
                 on_true,
                 on_false,
                 cond,
+                ..
             } => {
                 let cond = self.read_value(*cond)?;
                 let value = if cond != 0 {

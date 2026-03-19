@@ -15,10 +15,11 @@ use crate::{
         },
         native::{
             ir::machine::{
-                machine_ptr_width, MachineAddr, MachineBlockId, MachineBlockParam,
-                MachineBranchCond, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst,
-                MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
-                MachineTerminator, MachineTrapKind, MachineValue,
+                machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
+                MachineBlockParam, MachineBranchCond, MachineEdge, MachineFloatWidth,
+                MachineFuncId, MachineInst, MachineInstKind, MachineIntWidth, MachineLoadExtension,
+                MachineMemWidth, MachineReg, MachineStorageType, MachineTerminator,
+                MachineTrapKind, MachineValue,
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
             lower::{slot_offset_bytes, target_param_regs},
@@ -39,7 +40,7 @@ use crate::vm::lir::ir::CachedLocalInfo;
 struct CachedLocal {
     slot: FrameSlot,
     reg: MachineReg,
-    float_width: Option<MachineFloatWidth>,
+    ty: MachineStorageType,
     info: CachedLocalInfo,
 }
 
@@ -52,7 +53,7 @@ struct ValueLocation {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TransientState {
     value: Option<LirValue>,
-    float_width: Option<MachineFloatWidth>,
+    ty: Option<MachineStorageType>,
 }
 
 pub(super) struct BlockLowerContext<'a> {
@@ -64,6 +65,7 @@ pub(super) struct BlockLowerContext<'a> {
     all_runtime: &'a [MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
     machine_params: Vec<MachineReg>,
+    gp_reg_width: u8,
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
     values: Vec<ValueLocation>,
@@ -83,15 +85,39 @@ impl<'a> BlockLowerContext<'a> {
         runtime: MachineFunctionRuntime,
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
+        gp_reg_width: u8,
         is_entry: bool,
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
+        if cache_prefs.gp_preferred_slots.len() != cache_prefs.gp_preferred_types.len() {
+            return Err(WasmError::internal(
+                "GP cached-local slot/type metadata length mismatch".into(),
+            ));
+        }
         let machine_params = target_param_regs(&block.params, program, regfile)?;
         let mut cached_locals = Vec::new();
         for (index, slot) in cache_prefs.gp_preferred_slots.iter().copied().enumerate() {
             let Some(reg) = regfile.gp_local_cache(index) else {
                 break;
             };
+            let ty = cache_prefs
+                .gp_preferred_types
+                .get(index)
+                .copied()
+                .map(value_type_storage_type)
+                .ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "GP cached local {:?} is missing a type entry",
+                        slot
+                    ))
+                })?;
+            if ty.is_fp() {
+                return Err(WasmError::internal(alloc::format!(
+                    "GP cached local {:?} must not have float storage type {:?}",
+                    slot,
+                    ty
+                )));
+            }
             let info = cache_prefs
                 .gp_local_info
                 .get(index)
@@ -100,7 +126,7 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
-                float_width: None,
+                ty,
                 info,
             });
         }
@@ -108,17 +134,24 @@ impl<'a> BlockLowerContext<'a> {
             let Some(reg) = regfile.fp_local_cache(index) else {
                 break;
             };
-            let float_width = cache_prefs
+            let ty = cache_prefs
                 .fp_preferred_types
                 .get(index)
                 .copied()
-                .and_then(value_type_float_width)
+                .map(value_type_storage_type)
                 .ok_or_else(|| {
                     WasmError::internal(alloc::format!(
                         "FP cached local {:?} is missing a float type entry",
                         slot
                     ))
                 })?;
+            let Some(_width) = ty.float_width() else {
+                return Err(WasmError::internal(alloc::format!(
+                    "FP cached local {:?} must have float storage type, got {:?}",
+                    slot,
+                    ty
+                )));
+            };
             let info = cache_prefs
                 .fp_local_info
                 .get(index)
@@ -127,7 +160,7 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
-                float_width: Some(float_width),
+                ty,
                 info,
             });
         }
@@ -141,6 +174,7 @@ impl<'a> BlockLowerContext<'a> {
             all_runtime,
             call_link,
             machine_params,
+            gp_reg_width,
             ops: Vec::new(),
             cached_locals,
             values: Vec::new(),
@@ -156,8 +190,8 @@ impl<'a> BlockLowerContext<'a> {
         let machine_params = lower.machine_params.clone();
         for (param, reg) in block.params.iter().copied().zip(machine_params.into_iter()) {
             lower.values.push(ValueLocation { value: param, reg });
-            let fw = lir_value_float_width(lower.program, param);
-            lower.set_transient(reg, Some(param), fw)?;
+            let ty = lir_value_storage_type(lower.program, param);
+            lower.set_transient(reg, Some(param), Some(ty))?;
         }
         lower.release_dead_values()?;
 
@@ -242,10 +276,11 @@ impl<'a> BlockLowerContext<'a> {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
                 let dst_reg = self.alloc_slot_load_value(*dst)?;
-                let width = lir_value_slot_mem_width(self.program, *dst);
+                let width = lir_value_slot_mem_width(self.program, *dst, self.gp_reg_width);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
+                            ty: self.cached_locals[cached_index].ty,
                             dst: dst_reg,
                             src: MachineValue::Reg(self.cached_locals[cached_index].reg),
                         },
@@ -263,12 +298,13 @@ impl<'a> BlockLowerContext<'a> {
             }
             LirInstKind::StoreSlot { slot, src } => {
                 let src_reg = self.use_value(*src)?;
-                let width = lir_value_slot_mem_width(self.program, *src);
+                let width = lir_value_slot_mem_width(self.program, *src, self.gp_reg_width);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     let cache_reg = self.cached_locals[cached_index].reg;
                     if !self.try_coalesce_last_dst(*src, src_reg, cache_reg) {
                         self.emit_machine_inst(MachineInst {
                             kind: MachineInstKind::Move {
+                                ty: self.cached_locals[cached_index].ty,
                                 dst: cache_reg,
                                 src: MachineValue::Reg(src_reg),
                             },
@@ -304,6 +340,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst_reg = self.alloc_value(dst)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
+                ty: lir_value_storage_type(self.program, dst),
                 dst: dst_reg,
                 src: MachineValue::Imm64(imm),
             },
@@ -512,6 +549,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, args)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {
+                ty: lir_value_storage_type(self.program, single_result(results)?),
                 dst,
                 on_true: MachineValue::Reg(on_true),
                 on_false: MachineValue::Reg(on_false),
@@ -531,12 +569,12 @@ impl<'a> BlockLowerContext<'a> {
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
-                width: super::super::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 kind: super::super::ir::machine::MachineCompareKind::Eq,
                 sign: super::super::ir::machine::MachineSign::Unsigned,
                 dst,
                 lhs: MachineValue::Reg(src),
-                rhs: MachineValue::Imm64(usize::MAX as u64),
+                rhs: MachineValue::Imm64(self.gp_word_max_imm()),
             },
         });
         Ok(())
@@ -597,7 +635,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::Load {
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,
-                    width: cached_local_mem_width(cached),
+                    width: cached_local_mem_width(cached, self.gp_reg_width),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -616,15 +654,14 @@ impl<'a> BlockLowerContext<'a> {
                     kind: MachineInstKind::Load {
                         dst: cached.reg,
                         addr: self.frame_addr(cached.slot)?,
-                        width: cached_local_mem_width(cached),
+                        width: cached_local_mem_width(cached, self.gp_reg_width),
                         extension: MachineLoadExtension::None,
                     },
                 });
             } else if cached.info.reads_before_write {
                 // Non-param local that may be read before written — zero the
                 // register (wasm locals are initialized to zero).
-                if cached.float_width.is_some() {
-                    let width = cached.float_width.unwrap();
+                if let Some(width) = cached.ty.float_width() {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::FloatConst {
                             width,
@@ -635,6 +672,7 @@ impl<'a> BlockLowerContext<'a> {
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Move {
+                            ty: cached.ty,
                             dst: cached.reg,
                             src: MachineValue::Imm64(0),
                         },
@@ -652,7 +690,7 @@ impl<'a> BlockLowerContext<'a> {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
                     addr: self.frame_addr(cached.slot)?,
-                    width: cached_local_mem_width(cached),
+                    width: cached_local_mem_width(cached, self.gp_reg_width),
                     src: MachineValue::Reg(cached.reg),
                 },
             });
@@ -665,7 +703,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: self.regfile.mem0_base(),
                 addr: self.runtime_addr(ctx_offset::MEM0_BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -673,7 +711,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: self.regfile.mem0_size(),
                 addr: self.runtime_addr(ctx_offset::MEM0_SIZE),
-                width: MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -733,16 +771,16 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank(value, None)
+        self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
     pub(super) fn alloc_result_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank(value, lir_value_float_width(self.program, value))
+        self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
     /// Allocate a LoadSlot destination in the correct bank based on the type table.
     fn alloc_slot_load_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank(value, lir_value_float_width(self.program, value))
+        self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
     pub(super) fn alloc_value_reusing_dead_inputs(
@@ -750,7 +788,11 @@ impl<'a> BlockLowerContext<'a> {
         value: LirValue,
         candidates: &[LirValue],
     ) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, None)
+        self.alloc_value_in_bank_reusing_dead_inputs(
+            value,
+            candidates,
+            lir_value_storage_type(self.program, value),
+        )
     }
 
     pub(super) fn alloc_result_value_reusing_dead_inputs(
@@ -761,12 +803,12 @@ impl<'a> BlockLowerContext<'a> {
         self.alloc_value_in_bank_reusing_dead_inputs(
             value,
             candidates,
-            lir_value_float_width(self.program, value),
+            lir_value_storage_type(self.program, value),
         )
     }
 
     pub(super) fn slot_mem_width_for_value(&self, value: LirValue) -> MachineMemWidth {
-        lir_value_slot_mem_width(self.program, value)
+        lir_value_slot_mem_width(self.program, value, self.gp_reg_width)
     }
 
     pub(super) fn alloc_float_value(
@@ -774,7 +816,7 @@ impl<'a> BlockLowerContext<'a> {
         value: LirValue,
         width: MachineFloatWidth,
     ) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank(value, Some(width))
+        self.alloc_value_in_bank(value, float_storage_type(width))
     }
 
     pub(super) fn alloc_float_value_reusing_dead_inputs(
@@ -783,7 +825,7 @@ impl<'a> BlockLowerContext<'a> {
         candidates: &[LirValue],
         width: MachineFloatWidth,
     ) -> Result<MachineReg, WasmError> {
-        self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, Some(width))
+        self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, float_storage_type(width))
     }
 
     pub(super) fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
@@ -834,7 +876,7 @@ impl<'a> BlockLowerContext<'a> {
             {
                 push_unique_param(
                     &mut params,
-                    machine_block_param(entry.reg, self.float_width_for_reg(entry.reg)),
+                    machine_block_param(entry.reg, self.storage_type_for_reg(entry.reg)),
                 );
             }
         }
@@ -845,7 +887,7 @@ impl<'a> BlockLowerContext<'a> {
                 if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
                     push_unique_param(
                         &mut params,
-                        machine_block_param(reg, self.float_width_for_reg(reg)),
+                        machine_block_param(reg, self.storage_type_for_reg(reg)),
                     );
                 }
             });
@@ -859,7 +901,7 @@ impl<'a> BlockLowerContext<'a> {
             if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
                 push_unique_param(
                     &mut params,
-                    machine_block_param(reg, self.float_width_for_reg(reg)),
+                    machine_block_param(reg, self.storage_type_for_reg(reg)),
                 );
             }
         });
@@ -894,21 +936,21 @@ impl<'a> BlockLowerContext<'a> {
     fn alloc_value_in_bank(
         &mut self,
         value: LirValue,
-        float_width: Option<MachineFloatWidth>,
+        ty: MachineStorageType,
     ) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
-        let Some(reg) = self.first_free_transient(float_width) else {
+        let Some(reg) = self.first_free_transient(ty) else {
             return Err(WasmError::internal(alloc::format!(
                 "prepared LIR exceeded {} transient register budget during native lowering in block b{} for value {}",
-                if float_width.is_some() { "FP" } else { "GP" },
+                if ty.is_fp() { "FP" } else { "GP" },
                 self.block.id.0,
                 value.0,
             )));
         };
         self.values.push(ValueLocation { value, reg });
-        self.set_transient(reg, Some(value), float_width)?;
+        self.set_transient(reg, Some(value), Some(ty))?;
         Ok(reg)
     }
 
@@ -916,7 +958,7 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         value: LirValue,
         candidates: &[LirValue],
-        float_width: Option<MachineFloatWidth>,
+        ty: MachineStorageType,
     ) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
@@ -927,32 +969,32 @@ impl<'a> BlockLowerContext<'a> {
                 continue;
             }
             if let Some(index) = self.values.iter().position(|entry| {
-                entry.value == *candidate && self.is_fp_reg(entry.reg) == float_width.is_some()
+                entry.value == *candidate && self.is_fp_reg(entry.reg) == ty.is_fp()
             }) {
                 let reg = self.values[index].reg;
                 self.values[index].value = value;
-                self.set_transient(reg, Some(value), float_width)?;
+                self.set_transient(reg, Some(value), Some(ty))?;
                 return Ok(reg);
             }
         }
 
-        self.alloc_value_in_bank(value, float_width)
+        self.alloc_value_in_bank(value, ty)
     }
 
-    fn first_free_transient(&self, float_width: Option<MachineFloatWidth>) -> Option<MachineReg> {
-        let start = if float_width.is_some() {
+    fn first_free_transient(&self, ty: MachineStorageType) -> Option<MachineReg> {
+        let start = if ty.is_fp() {
             self.regfile.gp_transient_count()
         } else {
             0
         };
-        let count = if float_width.is_some() {
+        let count = if ty.is_fp() {
             self.regfile.fp_transient_count()
         } else {
             self.regfile.gp_transient_count()
         };
         for index in start..start + count {
             if self.transient_state[index].value.is_none() {
-                return if float_width.is_some() {
+                return if ty.is_fp() {
                     self.regfile.fp_transient(index - start)
                 } else {
                     self.regfile.gp_transient(index - start)
@@ -966,13 +1008,13 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         reg: MachineReg,
         value: Option<LirValue>,
-        float_width: Option<MachineFloatWidth>,
+        ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
         let index = self.transient_index(reg)?;
         let slot = self.transient_state.get_mut(index).ok_or_else(|| {
             WasmError::internal("transient register index is out of range".into())
         })?;
-        *slot = TransientState { value, float_width };
+        *slot = TransientState { value, ty };
         Ok(())
     }
 
@@ -1010,17 +1052,19 @@ impl<'a> BlockLowerContext<'a> {
         ))
     }
 
-    fn float_width_for_reg(&self, reg: MachineReg) -> Option<MachineFloatWidth> {
+    fn storage_type_for_reg(&self, reg: MachineReg) -> MachineStorageType {
         if let Ok(index) = self.transient_index(reg) {
             return self
                 .transient_state
                 .get(index)
-                .and_then(|state| state.float_width);
+                .and_then(|state| state.ty)
+                .unwrap_or(MachineStorageType::GpWord);
         }
         self.cached_locals
             .iter()
             .find(|cached| cached.reg == reg)
-            .and_then(|cached| cached.float_width)
+            .map(|cached| cached.ty)
+            .unwrap_or(MachineStorageType::GpWord)
     }
 
     pub(super) fn ensure_no_live_values(&self, message: &'static str) -> Result<(), WasmError> {
@@ -1067,6 +1111,26 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn mem0_size_reg(&self) -> MachineReg {
         self.regfile.mem0_size()
+    }
+
+    pub(super) fn gp_reg_width(&self) -> u8 {
+        self.gp_reg_width
+    }
+
+    pub(super) fn gp_word_mem_width(&self) -> MachineMemWidth {
+        gp_reg_mem_width(self.gp_reg_width)
+    }
+
+    pub(super) fn gp_word_int_width(&self) -> MachineIntWidth {
+        gp_reg_int_width(self.gp_reg_width)
+    }
+
+    pub(super) fn gp_word_max_imm(&self) -> u64 {
+        match self.gp_reg_width {
+            4 => u32::MAX as u64,
+            8 => u64::MAX,
+            other => panic!("unsupported GP register width {other}"),
+        }
     }
 
     pub(super) fn transient_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
@@ -1160,50 +1224,66 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
-fn machine_block_param(
-    reg: MachineReg,
-    float_width: Option<MachineFloatWidth>,
-) -> MachineBlockParam {
-    match float_width {
-        Some(width) => MachineBlockParam::fp(reg, width),
-        None => MachineBlockParam::gp(reg),
-    }
-}
-
-fn value_type_float_width(ty: ValueType) -> Option<MachineFloatWidth> {
+fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockParam {
     match ty {
-        ValueType::F32 => Some(MachineFloatWidth::F32),
-        ValueType::F64 => Some(MachineFloatWidth::F64),
-        _ => None,
+        MachineStorageType::GpWord => MachineBlockParam::gp_word(reg),
+        MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg),
+        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32),
+        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64),
     }
 }
 
-fn float_slot_mem_width(width: MachineFloatWidth) -> MachineMemWidth {
+fn value_type_storage_type(ty: ValueType) -> MachineStorageType {
+    match ty {
+        ValueType::F32 => MachineStorageType::Fp32,
+        ValueType::F64 => MachineStorageType::Fp64,
+        ValueType::I64 => MachineStorageType::GpI64,
+        _ => MachineStorageType::GpWord,
+    }
+}
+
+fn float_storage_type(width: MachineFloatWidth) -> MachineStorageType {
     match width {
-        MachineFloatWidth::F32 => MachineMemWidth::U32,
-        MachineFloatWidth::F64 => MachineMemWidth::U64,
+        MachineFloatWidth::F32 => MachineStorageType::Fp32,
+        MachineFloatWidth::F64 => MachineStorageType::Fp64,
     }
 }
 
-fn cached_local_mem_width(cached: CachedLocal) -> MachineMemWidth {
-    match cached.float_width {
-        Some(width) => float_slot_mem_width(width),
-        None => MachineMemWidth::U64,
+fn gp_reg_mem_width(gp_reg_width: u8) -> MachineMemWidth {
+    machine_ptr_width(gp_reg_width)
+}
+
+fn gp_reg_int_width(gp_reg_width: u8) -> MachineIntWidth {
+    machine_word_int_width(gp_reg_width)
+}
+
+fn storage_type_mem_width(ty: MachineStorageType, gp_reg_width: u8) -> MachineMemWidth {
+    match ty {
+        MachineStorageType::GpWord => gp_reg_mem_width(gp_reg_width),
+        MachineStorageType::GpI64 | MachineStorageType::Fp64 => MachineMemWidth::U64,
+        MachineStorageType::Fp32 => MachineMemWidth::U32,
     }
 }
 
-fn lir_value_float_width(program: &LirProgram, value: LirValue) -> Option<MachineFloatWidth> {
+fn cached_local_mem_width(cached: CachedLocal, gp_reg_width: u8) -> MachineMemWidth {
+    storage_type_mem_width(cached.ty, gp_reg_width)
+}
+
+fn lir_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStorageType {
     program
         .value_types
         .get(value.0 as usize)
         .copied()
-        .and_then(value_type_float_width)
+        .map(value_type_storage_type)
+        .unwrap_or(MachineStorageType::GpWord)
 }
 
-fn lir_value_slot_mem_width(program: &LirProgram, value: LirValue) -> MachineMemWidth {
-    lir_value_float_width(program, value)
-        .map(float_slot_mem_width)
-        .unwrap_or(MachineMemWidth::U64)
+fn lir_value_slot_mem_width(
+    program: &LirProgram,
+    value: LirValue,
+    gp_reg_width: u8,
+) -> MachineMemWidth {
+    storage_type_mem_width(lir_value_storage_type(program, value), gp_reg_width)
 }
 
 fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {

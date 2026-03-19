@@ -119,7 +119,7 @@ impl<'a> BlockLowerContext<'a> {
             P::F64Const { value } => {
                 self.lower_float_const(results, MachineFloatWidth::F64, *value)
             }
-            P::RefNull => self.lower_const(results, usize::MAX as u64),
+            P::RefNull => self.lower_const(results, self.gp_word_max_imm()),
             P::RefFunc { func_idx } => self.lower_const(results, *func_idx as u64),
             P::RefIsNull => self.lower_ref_is_null(args, results),
             P::Select => self.lower_select(args, results),
@@ -159,6 +159,7 @@ impl<'a> BlockLowerContext<'a> {
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
                 },
@@ -169,7 +170,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::Load {
                     dst: temp,
                     addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
-                    width: machine_ptr_width(),
+                    width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -182,14 +183,14 @@ impl<'a> BlockLowerContext<'a> {
                         core::mem::size_of::<NativeMemoryView>(),
                         memory_view_offset::LEN,
                     )?,
-                    width: machine_ptr_width(),
+                    width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
         }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::ShrU,
                 dst,
                 lhs: MachineValue::Reg(dst),
@@ -208,7 +209,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: base,
                 addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -237,7 +238,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: base,
                 addr: self.runtime_addr(ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -263,7 +264,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst: table_views,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -276,7 +277,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_LEN,
                 )?,
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -488,7 +489,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(addr32),
@@ -502,7 +503,7 @@ impl<'a> BlockLowerContext<'a> {
             let check_reg = free[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: check_reg,
                     lhs: MachineValue::Reg(addr32),
@@ -513,7 +514,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(check_reg),
@@ -525,7 +526,7 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -536,7 +537,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(addr32),
@@ -570,7 +571,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(addr32),
@@ -584,7 +585,7 @@ impl<'a> BlockLowerContext<'a> {
             let check_reg = scratch[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: check_reg,
                     lhs: MachineValue::Reg(addr32),
@@ -595,7 +596,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(check_reg),
@@ -609,7 +610,7 @@ impl<'a> BlockLowerContext<'a> {
             let check_addend = access_bytes as u64;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -620,7 +621,7 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineInstKind::TrapIf {
                     kind: MachineTrapKind::MemoryOutOfBounds,
                     cond: MachineBranchCond::IntCompare {
-                        width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                        width: self.gp_word_int_width(),
                         kind: MachineCompareKind::Gt,
                         sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                         lhs: MachineValue::Reg(addr32),
@@ -649,7 +650,7 @@ impl<'a> BlockLowerContext<'a> {
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -657,10 +658,16 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
-        emit_memory_base_load_ops(&mut ops, self.runtime_base_reg(), memidx, scratch)?;
+        emit_memory_base_load_ops(
+            &mut ops,
+            self.runtime_base_reg(),
+            memidx,
+            scratch,
+            self.gp_reg_width(),
+        )?;
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: scratch,
                 lhs: MachineValue::Reg(scratch),
@@ -707,7 +714,7 @@ impl<'a> BlockLowerContext<'a> {
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -717,7 +724,7 @@ impl<'a> BlockLowerContext<'a> {
         }
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: addr32,
                 lhs: MachineValue::Reg(self.mem0_base_reg()),
@@ -749,7 +756,7 @@ impl<'a> BlockLowerContext<'a> {
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -759,7 +766,7 @@ impl<'a> BlockLowerContext<'a> {
         }
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: addr32,
                 lhs: MachineValue::Reg(self.mem0_base_reg()),
@@ -788,18 +795,28 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<MachineTerminator, WasmError> {
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Convert {
-                op: MachineConvertOp::I64ExtendI32U,
-                dst: index64,
-                src: MachineValue::Reg(index),
-            },
-        });
+        if self.gp_reg_width() == 8 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Convert {
+                    op: MachineConvertOp::I64ExtendI32U,
+                    dst: index64,
+                    src: MachineValue::Reg(index),
+                },
+            });
+        } else if index64 != index {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                    dst: index64,
+                    src: MachineValue::Reg(index),
+                },
+            });
+        }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 dst: table_len,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -812,13 +829,13 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_LEN,
                 )?,
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         Ok(MachineTerminator::Branch {
             cond: MachineBranchCond::IntCompare {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 kind: MachineCompareKind::Ge,
                 sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                 lhs: MachineValue::Reg(index64),
@@ -845,18 +862,28 @@ impl<'a> BlockLowerContext<'a> {
         store_src: Option<crate::vm::native::ir::machine::MachineReg>,
     ) -> Result<Vec<MachineInst>, WasmError> {
         let mut ops = Vec::new();
-        ops.push(MachineInst {
-            kind: MachineInstKind::Convert {
-                op: MachineConvertOp::I64ExtendI32U,
-                dst: index64,
-                src: MachineValue::Reg(index),
-            },
-        });
+        if self.gp_reg_width() == 8 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Convert {
+                    op: MachineConvertOp::I64ExtendI32U,
+                    dst: index64,
+                    src: MachineValue::Reg(index),
+                },
+            });
+        } else if index64 != index {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                    dst: index64,
+                    src: MachineValue::Reg(index),
+                },
+            });
+        }
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
                 dst: scratch,
                 addr: self.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -869,13 +896,13 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeTableView>(),
                     table_view_offset::ELEMENTS_BASE,
                 )?,
-                width: machine_ptr_width(),
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: index64,
                 lhs: MachineValue::Reg(index64),
@@ -884,7 +911,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: self.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: scratch,
                 lhs: MachineValue::Reg(scratch),
@@ -899,7 +926,7 @@ impl<'a> BlockLowerContext<'a> {
                         base: scratch,
                         offset: 0,
                     },
-                    width: machine_ptr_width(),
+                    width: self.gp_word_mem_width(),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -911,7 +938,7 @@ impl<'a> BlockLowerContext<'a> {
                         base: scratch,
                         offset: 0,
                     },
-                    width: machine_ptr_width(),
+                    width: self.gp_word_mem_width(),
                     src: MachineValue::Reg(src),
                 },
             });
@@ -925,17 +952,27 @@ impl<'a> BlockLowerContext<'a> {
         addr: crate::vm::native::ir::machine::MachineReg,
         addr32: crate::vm::native::ir::machine::MachineReg,
     ) -> Result<(), WasmError> {
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Convert {
-                op: MachineConvertOp::I64ExtendI32U,
-                dst: addr32,
-                src: MachineValue::Reg(addr),
-            },
-        });
+        if self.gp_reg_width() == 8 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Convert {
+                    op: MachineConvertOp::I64ExtendI32U,
+                    dst: addr32,
+                    src: MachineValue::Reg(addr),
+                },
+            });
+        } else if addr32 != addr {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                    dst: addr32,
+                    src: MachineValue::Reg(addr),
+                },
+            });
+        }
         if offset != 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
-                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    width: self.gp_word_int_width(),
                     op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                     dst: addr32,
                     lhs: MachineValue::Reg(addr32),
@@ -954,6 +991,7 @@ impl<'a> BlockLowerContext<'a> {
         if memidx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
                 },
@@ -965,7 +1003,7 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Load {
                 dst,
                 addr: self.runtime_addr(ctx_offset::MEMORY_VIEWS_BASE),
-                width: MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -978,7 +1016,7 @@ impl<'a> BlockLowerContext<'a> {
                     core::mem::size_of::<NativeMemoryView>(),
                     memory_view_offset::LEN,
                 )?,
-                width: MachineMemWidth::U64,
+                width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -1439,17 +1477,28 @@ fn emit_effective_addr_ops(
     offset: u32,
     addr: crate::vm::native::ir::machine::MachineReg,
     addr32: crate::vm::native::ir::machine::MachineReg,
+    gp_reg_width: u8,
 ) {
-    ops.push(MachineInst {
-        kind: MachineInstKind::Convert {
-            op: MachineConvertOp::I64ExtendI32U,
-            dst: addr32,
-            src: MachineValue::Reg(addr),
-        },
-    });
+    if gp_reg_width == 8 {
+        ops.push(MachineInst {
+            kind: MachineInstKind::Convert {
+                op: MachineConvertOp::I64ExtendI32U,
+                dst: addr32,
+                src: MachineValue::Reg(addr),
+            },
+        });
+    } else if addr32 != addr {
+        ops.push(MachineInst {
+            kind: MachineInstKind::Move {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                dst: addr32,
+                src: MachineValue::Reg(addr),
+            },
+        });
+    }
     ops.push(MachineInst {
         kind: MachineInstKind::IntBinary {
-            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            width: crate::vm::native::ir::machine::machine_word_int_width(gp_reg_width),
             op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
             dst: addr32,
             lhs: MachineValue::Reg(addr32),
@@ -1463,10 +1512,12 @@ fn emit_memory_base_load_ops(
     runtime_base: crate::vm::native::ir::machine::MachineReg,
     memidx: u32,
     dst: crate::vm::native::ir::machine::MachineReg,
+    gp_reg_width: u8,
 ) -> Result<(), WasmError> {
     if memidx == 0 {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
                 dst,
                 src: MachineValue::Reg(crate::vm::native::ir::machine::MACHINE_MEM0_BASE_REG),
             },
@@ -1481,7 +1532,7 @@ fn emit_memory_base_load_ops(
                 base: runtime_base,
                 offset: ctx_offset::MEMORY_VIEWS_BASE as i32,
             },
-            width: machine_ptr_width(),
+            width: machine_ptr_width(gp_reg_width),
             extension: MachineLoadExtension::None,
         },
     });
@@ -1496,7 +1547,7 @@ fn emit_memory_base_load_ops(
                     memory_view_offset::BASE,
                 )?,
             },
-            width: machine_ptr_width(),
+            width: machine_ptr_width(gp_reg_width),
             extension: MachineLoadExtension::None,
         },
     });

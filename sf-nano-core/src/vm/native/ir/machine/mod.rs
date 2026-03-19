@@ -17,6 +17,7 @@
 
 mod cfg;
 mod inst;
+mod legalize;
 mod module;
 pub mod peephole;
 mod regs;

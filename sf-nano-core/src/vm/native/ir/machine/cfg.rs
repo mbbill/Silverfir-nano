@@ -3,23 +3,30 @@ use alloc::vec::Vec;
 use super::inst::MachineInst;
 use super::types::{
     MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFuncId, MachineIntWidth,
-    MachineReg, MachineSign, MachineTrapKind, MachineValue,
+    MachineReg, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
 };
 
 /// One explicit machine block parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MachineBlockParam {
     pub reg: MachineReg,
-    /// FP params must declare the lane width carried in the physical FP reg.
-    pub float_width: Option<MachineFloatWidth>,
+    pub ty: MachineStorageType,
 }
 
 impl MachineBlockParam {
     #[inline]
-    pub const fn gp(reg: MachineReg) -> Self {
+    pub const fn gp_word(reg: MachineReg) -> Self {
         Self {
             reg,
-            float_width: None,
+            ty: MachineStorageType::GpWord,
+        }
+    }
+
+    #[inline]
+    pub const fn gp_i64(reg: MachineReg) -> Self {
+        Self {
+            reg,
+            ty: MachineStorageType::GpI64,
         }
     }
 
@@ -27,7 +34,10 @@ impl MachineBlockParam {
     pub const fn fp(reg: MachineReg, width: MachineFloatWidth) -> Self {
         Self {
             reg,
-            float_width: Some(width),
+            ty: match width {
+                MachineFloatWidth::F32 => MachineStorageType::Fp32,
+                MachineFloatWidth::F64 => MachineStorageType::Fp64,
+            },
         }
     }
 }

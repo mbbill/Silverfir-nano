@@ -64,9 +64,9 @@ impl MachineModule {
     ///
     /// `first_transient` is the first GP transient register. FP transients are
     /// the prefix of the FP bank with length `fp_transient_count`.
-    pub fn optimize(&mut self, first_transient: u16) {
+    pub fn optimize(&mut self, first_transient: u16, gp_reg_width: u8) {
         for func in &mut self.functions {
-            super::peephole::optimize(&mut func.program, first_transient);
+            super::peephole::optimize(&mut func.program, first_transient, gp_reg_width);
         }
     }
 }

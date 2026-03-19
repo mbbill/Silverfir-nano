@@ -3,7 +3,7 @@ use alloc::{vec, vec::Vec};
 use crate::vm::native::ir::machine::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId, MachineEdge,
     MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
-    MachineReg, MachineTerminator, MachineValue,
+    MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
 use crate::vm::native::ir::runtime::{MachineExternBinding, MachineHelperSymbol};
 
@@ -27,7 +27,7 @@ fn rejects_edge_arity_mismatch() {
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp(MachineReg(0))],
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(0))],
                 ops: Vec::new(),
                 terminator: MachineTerminator::Return,
             },
@@ -51,6 +51,7 @@ fn rejects_out_of_range_register() {
             params: Vec::new(),
             ops: alloc::vec![MachineInst {
                 kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
                     dst: MachineReg(1),
                     src: MachineValue::Imm64(0),
                 },

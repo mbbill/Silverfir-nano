@@ -137,7 +137,7 @@ legalized MachineIR to ARMv7A machine code.
   - `--emu64`: current behavior; executes the 64-bit-target MachineIR shape
   - `--emu32`: executes optimized + legalized 32-bit-target MachineIR
 - `--emu32` must compile with a real 32-bit backend profile:
-  - `gp_reg_width = 4`
+  - `gp_unit_bytes = 4`
   - the same GP / FP lane and local-cache counts used by `armv7a`
 - The point of `--emu32` is to validate legalization semantics before ARM32
   encoding enters the picture.

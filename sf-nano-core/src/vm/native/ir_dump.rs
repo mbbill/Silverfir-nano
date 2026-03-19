@@ -446,10 +446,7 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
             block
                 .params
                 .iter()
-                .map(|param| match param.float_width {
-                    Some(width) => format!("r{}:{width:?}", param.reg.0),
-                    None => format!("r{}", param.reg.0),
-                })
+                .map(|param| format!("r{}:{}", param.reg.0, sty(&param.ty)))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -462,8 +459,8 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
 
 fn render_machine_inst(kind: &MachineInstKind) -> String {
     match kind {
-        MachineInstKind::Move { dst, src } => {
-            format!("move r{} <- {}", dst.0, mval(src))
+        MachineInstKind::Move { ty, dst, src } => {
+            format!("move.{} r{} <- {}", sty(ty), dst.0, mval(src))
         }
         MachineInstKind::FloatConst { width, dst, bits } => {
             format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
@@ -574,13 +571,15 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             format!("cvt.{:?} r{} <- {}", op, dst.0, mval(src))
         }
         MachineInstKind::Select {
+            ty,
             dst,
             on_true,
             on_false,
             cond,
         } => {
             format!(
-                "select r{} <- {} ? {} : {}",
+                "select.{} r{} <- {} ? {} : {}",
+                sty(ty),
                 dst.0,
                 mval(cond),
                 mval(on_true),
@@ -732,5 +731,14 @@ fn fw(w: &MachineFloatWidth) -> &'static str {
     match w {
         MachineFloatWidth::F32 => "f32",
         MachineFloatWidth::F64 => "f64",
+    }
+}
+
+fn sty(ty: &crate::vm::native::ir::machine::MachineStorageType) -> &'static str {
+    match ty {
+        crate::vm::native::ir::machine::MachineStorageType::GpWord => "gp",
+        crate::vm::native::ir::machine::MachineStorageType::GpI64 => "i64",
+        crate::vm::native::ir::machine::MachineStorageType::Fp32 => "f32",
+        crate::vm::native::ir::machine::MachineStorageType::Fp64 => "f64",
     }
 }

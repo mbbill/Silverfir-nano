@@ -27,7 +27,8 @@ use alloc::vec::Vec;
 
 use super::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth,
-    MachineInst, MachineInstKind, MachineProgram, MachineReg, MachineTerminator, MachineValue,
+    MachineInst, MachineInstKind, MachineProgram, MachineReg, MachineStorageType,
+    MachineTerminator, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -50,7 +51,7 @@ struct TrackedLoad {
 /// prefix of the FP bank with length `program.fp_transient_count`. Only
 /// transient registers are candidates for copy/constant rewriting; fixed and
 /// cached-local registers must not be disturbed.
-pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
+pub fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width: u8) {
     let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
     let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
     for block in &mut program.blocks {
@@ -86,7 +87,7 @@ pub fn optimize(program: &mut MachineProgram, first_transient: u16) {
     }
     // Compare-and-branch fusion needs cross-block liveness, so it runs after
     // the per-block passes when the instruction stream is stable.
-    fuse_compare_branch(&mut program.blocks);
+    fuse_compare_branch(&mut program.blocks, gp_reg_width);
 }
 
 /// Replace duplicate constant materializations with register copies.
@@ -116,6 +117,7 @@ fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
             MachineInstKind::Move {
                 dst,
                 src: src @ MachineValue::Imm64(..),
+                ..
             } if dst.0 < first_fp_reg => {
                 let bits = match *src {
                     MachineValue::Imm64(b) => b,
@@ -141,6 +143,10 @@ fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
                         .find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
                     {
                         inst.kind = MachineInstKind::Move {
+                            ty: match w {
+                                MachineFloatWidth::F32 => MachineStorageType::Fp32,
+                                MachineFloatWidth::F64 => MachineStorageType::Fp64,
+                            },
                             dst: d,
                             src: MachineValue::Reg(prev),
                         };
@@ -183,6 +189,7 @@ fn fold_constants(
             MachineInstKind::Move {
                 dst,
                 src: MachineValue::Imm64(imm),
+                ..
             } if dst.0 >= first_transient && dst.0 < first_fp_reg => (*dst, *imm),
             // FP transient constant: FloatConst rX <- bits
             MachineInstKind::FloatConst { dst, bits, .. }
@@ -238,8 +245,13 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 {
                     if matches!(src, MachineValue::Reg(src_reg) if src_reg == *dst) {
                         keep_inst = false;
-                    } else if move_rewrite_supported(*dst, src, first_fp_reg) {
-                        inst.kind = MachineInstKind::Move { dst: *dst, src };
+                    } else if let Some(ty) = rewrite_move_storage_type(
+                        *dst,
+                        src,
+                        super::MachineMemWidth::U64,
+                        first_fp_reg,
+                    ) {
+                        inst.kind = MachineInstKind::Move { ty, dst: *dst, src };
                     }
                 }
             }
@@ -301,8 +313,13 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 {
                     if src_reg == *dst {
                         keep_inst = false;
-                    } else if reg_move_rewrite_supported(*dst, src_reg, first_fp_reg) {
-                        rewrite_load = Some((*dst, src_reg));
+                    } else if let Some(ty) = rewrite_move_storage_type(
+                        *dst,
+                        MachineValue::Reg(src_reg),
+                        *width,
+                        first_fp_reg,
+                    ) {
+                        rewrite_load = Some((*dst, src_reg, ty));
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
                             width: *width,
@@ -329,8 +346,9 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
         }
 
         if keep_inst {
-            if let Some((dst, src_reg)) = rewrite_load {
+            if let Some((dst, src_reg, ty)) = rewrite_load {
                 inst.kind = MachineInstKind::Move {
+                    ty,
                     dst,
                     src: MachineValue::Reg(src_reg),
                 };
@@ -416,6 +434,7 @@ fn copy_propagate(
             MachineInstKind::Move {
                 dst,
                 src: MachineValue::Reg(src),
+                ..
             } => {
                 if *dst == *src {
                     continue;
@@ -936,6 +955,23 @@ fn move_rewrite_supported(dst: MachineReg, src: MachineValue, first_fp_reg: u16)
     }
 }
 
+fn rewrite_move_storage_type(
+    dst: MachineReg,
+    src: MachineValue,
+    width: super::MachineMemWidth,
+    first_fp_reg: u16,
+) -> Option<MachineStorageType> {
+    let dst_is_fp = dst.0 >= first_fp_reg;
+    let src_is_fp = matches!(src, MachineValue::Reg(src_reg) if src_reg.0 >= first_fp_reg);
+    match (dst_is_fp, src_is_fp, width) {
+        (true, _, super::MachineMemWidth::U32) => Some(MachineStorageType::Fp32),
+        (true, _, super::MachineMemWidth::U64) => Some(MachineStorageType::Fp64),
+        (false, true, super::MachineMemWidth::U32) => Some(MachineStorageType::GpWord),
+        (false, true, super::MachineMemWidth::U64) => Some(MachineStorageType::GpI64),
+        _ => None,
+    }
+}
+
 fn can_elide_reg_move(
     ops: &[MachineInst],
     terminator: &MachineTerminator,
@@ -1005,7 +1041,7 @@ fn mem_width_bytes(width: super::MachineMemWidth) -> i64 {
 ///
 /// This is a cross-block pass: it reads successor blocks to check liveness,
 /// so it must run after the per-block optimizations are done.
-fn fuse_compare_branch(blocks: &mut [MachineBlock]) {
+fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8) {
     for idx in 0..blocks.len() {
         // Check the last op and the terminator of this block.
         let last_op = match blocks[idx].ops.last() {
@@ -1032,6 +1068,14 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock]) {
         // correctly with a single B.cond, but since this is a shared pass
         // it must be safe for all backends.
         let fused_cond = match &last_op.kind {
+            MachineInstKind::IntCompare {
+                width,
+                kind,
+                sign,
+                dst,
+                lhs,
+                rhs,
+            } if *width == super::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
             MachineInstKind::IntCompare {
                 width,
                 kind,

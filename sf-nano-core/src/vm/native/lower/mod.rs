@@ -31,11 +31,11 @@ use crate::{
         native::{
             ir::{
                 machine::{
-                    machine_ptr_width, MachineBlock, MachineBlockId, MachineBlockParam,
-                    MachineBranchCond, MachineCompareKind, MachineConstData, MachineFloatWidth,
-                    MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
-                    MachineLoadExtension, MachineMemWidth, MachineModule, MachineProgram,
-                    MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
+                    MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
+                    MachineCompareKind, MachineConstData, MachineFloatWidth, MachineFuncId,
+                    MachineFunction, MachineInst, MachineInstKind, MachineLoadExtension,
+                    MachineMemWidth, MachineModule, MachineProgram, MachineReg, MachineStorageType,
+                    MachineTerminator, MachineTrapKind, MachineValue,
                 },
                 runtime::{
                     MachineCallLinkLayout, MachineExternBinding, MachineFrameRegion,
@@ -116,6 +116,7 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
             *function,
+            input.backend.gp_unit_bytes,
             &regfile,
             &function_runtime,
             call_link,
@@ -181,6 +182,7 @@ fn lower_function_runtime(
 
 fn lower_function(
     input: LowerFunctionInput<'_>,
+    gp_reg_width: u8,
     regfile: &MachineRegFile,
     runtime: &[MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
@@ -206,6 +208,7 @@ fn lower_function(
             caller_runtime,
             runtime,
             call_link,
+            gp_reg_width,
             target == input.lir.entry,
             #[cfg(has_guard_pages)]
             guard_pages,
@@ -217,11 +220,7 @@ fn lower_function(
             .copied()
             .zip(block.params.iter().copied())
             .map(|(reg, value)| {
-                if let Some(width) = program_value_float_width(input.lir, value) {
-                    MachineBlockParam::fp(reg, width)
-                } else {
-                    MachineBlockParam::gp(reg)
-                }
+                machine_block_param(reg, program_value_storage_type(input.lir, value))
             })
             .collect::<Vec<_>>();
 
@@ -371,7 +370,7 @@ fn lower_function(
                             lower.take_ops(),
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ge,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(0)?),
@@ -396,7 +395,7 @@ fn lower_function(
                             build_call_indirect_checked_block(&lower, table_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ge,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(2)?),
@@ -430,7 +429,7 @@ fn lower_function(
                             build_call_indirect_type_check_block(&lower, type_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ne,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(0)?),
@@ -464,7 +463,7 @@ fn lower_function(
                             build_call_indirect_dispatch_block(&lower, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
-                                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                                    width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Eq,
                                     sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
                                     lhs: MachineValue::Reg(lower.transient_reg(0)?),
@@ -494,7 +493,7 @@ fn lower_function(
                             local_call,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            vec![MachineBlockParam::gp(local_call_target_param)],
+                            vec![MachineBlockParam::gp_word(local_call_target_param)],
                             build_call_indirect_local_block(&mut lower, args)?,
                             MachineTerminator::CallIndirect {
                                 callee_target: MachineValue::Reg(local_call_target_param),
@@ -726,7 +725,7 @@ fn target_param_regs(
     let mut gp_index = 0usize;
     let mut fp_index = 0usize;
     for param in params {
-        if program_value_float_width(program, *param).is_some() {
+        if program_value_storage_type(program, *param).is_fp() {
             regs.push(regfile.fp_transient(fp_index).ok_or_else(|| {
                 WasmError::internal("target params exceed FP transient register budget".into())
             })?);
@@ -741,16 +740,22 @@ fn target_param_regs(
     Ok(regs)
 }
 
-fn program_value_float_width(program: &LirProgram, value: LirValue) -> Option<MachineFloatWidth> {
-    program
-        .value_types
-        .get(value.0 as usize)
-        .copied()
-        .and_then(|ty| match ty {
-            ValueType::F32 => Some(MachineFloatWidth::F32),
-            ValueType::F64 => Some(MachineFloatWidth::F64),
-            _ => None,
-        })
+fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockParam {
+    match ty {
+        MachineStorageType::GpWord => MachineBlockParam::gp_word(reg),
+        MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg),
+        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32),
+        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64),
+    }
+}
+
+fn program_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStorageType {
+    match program.value_types.get(value.0 as usize).copied() {
+        Some(ValueType::F32) => MachineStorageType::Fp32,
+        Some(ValueType::F64) => MachineStorageType::Fp64,
+        Some(ValueType::I64) => MachineStorageType::GpI64,
+        Some(_) | None => MachineStorageType::GpWord,
+    }
 }
 
 fn fp_reg_init_widths(
@@ -826,7 +831,7 @@ fn emit_call_indirect_bounds_check_setup(
         kind: MachineInstKind::Load {
             dst: index,
             addr: lower.frame_addr(index_slot)?,
-            width: MachineMemWidth::U64,
+            width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -834,7 +839,7 @@ fn emit_call_indirect_bounds_check_setup(
         kind: MachineInstKind::Load {
             dst: table_views,
             addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-            width: machine_ptr_width(),
+            width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -847,7 +852,7 @@ fn emit_call_indirect_bounds_check_setup(
                 core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
                 crate::vm::native::runtime::context::table_view_offset::ELEMENTS_LEN,
             )?,
-            width: machine_ptr_width(),
+            width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -867,7 +872,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Load {
                 dst: index,
                 addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U64,
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -875,7 +880,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Load {
                 dst: table_base,
                 addr: lower.runtime_addr(ctx_offset::TABLE_VIEWS_BASE),
-                width: machine_ptr_width(),
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -888,13 +893,13 @@ fn build_call_indirect_checked_block(
                     core::mem::size_of::<crate::vm::native::runtime::context::NativeTableView>(),
                     crate::vm::native::runtime::context::table_view_offset::ELEMENTS_BASE,
                 )?,
-                width: machine_ptr_width(),
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: lower.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: index,
                 lhs: MachineValue::Reg(index),
@@ -903,7 +908,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: lower.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: table_base,
                 lhs: MachineValue::Reg(table_base),
@@ -917,14 +922,14 @@ fn build_call_indirect_checked_block(
                     base: table_base,
                     offset: 0,
                 },
-                width: machine_ptr_width(),
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::Store {
                 addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U64,
+                width: lower.gp_word_mem_width(),
                 src: MachineValue::Reg(func_idx),
             },
         },
@@ -932,7 +937,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Load {
                 dst: table_base,
                 addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_LEN),
-                width: machine_ptr_width(),
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
@@ -963,7 +968,7 @@ fn build_call_indirect_type_check_block(
         kind: MachineInstKind::Load {
             dst: function_views,
             addr: lower.runtime_addr(ctx_offset::TYPE_CANON_BASE),
-            width: machine_ptr_width(),
+            width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
@@ -1024,7 +1029,7 @@ fn build_call_indirect_local_block(
 
     let ops = vec![MachineInst {
         kind: MachineInstKind::IntBinary {
-            width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+            width: lower.gp_word_int_width(),
             op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
             dst: callee_frame_base,
             lhs: MachineValue::Reg(lower.frame_base_reg()),
@@ -1056,19 +1061,20 @@ fn dynamic_function_view_load(
             kind: MachineInstKind::Load {
                 dst: func_idx_dst,
                 addr: lower.frame_addr(index_slot)?,
-                width: MachineMemWidth::U64,
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::Move {
+                ty: MachineStorageType::GpWord,
                 dst: scaled_index_reg,
                 src: MachineValue::Reg(func_idx_dst),
             },
         },
         MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: lower.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Mul,
                 dst: scaled_index_reg,
                 lhs: MachineValue::Reg(scaled_index_reg),
@@ -1079,13 +1085,13 @@ fn dynamic_function_view_load(
             kind: MachineInstKind::Load {
                 dst: base_reg,
                 addr: lower.runtime_addr(ctx_offset::FUNCTION_VIEWS_BASE),
-                width: machine_ptr_width(),
+                width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
         },
         MachineInst {
             kind: MachineInstKind::IntBinary {
-                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                width: lower.gp_word_int_width(),
                 op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
                 dst: base_reg,
                 lhs: MachineValue::Reg(base_reg),

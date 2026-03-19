@@ -36,6 +36,8 @@ pub struct CachedLocalInfo {
 pub struct LirLocalCachePrefs {
     /// GP-bank cached local slots (i32, i64, ref).
     pub gp_preferred_slots: Vec<FrameSlot>,
+    /// Semantic types for `gp_preferred_slots`, kept in the same order.
+    pub gp_preferred_types: Vec<ValueType>,
     /// FP-bank cached local slots (f32, f64).
     pub fp_preferred_slots: Vec<FrameSlot>,
     /// Semantic types for `fp_preferred_slots`, kept in the same order.

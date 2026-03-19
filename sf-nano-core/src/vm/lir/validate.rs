@@ -54,6 +54,14 @@ pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
             )));
         }
     }
+    if program.local_cache.gp_preferred_slots.len() != program.local_cache.gp_preferred_types.len()
+    {
+        return Err(WasmError::internal(alloc::format!(
+            "LIR GP local-cache preferences contain {} slots but {} type entries",
+            program.local_cache.gp_preferred_slots.len(),
+            program.local_cache.gp_preferred_types.len(),
+        )));
+    }
     if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len()
     {
         return Err(WasmError::internal(alloc::format!(
@@ -68,6 +76,28 @@ pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
                 "LIR FP local-cache preferences contain duplicate slot {:?}",
                 slot,
             )));
+        }
+    }
+    for ty in &program.local_cache.gp_preferred_types {
+        if matches!(
+            ty,
+            super::super::super::value_type::ValueType::F32
+                | super::super::super::value_type::ValueType::F64
+        ) {
+            return Err(WasmError::internal(
+                "LIR GP local-cache preferences must not contain float types".into(),
+            ));
+        }
+    }
+    for ty in &program.local_cache.fp_preferred_types {
+        if !matches!(
+            ty,
+            super::super::super::value_type::ValueType::F32
+                | super::super::super::value_type::ValueType::F64
+        ) {
+            return Err(WasmError::internal(
+                "LIR FP local-cache preferences must contain only float types".into(),
+            ));
         }
     }
 

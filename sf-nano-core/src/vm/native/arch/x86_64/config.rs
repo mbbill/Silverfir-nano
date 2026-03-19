@@ -14,5 +14,5 @@ pub const fn compile_backend_config() -> BackendConfig {
     //  7 GP transients     (RCX, RDX, RSI, RDI, R8, R9, R10)
     // 10 FP cached locals  (XMM6-XMM15) — caller-saved, save/restore at calls
     //  6 FP transients     (XMM0-XMM5)
-    BackendConfig::new(2, 7, 10, 6)
+    BackendConfig::new_with_gp_unit_bytes(2, 7, 10, 6, 8)
 }

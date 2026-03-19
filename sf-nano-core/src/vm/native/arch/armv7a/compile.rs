@@ -1098,7 +1098,7 @@ fn compile_function(
 
 fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(), WasmError> {
     match &inst.kind {
-        MachineInstKind::Move { dst, src } => {
+        MachineInstKind::Move { dst, src, .. } => {
             let dst_is_fp = is_fp_machine_reg(*dst);
             let src_is_fp = match src {
                 MachineValue::Reg(r) => is_fp_machine_reg(*r),
@@ -1280,6 +1280,7 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
             on_true,
             on_false,
             cond,
+            ..
         } => {
             compile_select(fc, *dst, cond, on_true, on_false)?;
         }

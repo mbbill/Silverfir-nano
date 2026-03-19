@@ -68,8 +68,9 @@ impl EntryState {
 
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
-    gp_transient_limit: u8,
-    fp_transient_limit: u8,
+    gp_unit_bytes: u8,
+    gp_transient_budget: u8,
+    fp_transient_budget: u8,
     stack_height: u16,
     spill_depth: u16,
     live: Vec<LirValue>,
@@ -81,8 +82,9 @@ impl BlockState {
     pub(super) fn from_entry(
         entry: &EntryState,
         params: &[LirValue],
-        gp_transient_limit: u8,
-        fp_transient_limit: u8,
+        gp_unit_bytes: u8,
+        gp_transient_budget: u8,
+        fp_transient_budget: u8,
     ) -> Result<Self, WasmError> {
         debug_assert_eq!(
             entry.live_types.len(),
@@ -90,8 +92,9 @@ impl BlockState {
             "EntryState.live_types must line up with block params",
         );
         let state = Self {
-            gp_transient_limit,
-            fp_transient_limit,
+            gp_unit_bytes,
+            gp_transient_budget,
+            fp_transient_budget,
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
             live: params.to_vec(),
@@ -245,24 +248,16 @@ impl BlockState {
     }
 
     fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
-        let (gp_live, fp_live) = count_live_banks(&self.live_types);
-        if gp_live > self.gp_transient_limit as usize || fp_live > self.fp_transient_limit as usize
+        let (gp_live, fp_live) = count_live_bank_budget_units(&self.live_types, self.gp_unit_bytes);
+        if gp_live > self.gp_transient_budget as usize
+            || fp_live > self.fp_transient_budget as usize
         {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeds configured transient bank budget during {context}: gp live {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
+                "prepared LIR exceeds configured transient bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
                 gp_live,
-                self.gp_transient_limit,
+                self.gp_transient_budget,
                 fp_live,
-                self.fp_transient_limit,
-                self.stack_height,
-                self.spill_depth,
-            )));
-        }
-        if self.live.len() > self.gp_transient_limit as usize + self.fp_transient_limit as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeds configured transient width during {context}: live window {} > total limit {} (stack_height={}, spill_depth={})",
-                self.live.len(),
-                self.gp_transient_limit as usize + self.fp_transient_limit as usize,
+                self.fp_transient_budget,
                 self.stack_height,
                 self.spill_depth,
             )));
@@ -271,14 +266,29 @@ impl BlockState {
     }
 }
 
-fn count_live_banks(types: &[ValueType]) -> (usize, usize) {
+pub(super) fn count_live_bank_budget_units(
+    types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> (usize, usize) {
     let mut gp = 0usize;
     let mut fp = 0usize;
     for ty in types {
         match ty {
             ValueType::F32 | ValueType::F64 => fp += 1,
-            _ => gp += 1,
+            _ => gp += gp_value_budget_units(*ty, gp_unit_bytes),
         }
     }
     (gp, fp)
+}
+
+#[inline]
+pub(super) fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
+    debug_assert!(gp_unit_bytes != 0, "gp_unit_bytes must be non-zero");
+    match ty {
+        ValueType::I64 => {
+            let width = usize::from(gp_unit_bytes.max(1));
+            8usize.div_ceil(width)
+        }
+        _ => 1,
+    }
 }
