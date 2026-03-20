@@ -3,7 +3,7 @@
 //! Enable by setting `SF_NATIVE_DUMP_DIR=/path/to/output_dir`.
 //! The dump writes exactly two files for the current module compile:
 //! - `native_index.txt`: function/region metadata, LIR, MachineIR, runtime contract
-//! - `native_code.bin`: concatenated emitted ARM64 machine code bytes
+//! - `native_code.bin`: concatenated emitted native machine code bytes
 
 use alloc::{format, string::String, vec::Vec};
 use core::fmt::Write as _;
@@ -538,6 +538,26 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(rhs)
             )
         }
+        MachineInstKind::Int64PairBinary {
+            op,
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+        } => {
+            format!(
+                "i64pair.{:?} r{},r{} <- ({}, {}) ({}, {})",
+                op,
+                dst_lo.0,
+                dst_hi.0,
+                mval(lhs_lo),
+                mval(lhs_hi),
+                mval(rhs_lo),
+                mval(rhs_hi)
+            )
+        }
         MachineInstKind::Int64PairDivRem {
             sign,
             rem,
@@ -595,6 +615,26 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(lhs_lo),
                 mval(lhs_hi),
                 mval(rhs)
+            )
+        }
+        MachineInstKind::Int64PairCompare {
+            kind,
+            sign,
+            dst,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+        } => {
+            format!(
+                "i64pair.cmp.{:?}.{:?} r{} <- ({}, {}) ({}, {})",
+                kind,
+                sign,
+                dst.0,
+                mval(lhs_lo),
+                mval(lhs_hi),
+                mval(rhs_lo),
+                mval(rhs_hi)
             )
         }
         MachineInstKind::IntCompare {

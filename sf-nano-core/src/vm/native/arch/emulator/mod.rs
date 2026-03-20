@@ -9,7 +9,7 @@ pub mod config;
 
 use self::address_space::EmulatorAddressSpace;
 use crate::{
-    constants::{MAX_CALL_STACK_DEPTH, MAX_STACK_SIZE},
+    constants::MAX_STACK_SIZE,
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
@@ -382,6 +382,25 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst_lo, lo, fixed_reg_addr_kind(*dst_lo))?;
                 self.write_reg_with_kind(*dst_hi, hi, fixed_reg_addr_kind(*dst_hi))?;
             }
+            MachineInstKind::Int64PairBinary {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => {
+                let (lo, hi) = eval_i64_pair_binary(
+                    *op,
+                    self.read_value(*lhs_lo)?,
+                    self.read_value(*lhs_hi)?,
+                    self.read_value(*rhs_lo)?,
+                    self.read_value(*rhs_hi)?,
+                )?;
+                self.write_reg_with_kind(*dst_lo, lo, fixed_reg_addr_kind(*dst_lo))?;
+                self.write_reg_with_kind(*dst_hi, hi, fixed_reg_addr_kind(*dst_hi))?;
+            }
             MachineInstKind::Int64PairDivRem {
                 sign,
                 rem,
@@ -446,6 +465,25 @@ impl<'a> Emulator<'a> {
                     *sign,
                     self.read_value(*lhs)?,
                     self.read_value(*rhs)?,
+                );
+                self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
+            }
+            MachineInstKind::Int64PairCompare {
+                kind,
+                sign,
+                dst,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => {
+                let value = eval_i64_pair_compare(
+                    *kind,
+                    *sign,
+                    self.read_value(*lhs_lo)?,
+                    self.read_value(*lhs_hi)?,
+                    self.read_value(*rhs_lo)?,
+                    self.read_value(*rhs_hi)?,
                 );
                 self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
             }
@@ -649,7 +687,7 @@ impl<'a> Emulator<'a> {
         let callee_fp = self
             .address_space
             .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        self.enter_callee(callee, callee_fp)
+        self.enter_callee(callee, callee_fp, false)
     }
 
     fn enter_indirect_call(
@@ -680,25 +718,27 @@ impl<'a> Emulator<'a> {
             WasmError::internal("indirect local call requires callee call scratch".into())
         })?;
         self.write_call_link(callee_fp, call_scratch, continuation, caller_result_base)?;
-        self.enter_callee(callee, callee_fp)
+        self.enter_callee(callee, callee_fp, true)
     }
 
     fn enter_callee(
         &mut self,
         callee: crate::vm::native::ir::machine::MachineFuncId,
         callee_fp: *mut u64,
+        check_stack_capacity: bool,
     ) -> Result<(), WasmError> {
         let callee_function = self
             .compiled
             .function(callee)
             .ok_or_else(|| WasmError::internal("machine local callee is out of range".into()))?;
         let callee_runtime = self.runtime_for(callee)?;
-        ensure_stack_capacity(
-            callee_fp,
-            self.ctx.stack_end,
-            callee_runtime.total_frame_slots,
-        )?;
-        ensure_call_depth_capacity(self.call_stack.len())?;
+        if check_stack_capacity {
+            ensure_stack_capacity(
+                callee_fp,
+                self.ctx.stack_end,
+                callee_runtime.total_frame_slots,
+            )?;
+        }
         self.call_stack.push(SavedCaller {
             func_id: self.func_id,
             regs: core::mem::take(&mut self.regs),
@@ -1229,13 +1269,6 @@ pub(crate) fn ensure_stack_capacity(
     Ok(())
 }
 
-pub(crate) fn ensure_call_depth_capacity(current_depth: usize) -> Result<(), WasmError> {
-    if current_depth >= MAX_CALL_STACK_DEPTH {
-        return Err(trap_from_kind(MachineTrapKind::CallStackExhausted));
-    }
-    Ok(())
-}
-
 fn frame_region_addr(
     fp: *mut u64,
     region: MachineFrameRegion,
@@ -1262,7 +1295,6 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         }
         MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::CallStackExhausted => WasmError::exhaustion("call stack exhausted".into()),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
     }
@@ -1461,6 +1493,28 @@ fn eval_i64_pair_div_rem(
     Ok((u64::from(value as u32), u64::from((value >> 32) as u32)))
 }
 
+fn eval_i64_pair_binary(
+    op: MachineIntBinaryOp,
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+) -> Result<(u64, u64), WasmError> {
+    let lhs = u64::from(lhs_lo as u32) | (u64::from(lhs_hi as u32) << 32);
+    let rhs = u64::from(rhs_lo as u32) | (u64::from(rhs_hi as u32) << 32);
+    let value = match op {
+        MachineIntBinaryOp::Add => lhs.wrapping_add(rhs),
+        MachineIntBinaryOp::Sub => lhs.wrapping_sub(rhs),
+        MachineIntBinaryOp::Mul => lhs.wrapping_mul(rhs),
+        _ => {
+            return Err(WasmError::internal(
+                "machine Int64PairBinary requires a supported i64 binary op".into(),
+            ))
+        }
+    };
+    Ok((u64::from(value as u32), u64::from((value >> 32) as u32)))
+}
+
 fn eval_i64_pair_unary(
     op: MachineIntUnaryOp,
     src_lo: u64,
@@ -1516,6 +1570,23 @@ fn eval_i64_pair_to_float(
         (MachineFloatWidth::F64, MachineSign::Signed) => from_f64((src as i64) as f64),
         (MachineFloatWidth::F64, MachineSign::Unsigned) => from_f64(src as f64),
     }
+}
+
+fn eval_i64_pair_compare(
+    kind: MachineCompareKind,
+    sign: MachineSign,
+    lhs_lo: u64,
+    lhs_hi: u64,
+    rhs_lo: u64,
+    rhs_hi: u64,
+) -> u64 {
+    let lhs = u64::from(lhs_lo as u32) | (u64::from(lhs_hi as u32) << 32);
+    let rhs = u64::from(rhs_lo as u32) | (u64::from(rhs_hi as u32) << 32);
+    let result = match sign {
+        MachineSign::Signed => compare_i64(kind, lhs as i64, rhs as i64),
+        MachineSign::Unsigned => compare_u64(kind, lhs, rhs),
+    };
+    u64::from(result as u32)
 }
 
 fn eval_int_compare(
@@ -2040,10 +2111,10 @@ mod tests {
                 code::CompiledNativeModule,
                 ir::machine::{
                     MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-                    MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
-                    MachineInstKind, MachineIntWidth, MachineProgram, MachineReg, MachineSign,
-                    MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
-                    MACHINE_MEM0_BASE_REG,
+                    MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction, MachineInst,
+                    MachineInstKind, MachineIntWidth, MachineMemWidth, MachineProgram, MachineReg,
+                    MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
+                    MachineValue, MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
                 },
                 ir::runtime::MachineRuntimeContract,
             },
@@ -2286,25 +2357,98 @@ mod tests {
     }
 
     #[test]
-    fn runtime_eval_emu32_traps_on_recursive_call_exhaustion() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+    fn compiled_emu32_rejects_unfinalized_gpi64_machine_ir() {
+        let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
+        let err = CompiledNativeModule::new(
+            NativeBackend::Reference,
+            backend,
+            crate::vm::native::ir::machine::MachineModule {
+                functions: vec![MachineFunction {
+                    id: MachineFuncId(0),
+                    program: MachineProgram {
+                        entry: MachineBlockId(0),
+                        first_fp_reg: MACHINE_FIXED_REG_COUNT
+                            + backend.gp_local_cache_budget as u16
+                            + backend.gp_transient_budget as u16,
+                        reg_count: MACHINE_FIXED_REG_COUNT
+                            + backend.gp_local_cache_budget as u16
+                            + backend.gp_transient_budget as u16,
+                        fp_transient_count: 0,
+                        fp_reg_init_widths: Vec::new(),
+                        blocks: vec![MachineBlock {
+                            id: MachineBlockId(0),
+                            params: Vec::new(),
+                            ops: vec![MachineInst {
+                                kind: MachineInstKind::Move {
+                                    ty: MachineStorageType::GpI64,
+                                    dst: MachineReg(MACHINE_FIXED_REG_COUNT),
+                                    src: MachineValue::Imm64(7),
+                                },
+                            }],
+                            terminator: MachineTerminator::Return,
+                        }],
+                    },
+                }],
+                consts: Vec::new(),
+                externs: Vec::new(),
+            },
+            MachineRuntimeContract::default(),
+        )
+        .expect_err("emu32 should reject unfinalized scalar gpi64 IR");
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
-        let mut module = ModuleInst::new(String::from("m"), types);
-        let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
-        spec.set_code((&[0x10, 0x00, 0x0b][..]).into());
-        module.functions.push(FunctionInst::Local {
-            spec,
-            type_index: 0,
-        });
-        let mut store = Store::new(module);
-        let func_ptr = &store.module().functions[0] as *const FunctionInst;
-        let func_ref = unsafe { &*func_ptr };
+        assert!(err.message().contains("not finalized 32-bit MachineIR"));
+        assert!(err.message().contains("GpI64"));
+    }
 
-        let error =
-            runtime::eval(func_ref, &mut store, &[]).expect_err("recursive call should exhaust");
-        assert_eq!(error.message(), "call stack exhausted");
+    #[test]
+    fn compiled_emu32_rejects_wrong_gp_fp_boundary() {
+        let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
+        let err = CompiledNativeModule::new(
+            NativeBackend::Reference,
+            backend,
+            crate::vm::native::ir::machine::MachineModule {
+                functions: vec![MachineFunction {
+                    id: MachineFuncId(0),
+                    program: MachineProgram {
+                        entry: MachineBlockId(0),
+                        first_fp_reg: MACHINE_FIXED_REG_COUNT
+                            + backend.gp_local_cache_budget as u16
+                            + backend.gp_transient_budget as u16
+                            - 1,
+                        reg_count: MACHINE_FIXED_REG_COUNT
+                            + backend.gp_local_cache_budget as u16
+                            + backend.gp_transient_budget as u16
+                            - 1,
+                        fp_transient_count: 0,
+                        fp_reg_init_widths: Vec::new(),
+                        blocks: vec![MachineBlock {
+                            id: MachineBlockId(0),
+                            params: Vec::new(),
+                            ops: vec![MachineInst {
+                                kind: MachineInstKind::Store {
+                                    ty: MachineStorageType::GpWord,
+                                    addr: crate::vm::native::ir::machine::MachineAddr {
+                                        base: MachineReg(1),
+                                        offset: 0,
+                                    },
+                                    width: MachineMemWidth::U32,
+                                    src: MachineValue::Imm64(0),
+                                },
+                            }],
+                            terminator: MachineTerminator::Return,
+                        }],
+                    },
+                }],
+                consts: Vec::new(),
+                externs: Vec::new(),
+            },
+            MachineRuntimeContract::default(),
+        )
+        .expect_err("emu32 should reject machine IR with a non-finalized GP/FP bank boundary");
+
+        assert!(err
+            .message()
+            .contains("expected first_fp_reg 12 after 32-bit finalization"));
     }
 
     #[test]

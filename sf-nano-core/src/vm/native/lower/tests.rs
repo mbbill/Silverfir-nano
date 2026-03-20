@@ -715,6 +715,63 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
 }
 
 #[test]
+fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
+    let frame = plan_frame_layout(0, 1, 1);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x0123_4567_89ab_cdef,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+        value_types: alloc::vec![ValueType::I64],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new(0, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("uncached const store lowering should succeed");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Store {
+            ty: MachineStorageType::GpI64,
+            src: MachineValue::Imm64(0x0123_4567_89ab_cdef),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn flushes_and_reloads_cached_locals_around_call_external() {
     let frame = plan_frame_layout(1, 2, 3);
     let lir = LirProgram {
@@ -968,30 +1025,55 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    assert_eq!(call_block.ops.len(), 5);
+    assert_eq!(call_block.ops.len(), 8);
     assert!(matches!(
         call_block.ops[1].kind,
+        MachineInstKind::Load { .. }
+    ));
+    assert!(matches!(
+        call_block.ops[2].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Sub,
+            ..
+        }
+    ));
+    assert!(matches!(
+        call_block.ops[3].kind,
+        MachineInstKind::TrapIf {
+            cond:
+                crate::vm::native::ir::machine::MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    kind: MachineCompareKind::Gt,
+                    sign: crate::vm::native::ir::machine::MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(lhs),
+                    ..
+                },
+            kind: crate::vm::native::ir::machine::MachineTrapKind::StackOverflow,
+        } if lhs == callee_frame_base
+    ));
+    assert!(matches!(
+        call_block.ops[4].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(0),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[2].kind,
+        call_block.ops[5].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(1),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[3].kind,
+        call_block.ops[6].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(1)),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[4].kind,
+        call_block.ops[7].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(40),
             ..
@@ -1828,20 +1910,103 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     .expect("32-bit GP-word slot accesses should use canonical slot width");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert!(matches!(
-        ops[1].kind,
+    assert!(ops.iter().any(|op| matches!(
+        op.kind,
         MachineInstKind::Store {
             width: MachineMemWidth::U64,
             ..
         }
-    ));
-    assert!(matches!(
-        ops[2].kind,
+    )));
+    assert!(ops.iter().any(|op| matches!(
+        op.kind,
         MachineInstKind::Load {
             width: MachineMemWidth::U64,
             ..
         }
-    ));
+    )));
+}
+
+#[test]
+fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_targets() {
+    let caller_frame = plan_frame_layout(1, 4, 4);
+    let callee_frame = plan_frame_layout(3, 2, 4);
+
+    let caller = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                    callee: 1,
+                    args: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(
+                        caller_frame.operand_slot(0),
+                        1,
+                    ),
+                    skip_reload: alloc::vec![],
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+        value_types: alloc::vec![],
+    };
+    let callee = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    callee_frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+        value_types: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(0),
+                frame: caller_frame,
+                lir: &caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(1),
+                frame: callee_frame,
+                lir: &callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("32-bit direct local call lowering should succeed");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    let store_widths: alloc::vec::Vec<_> = ops
+        .iter()
+        .filter_map(|op| match op.kind {
+            MachineInstKind::Store { width, .. } => Some(width),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        store_widths,
+        alloc::vec![
+            MachineMemWidth::U64,
+            MachineMemWidth::U64,
+            MachineMemWidth::U64,
+            MachineMemWidth::U64,
+        ]
+    );
 }
 
 #[test]

@@ -426,26 +426,45 @@ fn memory_grow_helper(
         let delta_pages = decode_memory_grow_delta(delta_pages_raw, is_64);
 
         let old_pages = mem.current_pages();
-        let new_pages = old_pages.checked_add(delta_pages).unwrap_or(usize::MAX);
-        if new_pages > mem.limits.get_max() {
-            (error_value, error_value)
-        } else {
-            #[cfg(has_guard_pages)]
-            {
-                if let Some(guard) = mem.guard_mut() {
-                    match guard.grow(delta_pages) {
-                        Ok(_) => (old_pages as u64, error_value),
-                        Err(_) => (error_value, error_value),
+        match old_pages.checked_add(delta_pages) {
+            None => (error_value, error_value),
+            Some(new_pages) if new_pages > mem.limits.get_max() => (error_value, error_value),
+            Some(new_pages) => {
+                #[cfg(has_guard_pages)]
+                {
+                    if let Some(guard) = mem.guard_mut() {
+                        match guard.grow(delta_pages) {
+                            Ok(_) => (old_pages as u64, error_value),
+                            Err(_) => (error_value, error_value),
+                        }
+                    } else {
+                        if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
+                            let additional = new_len.saturating_sub(mem.data.len());
+                            if mem.data.try_reserve(additional).is_err() {
+                                (error_value, error_value)
+                            } else {
+                                mem.data.resize(new_len, 0);
+                                (old_pages as u64, error_value)
+                            }
+                        } else {
+                            (error_value, error_value)
+                        }
                     }
-                } else {
-                    mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
-                    (old_pages as u64, error_value)
                 }
-            }
-            #[cfg(not(has_guard_pages))]
-            {
-                mem.data.resize(new_pages * WASM_PAGE_SIZE, 0);
-                (old_pages as u64, error_value)
+                #[cfg(not(has_guard_pages))]
+                {
+                    if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
+                        let additional = new_len.saturating_sub(mem.data.len());
+                        if mem.data.try_reserve(additional).is_err() {
+                            (error_value, error_value)
+                        } else {
+                            mem.data.resize(new_len, 0);
+                            (old_pages as u64, error_value)
+                        }
+                    } else {
+                        (error_value, error_value)
+                    }
+                }
             }
         }
     };
@@ -619,12 +638,14 @@ fn table_grow_helper(
     let result = {
         let table = table_mut(ctx, meta.table_idx)?;
         let old_len = table.elements.len();
-        let new_len = old_len.checked_add(delta).unwrap_or(usize::MAX);
-        if new_len > table.limits.get_max() {
-            u32::MAX as u64
-        } else {
-            table.elements.resize_with(new_len, || fill);
-            old_len as u64
+        match old_len.checked_add(delta) {
+            None => u32::MAX as u64,
+            Some(new_len) if new_len > table.limits.get_max() => u32::MAX as u64,
+            Some(new_len) if table.elements.try_reserve(delta).is_err() => u32::MAX as u64,
+            Some(new_len) => {
+                table.elements.resize_with(new_len, || fill);
+                old_len as u64
+            }
         }
     };
 
@@ -988,6 +1009,59 @@ mod tests {
         assert_eq!(ctx.table_views_len, 1);
         let view = unsafe { &*ctx.table_views_base };
         assert_eq!(view.elements_len, 3);
+        assert!(ctx.error.is_none());
+    }
+
+    #[test]
+    fn table_grow_helper_returns_minus_one_on_unallocatable_growth() {
+        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        module.tables.push(TableInst::new(
+            Limits::new(0x10, Some(u32::MAX as usize)).unwrap(),
+            ValueType::Ref(RefType::funcref()),
+        ));
+        let (_store, mut ctx) = test_context(module);
+        let meta = TableGrowMeta {
+            table_idx: 0,
+            args: HelperFrameRegion {
+                base_slot: 0,
+                slots: 2,
+            },
+            results: HelperFrameRegion {
+                base_slot: 0,
+                slots: 1,
+            },
+        };
+        let mut frame = [RefHandle::null().0 as u64, 0xffff_fff0];
+
+        let status = call_helper(MachineHelperSymbol::TableGrow, &mut ctx, &mut frame, &meta);
+
+        assert_eq!(status, NativeHelperStatus::Ok as u32);
+        assert_eq!(frame[0], u32::MAX as u64);
+        assert_eq!(ctx.table_views_len, 1);
+        assert!(ctx.error.is_none());
+    }
+
+    #[test]
+    fn memory_grow_helper_returns_minus_one_on_unallocatable_growth() {
+        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        module
+            .memories
+            .push(MemInst::new(Limits::new(0, None).unwrap()));
+        let (_store, mut ctx) = test_context(module);
+        let meta = MemoryGrowMeta {
+            mem_idx: 0,
+            io: HelperFrameRegion {
+                base_slot: 0,
+                slots: 1,
+            },
+        };
+        let mut frame = [u32::MAX as u64];
+
+        let status = call_helper(MachineHelperSymbol::MemoryGrow, &mut ctx, &mut frame, &meta);
+
+        assert_eq!(status, NativeHelperStatus::Ok as u32);
+        assert_eq!(frame[0], u32::MAX as u64);
+        assert_eq!(ctx.mem0_size, 0);
         assert!(ctx.error.is_none());
     }
 

@@ -173,8 +173,7 @@ pub(crate) unsafe extern "C" fn arm64_raise_trap(ctx: *mut NativeContext, kind: 
         4 => WasmError::trap("indirect call type mismatch".into()),
         5 => WasmError::trap("integer divide by zero".into()),
         6 => WasmError::trap("integer overflow".into()),
-        7 => WasmError::exhaustion("call stack exhausted".into()),
-        8 => WasmError::exhaustion("stack overflow".into()),
+        7 => WasmError::exhaustion("stack overflow".into()),
         _ => WasmError::trap("native helper failed".into()),
     };
     #[cfg(feature = "function-trace")]

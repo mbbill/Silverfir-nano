@@ -8,9 +8,9 @@
 //! R0-R2  caller-saved     GP transient                3
 //! R3     caller-saved     GP transient                1
 //! R4     callee-saved     fixed: MEM0_SIZE            1
-//! R5-R6  callee-saved     GP local cache              2
-//! R7-R8  callee-saved     GP transient                2
-//! R9     platform         fixed: CTX                  1
+//! R5-R7  callee-saved     GP local cache              3
+//! R8     callee-saved     fixed: CTX                  1
+//! R9     platform         GP local cache              1
 //! R10    callee-saved     fixed: FP                   1
 //! R11    callee-saved     fixed: MEM0_BASE            1
 //! R12    caller-saved     scratch (IP)                1
@@ -18,8 +18,8 @@
 //! R14    —                LR (reserved)               1
 //! R15    —                PC (reserved)               1
 //! ─────────────────────────────────────────────────────
-//!                         GP transient                6
-//!                         GP local cache              2
+//!                         GP transient                4
+//!                         GP local cache              4
 //! ```
 //!
 //! # FP register plan (D0-D15, VFPv3-D16)
@@ -46,6 +46,9 @@ use crate::{
 use super::{emit::Arm32TextEmitter, enc, reg::Arm32Reg};
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
+/// Call-local scratch. LR is saved in the shared prologue and only used as a
+/// transient scratch within straight-line sequences that do not issue calls.
+pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
 
 /// FP scratch registers (caller-saved, not used for values or parameters).
 pub(super) const FP_SCRATCH0: u32 = 0; // D0
@@ -69,14 +72,23 @@ const _: () = assert!(
 
 /// GP registers available to the machine-reg file, ordered: local cache first,
 /// then transients.
+///
+/// R9 is never used for fixed MachineIR state. It stays in the dynamic bank
+/// only, so the fixed roles remain pinned to unquestionably preserved
+/// registers. Cached locals are synchronized through frame slots at call
+/// boundaries, so the dynamic bank may include registers that are not part of
+/// the backend's fixed-state contract.
 const DYNAMIC_REGS: [Arm32Reg; 8] = [
-    // GP local cache: callee-saved — survive helper calls
+    // GP local cache: preferred for cached locals. Shared lowering
+    // synchronizes cached locals through frame slots across helper/call
+    // boundaries, so this bank does not rely on every register being
+    // callee-saved in the C ABI.
     Arm32Reg::R5,
     Arm32Reg::R6,
+    Arm32Reg::R7,
+    Arm32Reg::R9,
     // GP transient: dead at call boundaries
     Arm32Reg::R3,
-    Arm32Reg::R7,
-    Arm32Reg::R8,
     Arm32Reg::R0,
     Arm32Reg::R1,
     Arm32Reg::R2,
@@ -101,6 +113,11 @@ const CALLEE_SAVED_FP_FIRST: u32 = 8;
 const CALLEE_SAVED_FP_COUNT: u32 = 8;
 
 const STACK_ALIGNMENT_BYTES: u32 = 8; // EABI requires 8-byte stack alignment
+const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 == 1 {
+    4
+} else {
+    0
+};
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
@@ -129,16 +146,10 @@ pub(super) const fn fp_machine_reg(index: usize) -> Option<u32> {
     None
 }
 
-/// Returns true if this machine register is in the FP register file.
-#[inline]
-pub(super) const fn is_fp_machine_reg(reg: MachineReg) -> bool {
-    reg.0 as usize >= max_gp_mapped_regs()
-}
-
 #[inline]
 pub(super) fn map_fixed_reg(reg: MachineReg) -> Arm32Reg {
     match reg {
-        MACHINE_CTX_REG => Arm32Reg::R9,
+        MACHINE_CTX_REG => Arm32Reg::R8,
         MACHINE_FP_REG => Arm32Reg::R10,
         MACHINE_MEM0_BASE_REG => Arm32Reg::R11,
         MACHINE_MEM0_SIZE_REG => Arm32Reg::R4,
@@ -165,7 +176,7 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
 #[inline]
 pub(super) fn inv_map_reg(reg: Arm32Reg) -> MachineReg {
     match reg {
-        Arm32Reg::R9 => MACHINE_CTX_REG,
+        Arm32Reg::R8 => MACHINE_CTX_REG,
         Arm32Reg::R10 => MACHINE_FP_REG,
         Arm32Reg::R11 => MACHINE_MEM0_BASE_REG,
         Arm32Reg::R4 => MACHINE_MEM0_SIZE_REG,
@@ -191,6 +202,17 @@ fn callee_saved_gp_mask() -> u16 {
 }
 
 pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
+    // Preserve 8-byte stack alignment across all helper and runtime calls.
+    // The GP save set has an odd number of words, so reserve one extra word
+    // before the push/vpush sequence.
+    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
+        text.emit_u32(enc::sub_imm(
+            Arm32Reg::SP,
+            Arm32Reg::SP,
+            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
+            0,
+        ));
+    }
     // PUSH {R4-R11, LR}
     text.emit_u32(enc::push(callee_saved_gp_mask()));
     // VPUSH {D8-D15}
@@ -200,8 +222,16 @@ pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
 pub(super) fn emit_shared_epilogue(text: &mut Arm32TextEmitter) {
     // VPOP {D8-D15}
     text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
-    // POP {R4-R11, PC} — loading PC from the saved LR effectively returns
-    let pop_mask =
-        callee_saved_gp_mask() & !(1 << Arm32Reg::R14.idx()) | (1 << Arm32Reg::R15.idx());
+    // Restore the GP save set, then drop the alignment pad and return via LR.
+    let pop_mask = callee_saved_gp_mask();
     text.emit_u32(enc::pop(pop_mask));
+    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
+        text.emit_u32(enc::add_imm(
+            Arm32Reg::SP,
+            Arm32Reg::SP,
+            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
+            0,
+        ));
+    }
+    text.emit_u32(enc::bx(Arm32Reg::R14));
 }

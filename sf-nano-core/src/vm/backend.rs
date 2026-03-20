@@ -81,6 +81,11 @@ impl BackendConfig {
             fp_transient_budget,
         }
     }
+
+    #[inline]
+    pub const fn needs_32bit_gp_legalization(self) -> bool {
+        self.gp_unit_bytes == 4
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +102,12 @@ mod tests {
     fn backend_config_keeps_explicit_gp_unit_bytes() {
         let config = BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4);
         assert_eq!(config.gp_unit_bytes, 4);
+    }
+
+    #[test]
+    fn backend_config_detects_32bit_gp_legalization_targets() {
+        assert!(BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4).needs_32bit_gp_legalization());
+        assert!(!BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 8).needs_32bit_gp_legalization());
     }
 }
 

@@ -10,8 +10,9 @@ use crate::{
             },
             ir::{
                 machine::{
-                    MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
-                    MachineReg, MachineTerminator, MachineValue,
+                    MachineBlockId, MachineBranchCond, MachineCompareKind, MachineFuncId,
+                    MachineHelperCall, MachineInst, MachineInstKind, MachineLoadExtension,
+                    MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
                 },
                 runtime::{MachineFrameRegion, MachineHelperSymbol},
             },
@@ -63,7 +64,9 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_all_cached_locals()?;
 
-        let callee_frame_base = self.borrow_free_transients(1)?[0];
+        let call_regs = self.borrow_free_transients(2)?;
+        let callee_frame_base = call_regs[0];
+        let stack_limit = call_regs[1];
 
         // Native local calls reuse the caller operand span as the callee frame
         // prefix, so arguments are already in place when control transfers.
@@ -76,6 +79,12 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Imm64(slot_offset_bytes(args.start)? as u64),
             },
         });
+
+        self.emit_direct_call_stack_precheck(
+            callee_frame_base,
+            stack_limit,
+            callee_runtime.total_frame_slots,
+        )?;
 
         for slot in args.count..callee_runtime.frame_prefix_slots {
             self.emit_machine_inst(MachineInst {
@@ -277,6 +286,47 @@ impl<'a> BlockLowerContext<'a> {
             }
         };
         Ok(pair)
+    }
+
+    fn emit_direct_call_stack_precheck(
+        &mut self,
+        callee_frame_base: MachineReg,
+        stack_limit: MachineReg,
+        callee_total_frame_slots: u16,
+    ) -> Result<(), WasmError> {
+        let callee_total_bytes = slot_offset_bytes(FrameSlot(callee_total_frame_slots))? as u64;
+        let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                dst: stack_limit,
+                addr: self.runtime_addr(stack_end_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                dst: stack_limit,
+                lhs: MachineValue::Reg(stack_limit),
+                rhs: MachineValue::Imm64(callee_total_bytes),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::StackOverflow,
+                cond: MachineBranchCond::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Gt,
+                    sign: MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(callee_frame_base),
+                    rhs: MachineValue::Reg(stack_limit),
+                },
+            },
+        });
+        Ok(())
     }
 
     fn store_call_link(

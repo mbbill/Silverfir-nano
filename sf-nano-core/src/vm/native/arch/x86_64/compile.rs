@@ -48,7 +48,6 @@ enum LabelKind {
     Block,
     Edge,
     StackOverflow,
-    CallDepthExhausted,
     ReturnOk,
     ReturnError,
 }
@@ -148,7 +147,6 @@ struct FunctionCompiler<'a> {
     current_op_index: Option<usize>,
     current_edge_target: Option<MachineBlockId>,
     stack_overflow_label: usize,
-    call_depth_label: usize,
     return_ok_label: usize,
     return_error_label: usize,
     shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
@@ -408,7 +406,7 @@ fn compile_function(
         });
     }
 
-    // Tail: return_ok, stack_overflow, call_depth, return_error, deferred traps
+    // Tail: return_ok, stack_overflow, return_error, deferred traps
     let tail_start = compiler.text.len();
     compiler.bind_label(compiler.return_ok_label);
     enc::mov_ri_32(&mut compiler.text, X86Reg::RAX, 0); // status = 0
@@ -416,9 +414,6 @@ fn compile_function(
 
     compiler.bind_label(compiler.stack_overflow_label);
     compiler.emit_trap(MachineTrapKind::StackOverflow);
-
-    compiler.bind_label(compiler.call_depth_label);
-    compiler.emit_trap(MachineTrapKind::CallStackExhausted);
 
     compiler.bind_label(compiler.return_error_label);
     compiler.emit_epilogue();
@@ -499,15 +494,11 @@ impl<'a> FunctionCompiler<'a> {
         }
         let stack_overflow_label = labels.len();
         labels.push(None);
-        let call_depth_label = labels.len();
-        labels.push(None);
         let return_ok_label = labels.len();
         labels.push(None);
         let return_error_label = labels.len();
         labels.push(None);
         let mut shared_trap_labels = [None; MACHINE_TRAP_KIND_COUNT];
-        shared_trap_labels[trap_kind_index(MachineTrapKind::CallStackExhausted)] =
-            Some(call_depth_label);
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
         Self {
@@ -552,7 +543,6 @@ impl<'a> FunctionCompiler<'a> {
             current_op_index: None,
             current_edge_target: None,
             stack_overflow_label,
-            call_depth_label,
             return_ok_label,
             return_error_label,
             shared_trap_labels,
@@ -660,6 +650,9 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
                 "x86_64 backend received IntMulWide; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
+            MachineInstKind::Int64PairBinary { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64PairBinary; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
             MachineInstKind::Int64PairUnary { .. } => Err(WasmError::internal(
                 "x86_64 backend received Int64PairUnary; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
@@ -712,6 +705,9 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
             MachineInstKind::ConvertI64PairToFloat { .. } => Err(WasmError::internal(
                 "x86_64 backend received ConvertI64PairToFloat; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairCompare { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64PairCompare; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
             MachineInstKind::ConvertFloatToI64Pair { .. } => Err(WasmError::internal(
                 "x86_64 backend received ConvertFloatToI64Pair; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
@@ -3111,8 +3107,6 @@ impl<'a> FunctionCompiler<'a> {
             + self.compiled.runtime().call_link.continuation_offset as i32;
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
-        self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-
         // Load continuation address via movabs (patched after label resolution).
         // mov_ri_64 emits REX.W B8+rd imm64 (2 + 8 = 10 bytes).
         enc::movabs_ri_64(&mut self.text, SCRATCH0, 0); // placeholder (patched later)
@@ -3328,30 +3322,6 @@ impl<'a> FunctionCompiler<'a> {
     }
 
     // ── Stack overflow / call depth ──────────────────────────────────────────
-
-    fn emit_stack_overflow_check(
-        &mut self,
-        callee_fp: X86Reg,
-        callee_total_frame_slots: u16,
-    ) -> Result<(), WasmError> {
-        let callee_end_bytes = u64::from(callee_total_frame_slots) * 8;
-        // SCRATCH0 = callee_fp + callee_end_bytes
-        if callee_end_bytes <= i32::MAX as u64 {
-            enc::lea_64(&mut self.text, SCRATCH0, callee_fp, callee_end_bytes as i32);
-        } else {
-            self.materialize_u64(SCRATCH0, callee_end_bytes);
-            enc::add_rr_64(&mut self.text, SCRATCH0, callee_fp);
-        }
-        enc::load_64(
-            &mut self.text,
-            SCRATCH1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::STACK_END as i32,
-        );
-        enc::cmp_rr_64(&mut self.text, SCRATCH0, SCRATCH1);
-        self.emit_jcc(Cc::A, self.stack_overflow_label);
-        Ok(())
-    }
 
     // ── Parallel moves ───────────────────────────────────────────────────────
 
@@ -3575,13 +3545,12 @@ fn trap_code(kind: MachineTrapKind) -> u64 {
         MachineTrapKind::IndirectCallTypeMismatch => 4,
         MachineTrapKind::IntegerDivideByZero => 5,
         MachineTrapKind::IntegerOverflow => 6,
-        MachineTrapKind::CallStackExhausted => 7,
-        MachineTrapKind::StackOverflow => 8,
-        MachineTrapKind::HelperFailure => 9,
+        MachineTrapKind::StackOverflow => 7,
+        MachineTrapKind::HelperFailure => 8,
     }
 }
 
-const MACHINE_TRAP_KIND_COUNT: usize = 10;
+const MACHINE_TRAP_KIND_COUNT: usize = 9;
 
 fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize

@@ -42,7 +42,6 @@ enum LabelKind {
     Block,
     Edge,
     StackOverflow,
-    CallDepthExhausted,
     ReturnOk,
     ReturnError,
 }
@@ -146,7 +145,6 @@ struct FunctionCompiler<'a> {
     current_op_index: Option<usize>,
     current_edge_target: Option<MachineBlockId>,
     stack_overflow_label: usize,
-    call_depth_label: usize,
     return_ok_label: usize,
     return_error_label: usize,
     shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
@@ -431,9 +429,6 @@ fn compile_function(
     compiler.bind_label(compiler.stack_overflow_label);
     compiler.emit_trap(MachineTrapKind::StackOverflow);
 
-    compiler.bind_label(compiler.call_depth_label);
-    compiler.emit_trap(MachineTrapKind::CallStackExhausted);
-
     compiler.bind_label(compiler.return_error_label);
     compiler.emit_epilogue();
 
@@ -544,15 +539,11 @@ impl<'a> FunctionCompiler<'a> {
         }
         let stack_overflow_label = labels.len();
         labels.push(None);
-        let call_depth_label = labels.len();
-        labels.push(None);
         let return_ok_label = labels.len();
         labels.push(None);
         let return_error_label = labels.len();
         labels.push(None);
         let mut shared_trap_labels = [None; MACHINE_TRAP_KIND_COUNT];
-        shared_trap_labels[trap_kind_index(MachineTrapKind::CallStackExhausted)] =
-            Some(call_depth_label);
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
         Self {
@@ -597,7 +588,6 @@ impl<'a> FunctionCompiler<'a> {
             current_op_index: None,
             current_edge_target: None,
             stack_overflow_label,
-            call_depth_label,
             return_ok_label,
             return_error_label,
             shared_trap_labels,
@@ -786,6 +776,9 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
                 "arm64 backend received IntMulWide; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
             )),
+            MachineInstKind::Int64PairBinary { .. } => Err(WasmError::internal(
+                "arm64 backend received Int64PairBinary; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
             MachineInstKind::Int64PairUnary { .. } => Err(WasmError::internal(
                 "arm64 backend received Int64PairUnary; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
             )),
@@ -838,6 +831,9 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
             MachineInstKind::ConvertI64PairToFloat { .. } => Err(WasmError::internal(
                 "arm64 backend received ConvertI64PairToFloat; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
+            )),
+            MachineInstKind::Int64PairCompare { .. } => Err(WasmError::internal(
+                "arm64 backend received Int64PairCompare; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
             )),
             MachineInstKind::ConvertFloatToI64Pair { .. } => Err(WasmError::internal(
                 "arm64 backend received ConvertFloatToI64Pair; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
@@ -1120,8 +1116,6 @@ impl<'a> FunctionCompiler<'a> {
             + (self.compiled.runtime().call_link.continuation_offset / 8) as u16;
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
-        self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-
         let continuation_load = self.text.emit_u32(enc::ldr_lit_64(SCRATCH0, 0));
         if continuation_slot < 4096 {
             self.text
@@ -1375,33 +1369,6 @@ impl<'a> FunctionCompiler<'a> {
         self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, Arm64Reg::X2));
         self.emit_b_cond(Cond::Lo, loop_label);
         self.bind_label(done);
-        Ok(())
-    }
-
-    fn emit_stack_overflow_check(
-        &mut self,
-        callee_fp: Arm64Reg,
-        callee_total_frame_slots: u16,
-    ) -> Result<(), WasmError> {
-        let callee_end_bytes = u64::from(callee_total_frame_slots) * 8;
-        if callee_end_bytes < 4096 {
-            self.text.emit_u32(enc::add_imm_64(
-                SCRATCH0,
-                callee_fp,
-                callee_end_bytes as u32,
-            ));
-        } else {
-            self.materialize_u64(SCRATCH0, callee_end_bytes);
-            self.text
-                .emit_u32(enc::add_reg_64(SCRATCH0, callee_fp, SCRATCH0));
-        }
-        self.text.emit_u32(enc::ldr_64(
-            SCRATCH1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::STACK_END / 8) as u32,
-        ));
-        self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, SCRATCH1));
-        self.emit_b_cond(Cond::Hi, self.stack_overflow_label);
         Ok(())
     }
 
@@ -3424,13 +3391,12 @@ fn trap_code(kind: MachineTrapKind) -> u64 {
         MachineTrapKind::IndirectCallTypeMismatch => 4,
         MachineTrapKind::IntegerDivideByZero => 5,
         MachineTrapKind::IntegerOverflow => 6,
-        MachineTrapKind::CallStackExhausted => 7,
-        MachineTrapKind::StackOverflow => 8,
-        MachineTrapKind::HelperFailure => 9,
+        MachineTrapKind::StackOverflow => 7,
+        MachineTrapKind::HelperFailure => 8,
     }
 }
 
-const MACHINE_TRAP_KIND_COUNT: usize = 10;
+const MACHINE_TRAP_KIND_COUNT: usize = 9;
 
 fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize
@@ -4425,9 +4391,11 @@ fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
         MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairCompare { dst, .. } => *dst == reg,
         MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
             *dst_lo == reg || *dst_hi == reg
         }
@@ -4458,6 +4426,18 @@ fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg)
         }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            value_is_reg(*lhs_lo, reg)
+                || value_is_reg(*lhs_hi, reg)
+                || value_is_reg(*rhs_lo, reg)
+                || value_is_reg(*rhs_hi, reg)
+        }
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
             value_is_reg(*src_lo, reg) || value_is_reg(*src_hi, reg)
         }
@@ -4479,6 +4459,18 @@ fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
             rhs,
             ..
         } => value_is_reg(*lhs_lo, reg) || value_is_reg(*lhs_hi, reg) || value_is_reg(*rhs, reg),
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            value_is_reg(*lhs_lo, reg)
+                || value_is_reg(*lhs_hi, reg)
+                || value_is_reg(*rhs_lo, reg)
+                || value_is_reg(*rhs_hi, reg)
+        }
         MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
             value_is_reg(*src_lo, reg) || value_is_reg(*src_hi, reg)
         }

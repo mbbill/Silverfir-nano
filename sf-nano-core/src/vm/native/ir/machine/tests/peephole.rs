@@ -1022,3 +1022,122 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
         }
     ));
 }
+
+#[test]
+fn folds_single_use_constant_into_later_store_in_same_block() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 9,
+        reg_count: 10,
+        fp_transient_count: 1,
+        fp_reg_init_widths: vec![None],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Imm64(0),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::FloatConst {
+                        width: crate::vm::native::ir::machine::MachineFloatWidth::F32,
+                        dst: MachineReg(9),
+                        bits: 0,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 24,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 4);
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::FloatConst { .. }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Store {
+            src: MachineValue::Imm64(0),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_fold_constant_used_as_non_replaceable_address_base() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 8,
+        reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Imm64(64),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(6),
+                        addr: MachineAddr {
+                            base: MachineReg(7),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::native::ir::machine::peephole::optimize(&mut program, 7, 4);
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Imm64(64),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Load {
+            addr: MachineAddr {
+                base: MachineReg(7),
+                ..
+            },
+            ..
+        }
+    ));
+}

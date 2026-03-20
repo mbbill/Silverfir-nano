@@ -443,6 +443,442 @@ fn gp_expansion_finalization_shifts_fp_bank_and_compacts_new_gp_regs() {
 }
 
 #[test]
+fn compact_32bit_gp_bank_packs_sparse_legalized_gp_regs_back_into_budget() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 14,
+        reg_count: 16,
+        fp_transient_count: 1,
+        fp_reg_init_widths: vec![Some(MachineFloatWidth::F32), None],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![MachineBlockParam::gp_word(MachineReg(4))],
+            ops: vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(12),
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::Add,
+                        dst: MachineReg(13),
+                        lhs: MachineValue::Reg(MachineReg(12)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::FloatUnary {
+                        width: MachineFloatWidth::F32,
+                        op: MachineFloatUnaryOp::Neg,
+                        dst: MachineReg(14),
+                        src: MachineValue::Reg(MachineReg(14)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+                target: MachineBlockId(0),
+                args: vec![MachineValue::Reg(MachineReg(13))],
+            }),
+        }],
+    };
+
+    program
+        .compact_32bit_gp_bank(8)
+        .expect("gp-bank compaction should fit sparse legalized regs into budget");
+
+    assert_eq!(program.first_fp_reg, 8);
+    assert_eq!(program.reg_count, 10);
+
+    let block = &program.blocks[0];
+    assert_eq!(block.params.len(), 1);
+    assert_eq!(block.params[0].ty, MachineStorageType::GpWord);
+    assert!(block.params[0].reg.0 < 8);
+
+    let MachineInstKind::Move { dst, src, .. } = &block.ops[0].kind else {
+        panic!("expected move");
+    };
+    assert!(dst.0 < 8);
+    let move_dst = *dst;
+    let MachineValue::Reg(src_reg) = *src else {
+        panic!("expected move source reg");
+    };
+    assert_eq!(src_reg, block.params[0].reg);
+
+    let MachineInstKind::IntBinary { dst, lhs, rhs, .. } = &block.ops[1].kind else {
+        panic!("expected int binary");
+    };
+    assert!(dst.0 < 8);
+    let MachineValue::Reg(lhs_reg) = *lhs else {
+        panic!("expected int binary lhs reg");
+    };
+    let MachineValue::Reg(rhs_reg) = *rhs else {
+        panic!("expected int binary rhs reg");
+    };
+    let int_dst = *dst;
+    assert_eq!(lhs_reg, move_dst);
+    assert!(rhs_reg.0 < 8);
+
+    let MachineInstKind::FloatUnary { dst, src, .. } = &block.ops[2].kind else {
+        panic!("expected float unary");
+    };
+    assert_eq!(*dst, MachineReg(8));
+    assert_eq!(*src, MachineValue::Reg(MachineReg(8)));
+
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump");
+    };
+    assert_eq!(edge.args, vec![MachineValue::Reg(int_dst)]);
+
+    program
+        .validate()
+        .expect("compacted program should validate");
+}
+
+#[test]
+fn compaction_debug_distinguishes_persistent_hi_from_scratch_temps() {
+    let mut module = MachineModule {
+        functions: vec![MachineFunction {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            program: MachineProgram {
+                entry: MachineBlockId(0),
+                first_fp_reg: 6,
+                reg_count: 6,
+                fp_transient_count: 0,
+                fp_reg_init_widths: vec![],
+                blocks: vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: vec![MachineBlockParam::gp_word(MachineReg(4))],
+                    ops: vec![
+                        MachineInst {
+                            kind: MachineInstKind::Load {
+                                ty: MachineStorageType::GpI64,
+                                dst: MachineReg(4),
+                                addr: MachineAddr {
+                                    base: MachineReg(4),
+                                    offset: 0,
+                                },
+                                width: MachineMemWidth::U64,
+                                extension: MachineLoadExtension::None,
+                            },
+                        },
+                        MachineInst {
+                            kind: MachineInstKind::IntBinary {
+                                width: MachineIntWidth::I64,
+                                op: MachineIntBinaryOp::Add,
+                                dst: MachineReg(4),
+                                lhs: MachineValue::Reg(MachineReg(4)),
+                                rhs: MachineValue::Imm64(1),
+                            },
+                        },
+                    ],
+                    terminator: MachineTerminator::Return,
+                }],
+            },
+        }],
+        consts: vec![],
+        externs: vec![],
+    };
+
+    module
+        .legalize(4)
+        .expect("legalize tiny i64 load/add program");
+    let program = &module.functions[0].program;
+    let debug = crate::vm::native::ir::machine::debug_describe_gp_compaction(program, 6)
+        .expect("describe legalized gp compaction");
+
+    assert_eq!(debug.peak_live_regs, 2);
+    assert!(
+        debug.estimated_pressure >= debug.peak_live_regs,
+        "graph estimate should not be below actual peak liveness"
+    );
+
+    let persistent = debug
+        .extra_regs
+        .iter()
+        .find(|info| info.pair_low_regs == vec![MachineReg(4)])
+        .expect("expected one persistent high-half companion for r4");
+    assert!(
+        persistent
+            .samples
+            .iter()
+            .any(|sample| sample.contains("pair Add dst_hi")),
+        "expected pair-op provenance, got {:?}",
+        persistent.samples
+    );
+
+    let scratch = debug
+        .extra_regs
+        .iter()
+        .find(|info| info.pair_low_regs.is_empty())
+        .expect("expected one scratch temp from preserved pair-load base");
+    assert!(
+        scratch
+            .samples
+            .iter()
+            .any(|sample| sample.contains("load base")),
+        "expected preserved-base scratch provenance, got {:?}",
+        scratch.samples
+    );
+}
+
+#[test]
+fn compact_32bit_gp_bank_preserves_backend_fp_bank_boundary() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 15,
+        reg_count: 17,
+        fp_transient_count: 1,
+        fp_reg_init_widths: vec![Some(MachineFloatWidth::F64), None],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![MachineBlockParam::gp_word(MachineReg(4))],
+            ops: vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(14),
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::FloatUnary {
+                        width: MachineFloatWidth::F64,
+                        op: MachineFloatUnaryOp::Abs,
+                        dst: MachineReg(15),
+                        src: MachineValue::Reg(MachineReg(15)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    program
+        .compact_32bit_gp_bank(12)
+        .expect("gp-bank compaction should respect the backend fp-bank boundary");
+
+    assert_eq!(program.first_fp_reg, 12);
+    assert_eq!(program.reg_count, 14);
+
+    let block = &program.blocks[0];
+    let MachineInstKind::Move { dst, src, .. } = &block.ops[0].kind else {
+        panic!("expected move");
+    };
+    assert!(dst.0 < 12);
+    let MachineValue::Reg(src_reg) = *src else {
+        panic!("expected move source reg");
+    };
+    assert!(src_reg.0 < 12);
+
+    let MachineInstKind::FloatUnary { dst, src, .. } = &block.ops[1].kind else {
+        panic!("expected float unary");
+    };
+    assert_eq!(*dst, MachineReg(12));
+    assert_eq!(*src, MachineValue::Reg(MachineReg(12)));
+
+    program
+        .validate()
+        .expect("compacted program should validate");
+}
+
+#[test]
+fn compact_32bit_gp_bank_keeps_mem0_fixed_slots_reserved() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 8,
+        reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![MachineBlockParam::gp_word(MachineReg(4))],
+            ops: vec![MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: MachineReg(7),
+                    src: MachineValue::Reg(MachineReg(4)),
+                },
+            }],
+            terminator: MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+                target: MachineBlockId(0),
+                args: vec![MachineValue::Reg(MachineReg(7))],
+            }),
+        }],
+    };
+
+    program
+        .compact_32bit_gp_bank(5)
+        .expect("compaction should fit into one dynamic GP slot without stealing mem0 fixed regs");
+
+    let block = &program.blocks[0];
+    assert_eq!(block.params.len(), 1);
+    assert_eq!(block.params[0].ty, MachineStorageType::GpWord);
+    assert_eq!(block.params[0].reg, MachineReg(4));
+
+    let MachineInstKind::Move { dst, src, .. } = &block.ops[0].kind else {
+        panic!("expected move");
+    };
+    assert_eq!(*dst, MachineReg(4));
+    let MachineValue::Reg(src_reg) = *src else {
+        panic!("expected move source reg");
+    };
+    assert_eq!(src_reg, block.params[0].reg);
+
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump");
+    };
+    assert_eq!(edge.args, vec![MachineValue::Reg(*dst)]);
+
+    program
+        .validate()
+        .expect("compacted program with reserved mem0 fixed regs should validate");
+}
+
+#[test]
+fn compact_32bit_gp_bank_fails_when_fit_requires_stealing_mem0_fixed_slots() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 8,
+        reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![MachineBlockParam::gp_word(MachineReg(4))],
+            ops: vec![MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: MachineReg(7),
+                    src: MachineValue::Reg(MachineReg(4)),
+                },
+            }],
+            terminator: MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+                target: MachineBlockId(0),
+                args: vec![MachineValue::Reg(MachineReg(7))],
+            }),
+        }],
+    };
+
+    let err = program
+        .compact_32bit_gp_bank(4)
+        .expect_err("compaction should fail when only fixed GP regs remain");
+    let message = format!("{err}");
+    assert!(
+        message.contains("requires more than 4 GP regs"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn compact_32bit_gp_bank_reuses_slots_for_disjoint_gp_live_ranges() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 10,
+        reg_count: 10,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![
+                MachineBlockParam::gp_word(MachineReg(4)),
+                MachineBlockParam::gp_word(MachineReg(5)),
+            ],
+            ops: vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(8),
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(5),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(8)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(9),
+                        src: MachineValue::Imm64(7),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Jump(crate::vm::native::ir::machine::MachineEdge {
+                target: MachineBlockId(0),
+                args: vec![
+                    MachineValue::Reg(MachineReg(9)),
+                    MachineValue::Reg(MachineReg(5)),
+                ],
+            }),
+        }],
+    };
+
+    program
+        .compact_32bit_gp_bank(6)
+        .expect("compaction should reuse one dynamic GP slot across disjoint live ranges");
+
+    assert_eq!(program.first_fp_reg, 6);
+    assert_eq!(program.reg_count, 6);
+    program
+        .validate()
+        .expect("compacted program with reused GP slots should validate");
+}
+
+#[test]
+fn compact_32bit_gp_bank_keeps_pair_destinations_distinct() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        first_fp_reg: 8,
+        reg_count: 8,
+        fp_transient_count: 0,
+        fp_reg_init_widths: vec![],
+        blocks: vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: vec![
+                MachineBlockParam::gp_word(MachineReg(4)),
+                MachineBlockParam::gp_word(MachineReg(5)),
+            ],
+            ops: vec![MachineInst {
+                kind: MachineInstKind::Int64PairBinary {
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                    dst_lo: MachineReg(6),
+                    dst_hi: MachineReg(7),
+                    lhs_lo: MachineValue::Reg(MachineReg(4)),
+                    lhs_hi: MachineValue::Imm64(0),
+                    rhs_lo: MachineValue::Reg(MachineReg(5)),
+                    rhs_hi: MachineValue::Imm64(0),
+                },
+            }],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    program
+        .compact_32bit_gp_bank(6)
+        .expect("compaction should keep legalized pair destinations distinct");
+
+    let MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } = &program.blocks[0].ops[0].kind
+    else {
+        panic!("expected compacted pair binary");
+    };
+    assert_ne!(dst_lo, dst_hi);
+    program
+        .validate()
+        .expect("compacted pair binary should validate");
+}
+
+#[test]
 fn legalize_scaffold_allows_gpword_moves_from_gpi64_sources() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
@@ -589,62 +1025,17 @@ fn legalize_rewrites_i64_add_into_word_pairs() {
         ]
     );
     let ops = &program.blocks[0].ops;
-    assert_eq!(ops.len(), 6);
+    assert_eq!(ops.len(), 1);
     assert_eq!(
         ops[0].kind,
-        MachineInstKind::IntBinary {
-            width: MachineIntWidth::I32,
+        MachineInstKind::Int64PairBinary {
             op: MachineIntBinaryOp::Add,
-            dst: MachineReg(8),
-            lhs: MachineValue::Reg(MachineReg(4)),
-            rhs: MachineValue::Imm64(1),
-        }
-    );
-    assert_eq!(
-        ops[1].kind,
-        MachineInstKind::IntCompare {
-            width: MachineIntWidth::I32,
-            kind: MachineCompareKind::Lt,
-            sign: MachineSign::Unsigned,
-            dst: MachineReg(9),
-            lhs: MachineValue::Reg(MachineReg(8)),
-            rhs: MachineValue::Reg(MachineReg(4)),
-        }
-    );
-    assert_eq!(
-        ops[2].kind,
-        MachineInstKind::IntBinary {
-            width: MachineIntWidth::I32,
-            op: MachineIntBinaryOp::Add,
-            dst: MachineReg(10),
-            lhs: MachineValue::Reg(MachineReg(6)),
-            rhs: MachineValue::Imm64(0),
-        }
-    );
-    assert_eq!(
-        ops[3].kind,
-        MachineInstKind::IntBinary {
-            width: MachineIntWidth::I32,
-            op: MachineIntBinaryOp::Add,
-            dst: MachineReg(10),
-            lhs: MachineValue::Reg(MachineReg(10)),
-            rhs: MachineValue::Reg(MachineReg(9)),
-        }
-    );
-    assert_eq!(
-        ops[4].kind,
-        MachineInstKind::Move {
-            ty: MachineStorageType::GpWord,
-            dst: MachineReg(5),
-            src: MachineValue::Reg(MachineReg(8)),
-        }
-    );
-    assert_eq!(
-        ops[5].kind,
-        MachineInstKind::Move {
-            ty: MachineStorageType::GpWord,
-            dst: MachineReg(7),
-            src: MachineValue::Reg(MachineReg(10)),
+            dst_lo: MachineReg(5),
+            dst_hi: MachineReg(7),
+            lhs_lo: MachineValue::Reg(MachineReg(4)),
+            lhs_hi: MachineValue::Reg(MachineReg(6)),
+            rhs_lo: MachineValue::Imm64(1),
+            rhs_hi: MachineValue::Imm64(0),
         }
     );
 }
@@ -992,4 +1383,73 @@ fn legalize_rewrites_i64_trunc_f32_into_pair_convert_op() {
             src: MachineValue::Reg(MachineReg(12)),
         }
     );
+}
+
+#[test]
+fn legalize_rewrites_immediate_only_i64_store_without_shadow_regs() {
+    let mut module = MachineModule {
+        functions: vec![MachineFunction {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            program: MachineProgram {
+                entry: MachineBlockId(0),
+                first_fp_reg: 12,
+                reg_count: 12,
+                fp_transient_count: 0,
+                fp_reg_init_widths: vec![],
+                blocks: vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: vec![],
+                    ops: vec![MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: MachineStorageType::GpI64,
+                            addr: MachineAddr {
+                                base: MachineReg(1),
+                                offset: 24,
+                            },
+                            width: MachineMemWidth::U64,
+                            src: MachineValue::Imm64(0x0cab_ba6e_0ba6_6a6e),
+                        },
+                    }],
+                    terminator: MachineTerminator::Return,
+                }],
+            },
+        }],
+        consts: vec![],
+        externs: vec![],
+    };
+
+    module
+        .legalize(4)
+        .expect("legalizer should rewrite immediate-only i64 stores");
+
+    let ops = &module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 2, "i64 store should split into two word stores");
+
+    let MachineInstKind::Store {
+        ty: lo_ty,
+        addr: lo_addr,
+        width: lo_width,
+        src: lo_src,
+    } = ops[0].kind
+    else {
+        panic!("expected legalized low-word store");
+    };
+    assert_eq!(lo_ty, MachineStorageType::GpWord);
+    assert_eq!(lo_width, MachineMemWidth::U32);
+    assert_eq!(lo_addr.offset, 24);
+    assert_eq!(lo_src, MachineValue::Imm64(0x0ba6_6a6e));
+
+    let MachineInstKind::Store {
+        ty: hi_ty,
+        addr: hi_addr,
+        width: hi_width,
+        src: hi_src,
+    } = ops[1].kind
+    else {
+        panic!("expected legalized high-word store");
+    };
+    assert_eq!(hi_ty, MachineStorageType::GpWord);
+    assert_eq!(hi_width, MachineMemWidth::U32);
+    assert_eq!(hi_addr.offset, 28);
+    assert_eq!(hi_src, MachineValue::Imm64(0x0cab_ba6e));
 }

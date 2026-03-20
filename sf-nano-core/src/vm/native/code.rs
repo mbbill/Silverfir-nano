@@ -8,7 +8,8 @@ use crate::{
             arch::NativeBackend,
             ir::{
                 machine::{
-                    MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
+                    MachineConstData, MachineConstId, MachineFuncId, MachineFunction,
+                    MachineModule, MACHINE_FIXED_REG_COUNT,
                 },
                 runtime::MachineRuntimeContract,
             },
@@ -81,6 +82,12 @@ impl CompiledNativeModule {
         module: MachineModule,
         runtime: MachineRuntimeContract,
     ) -> Result<Self, WasmError> {
+        if backend.needs_32bit_gp_legalization() {
+            let max_gp_regs = MACHINE_FIXED_REG_COUNT
+                + backend.gp_local_cache_budget as u16
+                + backend.gp_transient_budget as u16;
+            module.validate_finalized_32bit_backend(max_gp_regs)?;
+        }
         let mut aligned_consts = Vec::with_capacity(module.consts.len());
         for konst in &module.consts {
             aligned_consts.push(AlignedConstData::new(konst)?);

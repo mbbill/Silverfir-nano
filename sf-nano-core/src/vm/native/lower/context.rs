@@ -334,14 +334,17 @@ impl<'a> BlockLowerContext<'a> {
                         });
                     }
                 } else {
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Store {
-                            ty,
-                            addr: self.frame_addr(*slot)?,
-                            width,
-                            src: MachineValue::Reg(src_reg),
-                        },
-                    });
+                    let addr = self.frame_addr(*slot)?;
+                    if !self.try_coalesce_last_store_immediate(*src, src_reg, ty, addr, width) {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Store {
+                                ty,
+                                addr,
+                                width,
+                                src: MachineValue::Reg(src_reg),
+                            },
+                        });
+                    }
                 }
                 self.release_dead_values()?;
             }
@@ -1276,6 +1279,59 @@ impl<'a> BlockLowerContext<'a> {
         true
     }
 
+    /// Try to fold a dead constant-producing instruction directly into an
+    /// uncached frame store so 32-bit lowering does not keep unnecessary GP
+    /// temporaries alive across long argument setup.
+    fn try_coalesce_last_store_immediate(
+        &mut self,
+        src_value: LirValue,
+        src_reg: MachineReg,
+        ty: MachineStorageType,
+        addr: MachineAddr,
+        width: MachineMemWidth,
+    ) -> bool {
+        if !self.is_transient_reg(src_reg) {
+            return false;
+        }
+        let remaining = self.remaining_uses.get(&src_value).copied().unwrap_or(0);
+        if remaining != 0 {
+            return false;
+        }
+
+        let imm = match self.ops.last().map(|inst| &inst.kind) {
+            Some(MachineInstKind::Move {
+                ty: inst_ty,
+                dst,
+                src: MachineValue::Imm64(imm),
+            }) if *dst == src_reg && *inst_ty == ty => *imm,
+            Some(MachineInstKind::FloatConst {
+                width: inst_width,
+                dst,
+                bits,
+            }) if *dst == src_reg
+                && matches!(
+                    (ty, inst_width),
+                    (MachineStorageType::Fp32, MachineFloatWidth::F32)
+                        | (MachineStorageType::Fp64, MachineFloatWidth::F64)
+                ) =>
+            {
+                *bits
+            }
+            _ => return false,
+        };
+
+        let _ = self.ops.pop();
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty,
+                addr,
+                width,
+                src: MachineValue::Imm64(imm),
+            },
+        });
+        true
+    }
+
     pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {
         self.ops.push(inst);
     }
@@ -1368,9 +1424,11 @@ fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
         MachineInstKind::IntMulWide { .. } => None,
+        MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
         MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::Int64PairCompare { dst, .. } => Some(*dst),
         MachineInstKind::ConvertFloatToI64Pair { .. } => None,
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
@@ -1401,6 +1459,18 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
         }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            visit_value_reg(lhs_lo, &mut visit);
+            visit_value_reg(lhs_hi, &mut visit);
+            visit_value_reg(rhs_lo, &mut visit);
+            visit_value_reg(rhs_hi, &mut visit);
+        }
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
             visit_value_reg(src_lo, &mut visit);
             visit_value_reg(src_hi, &mut visit);
@@ -1426,6 +1496,18 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(lhs_lo, &mut visit);
             visit_value_reg(lhs_hi, &mut visit);
             visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            visit_value_reg(lhs_lo, &mut visit);
+            visit_value_reg(lhs_hi, &mut visit);
+            visit_value_reg(rhs_lo, &mut visit);
+            visit_value_reg(rhs_hi, &mut visit);
         }
         MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
             visit_value_reg(src_lo, &mut visit);
@@ -1550,9 +1632,11 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
         MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairCompare { dst, .. } => *dst == reg,
         MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
             *dst_lo == reg || *dst_hi == reg
         }
@@ -1583,6 +1667,13 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
         MachineInstKind::Int64PairDivRem {
             lhs_lo,
@@ -1597,6 +1688,13 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
             rhs,
             ..
         } => is(lhs_lo) || is(lhs_hi) || is(rhs),
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
         MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
         MachineInstKind::ConvertFloatToI64Pair { src, .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => is(src),
@@ -1627,9 +1725,11 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst = new_dst,
         MachineInstKind::IntMulWide { .. }
+        | MachineInstKind::Int64PairBinary { .. }
         | MachineInstKind::Int64PairUnary { .. }
         | MachineInstKind::Int64PairDivRem { .. }
         | MachineInstKind::Int64PairShift { .. }
+        | MachineInstKind::Int64PairCompare { .. }
         | MachineInstKind::ConvertFloatToI64Pair { .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { .. } => {}
         MachineInstKind::ConvertI64PairToFloat { dst, .. }

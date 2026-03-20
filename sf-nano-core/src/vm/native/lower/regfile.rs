@@ -28,19 +28,51 @@ pub(super) struct MachineRegFile {
 }
 
 impl MachineRegFile {
-    pub(super) fn new(config: BackendConfig) -> Result<Self, WasmError> {
-        if config.gp_transient_budget == 0 {
+    pub(super) fn for_backend_capacity(config: BackendConfig) -> Result<Self, WasmError> {
+        Self::from_partition_counts(
+            config.gp_local_cache_budget,
+            config.gp_transient_budget,
+            config.fp_local_cache_budget,
+            config.fp_transient_budget,
+        )
+    }
+
+    pub(super) fn for_function(
+        config: BackendConfig,
+        gp_cached_locals: usize,
+    ) -> Result<Self, WasmError> {
+        let gp_local_cache =
+            core::cmp::min(gp_cached_locals, config.gp_local_cache_budget as usize);
+        let gp_local_cache = gp_local_cache as u8;
+        let gp_transient = config
+            .gp_transient_budget
+            .saturating_add(config.gp_local_cache_budget.saturating_sub(gp_local_cache));
+        Self::from_partition_counts(
+            gp_local_cache,
+            gp_transient,
+            config.fp_local_cache_budget,
+            config.fp_transient_budget,
+        )
+    }
+
+    fn from_partition_counts(
+        gp_local_cache_budget: u8,
+        gp_transient_budget: u8,
+        fp_local_cache_budget: u8,
+        fp_transient_budget: u8,
+    ) -> Result<Self, WasmError> {
+        if gp_transient_budget == 0 {
             return Err(WasmError::internal(
                 "native lowering requires at least one GP transient register".into(),
             ));
         }
 
         let mut next = MACHINE_FIXED_REG_COUNT;
-        let gp_local_cache = collect_regs(&mut next, config.gp_local_cache_budget);
-        let gp_transient = collect_regs(&mut next, config.gp_transient_budget);
+        let gp_local_cache = collect_regs(&mut next, gp_local_cache_budget);
+        let gp_transient = collect_regs(&mut next, gp_transient_budget);
         let first_fp_reg = next;
-        let fp_transient = collect_regs(&mut next, config.fp_transient_budget);
-        let fp_local_cache = collect_regs(&mut next, config.fp_local_cache_budget);
+        let fp_transient = collect_regs(&mut next, fp_transient_budget);
+        let fp_local_cache = collect_regs(&mut next, fp_local_cache_budget);
 
         // Layout: [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
         //                                                              ^ first_fp_reg

@@ -18,8 +18,5 @@ pub const MAX_TABLE_SIZE_64: usize = usize::MAX;
 // Maximum number of locals allowed.
 pub const MAX_LOCALS: u32 = 4096;
 
-// Maximum number of call stack frames allowed.
-pub const MAX_CALL_STACK_DEPTH: usize = 4096;
-
 // Maximum total stack memory in bytes.
 pub const MAX_STACK_SIZE: usize = 1024 * 1024 * 2;

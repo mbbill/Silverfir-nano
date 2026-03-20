@@ -186,7 +186,7 @@ fn fold_constants(
     fp_transient_end: u16,
 ) {
     let mut i = 0;
-    while i + 1 < block.ops.len() {
+    while i < block.ops.len() {
         let (dst, imm) = match &block.ops[i].kind {
             // GP transient constant: move rX <- imm
             MachineInstKind::Move {
@@ -206,20 +206,21 @@ fn fold_constants(
             }
         };
 
-        let next = &block.ops[i + 1].kind;
-        let use_count = count_value_uses(next, dst);
-        let is_dst_of_next = inst_defines(next, dst);
+        let Some(use_site) = find_single_replaceable_use_before_redef(block, i, dst) else {
+            i += 1;
+            continue;
+        };
 
-        if use_count == 1 && !is_dst_of_next {
-            let safe = is_last_use_before_redef(block, i + 1, dst);
-            if safe {
-                let imm_val = MachineValue::Imm64(imm);
-                replace_value_use(&mut block.ops[i + 1].kind, dst, imm_val);
-                block.ops.remove(i);
-                continue;
+        let imm_val = MachineValue::Imm64(imm);
+        match use_site {
+            ReplaceableUseSite::Op(op_index) => {
+                replace_value_use(&mut block.ops[op_index].kind, dst, imm_val);
+            }
+            ReplaceableUseSite::Terminator => {
+                replace_terminator_value_use(&mut block.terminator, dst, imm_val);
             }
         }
-        i += 1;
+        block.ops.remove(i);
     }
 }
 
@@ -487,6 +488,16 @@ fn count_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize {
     count
 }
 
+fn count_replaceable_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize {
+    let mut count = 0;
+    visit_replaceable_source_values(kind, |v| {
+        if matches!(v, MachineValue::Reg(r) if *r == reg) {
+            count += 1;
+        }
+    });
+    count
+}
+
 /// Check if `kind` defines (writes to) `reg`.
 fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
@@ -503,9 +514,11 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
         MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64PairCompare { dst, .. } => *dst == reg,
         MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
             *dst_lo == reg || *dst_hi == reg
         }
@@ -535,9 +548,11 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
         MachineInstKind::IntMulWide { .. } => None,
+        MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
         MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::Int64PairCompare { dst, .. } => Some(*dst),
         MachineInstKind::ConvertFloatToI64Pair { .. } => None,
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
@@ -564,6 +579,49 @@ fn is_last_use_before_redef(block: &MachineBlock, start_idx: usize, reg: Machine
         return false;
     }
     true // not used again in the block
+}
+
+#[derive(Clone, Copy)]
+enum ReplaceableUseSite {
+    Op(usize),
+    Terminator,
+}
+
+fn find_single_replaceable_use_before_redef(
+    block: &MachineBlock,
+    def_index: usize,
+    reg: MachineReg,
+) -> Option<ReplaceableUseSite> {
+    let mut use_site = None;
+    for (offset, inst) in block.ops[def_index + 1..].iter().enumerate() {
+        let total_uses = count_value_uses(&inst.kind, reg);
+        let replaceable_uses = count_replaceable_value_uses(&inst.kind, reg);
+        if total_uses != replaceable_uses || replaceable_uses > 1 {
+            return None;
+        }
+        if replaceable_uses == 1 {
+            if use_site.is_some() {
+                return None;
+            }
+            use_site = Some(ReplaceableUseSite::Op(def_index + 1 + offset));
+        }
+        if inst_defines(&inst.kind, reg) {
+            return use_site;
+        }
+    }
+
+    let total_term_uses = count_terminator_value_uses(&block.terminator, reg);
+    let replaceable_term_uses = count_replaceable_terminator_value_uses(&block.terminator, reg);
+    if total_term_uses != replaceable_term_uses || replaceable_term_uses > 1 {
+        return None;
+    }
+    if replaceable_term_uses == 1 {
+        if use_site.is_some() {
+            return None;
+        }
+        use_site = Some(ReplaceableUseSite::Terminator);
+    }
+    use_site
 }
 
 /// Check if a terminator reads from `reg`.
@@ -614,6 +672,26 @@ fn value_is_reg(v: &MachineValue, reg: MachineReg) -> bool {
     matches!(v, MachineValue::Reg(r) if *r == reg)
 }
 
+fn count_terminator_value_uses(term: &MachineTerminator, reg: MachineReg) -> usize {
+    let mut count = 0;
+    visit_terminator_values(term, |value| {
+        if value_is_reg(value, reg) {
+            count += 1;
+        }
+    });
+    count
+}
+
+fn count_replaceable_terminator_value_uses(term: &MachineTerminator, reg: MachineReg) -> usize {
+    let mut count = 0;
+    visit_replaceable_terminator_values(term, |value| {
+        if value_is_reg(value, reg) {
+            count += 1;
+        }
+    });
+    count
+}
+
 /// Visit all source (read) values in an instruction.
 fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
     match kind {
@@ -637,6 +715,18 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
         MachineInstKind::IntMulWide { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
+        }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs_lo);
+            f(rhs_hi);
         }
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
             f(src_lo);
@@ -663,6 +753,18 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
             f(lhs_lo);
             f(lhs_hi);
             f(rhs);
+        }
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs_lo);
+            f(rhs_hi);
         }
         MachineInstKind::IntCompare { lhs, rhs, .. } => {
             f(lhs);
@@ -703,6 +805,83 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
     }
 }
 
+fn visit_replaceable_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
+    match kind {
+        MachineInstKind::Move { src, .. }
+        | MachineInstKind::IntUnary { src, .. }
+        | MachineInstKind::FloatUnary { src, .. }
+        | MachineInstKind::Convert { src, .. }
+        | MachineInstKind::ConvertFloatToI64Pair { src, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => f(src),
+        MachineInstKind::FloatConst { .. }
+        | MachineInstKind::Lea { .. }
+        | MachineInstKind::Load { .. } => {}
+        MachineInstKind::Store { src, .. } => f(src),
+        MachineInstKind::IntBinary { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. }
+        | MachineInstKind::IntCompare { lhs, rhs, .. }
+        | MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        }
+        | MachineInstKind::Int64PairDivRem {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        }
+        | MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs_lo);
+            f(rhs_hi);
+        }
+        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. }
+        | MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            f(src_lo);
+            f(src_hi);
+        }
+        MachineInstKind::Int64PairShift {
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            f(lhs_lo);
+            f(lhs_hi);
+            f(rhs);
+        }
+        MachineInstKind::Select {
+            on_true,
+            on_false,
+            cond,
+            ..
+        } => {
+            f(on_true);
+            f(on_false);
+            f(cond);
+        }
+        MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
+        MachineInstKind::CallHelper(_) => {}
+    }
+}
+
 /// Replace one occurrence of `Reg(old)` with `new_val` in an instruction's sources.
 fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: MachineValue) {
     match kind {
@@ -720,6 +899,21 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
         MachineInstKind::IntMulWide { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
+            }
+        }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            if !try_replace(lhs_lo, old, new_val) {
+                if !try_replace(lhs_hi, old, new_val) {
+                    if !try_replace(rhs_lo, old, new_val) {
+                        try_replace(rhs_hi, old, new_val);
+                    }
+                }
             }
         }
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
@@ -751,6 +945,21 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
             if !try_replace(lhs_lo, old, new_val) {
                 if !try_replace(lhs_hi, old, new_val) {
                     try_replace(rhs, old, new_val);
+                }
+            }
+        }
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            if !try_replace(lhs_lo, old, new_val) {
+                if !try_replace(lhs_hi, old, new_val) {
+                    if !try_replace(rhs_lo, old, new_val) {
+                        try_replace(rhs_hi, old, new_val);
+                    }
                 }
             }
         }
@@ -847,6 +1056,18 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
         }
+        MachineInstKind::Int64PairBinary {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            rewrite_value(lhs_lo, aliases);
+            rewrite_value(lhs_hi, aliases);
+            rewrite_value(rhs_lo, aliases);
+            rewrite_value(rhs_hi, aliases);
+        }
         MachineInstKind::Int64PairDivRem {
             lhs_lo,
             lhs_hi,
@@ -873,6 +1094,18 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(lhs_hi, aliases);
             rewrite_value(rhs, aliases);
         }
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            rewrite_value(lhs_lo, aliases);
+            rewrite_value(lhs_hi, aliases);
+            rewrite_value(rhs_lo, aliases);
+            rewrite_value(rhs_hi, aliases);
+        }
         MachineInstKind::Select {
             on_true,
             on_false,
@@ -885,6 +1118,99 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallHelper(_) => {}
+    }
+}
+
+fn visit_terminator_values(term: &MachineTerminator, mut f: impl FnMut(&MachineValue)) {
+    match term {
+        MachineTerminator::Jump(edge) => visit_edge_values(edge, &mut f),
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            visit_branch_cond_values(cond, &mut f);
+            visit_edge_values(then_edge, &mut f);
+            visit_edge_values(else_edge, &mut f);
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            f(index);
+            for edge in entries {
+                visit_edge_values(edge, &mut f);
+            }
+        }
+        MachineTerminator::CallDirect { .. } => {}
+        MachineTerminator::CallIndirect { callee_target, .. } => f(callee_target),
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+    }
+}
+
+fn visit_replaceable_terminator_values(term: &MachineTerminator, mut f: impl FnMut(&MachineValue)) {
+    match term {
+        MachineTerminator::Jump(edge) => visit_edge_values(edge, &mut f),
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            visit_branch_cond_values(cond, &mut f);
+            visit_edge_values(then_edge, &mut f);
+            visit_edge_values(else_edge, &mut f);
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            f(index);
+            for edge in entries {
+                visit_edge_values(edge, &mut f);
+            }
+        }
+        MachineTerminator::CallDirect { .. } => {}
+        MachineTerminator::CallIndirect { callee_target, .. } => f(callee_target),
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+    }
+}
+
+fn visit_edge_values(edge: &MachineEdge, mut f: impl FnMut(&MachineValue)) {
+    for arg in &edge.args {
+        f(arg);
+    }
+}
+
+fn replace_terminator_value_use(
+    term: &mut MachineTerminator,
+    old: MachineReg,
+    new_val: MachineValue,
+) {
+    match term {
+        MachineTerminator::Jump(edge) => replace_edge_value_use(edge, old, new_val),
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            replace_branch_cond_value(cond, old, new_val);
+            replace_edge_value_use(then_edge, old, new_val);
+            replace_edge_value_use(else_edge, old, new_val);
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            if !try_replace(index, old, new_val) {
+                for edge in entries {
+                    replace_edge_value_use(edge, old, new_val);
+                }
+            }
+        }
+        MachineTerminator::CallDirect { .. } => {}
+        MachineTerminator::CallIndirect { callee_target, .. } => {
+            try_replace(callee_target, old, new_val);
+        }
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+    }
+}
+
+fn replace_edge_value_use(edge: &mut MachineEdge, old: MachineReg, new_val: MachineValue) {
+    for arg in &mut edge.args {
+        if try_replace(arg, old, new_val) {
+            break;
+        }
     }
 }
 

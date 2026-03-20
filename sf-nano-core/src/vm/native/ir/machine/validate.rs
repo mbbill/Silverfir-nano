@@ -4,13 +4,42 @@ use super::cfg::{MachineBlockParam, MachineBranchCond, MachineEdge, MachineTermi
 use super::inst::{MachineInst, MachineInstKind};
 use super::module::{MachineModule, MachineProgram};
 use super::types::{
-    MachineAddr, MachineBlockId, MachineConstId, MachineExternId, MachineFuncId, MachineReg,
-    MachineStorageType, MachineValue,
+    MachineAddr, MachineBlockId, MachineConstId, MachineConvertOp, MachineExternId, MachineFuncId,
+    MachineIntWidth, MachineReg, MachineStorageType, MachineValue,
 };
 
 type ValidateResult = Result<(), WasmError>;
 
 impl MachineProgram {
+    pub fn validate_finalized_32bit_backend(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+        if self.first_fp_reg != max_gp_regs {
+            return Err(WasmError::internal(alloc::format!(
+                "expected first_fp_reg {} after 32-bit finalization, found {}",
+                max_gp_regs,
+                self.first_fp_reg,
+            )));
+        }
+        if self.reg_count < self.first_fp_reg {
+            return Err(WasmError::internal(alloc::format!(
+                "machine reg_count {} is below finalized 32-bit fp boundary {}",
+                self.reg_count,
+                self.first_fp_reg,
+            )));
+        }
+
+        for block in &self.blocks {
+            for (param_index, param) in block.params.iter().enumerate() {
+                validate_finalized_32bit_param(block.id, param_index, *param)?;
+            }
+            for (inst_index, inst) in block.ops.iter().enumerate() {
+                validate_finalized_32bit_inst(block.id, inst_index, &inst.kind)?;
+            }
+            validate_finalized_32bit_term(block.id, &block.terminator)?;
+        }
+
+        Ok(())
+    }
+
     #[cfg(any(debug_assertions, test))]
     pub fn validate(&self) -> Result<(), WasmError> {
         if self.blocks.is_empty() {
@@ -150,6 +179,39 @@ impl MachineProgram {
                     ));
                 }
             }
+            MachineInstKind::Int64PairBinary {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*lhs_lo)?;
+                self.validate_value(*lhs_hi)?;
+                self.validate_value(*rhs_lo)?;
+                self.validate_value(*rhs_hi)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                if !matches!(
+                    op,
+                    super::types::MachineIntBinaryOp::Add
+                        | super::types::MachineIntBinaryOp::Sub
+                        | super::types::MachineIntBinaryOp::Mul
+                ) {
+                    return Err(WasmError::internal(
+                        "machine Int64PairBinary requires a supported i64 binary op".into(),
+                    ));
+                }
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine Int64PairBinary requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
             MachineInstKind::Int64PairDivRem {
                 dst_lo,
                 dst_hi,
@@ -239,6 +301,21 @@ impl MachineProgram {
                 self.validate_reg(*dst)?;
                 self.validate_value(*lhs)?;
                 self.validate_value(*rhs)?;
+            }
+            MachineInstKind::Int64PairCompare {
+                dst,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+                ..
+            } => {
+                self.validate_reg(*dst)?;
+                self.validate_value(*lhs_lo)?;
+                self.validate_value(*lhs_hi)?;
+                self.validate_value(*rhs_lo)?;
+                self.validate_value(*rhs_hi)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord)?;
             }
             MachineInstKind::ConvertI64PairToFloat {
                 width,
@@ -500,6 +577,21 @@ impl MachineProgram {
 }
 
 impl MachineModule {
+    pub fn validate_finalized_32bit_backend(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+        for func in &self.functions {
+            func.program
+                .validate_finalized_32bit_backend(max_gp_regs)
+                .map_err(|err| {
+                    WasmError::internal(alloc::format!(
+                        "machine function {} is not finalized 32-bit MachineIR: {}",
+                        func.id.0,
+                        err
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     #[cfg(any(debug_assertions, test))]
     pub fn validate(&self) -> Result<(), WasmError> {
         for (index, konst) in self.consts.iter().enumerate() {
@@ -606,4 +698,113 @@ impl MachineModule {
         }
         Ok(())
     }
+}
+
+fn validate_finalized_32bit_param(
+    block_id: MachineBlockId,
+    param_index: usize,
+    param: MachineBlockParam,
+) -> ValidateResult {
+    if matches!(param.ty, MachineStorageType::GpI64) {
+        return Err(WasmError::internal(alloc::format!(
+            "block {} param {} still uses GpI64 after 32-bit finalization",
+            block_id.0,
+            param_index,
+        )));
+    }
+    Ok(())
+}
+
+fn validate_finalized_32bit_inst(
+    block_id: MachineBlockId,
+    inst_index: usize,
+    inst: &MachineInstKind,
+) -> ValidateResult {
+    let detail = match inst {
+        MachineInstKind::Move { ty, .. }
+        | MachineInstKind::Load { ty, .. }
+        | MachineInstKind::Store { ty, .. }
+        | MachineInstKind::Select { ty, .. }
+            if matches!(ty, MachineStorageType::GpI64) =>
+        {
+            Some("still uses GpI64 storage")
+        }
+        MachineInstKind::IntUnary { width, .. }
+        | MachineInstKind::IntBinary { width, .. }
+        | MachineInstKind::IntCompare { width, .. }
+            if matches!(width, MachineIntWidth::I64) =>
+        {
+            Some("still uses scalar i64 integer width")
+        }
+        MachineInstKind::Convert { op, .. } if convert_requires_32bit_finalization(*op) => {
+            Some("still uses an unsplit i64 convert/reinterpret op")
+        }
+        MachineInstKind::TrapIf { cond, .. } if branch_cond_requires_32bit_finalization(*cond) => {
+            Some("still uses an i64 trap condition")
+        }
+        _ => None,
+    };
+
+    if let Some(detail) = detail {
+        return Err(WasmError::internal(alloc::format!(
+            "block {} op {} {:?} {}",
+            block_id.0,
+            inst_index,
+            inst,
+            detail,
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_finalized_32bit_term(
+    block_id: MachineBlockId,
+    term: &MachineTerminator,
+) -> ValidateResult {
+    match term {
+        MachineTerminator::Branch { cond, .. }
+            if branch_cond_requires_32bit_finalization(*cond) =>
+        {
+            Err(WasmError::internal(alloc::format!(
+                "block {} terminator {:?} still uses an i64 branch condition",
+                block_id.0,
+                term,
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn branch_cond_requires_32bit_finalization(cond: MachineBranchCond) -> bool {
+    matches!(
+        cond,
+        MachineBranchCond::IntCompare {
+            width: MachineIntWidth::I64,
+            ..
+        }
+    )
+}
+
+fn convert_requires_32bit_finalization(op: MachineConvertOp) -> bool {
+    matches!(
+        op,
+        MachineConvertOp::I32WrapI64
+            | MachineConvertOp::I64ExtendI32S
+            | MachineConvertOp::I64ExtendI32U
+            | MachineConvertOp::I64TruncF32S
+            | MachineConvertOp::I64TruncF32U
+            | MachineConvertOp::I64TruncF64S
+            | MachineConvertOp::I64TruncF64U
+            | MachineConvertOp::I64TruncSatF32S
+            | MachineConvertOp::I64TruncSatF32U
+            | MachineConvertOp::I64TruncSatF64S
+            | MachineConvertOp::I64TruncSatF64U
+            | MachineConvertOp::F32ConvertI64S
+            | MachineConvertOp::F32ConvertI64U
+            | MachineConvertOp::F64ConvertI64S
+            | MachineConvertOp::F64ConvertI64U
+            | MachineConvertOp::I64ReinterpretF64
+            | MachineConvertOp::F64ReinterpretI64
+    )
 }

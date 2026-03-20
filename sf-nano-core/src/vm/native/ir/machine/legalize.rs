@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec, vec::Vec};
+use alloc::{collections::VecDeque, string::String, vec, vec::Vec};
 
 use crate::error::WasmError;
 
@@ -7,11 +7,9 @@ use super::{
     MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatWidth,
     MachineFunction, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
     MachineIntWidth, MachineMemWidth, MachineModule, MachineProgram, MachineReg, MachineSign,
-    MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
-    MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+    MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+    MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
 };
-
-const LEGALIZE_32BIT_SCRATCH_COUNT: u16 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MachineStorageFact {
@@ -52,7 +50,7 @@ impl MachineModule {
                     err
                 ))
             })?;
-            let Some(legalizer) = Legalize32BitGpI64::new(program)? else {
+            let Some(mut legalizer) = Legalize32BitGpI64::new(program, &flow)? else {
                 continue;
             };
             legalizer.rewrite_program(program, &flow).map_err(|err| {
@@ -66,61 +64,115 @@ impl MachineModule {
 
         Ok(())
     }
+
+    /// Compact the legalized GP bank back into the backend's fixed GP budget.
+    ///
+    /// The 32-bit legalizer may temporarily introduce sparse GP register ids
+    /// for high halves and scratch values. After a second peephole pass removes
+    /// dead copies, the remaining live GP ids can usually be packed back into
+    /// the original lowering budget without changing semantics.
+    pub fn compact_32bit_gp_bank(&mut self, max_gp_regs: u16) -> Result<(), WasmError> {
+        for MachineFunction { id, program } in &mut self.functions {
+            program.compact_32bit_gp_bank(max_gp_regs).map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "machine function {} failed 32-bit gp-bank compaction: {}",
+                    id.0,
+                    err
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Final cleanup step for legalized 32-bit GP MachineIR.
+    ///
+    /// The legalizer may temporarily introduce sparse GP ids and small
+    /// copy-heavy sequences. A final peephole pass removes redundant moves,
+    /// then GP compaction packs the surviving legalized GP regs back into the
+    /// backend's fixed budget.
+    pub fn finalize_32bit_gp_legalization(
+        &mut self,
+        first_transient: u16,
+        max_gp_regs: u16,
+    ) -> Result<(), WasmError> {
+        self.optimize(first_transient, 4);
+        self.compact_32bit_gp_bank(max_gp_regs)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GpExtraRegDebugInfo {
+    pub(crate) reg: MachineReg,
+    pub(crate) candidate_slots: Vec<MachineReg>,
+    pub(crate) pair_low_regs: Vec<MachineReg>,
+    pub(crate) samples: Vec<String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GpCompactionDebugInfo {
+    pub(crate) used_gp_regs: Vec<MachineReg>,
+    pub(crate) used_degrees: Vec<(MachineReg, usize)>,
+    pub(crate) peak_live_regs: usize,
+    pub(crate) peak_live_point: GpPeakLivePoint,
+    pub(crate) estimated_pressure: usize,
+    pub(crate) extra_regs: Vec<GpExtraRegDebugInfo>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GpPeakLivePoint {
+    pub(crate) block: MachineBlockId,
+    pub(crate) stage: String,
+    pub(crate) live_regs: Vec<MachineReg>,
+}
+
+struct GpLiveness {
+    live_in: Vec<Vec<bool>>,
+    live_out: Vec<Vec<bool>>,
 }
 
 struct Legalize32BitGpI64 {
     original_reg_count: u16,
     original_first_fp_reg: u16,
-    shadow_hi: Vec<Option<MachineReg>>,
-    scratch_regs: Vec<MachineReg>,
-    provisional_reg_count: u16,
+    persistent_hi: Vec<Option<MachineReg>>,
+    next_reg: u16,
 }
 
 impl Legalize32BitGpI64 {
-    fn new(program: &MachineProgram) -> Result<Option<Self>, WasmError> {
-        let mut needs_hi = vec![false; program.reg_count as usize];
-        collect_legalized_i64_regs(program, &mut needs_hi)?;
-
-        let original_reg_count = program.reg_count;
-        let original_first_fp_reg = program.first_fp_reg;
-        let mut next_reg = original_reg_count;
-        let mut shadow_hi = vec![None; original_reg_count as usize];
-        for reg_index in 0..original_first_fp_reg {
-            if needs_hi[reg_index as usize] {
-                shadow_hi[reg_index as usize] = Some(MachineReg(next_reg));
-                next_reg = next_reg.checked_add(1).ok_or_else(|| {
-                    WasmError::internal(
-                        "32-bit legalizer overflowed the machine register count".into(),
-                    )
-                })?;
-            }
-        }
-
-        if shadow_hi.iter().all(Option::is_none) {
+    fn new(
+        program: &MachineProgram,
+        _flow: &MachineStorageFlow,
+    ) -> Result<Option<Self>, WasmError> {
+        if !program_needs_gp_i64_legalization(program) {
             return Ok(None);
         }
 
-        let mut scratch_regs = Vec::with_capacity(LEGALIZE_32BIT_SCRATCH_COUNT as usize);
-        for _ in 0..LEGALIZE_32BIT_SCRATCH_COUNT {
-            scratch_regs.push(MachineReg(next_reg));
+        let mut next_reg = program.reg_count;
+        let mut persistent_hi = vec![None; program.reg_count as usize];
+        let mut needs_hi = vec![false; program.reg_count as usize];
+        collect_legalized_i64_regs(program, &mut needs_hi)?;
+        for reg_index in 0..program.first_fp_reg {
+            if !needs_hi[reg_index as usize] {
+                continue;
+            }
+            persistent_hi[reg_index as usize] = Some(MachineReg(next_reg));
             next_reg = next_reg.checked_add(1).ok_or_else(|| {
-                WasmError::internal(
-                    "32-bit legalizer scratch register allocation overflowed".into(),
-                )
+                WasmError::internal("32-bit legalizer overflowed the machine register count".into())
             })?;
         }
 
         Ok(Some(Self {
-            original_reg_count,
-            original_first_fp_reg,
-            shadow_hi,
-            scratch_regs,
-            provisional_reg_count: next_reg,
+            original_reg_count: program.reg_count,
+            original_first_fp_reg: program.first_fp_reg,
+            persistent_hi,
+            next_reg,
         }))
     }
 
     fn rewrite_program(
-        &self,
+        &mut self,
         program: &mut MachineProgram,
         flow: &MachineStorageFlow,
     ) -> Result<(), WasmError> {
@@ -148,12 +200,22 @@ impl Legalize32BitGpI64 {
             };
 
             let block = &mut program.blocks[block_index];
-            block.params = self.rewrite_block_params(&original_params[block_index])?;
+            let mut current_hi = vec![None; self.original_first_fp_reg as usize];
+            for reg in 0..self.original_first_fp_reg {
+                if matches!(
+                    state.get(reg as usize).and_then(|fact| fact.known()),
+                    Some(MachineStorageType::GpI64)
+                ) {
+                    current_hi[reg as usize] = self.persistent_hi[reg as usize];
+                }
+            }
+            block.params =
+                self.rewrite_block_params(&original_params[block_index], &mut current_hi)?;
 
             let old_ops = core::mem::take(&mut block.ops);
             let mut new_ops = Vec::with_capacity(old_ops.len() * 4);
             for inst in old_ops {
-                self.rewrite_inst(&inst.kind, &state, &mut new_ops)?;
+                self.rewrite_inst(&inst.kind, &state, &mut current_hi, &mut new_ops)?;
                 simulate_inst(
                     &mut state,
                     &inst.kind,
@@ -171,32 +233,38 @@ impl Legalize32BitGpI64 {
             }
 
             let old_term = block.terminator.clone();
-            block.terminator =
-                self.rewrite_term(old_term, &state, &original_params, &mut new_ops)?;
+            block.terminator = self.rewrite_term(
+                old_term,
+                &state,
+                &current_hi,
+                &original_params,
+                &mut new_ops,
+            )?;
             block.ops = new_ops;
         }
 
-        program.reg_count = self.provisional_reg_count;
+        program.reg_count = self.next_reg;
         program.finalize_32bit_gp_expansion(
             self.original_reg_count,
-            self.provisional_reg_count - self.original_reg_count,
+            self.next_reg - self.original_reg_count,
         )?;
         program.validate()?;
         Ok(())
     }
 
     fn rewrite_block_params(
-        &self,
+        &mut self,
         params: &[MachineBlockParam],
+        current_hi: &mut [Option<MachineReg>],
     ) -> Result<Vec<MachineBlockParam>, WasmError> {
         let mut rewritten = Vec::with_capacity(params.len() * 2);
         for param in params {
             match param.ty {
                 MachineStorageType::GpI64 => {
+                    let hi =
+                        self.alloc_hi_reg(current_hi, param.reg, "block parameter high half")?;
                     rewritten.push(MachineBlockParam::gp_word(param.reg));
-                    rewritten.push(MachineBlockParam::gp_word(
-                        self.hi_reg(param.reg, "block parameter high half")?,
-                    ));
+                    rewritten.push(MachineBlockParam::gp_word(hi));
                 }
                 _ => rewritten.push(*param),
             }
@@ -205,25 +273,24 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_inst(
-        &self,
+        &mut self,
         inst: &MachineInstKind,
         state: &[MachineStorageFact],
+        current_hi: &mut [Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
         match inst {
             MachineInstKind::Move { ty, dst, src } => match ty {
                 MachineStorageType::GpI64 => {
                     let (src_lo, src_hi) =
-                        self.split_move_like_i64_source(state, *src, "move source")?;
+                        self.split_move_like_i64_source(state, current_hi, *src, "move source")?;
+                    let dst_hi =
+                        self.alloc_hi_reg(current_hi, *dst, "move destination high half")?;
                     emit_move(out, MachineStorageType::GpWord, *dst, src_lo);
-                    emit_move(
-                        out,
-                        MachineStorageType::GpWord,
-                        self.hi_reg(*dst, "move destination high half")?,
-                        src_hi,
-                    );
+                    emit_move(out, MachineStorageType::GpWord, dst_hi, src_hi);
                 }
                 _ => {
+                    self.clear_hi_binding(current_hi, *dst);
                     emit_move(
                         out,
                         *ty,
@@ -243,17 +310,20 @@ impl Legalize32BitGpI64 {
                 extension,
             } => match ty {
                 MachineStorageType::GpI64 => {
-                    self.rewrite_i64_load(*dst, *addr, *width, *extension, out)?
+                    self.rewrite_i64_load(*dst, *addr, *width, *extension, current_hi, out)?
                 }
-                _ => out.push(MachineInst {
-                    kind: MachineInstKind::Load {
-                        ty: *ty,
-                        dst: *dst,
-                        addr: *addr,
-                        width: *width,
-                        extension: *extension,
-                    },
-                }),
+                _ => {
+                    self.clear_hi_binding(current_hi, *dst);
+                    out.push(MachineInst {
+                        kind: MachineInstKind::Load {
+                            ty: *ty,
+                            dst: *dst,
+                            addr: *addr,
+                            width: *width,
+                            extension: *extension,
+                        },
+                    })
+                }
             },
             MachineInstKind::Store {
                 ty,
@@ -262,7 +332,7 @@ impl Legalize32BitGpI64 {
                 src,
             } => match ty {
                 MachineStorageType::GpI64 => {
-                    self.rewrite_i64_store(state, *addr, *width, *src, out)?
+                    self.rewrite_i64_store(state, current_hi, *addr, *width, *src, out)?
                 }
                 _ => out.push(MachineInst {
                     kind: MachineInstKind::Store {
@@ -285,8 +355,9 @@ impl Legalize32BitGpI64 {
                 src,
             } => {
                 if matches!(width, MachineIntWidth::I64) {
-                    self.rewrite_i64_unary(*op, *dst, *src, state, out)?;
+                    self.rewrite_i64_unary(*op, *dst, *src, state, current_hi, out)?;
                 } else {
+                    self.clear_hi_binding(current_hi, *dst);
                     out.push(MachineInst { kind: inst.clone() });
                 }
             }
@@ -298,17 +369,20 @@ impl Legalize32BitGpI64 {
                 rhs,
             } => {
                 if matches!(width, MachineIntWidth::I64) {
-                    self.rewrite_i64_binary(*op, *dst, *lhs, *rhs, state, out)?;
+                    self.rewrite_i64_binary(*op, *dst, *lhs, *rhs, state, current_hi, out)?;
                 } else {
+                    self.clear_hi_binding(current_hi, *dst);
                     out.push(MachineInst { kind: inst.clone() });
                 }
             }
             MachineInstKind::IntMulWide { .. } => {
                 out.push(MachineInst { kind: inst.clone() });
             }
-            MachineInstKind::Int64PairUnary { .. }
+            MachineInstKind::Int64PairBinary { .. }
+            | MachineInstKind::Int64PairUnary { .. }
             | MachineInstKind::Int64PairDivRem { .. }
             | MachineInstKind::Int64PairShift { .. }
+            | MachineInstKind::Int64PairCompare { .. }
             | MachineInstKind::ConvertI64PairToFloat { .. }
             | MachineInstKind::ConvertFloatToI64Pair { .. }
             | MachineInstKind::ReinterpretF64ToI64Pair { .. }
@@ -324,8 +398,12 @@ impl Legalize32BitGpI64 {
                 rhs,
             } => {
                 if matches!(width, MachineIntWidth::I64) {
-                    self.emit_i64_compare_result(*kind, *sign, *dst, *lhs, *rhs, state, out)?;
+                    self.clear_hi_binding(current_hi, *dst);
+                    self.emit_i64_compare_result(
+                        *kind, *sign, *dst, *lhs, *rhs, state, current_hi, out,
+                    )?;
                 } else {
+                    self.clear_hi_binding(current_hi, *dst);
                     out.push(MachineInst { kind: inst.clone() });
                 }
             }
@@ -335,7 +413,7 @@ impl Legalize32BitGpI64 {
                 out.push(MachineInst { kind: inst.clone() });
             }
             MachineInstKind::Convert { op, dst, src } => {
-                self.rewrite_convert(*op, *dst, *src, state, out)?
+                self.rewrite_convert(*op, *dst, *src, state, current_hi, out)?
             }
             MachineInstKind::Select {
                 ty,
@@ -345,10 +423,20 @@ impl Legalize32BitGpI64 {
                 cond,
             } => match ty {
                 MachineStorageType::GpI64 => {
-                    let (true_lo, true_hi) =
-                        self.split_move_like_i64_source(state, *on_true, "select on_true")?;
-                    let (false_lo, false_hi) =
-                        self.split_move_like_i64_source(state, *on_false, "select on_false")?;
+                    let (true_lo, true_hi) = self.split_move_like_i64_source(
+                        state,
+                        current_hi,
+                        *on_true,
+                        "select on_true",
+                    )?;
+                    let (false_lo, false_hi) = self.split_move_like_i64_source(
+                        state,
+                        current_hi,
+                        *on_false,
+                        "select on_false",
+                    )?;
+                    let dst_hi =
+                        self.alloc_hi_reg(current_hi, *dst, "select destination high half")?;
                     out.push(MachineInst {
                         kind: MachineInstKind::Select {
                             ty: MachineStorageType::GpWord,
@@ -361,35 +449,38 @@ impl Legalize32BitGpI64 {
                     out.push(MachineInst {
                         kind: MachineInstKind::Select {
                             ty: MachineStorageType::GpWord,
-                            dst: self.hi_reg(*dst, "select destination high half")?,
+                            dst: dst_hi,
                             on_true: true_hi,
                             on_false: false_hi,
                             cond: *cond,
                         },
                     });
                 }
-                _ => out.push(MachineInst {
-                    kind: MachineInstKind::Select {
-                        ty: *ty,
-                        dst: *dst,
-                        on_true: self.rewrite_single_move_like_value(
-                            *ty,
-                            state,
-                            *on_true,
-                            "select on_true",
-                        )?,
-                        on_false: self.rewrite_single_move_like_value(
-                            *ty,
-                            state,
-                            *on_false,
-                            "select on_false",
-                        )?,
-                        cond: *cond,
-                    },
-                }),
+                _ => {
+                    self.clear_hi_binding(current_hi, *dst);
+                    out.push(MachineInst {
+                        kind: MachineInstKind::Select {
+                            ty: *ty,
+                            dst: *dst,
+                            on_true: self.rewrite_single_move_like_value(
+                                *ty,
+                                state,
+                                *on_true,
+                                "select on_true",
+                            )?,
+                            on_false: self.rewrite_single_move_like_value(
+                                *ty,
+                                state,
+                                *on_false,
+                                "select on_false",
+                            )?,
+                            cond: *cond,
+                        },
+                    })
+                }
             },
             MachineInstKind::TrapIf { kind, cond } => {
-                let cond = self.rewrite_branch_cond(*cond, state, out)?;
+                let cond = self.rewrite_branch_cond(*cond, state, current_hi, out)?;
                 out.push(MachineInst {
                     kind: MachineInstKind::TrapIf { kind: *kind, cond },
                 });
@@ -400,16 +491,17 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_term(
-        &self,
+        &mut self,
         term: MachineTerminator,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         original_params: &[Vec<MachineBlockParam>],
         out: &mut Vec<MachineInst>,
     ) -> Result<MachineTerminator, WasmError> {
         Ok(match term {
             MachineTerminator::Jump(mut edge) => {
                 let target_index = edge.target.as_usize();
-                self.rewrite_edge(&mut edge, state, &original_params[target_index])?;
+                self.rewrite_edge(&mut edge, state, current_hi, &original_params[target_index])?;
                 MachineTerminator::Jump(edge)
             }
             MachineTerminator::Branch {
@@ -417,11 +509,21 @@ impl Legalize32BitGpI64 {
                 mut then_edge,
                 mut else_edge,
             } => {
-                let cond = self.rewrite_branch_cond(cond, state, out)?;
+                let cond = self.rewrite_branch_cond(cond, state, current_hi, out)?;
                 let then_target = then_edge.target.as_usize();
-                self.rewrite_edge(&mut then_edge, state, &original_params[then_target])?;
+                self.rewrite_edge(
+                    &mut then_edge,
+                    state,
+                    current_hi,
+                    &original_params[then_target],
+                )?;
                 let else_target = else_edge.target.as_usize();
-                self.rewrite_edge(&mut else_edge, state, &original_params[else_target])?;
+                self.rewrite_edge(
+                    &mut else_edge,
+                    state,
+                    current_hi,
+                    &original_params[else_target],
+                )?;
                 MachineTerminator::Branch {
                     cond,
                     then_edge,
@@ -436,7 +538,12 @@ impl Legalize32BitGpI64 {
                     "jump table index",
                 )?;
                 for edge in &mut entries {
-                    self.rewrite_edge(edge, state, &original_params[edge.target.as_usize()])?;
+                    self.rewrite_edge(
+                        edge,
+                        state,
+                        current_hi,
+                        &original_params[edge.target.as_usize()],
+                    )?;
                 }
                 MachineTerminator::JumpTable { index, entries }
             }
@@ -463,9 +570,10 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_edge(
-        &self,
+        &mut self,
         edge: &mut MachineEdge,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         target_params: &[MachineBlockParam],
     ) -> Result<(), WasmError> {
         let mut args = Vec::with_capacity(edge.args.len() * 2);
@@ -480,6 +588,7 @@ impl Legalize32BitGpI64 {
                 MachineStorageType::GpI64 => {
                     let (lo, hi) = self.split_move_like_i64_source(
                         state,
+                        current_hi,
                         arg,
                         &alloc::format!("edge arg {} to gpi64 param r{}", index, param.reg.0),
                     )?;
@@ -499,19 +608,20 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_i64_load(
-        &self,
+        &mut self,
         dst: MachineReg,
         addr: super::MachineAddr,
         width: MachineMemWidth,
         extension: super::MachineLoadExtension,
+        current_hi: &mut [Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
-        let dst_hi = self.hi_reg(dst, "load destination high half")?;
+        let dst_hi = self.alloc_hi_reg(current_hi, dst, "load destination high half")?;
         let load_addr = if addr.base == dst || addr.base == dst_hi {
             // A pair load cannot clobber the address base between the low-word
             // and high-word loads. Preserve the base in a scratch register when
             // the legalized low half reuses that same GP register.
-            let preserved_base = self.scratch(0);
+            let preserved_base = self.alloc_temp_gp_reg()?;
             emit_move(
                 out,
                 MachineStorageType::GpWord,
@@ -580,6 +690,7 @@ impl Legalize32BitGpI64 {
     fn rewrite_i64_store(
         &self,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         addr: super::MachineAddr,
         width: MachineMemWidth,
         src: MachineValue,
@@ -588,7 +699,7 @@ impl Legalize32BitGpI64 {
         match width {
             MachineMemWidth::U64 => {
                 let (src_lo, src_hi) =
-                    self.split_move_like_i64_source(state, src, "store source")?;
+                    self.split_move_like_i64_source(state, current_hi, src, "store source")?;
                 out.push(MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,
@@ -621,19 +732,23 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_i64_unary(
-        &self,
+        &mut self,
         op: MachineIntUnaryOp,
         dst: MachineReg,
         src: MachineValue,
         state: &[MachineStorageFact],
+        current_hi: &mut [Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
         match op {
             MachineIntUnaryOp::Eqz => {
-                let (src_lo, src_hi) = self.split_exact_i64_value(state, src, "i64.eqz source")?;
+                let (src_lo, src_hi) =
+                    self.split_exact_i64_value(state, current_hi, src, "i64.eqz source")?;
+                let scratch0 = self.alloc_temp_gp_reg()?;
+                let scratch1 = self.alloc_temp_gp_reg()?;
                 emit_i32_compare(
                     out,
-                    self.scratch(0),
+                    scratch0,
                     MachineCompareKind::Eq,
                     MachineSign::Unsigned,
                     src_lo,
@@ -641,7 +756,7 @@ impl Legalize32BitGpI64 {
                 );
                 emit_i32_compare(
                     out,
-                    self.scratch(1),
+                    scratch1,
                     MachineCompareKind::Eq,
                     MachineSign::Unsigned,
                     src_hi,
@@ -651,29 +766,34 @@ impl Legalize32BitGpI64 {
                     out,
                     MachineIntBinaryOp::And,
                     dst,
-                    MachineValue::Reg(self.scratch(0)),
-                    MachineValue::Reg(self.scratch(1)),
+                    MachineValue::Reg(scratch0),
+                    MachineValue::Reg(scratch1),
                 );
                 Ok(())
             }
             MachineIntUnaryOp::Extend8S | MachineIntUnaryOp::Extend16S => {
-                let (src_lo, _) = self.split_exact_i64_value(state, src, "i64 extend source")?;
-                let dst_hi = self.hi_reg(dst, "i64 extend destination high half")?;
+                let (src_lo, _) =
+                    self.split_exact_i64_value(state, current_hi, src, "i64 extend source")?;
+                let dst_hi =
+                    self.alloc_hi_reg(current_hi, dst, "i64 extend destination high half")?;
                 emit_i32_unary(out, op, dst, src_lo);
                 emit_i32_shift_right_signed(out, dst_hi, MachineValue::Reg(dst), 31);
                 Ok(())
             }
             MachineIntUnaryOp::Extend32S => {
-                let (src_lo, _) = self.split_exact_i64_value(state, src, "i64 extend source")?;
-                let dst_hi = self.hi_reg(dst, "i64 extend destination high half")?;
+                let (src_lo, _) =
+                    self.split_exact_i64_value(state, current_hi, src, "i64 extend source")?;
+                let dst_hi =
+                    self.alloc_hi_reg(current_hi, dst, "i64 extend destination high half")?;
                 emit_move(out, MachineStorageType::GpWord, dst, src_lo);
                 emit_i32_shift_right_signed(out, dst_hi, MachineValue::Reg(dst), 31);
                 Ok(())
             }
             MachineIntUnaryOp::Clz | MachineIntUnaryOp::Ctz | MachineIntUnaryOp::Popcnt => {
                 let (src_lo, src_hi) =
-                    self.split_exact_i64_value(state, src, "i64 unary source")?;
-                let dst_hi = self.hi_reg(dst, "i64 unary destination high half")?;
+                    self.split_exact_i64_value(state, current_hi, src, "i64 unary source")?;
+                let dst_hi =
+                    self.alloc_hi_reg(current_hi, dst, "i64 unary destination high half")?;
                 out.push(MachineInst {
                     kind: MachineInstKind::Int64PairUnary {
                         op,
@@ -689,156 +809,33 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_i64_binary(
-        &self,
+        &mut self,
         op: MachineIntBinaryOp,
         dst: MachineReg,
         lhs: MachineValue,
         rhs: MachineValue,
         state: &[MachineStorageFact],
+        current_hi: &mut [Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
-        let (lhs_lo, lhs_hi) = self.split_exact_i64_value(state, lhs, "i64 binary lhs")?;
-        let (rhs_lo, rhs_hi) = self.split_exact_i64_value(state, rhs, "i64 binary rhs")?;
-        let dst_hi = self.hi_reg(dst, "i64 binary destination high half")?;
+        let (lhs_lo, lhs_hi) =
+            self.split_exact_i64_value(state, current_hi, lhs, "i64 binary lhs")?;
+        let (rhs_lo, rhs_hi) =
+            self.split_exact_i64_value(state, current_hi, rhs, "i64 binary rhs")?;
+        let dst_hi = self.alloc_hi_reg(current_hi, dst, "i64 binary destination high half")?;
         match op {
-            MachineIntBinaryOp::Add => {
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Add,
-                    self.scratch(0),
-                    lhs_lo,
-                    rhs_lo,
-                );
-                emit_i32_compare(
-                    out,
-                    self.scratch(1),
-                    MachineCompareKind::Lt,
-                    MachineSign::Unsigned,
-                    MachineValue::Reg(self.scratch(0)),
-                    lhs_lo,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Add,
-                    self.scratch(2),
-                    lhs_hi,
-                    rhs_hi,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Add,
-                    self.scratch(2),
-                    MachineValue::Reg(self.scratch(2)),
-                    MachineValue::Reg(self.scratch(1)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst,
-                    MachineValue::Reg(self.scratch(0)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst_hi,
-                    MachineValue::Reg(self.scratch(2)),
-                );
-                Ok(())
-            }
-            MachineIntBinaryOp::Sub => {
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Sub,
-                    self.scratch(0),
-                    lhs_lo,
-                    rhs_lo,
-                );
-                emit_i32_compare(
-                    out,
-                    self.scratch(1),
-                    MachineCompareKind::Lt,
-                    MachineSign::Unsigned,
-                    lhs_lo,
-                    rhs_lo,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Sub,
-                    self.scratch(2),
-                    lhs_hi,
-                    rhs_hi,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Sub,
-                    self.scratch(2),
-                    MachineValue::Reg(self.scratch(2)),
-                    MachineValue::Reg(self.scratch(1)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst,
-                    MachineValue::Reg(self.scratch(0)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst_hi,
-                    MachineValue::Reg(self.scratch(2)),
-                );
-                Ok(())
-            }
-            MachineIntBinaryOp::Mul => {
+            MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub | MachineIntBinaryOp::Mul => {
                 out.push(MachineInst {
-                    kind: MachineInstKind::IntMulWide {
-                        sign: MachineSign::Unsigned,
-                        dst_lo: self.scratch(0),
-                        dst_hi: self.scratch(1),
-                        lhs: lhs_lo,
-                        rhs: rhs_lo,
+                    kind: MachineInstKind::Int64PairBinary {
+                        op,
+                        dst_lo: dst,
+                        dst_hi,
+                        lhs_lo,
+                        lhs_hi,
+                        rhs_lo,
+                        rhs_hi,
                     },
                 });
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Mul,
-                    self.scratch(2),
-                    lhs_lo,
-                    rhs_hi,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Mul,
-                    self.scratch(3),
-                    lhs_hi,
-                    rhs_lo,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Add,
-                    self.scratch(4),
-                    MachineValue::Reg(self.scratch(1)),
-                    MachineValue::Reg(self.scratch(2)),
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Add,
-                    self.scratch(4),
-                    MachineValue::Reg(self.scratch(4)),
-                    MachineValue::Reg(self.scratch(3)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst,
-                    MachineValue::Reg(self.scratch(0)),
-                );
-                emit_move(
-                    out,
-                    MachineStorageType::GpWord,
-                    dst_hi,
-                    MachineValue::Reg(self.scratch(4)),
-                );
                 Ok(())
             }
             MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
@@ -893,15 +890,17 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_convert(
-        &self,
+        &mut self,
         op: MachineConvertOp,
         dst: MachineReg,
         src: MachineValue,
         state: &[MachineStorageFact],
+        current_hi: &mut [Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
         match op {
             MachineConvertOp::I32WrapI64 => {
+                self.clear_hi_binding(current_hi, dst);
                 emit_move(
                     out,
                     MachineStorageType::GpWord,
@@ -911,7 +910,8 @@ impl Legalize32BitGpI64 {
                 Ok(())
             }
             MachineConvertOp::I64ExtendI32U => {
-                let dst_hi = self.hi_reg(dst, "i64.extend_i32_u destination high half")?;
+                let dst_hi =
+                    self.alloc_hi_reg(current_hi, dst, "i64.extend_i32_u destination high half")?;
                 emit_move(
                     out,
                     MachineStorageType::GpWord,
@@ -927,7 +927,8 @@ impl Legalize32BitGpI64 {
                 Ok(())
             }
             MachineConvertOp::I64ExtendI32S => {
-                let dst_hi = self.hi_reg(dst, "i64.extend_i32_s destination high half")?;
+                let dst_hi =
+                    self.alloc_hi_reg(current_hi, dst, "i64.extend_i32_s destination high half")?;
                 emit_move(
                     out,
                     MachineStorageType::GpWord,
@@ -938,7 +939,11 @@ impl Legalize32BitGpI64 {
                 Ok(())
             }
             MachineConvertOp::I64ReinterpretF64 => {
-                let dst_hi = self.hi_reg(dst, "i64.reinterpret_f64 destination high half")?;
+                let dst_hi = self.alloc_hi_reg(
+                    current_hi,
+                    dst,
+                    "i64.reinterpret_f64 destination high half",
+                )?;
                 out.push(MachineInst {
                     kind: MachineInstKind::ReinterpretF64ToI64Pair {
                         dst_lo: dst,
@@ -954,8 +959,13 @@ impl Legalize32BitGpI64 {
                 Ok(())
             }
             MachineConvertOp::F64ReinterpretI64 => {
-                let (src_lo, src_hi) =
-                    self.split_exact_i64_value(state, src, "f64.reinterpret_i64 source")?;
+                let (src_lo, src_hi) = self.split_exact_i64_value(
+                    state,
+                    current_hi,
+                    src,
+                    "f64.reinterpret_i64 source",
+                )?;
+                self.clear_hi_binding(current_hi, dst);
                 out.push(MachineInst {
                     kind: MachineInstKind::ReinterpretI64PairToF64 {
                         dst,
@@ -977,7 +987,11 @@ impl Legalize32BitGpI64 {
                         | MachineConvertOp::I64TruncSatF64S
                         | MachineConvertOp::I64TruncSatF64U
                 ) {
-                    let dst_hi = self.hi_reg(dst, "float-to-i64 convert destination high half")?;
+                    let dst_hi = self.alloc_hi_reg(
+                        current_hi,
+                        dst,
+                        "float-to-i64 convert destination high half",
+                    )?;
                     let (src_ty, _) = storage_types_for_convert(op);
                     out.push(MachineInst {
                         kind: MachineInstKind::ConvertFloatToI64Pair {
@@ -1001,8 +1015,13 @@ impl Legalize32BitGpI64 {
                         | MachineConvertOp::F64ConvertI64S
                         | MachineConvertOp::F64ConvertI64U
                 ) {
-                    let (src_lo, src_hi) =
-                        self.split_exact_i64_value(state, src, "i64-to-float convert source")?;
+                    let (src_lo, src_hi) = self.split_exact_i64_value(
+                        state,
+                        current_hi,
+                        src,
+                        "i64-to-float convert source",
+                    )?;
+                    self.clear_hi_binding(current_hi, dst);
                     out.push(MachineInst {
                         kind: MachineInstKind::ConvertI64PairToFloat {
                             width: match op {
@@ -1032,6 +1051,7 @@ impl Legalize32BitGpI64 {
                 {
                     return unsupported_32bit_i64(&alloc::format!("i64 conversion op {:?}", op));
                 }
+                self.clear_hi_binding(current_hi, dst);
                 out.push(MachineInst {
                     kind: MachineInstKind::Convert { op, dst, src },
                 });
@@ -1042,9 +1062,10 @@ impl Legalize32BitGpI64 {
     }
 
     fn rewrite_branch_cond(
-        &self,
+        &mut self,
         cond: MachineBranchCond,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<MachineBranchCond, WasmError> {
         Ok(match cond {
@@ -1063,8 +1084,11 @@ impl Legalize32BitGpI64 {
                 lhs,
                 rhs,
             } => {
-                self.emit_i64_compare_result(kind, sign, self.scratch(0), lhs, rhs, state, out)?;
-                MachineBranchCond::Value(MachineValue::Reg(self.scratch(0)))
+                let scratch = self.alloc_temp_gp_reg()?;
+                self.emit_i64_compare_result(
+                    kind, sign, scratch, lhs, rhs, state, current_hi, out,
+                )?;
+                MachineBranchCond::Value(MachineValue::Reg(scratch))
             }
             other => other,
         })
@@ -1078,138 +1102,24 @@ impl Legalize32BitGpI64 {
         lhs: MachineValue,
         rhs: MachineValue,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         out: &mut Vec<MachineInst>,
     ) -> Result<(), WasmError> {
-        let (lhs_lo, lhs_hi) = self.split_exact_i64_value(state, lhs, "i64 compare lhs")?;
-        let (rhs_lo, rhs_hi) = self.split_exact_i64_value(state, rhs, "i64 compare rhs")?;
-        match kind {
-            MachineCompareKind::Eq => {
-                emit_i32_compare(
-                    out,
-                    self.scratch(0),
-                    MachineCompareKind::Eq,
-                    MachineSign::Unsigned,
-                    lhs_hi,
-                    rhs_hi,
-                );
-                emit_i32_compare(
-                    out,
-                    self.scratch(1),
-                    MachineCompareKind::Eq,
-                    MachineSign::Unsigned,
-                    lhs_lo,
-                    rhs_lo,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::And,
-                    dst,
-                    MachineValue::Reg(self.scratch(0)),
-                    MachineValue::Reg(self.scratch(1)),
-                );
-                Ok(())
-            }
-            MachineCompareKind::Ne => {
-                emit_i32_compare(
-                    out,
-                    self.scratch(0),
-                    MachineCompareKind::Ne,
-                    MachineSign::Unsigned,
-                    lhs_hi,
-                    rhs_hi,
-                );
-                emit_i32_compare(
-                    out,
-                    self.scratch(1),
-                    MachineCompareKind::Ne,
-                    MachineSign::Unsigned,
-                    lhs_lo,
-                    rhs_lo,
-                );
-                emit_i32_binary(
-                    out,
-                    MachineIntBinaryOp::Or,
-                    dst,
-                    MachineValue::Reg(self.scratch(0)),
-                    MachineValue::Reg(self.scratch(1)),
-                );
-                Ok(())
-            }
-            MachineCompareKind::Lt | MachineCompareKind::Le => {
-                self.emit_i64_ordered_compare(kind, sign, dst, lhs_lo, lhs_hi, rhs_lo, rhs_hi, out)
-            }
-            MachineCompareKind::Gt => self.emit_i64_ordered_compare(
-                MachineCompareKind::Lt,
+        let (lhs_lo, lhs_hi) =
+            self.split_exact_i64_value(state, current_hi, lhs, "i64 compare lhs")?;
+        let (rhs_lo, rhs_hi) =
+            self.split_exact_i64_value(state, current_hi, rhs, "i64 compare rhs")?;
+        out.push(MachineInst {
+            kind: MachineInstKind::Int64PairCompare {
+                kind,
                 sign,
                 dst,
-                rhs_lo,
-                rhs_hi,
                 lhs_lo,
                 lhs_hi,
-                out,
-            ),
-            MachineCompareKind::Ge => self.emit_i64_ordered_compare(
-                MachineCompareKind::Le,
-                sign,
-                dst,
                 rhs_lo,
                 rhs_hi,
-                lhs_lo,
-                lhs_hi,
-                out,
-            ),
-        }
-    }
-
-    fn emit_i64_ordered_compare(
-        &self,
-        low_kind: MachineCompareKind,
-        sign: MachineSign,
-        dst: MachineReg,
-        lhs_lo: MachineValue,
-        lhs_hi: MachineValue,
-        rhs_lo: MachineValue,
-        rhs_hi: MachineValue,
-        out: &mut Vec<MachineInst>,
-    ) -> Result<(), WasmError> {
-        emit_i32_compare(
-            out,
-            self.scratch(0),
-            MachineCompareKind::Lt,
-            sign,
-            lhs_hi,
-            rhs_hi,
-        );
-        emit_i32_compare(
-            out,
-            self.scratch(1),
-            MachineCompareKind::Eq,
-            MachineSign::Unsigned,
-            lhs_hi,
-            rhs_hi,
-        );
-        emit_i32_compare(
-            out,
-            self.scratch(2),
-            low_kind,
-            MachineSign::Unsigned,
-            lhs_lo,
-            rhs_lo,
-        );
-        emit_i32_binary(
-            out,
-            MachineIntBinaryOp::And,
-            self.scratch(3),
-            MachineValue::Reg(self.scratch(1)),
-            MachineValue::Reg(self.scratch(2)),
-        );
-        emit_i32_binary(
-            out,
-            MachineIntBinaryOp::Or,
-            dst,
-            MachineValue::Reg(self.scratch(0)),
-            MachineValue::Reg(self.scratch(3)),
-        );
+            },
+        });
         Ok(())
     }
 
@@ -1263,6 +1173,7 @@ impl Legalize32BitGpI64 {
     fn split_exact_i64_value(
         &self,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         value: MachineValue,
         context: &str,
     ) -> Result<(MachineValue, MachineValue), WasmError> {
@@ -1271,7 +1182,7 @@ impl Legalize32BitGpI64 {
             MachineValue::Reg(reg) => match require_known_reg_type(state, reg, context)? {
                 MachineStorageType::GpI64 => Ok((
                     MachineValue::Reg(reg),
-                    MachineValue::Reg(self.hi_reg(reg, context)?),
+                    MachineValue::Reg(self.current_hi_reg(current_hi, reg, context)?),
                 )),
                 actual => Err(WasmError::internal(alloc::format!(
                     "{} requires an exact gpi64 source on 32-bit, found {:?} in r{}",
@@ -1286,6 +1197,7 @@ impl Legalize32BitGpI64 {
     fn split_move_like_i64_source(
         &self,
         state: &[MachineStorageFact],
+        current_hi: &[Option<MachineReg>],
         value: MachineValue,
         context: &str,
     ) -> Result<(MachineValue, MachineValue), WasmError> {
@@ -1294,7 +1206,7 @@ impl Legalize32BitGpI64 {
             MachineValue::Reg(reg) => match require_known_reg_type(state, reg, context)? {
                 MachineStorageType::GpI64 => Ok((
                     MachineValue::Reg(reg),
-                    MachineValue::Reg(self.hi_reg(reg, context)?),
+                    MachineValue::Reg(self.current_hi_reg(current_hi, reg, context)?),
                 )),
                 MachineStorageType::GpWord => Ok((MachineValue::Reg(reg), MachineValue::Imm64(0))),
                 MachineStorageType::Fp64 => Err(WasmError::internal(
@@ -1317,21 +1229,125 @@ impl Legalize32BitGpI64 {
         }
     }
 
-    fn hi_reg(&self, reg: MachineReg, context: &str) -> Result<MachineReg, WasmError> {
-        self.shadow_hi
+    fn alloc_temp_gp_reg(&mut self) -> Result<MachineReg, WasmError> {
+        let reg = MachineReg(self.next_reg);
+        self.next_reg = self.next_reg.checked_add(1).ok_or_else(|| {
+            WasmError::internal("32-bit legalizer overflowed the machine register count".into())
+        })?;
+        Ok(reg)
+    }
+
+    fn alloc_hi_reg(
+        &mut self,
+        current_hi: &mut [Option<MachineReg>],
+        reg: MachineReg,
+        context: &str,
+    ) -> Result<MachineReg, WasmError> {
+        if reg.0 >= self.original_first_fp_reg {
+            return Err(WasmError::internal(alloc::format!(
+                "{} requires a GP destination register, found r{}",
+                context,
+                reg.0,
+            )));
+        }
+        let hi = self.persistent_hi[reg.0 as usize].unwrap_or(self.alloc_temp_gp_reg()?);
+        current_hi[reg.0 as usize] = Some(hi);
+        Ok(hi)
+    }
+
+    fn current_hi_reg(
+        &self,
+        current_hi: &[Option<MachineReg>],
+        reg: MachineReg,
+        context: &str,
+    ) -> Result<MachineReg, WasmError> {
+        current_hi
             .get(reg.0 as usize)
             .and_then(|mapped| *mapped)
+            .or_else(|| {
+                self.persistent_hi
+                    .get(reg.0 as usize)
+                    .and_then(|mapped| *mapped)
+            })
             .ok_or_else(|| {
                 WasmError::internal(alloc::format!(
-                    "{} requires a legalized high-half register for r{}",
+                    "{} requires a live legalized high-half register for r{}",
                     context,
                     reg.0,
                 ))
             })
     }
 
-    fn scratch(&self, index: usize) -> MachineReg {
-        self.scratch_regs[index]
+    fn clear_hi_binding(&self, current_hi: &mut [Option<MachineReg>], reg: MachineReg) {
+        if reg.0 < self.original_first_fp_reg {
+            current_hi[reg.0 as usize] = None;
+        }
+    }
+}
+
+fn program_needs_gp_i64_legalization(program: &MachineProgram) -> bool {
+    program.blocks.iter().any(|block| {
+        block
+            .params
+            .iter()
+            .any(|param| matches!(param.ty, MachineStorageType::GpI64))
+            || block
+                .ops
+                .iter()
+                .any(|inst| inst_needs_gp_i64_legalization(&inst.kind))
+            || terminator_needs_gp_i64_legalization(&block.terminator)
+    })
+}
+
+fn inst_needs_gp_i64_legalization(inst: &MachineInstKind) -> bool {
+    match inst {
+        MachineInstKind::Move { ty, .. }
+        | MachineInstKind::Load { ty, .. }
+        | MachineInstKind::Store { ty, .. }
+        | MachineInstKind::Select { ty, .. } => matches!(ty, MachineStorageType::GpI64),
+        MachineInstKind::IntUnary { width, .. }
+        | MachineInstKind::IntBinary { width, .. }
+        | MachineInstKind::IntCompare { width, .. } => matches!(width, MachineIntWidth::I64),
+        MachineInstKind::Convert { op, .. } => {
+            let (src_ty, dst_ty) = storage_types_for_convert(*op);
+            matches!(src_ty, MachineStorageType::GpI64)
+                || matches!(dst_ty, MachineStorageType::GpI64)
+        }
+        MachineInstKind::TrapIf { cond, .. } => match cond {
+            MachineBranchCond::IntCompare { width, .. } => matches!(width, MachineIntWidth::I64),
+            _ => false,
+        },
+        MachineInstKind::ConvertI64PairToFloat { .. }
+        | MachineInstKind::ConvertFloatToI64Pair { .. }
+        | MachineInstKind::Int64PairBinary { .. }
+        | MachineInstKind::Int64PairUnary { .. }
+        | MachineInstKind::Int64PairDivRem { .. }
+        | MachineInstKind::Int64PairShift { .. }
+        | MachineInstKind::Int64PairCompare { .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { .. }
+        | MachineInstKind::ReinterpretI64PairToF64 { .. }
+        | MachineInstKind::IntMulWide { .. } => true,
+        MachineInstKind::FloatConst { .. }
+        | MachineInstKind::Lea { .. }
+        | MachineInstKind::FloatBinary { .. }
+        | MachineInstKind::FloatUnary { .. }
+        | MachineInstKind::FloatCompare { .. }
+        | MachineInstKind::CallHelper(_) => false,
+    }
+}
+
+fn terminator_needs_gp_i64_legalization(terminator: &MachineTerminator) -> bool {
+    match terminator {
+        MachineTerminator::Branch { cond, .. } => match cond {
+            MachineBranchCond::IntCompare { width, .. } => matches!(width, MachineIntWidth::I64),
+            _ => false,
+        },
+        MachineTerminator::Jump { .. }
+        | MachineTerminator::Return
+        | MachineTerminator::Trap { .. }
+        | MachineTerminator::CallDirect { .. }
+        | MachineTerminator::CallIndirect { .. }
+        | MachineTerminator::JumpTable { .. } => false,
     }
 }
 
@@ -1394,9 +1410,11 @@ fn collect_legalized_i64_regs(
                     }
                 }
                 MachineInstKind::IntMulWide { .. } => {}
-                MachineInstKind::Int64PairUnary { .. } => {}
+                MachineInstKind::Int64PairBinary { .. }
+                | MachineInstKind::Int64PairUnary { .. } => {}
                 MachineInstKind::Int64PairDivRem { .. }
                 | MachineInstKind::Int64PairShift { .. }
+                | MachineInstKind::Int64PairCompare { .. }
                 | MachineInstKind::ConvertI64PairToFloat { .. }
                 | MachineInstKind::ConvertFloatToI64Pair { .. }
                 | MachineInstKind::ReinterpretF64ToI64Pair { .. }
@@ -1622,6 +1640,84 @@ fn unsupported_32bit_i64(context: &str) -> Result<(), WasmError> {
 }
 
 impl MachineProgram {
+    pub(crate) fn compact_32bit_gp_bank(&mut self, max_gp_regs: u16) -> Result<(), WasmError> {
+        if self.first_fp_reg <= max_gp_regs {
+            return Ok(());
+        }
+
+        let original_first_fp_reg = self.first_fp_reg;
+        let fp_reg_count = self
+            .reg_count
+            .checked_sub(original_first_fp_reg)
+            .ok_or_else(|| {
+                WasmError::internal(
+                    "machine reg_count underflowed the fp bank during 32-bit gp compaction".into(),
+                )
+            })?;
+        let mut used_gp = vec![false; original_first_fp_reg as usize];
+        collect_used_gp_regs(self, &mut used_gp)?;
+
+        let mut gp_map = vec![None; original_first_fp_reg as usize];
+        // The original lowering GP bank `[0, max_gp_regs)` already fits the
+        // backend budget. Compaction only needs to pack the extra legalized GP
+        // regs back into that existing dynamic-bank color space; recoloring the
+        // original non-SSA GP bank would only add false pressure.
+        for reg in 0..max_gp_regs.min(original_first_fp_reg) {
+            let reg = MachineReg(reg);
+            gp_map[reg.0 as usize] = Some(reg);
+        }
+        let interference = build_gp_interference(self, original_first_fp_reg)?;
+        let mut free_gp_slots =
+            Vec::with_capacity(max_gp_regs.saturating_sub(MACHINE_FIXED_REG_COUNT) as usize);
+        for reg in MACHINE_FIXED_REG_COUNT..max_gp_regs {
+            let reg = MachineReg(reg);
+            free_gp_slots.push(reg);
+        }
+
+        if !assign_compacted_gp_colors(&interference, &used_gp, &mut gp_map, &free_gp_slots) {
+            let required_gp_regs = max_live_gp_regs(&interference, &used_gp, &gp_map);
+            return Err(WasmError::invalid(alloc::format!(
+                "32-bit gp-bank compaction requires more than {} GP regs (estimated live pressure {})",
+                max_gp_regs,
+                required_gp_regs
+            )));
+        }
+
+        // Keep the FP bank anchored at the backend's configured boundary.
+        //
+        // The legalizer may prove that fewer GP regs are actually needed than
+        // the backend budget, but native backends still use a fixed machine-reg
+        // partition chosen by lowering/ABI setup. Letting first_fp_reg drift
+        // downward would make post-legalization MachineIR disagree with that
+        // fixed physical mapping contract.
+        let new_first_fp_reg = max_gp_regs;
+        remap_program_regs(self, |reg| {
+            if reg.0 < original_first_fp_reg {
+                return gp_map
+                    .get(reg.0 as usize)
+                    .and_then(|mapped| *mapped)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "32-bit gp-bank compaction missing remap for gp reg {}",
+                            reg.0
+                        ))
+                    });
+            }
+            Ok(MachineReg(
+                new_first_fp_reg + (reg.0 - original_first_fp_reg),
+            ))
+        })?;
+
+        self.first_fp_reg = new_first_fp_reg;
+        self.reg_count = new_first_fp_reg.checked_add(fp_reg_count).ok_or_else(|| {
+            WasmError::internal(
+                "32-bit gp-bank compaction overflowed the machine register count".into(),
+            )
+        })?;
+        self.validate()?;
+        Ok(())
+    }
+
     pub(crate) fn finalize_32bit_gp_expansion(
         &mut self,
         original_reg_count: u16,
@@ -1996,6 +2092,1398 @@ fn remap_program_regs(
     Ok(())
 }
 
+fn collect_used_gp_regs(program: &MachineProgram, used: &mut [bool]) -> Result<(), WasmError> {
+    for block in &program.blocks {
+        for param in &block.params {
+            mark_gp_used(used, param.reg)?;
+        }
+        for inst in &block.ops {
+            collect_inst_gp_regs(&inst.kind, used)?;
+        }
+        collect_term_gp_regs(&block.terminator, used)?;
+    }
+    Ok(())
+}
+
+fn build_gp_interference(
+    program: &MachineProgram,
+    first_fp_reg: u16,
+) -> Result<Vec<Vec<bool>>, WasmError> {
+    let liveness = build_gp_liveness(program, first_fp_reg)?;
+
+    let gp_reg_count = first_fp_reg as usize;
+    let mut interference = vec![vec![false; gp_reg_count]; gp_reg_count];
+    for block in &program.blocks {
+        let block_index = block.id.as_usize();
+        let mut live = liveness.live_out[block_index].clone();
+        let block_param_regs: Vec<MachineReg> =
+            block.params.iter().map(|param| param.reg).collect();
+        add_gp_group_interference(&mut interference, &block_param_regs, first_fp_reg);
+
+        let mut term_uses = Vec::new();
+        collect_term_gp_uses(&block.terminator, first_fp_reg, &mut term_uses)?;
+        for reg in term_uses {
+            mark_gp_live(&mut live, reg, first_fp_reg);
+        }
+
+        for inst in block.ops.iter().rev() {
+            let mut uses = Vec::new();
+            let mut defs = Vec::new();
+            collect_inst_gp_uses_defs(&inst.kind, first_fp_reg, &mut uses, &mut defs)?;
+            add_gp_group_interference(&mut interference, &defs, first_fp_reg);
+            for reg in defs {
+                add_gp_interference(
+                    &mut interference,
+                    reg,
+                    &live,
+                    first_fp_reg,
+                    gp_copy_coalescing_partner(&inst.kind, reg, first_fp_reg),
+                );
+                clear_gp_live(&mut live, reg, first_fp_reg);
+            }
+            for reg in uses {
+                mark_gp_live(&mut live, reg, first_fp_reg);
+            }
+        }
+
+        for param in block.params.iter().rev() {
+            add_gp_interference(&mut interference, param.reg, &live, first_fp_reg, None);
+            clear_gp_live(&mut live, param.reg, first_fp_reg);
+        }
+    }
+
+    Ok(interference)
+}
+
+fn build_gp_liveness(program: &MachineProgram, first_fp_reg: u16) -> Result<GpLiveness, WasmError> {
+    let gp_reg_count = first_fp_reg as usize;
+    let block_count = program.blocks.len();
+    let mut block_use = vec![vec![false; gp_reg_count]; block_count];
+    let mut block_def = vec![vec![false; gp_reg_count]; block_count];
+
+    for block in &program.blocks {
+        let block_index = block.id.as_usize();
+        for param in &block.params {
+            mark_gp_def(&mut block_def[block_index], param.reg, first_fp_reg);
+        }
+
+        for inst in &block.ops {
+            let mut uses = Vec::new();
+            let mut defs = Vec::new();
+            collect_inst_gp_uses_defs(&inst.kind, first_fp_reg, &mut uses, &mut defs)?;
+            for reg in uses {
+                mark_gp_use(
+                    &mut block_use[block_index],
+                    &block_def[block_index],
+                    reg,
+                    first_fp_reg,
+                );
+            }
+            for reg in defs {
+                mark_gp_def(&mut block_def[block_index], reg, first_fp_reg);
+            }
+        }
+
+        let mut term_uses = Vec::new();
+        collect_term_gp_uses(&block.terminator, first_fp_reg, &mut term_uses)?;
+        for reg in term_uses {
+            mark_gp_use(
+                &mut block_use[block_index],
+                &block_def[block_index],
+                reg,
+                first_fp_reg,
+            );
+        }
+    }
+
+    let mut live_in = vec![vec![false; gp_reg_count]; block_count];
+    let mut live_out = vec![vec![false; gp_reg_count]; block_count];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in program.blocks.iter().rev() {
+            let block_index = block.id.as_usize();
+            let mut new_out = vec![false; gp_reg_count];
+            for succ in term_successors(&block.terminator) {
+                union_bitset(&mut new_out, &live_in[succ.as_usize()]);
+            }
+
+            let mut new_in = block_use[block_index].clone();
+            let out_minus_defs = subtract_bitset(&new_out, &block_def[block_index]);
+            union_bitset(&mut new_in, &out_minus_defs);
+
+            if new_out != live_out[block_index] || new_in != live_in[block_index] {
+                live_out[block_index] = new_out;
+                live_in[block_index] = new_in;
+                changed = true;
+            }
+        }
+    }
+
+    Ok(GpLiveness { live_in, live_out })
+}
+
+fn collect_inst_gp_uses_defs(
+    inst: &MachineInstKind,
+    first_fp_reg: u16,
+    uses: &mut Vec<MachineReg>,
+    defs: &mut Vec<MachineReg>,
+) -> Result<(), WasmError> {
+    match inst {
+        MachineInstKind::Move { dst, src, .. } | MachineInstKind::Convert { dst, src, .. } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *src, first_fp_reg);
+        }
+        MachineInstKind::FloatConst { dst, .. } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+        }
+        MachineInstKind::Lea { dst, addr } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_use(uses, addr.base, first_fp_reg);
+        }
+        MachineInstKind::Load { dst, addr, .. } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_use(uses, addr.base, first_fp_reg);
+        }
+        MachineInstKind::Store { addr, src, .. } => {
+            push_gp_use(uses, addr.base, first_fp_reg);
+            push_gp_value_use(uses, *src, first_fp_reg);
+        }
+        MachineInstKind::IntUnary { dst, src, .. }
+        | MachineInstKind::FloatUnary { dst, src, .. } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *src, first_fp_reg);
+        }
+        MachineInstKind::IntBinary { dst, lhs, rhs, .. }
+        | MachineInstKind::IntCompare { dst, lhs, rhs, .. }
+        | MachineInstKind::FloatBinary { dst, lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { dst, lhs, rhs, .. } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *lhs, first_fp_reg);
+            push_gp_value_use(uses, *rhs, first_fp_reg);
+        }
+        MachineInstKind::IntMulWide {
+            dst_lo,
+            dst_hi,
+            lhs,
+            rhs,
+            ..
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *lhs, first_fp_reg);
+            push_gp_value_use(uses, *rhs, first_fp_reg);
+        }
+        MachineInstKind::Int64PairBinary {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        }
+        | MachineInstKind::Int64PairDivRem {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *lhs_lo, first_fp_reg);
+            push_gp_value_use(uses, *lhs_hi, first_fp_reg);
+            push_gp_value_use(uses, *rhs_lo, first_fp_reg);
+            push_gp_value_use(uses, *rhs_hi, first_fp_reg);
+        }
+        MachineInstKind::Int64PairUnary {
+            dst_lo,
+            dst_hi,
+            src_lo,
+            src_hi,
+            ..
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *src_lo, first_fp_reg);
+            push_gp_value_use(uses, *src_hi, first_fp_reg);
+        }
+        MachineInstKind::Int64PairCompare {
+            dst,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *lhs_lo, first_fp_reg);
+            push_gp_value_use(uses, *lhs_hi, first_fp_reg);
+            push_gp_value_use(uses, *rhs_lo, first_fp_reg);
+            push_gp_value_use(uses, *rhs_hi, first_fp_reg);
+        }
+        MachineInstKind::Int64PairShift {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *lhs_lo, first_fp_reg);
+            push_gp_value_use(uses, *lhs_hi, first_fp_reg);
+            push_gp_value_use(uses, *rhs, first_fp_reg);
+        }
+        MachineInstKind::ConvertI64PairToFloat {
+            dst,
+            src_lo,
+            src_hi,
+            ..
+        } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *src_lo, first_fp_reg);
+            push_gp_value_use(uses, *src_hi, first_fp_reg);
+        }
+        MachineInstKind::ConvertFloatToI64Pair {
+            dst_lo,
+            dst_hi,
+            src,
+            ..
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *src, first_fp_reg);
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair {
+            dst_lo,
+            dst_hi,
+            src,
+        } => {
+            push_gp_def(defs, *dst_lo, first_fp_reg);
+            push_gp_def(defs, *dst_hi, first_fp_reg);
+            push_gp_value_use(uses, *src, first_fp_reg);
+        }
+        MachineInstKind::ReinterpretI64PairToF64 {
+            dst,
+            src_lo,
+            src_hi,
+        } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *src_lo, first_fp_reg);
+            push_gp_value_use(uses, *src_hi, first_fp_reg);
+        }
+        MachineInstKind::Select {
+            dst,
+            on_true,
+            on_false,
+            cond,
+            ..
+        } => {
+            push_gp_def(defs, *dst, first_fp_reg);
+            push_gp_value_use(uses, *on_true, first_fp_reg);
+            push_gp_value_use(uses, *on_false, first_fp_reg);
+            push_gp_value_use(uses, *cond, first_fp_reg);
+        }
+        MachineInstKind::TrapIf { cond, .. } => {
+            collect_branch_cond_gp_uses(cond, first_fp_reg, uses)?;
+        }
+        MachineInstKind::CallHelper(_) => {}
+    }
+    Ok(())
+}
+
+fn collect_term_gp_uses(
+    term: &MachineTerminator,
+    first_fp_reg: u16,
+    uses: &mut Vec<MachineReg>,
+) -> Result<(), WasmError> {
+    match term {
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::Jump(edge) => {
+            collect_edge_gp_uses(edge, first_fp_reg, uses)?;
+        }
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            collect_branch_cond_gp_uses(cond, first_fp_reg, uses)?;
+            collect_edge_gp_uses(then_edge, first_fp_reg, uses)?;
+            collect_edge_gp_uses(else_edge, first_fp_reg, uses)?;
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            push_gp_value_use(uses, *index, first_fp_reg);
+            for edge in entries {
+                collect_edge_gp_uses(edge, first_fp_reg, uses)?;
+            }
+        }
+        MachineTerminator::CallDirect {
+            callee_frame_base, ..
+        } => {
+            push_gp_use(uses, *callee_frame_base, first_fp_reg);
+        }
+        MachineTerminator::CallIndirect {
+            callee_target,
+            callee_frame_base,
+            ..
+        } => {
+            push_gp_value_use(uses, *callee_target, first_fp_reg);
+            push_gp_use(uses, *callee_frame_base, first_fp_reg);
+        }
+    }
+    Ok(())
+}
+
+fn collect_edge_gp_uses(
+    edge: &MachineEdge,
+    first_fp_reg: u16,
+    uses: &mut Vec<MachineReg>,
+) -> Result<(), WasmError> {
+    for arg in &edge.args {
+        push_gp_value_use(uses, *arg, first_fp_reg);
+    }
+    Ok(())
+}
+
+fn collect_branch_cond_gp_uses(
+    cond: &MachineBranchCond,
+    first_fp_reg: u16,
+    uses: &mut Vec<MachineReg>,
+) -> Result<(), WasmError> {
+    match cond {
+        MachineBranchCond::Value(value) => push_gp_value_use(uses, *value, first_fp_reg),
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            push_gp_value_use(uses, *lhs, first_fp_reg);
+            push_gp_value_use(uses, *rhs, first_fp_reg);
+        }
+    }
+    Ok(())
+}
+
+fn term_successors(term: &MachineTerminator) -> alloc::vec::IntoIter<MachineBlockId> {
+    let mut succs = Vec::new();
+    match term {
+        MachineTerminator::Jump(edge) => succs.push(edge.target),
+        MachineTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            succs.push(then_edge.target);
+            if else_edge.target != then_edge.target {
+                succs.push(else_edge.target);
+            }
+        }
+        MachineTerminator::JumpTable { entries, .. } => {
+            for edge in entries {
+                if !succs.contains(&edge.target) {
+                    succs.push(edge.target);
+                }
+            }
+        }
+        MachineTerminator::CallDirect { continuation, .. }
+        | MachineTerminator::CallIndirect { continuation, .. } => succs.push(*continuation),
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+    }
+    succs.into_iter()
+}
+
+fn union_bitset(dst: &mut [bool], src: &[bool]) {
+    for (dst, src) in dst.iter_mut().zip(src) {
+        *dst |= *src;
+    }
+}
+
+fn subtract_bitset(lhs: &[bool], rhs: &[bool]) -> Vec<bool> {
+    lhs.iter()
+        .zip(rhs)
+        .map(|(lhs, rhs)| *lhs && !*rhs)
+        .collect()
+}
+
+fn add_gp_interference(
+    interference: &mut [Vec<bool>],
+    reg: MachineReg,
+    live: &[bool],
+    first_fp_reg: u16,
+    coalescing_partner: Option<MachineReg>,
+) {
+    if reg.0 >= first_fp_reg {
+        return;
+    }
+    let reg_index = reg.0 as usize;
+    let coalescing_partner = coalescing_partner.map(|partner| partner.0 as usize);
+    for (other, is_live) in live.iter().enumerate() {
+        if !*is_live || other == reg_index || Some(other) == coalescing_partner {
+            continue;
+        }
+        interference[reg_index][other] = true;
+        interference[other][reg_index] = true;
+    }
+}
+
+fn add_gp_group_interference(
+    interference: &mut [Vec<bool>],
+    regs: &[MachineReg],
+    first_fp_reg: u16,
+) {
+    for (index, &lhs) in regs.iter().enumerate() {
+        if lhs.0 >= first_fp_reg {
+            continue;
+        }
+        let lhs_index = lhs.0 as usize;
+        for &rhs in &regs[index + 1..] {
+            if rhs.0 >= first_fp_reg || lhs == rhs {
+                continue;
+            }
+            let rhs_index = rhs.0 as usize;
+            interference[lhs_index][rhs_index] = true;
+            interference[rhs_index][lhs_index] = true;
+        }
+    }
+}
+
+fn gp_copy_coalescing_partner(
+    inst: &MachineInstKind,
+    reg: MachineReg,
+    first_fp_reg: u16,
+) -> Option<MachineReg> {
+    match inst {
+        MachineInstKind::Move {
+            dst,
+            src: MachineValue::Reg(src),
+            ..
+        } if *dst == reg && src.0 < first_fp_reg => Some(*src),
+        _ => None,
+    }
+}
+
+fn gp_interference_degree(interference: &[Vec<bool>], reg: MachineReg) -> usize {
+    interference[reg.0 as usize]
+        .iter()
+        .filter(|interferes| **interferes)
+        .count()
+}
+
+fn assign_compacted_gp_colors(
+    interference: &[Vec<bool>],
+    used_gp: &[bool],
+    gp_map: &mut [Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+) -> bool {
+    let mut color_order = Vec::new();
+    for (index, used) in used_gp.iter().copied().enumerate() {
+        if !used || gp_map[index].is_some() {
+            continue;
+        }
+        color_order.push(MachineReg(index as u16));
+    }
+    color_order.sort_by(|lhs, rhs| {
+        let lhs_degree = gp_interference_degree(interference, *lhs);
+        let rhs_degree = gp_interference_degree(interference, *rhs);
+        rhs_degree.cmp(&lhs_degree).then(lhs.0.cmp(&rhs.0))
+    });
+
+    let mut greedy_map = gp_map.to_vec();
+    let greedy_ok = color_order.iter().copied().all(|reg| {
+        let assigned = free_gp_slots
+            .iter()
+            .copied()
+            .find(|slot| can_assign_gp_color(interference, &greedy_map, reg, *slot));
+        let Some(slot) = assigned else {
+            return false;
+        };
+        greedy_map[reg.0 as usize] = Some(slot);
+        true
+    });
+    if greedy_ok {
+        gp_map.copy_from_slice(&greedy_map);
+        return true;
+    }
+
+    assign_compacted_gp_colors_exact(interference, used_gp, gp_map, free_gp_slots)
+}
+
+fn assign_compacted_gp_colors_exact(
+    interference: &[Vec<bool>],
+    used_gp: &[bool],
+    gp_map: &mut [Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+) -> bool {
+    let mut uncolored = Vec::new();
+    for (index, used) in used_gp.iter().copied().enumerate() {
+        if used && gp_map[index].is_none() {
+            uncolored.push(index);
+        }
+    }
+    if uncolored.is_empty() {
+        return true;
+    }
+    color_backtrack(interference, gp_map, free_gp_slots, &uncolored)
+}
+
+fn color_backtrack(
+    interference: &[Vec<bool>],
+    gp_map: &mut [Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+    uncolored: &[usize],
+) -> bool {
+    let Some(next) = choose_next_uncolored_reg(interference, gp_map, free_gp_slots, uncolored)
+    else {
+        return true;
+    };
+    let reg = MachineReg(next as u16);
+    let mut candidate_slots = candidate_gp_slots(interference, gp_map, free_gp_slots, reg);
+    if candidate_slots.is_empty() {
+        return false;
+    }
+    candidate_slots.sort_by_key(|slot| slot.0);
+    for slot in candidate_slots {
+        gp_map[next] = Some(slot);
+        if color_backtrack(interference, gp_map, free_gp_slots, uncolored) {
+            return true;
+        }
+        gp_map[next] = None;
+    }
+    false
+}
+
+fn choose_next_uncolored_reg(
+    interference: &[Vec<bool>],
+    gp_map: &[Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+    uncolored: &[usize],
+) -> Option<usize> {
+    uncolored
+        .iter()
+        .copied()
+        .filter(|index| gp_map[*index].is_none())
+        .max_by(|lhs, rhs| {
+            let lhs_reg = MachineReg(*lhs as u16);
+            let rhs_reg = MachineReg(*rhs as u16);
+            let lhs_sat = gp_saturation_degree(interference, gp_map, lhs_reg);
+            let rhs_sat = gp_saturation_degree(interference, gp_map, rhs_reg);
+            lhs_sat
+                .cmp(&rhs_sat)
+                .then_with(|| {
+                    let lhs_options =
+                        candidate_gp_slots(interference, gp_map, free_gp_slots, lhs_reg).len();
+                    let rhs_options =
+                        candidate_gp_slots(interference, gp_map, free_gp_slots, rhs_reg).len();
+                    rhs_options.cmp(&lhs_options)
+                })
+                .then_with(|| {
+                    gp_interference_degree(interference, lhs_reg)
+                        .cmp(&gp_interference_degree(interference, rhs_reg))
+                })
+                .then_with(|| rhs.cmp(lhs))
+        })
+}
+
+fn gp_saturation_degree(
+    interference: &[Vec<bool>],
+    gp_map: &[Option<MachineReg>],
+    reg: MachineReg,
+) -> usize {
+    let mut colors = Vec::new();
+    for (other, interferes) in interference[reg.0 as usize].iter().copied().enumerate() {
+        if !interferes {
+            continue;
+        }
+        let Some(color) = gp_map[other] else {
+            continue;
+        };
+        if !colors.contains(&color) {
+            colors.push(color);
+        }
+    }
+    colors.len()
+}
+
+fn candidate_gp_slots(
+    interference: &[Vec<bool>],
+    gp_map: &[Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+    reg: MachineReg,
+) -> Vec<MachineReg> {
+    free_gp_slots
+        .iter()
+        .copied()
+        .filter(|slot| can_assign_gp_color(interference, gp_map, reg, *slot))
+        .collect()
+}
+
+fn can_assign_gp_color(
+    interference: &[Vec<bool>],
+    gp_map: &[Option<MachineReg>],
+    reg: MachineReg,
+    slot: MachineReg,
+) -> bool {
+    interference[reg.0 as usize]
+        .iter()
+        .enumerate()
+        .filter_map(|(other, interferes)| interferes.then_some(other))
+        .all(|other| gp_map[other] != Some(slot))
+}
+
+fn max_live_gp_regs(
+    interference: &[Vec<bool>],
+    used_gp: &[bool],
+    gp_map: &[Option<MachineReg>],
+) -> usize {
+    let reserved = gp_map.iter().filter(|slot| slot.is_some()).count();
+    let mut max_degree = 0usize;
+    for (reg, used) in used_gp.iter().enumerate() {
+        if !*used || gp_map[reg].is_some() {
+            continue;
+        }
+        max_degree = max_degree.max(
+            interference[reg]
+                .iter()
+                .enumerate()
+                .filter(|(other, interferes)| **interferes && used_gp[*other])
+                .count()
+                + 1,
+        );
+    }
+    reserved + max_degree
+}
+
+#[cfg(test)]
+pub(crate) fn debug_describe_gp_compaction(
+    program: &MachineProgram,
+    max_gp_regs: u16,
+) -> Result<GpCompactionDebugInfo, WasmError> {
+    let mut used_gp = vec![false; program.first_fp_reg as usize];
+    collect_used_gp_regs(program, &mut used_gp)?;
+    let mut gp_map = vec![None; program.first_fp_reg as usize];
+    for reg in 0..max_gp_regs.min(program.first_fp_reg) {
+        let reg = MachineReg(reg);
+        gp_map[reg.0 as usize] = Some(reg);
+    }
+    let interference = build_gp_interference(program, program.first_fp_reg)?;
+    let free_gp_slots = (MACHINE_FIXED_REG_COUNT..max_gp_regs)
+        .map(MachineReg)
+        .collect::<Vec<_>>();
+    let used_gp_regs = used_gp
+        .iter()
+        .enumerate()
+        .filter_map(|(reg, used)| used.then_some(MachineReg(reg as u16)))
+        .collect::<Vec<_>>();
+    let used_degrees = used_gp_regs
+        .iter()
+        .copied()
+        .map(|reg| (reg, gp_interference_degree(&interference, reg)))
+        .collect::<Vec<_>>();
+    let peak_live_point = max_actual_live_gp_point(program, program.first_fp_reg)?;
+    let peak_live_regs = peak_live_point.live_regs.len();
+    let estimated_pressure = max_live_gp_regs(&interference, &used_gp, &gp_map);
+    let extra_regs = collect_extra_gp_debug_info(
+        program,
+        &used_gp,
+        &interference,
+        &gp_map,
+        &free_gp_slots,
+        max_gp_regs,
+    )?;
+
+    Ok(GpCompactionDebugInfo {
+        used_gp_regs,
+        used_degrees,
+        peak_live_regs,
+        peak_live_point,
+        estimated_pressure,
+        extra_regs,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn debug_build_gp_interference(
+    program: &MachineProgram,
+) -> Result<Vec<Vec<bool>>, WasmError> {
+    build_gp_interference(program, program.first_fp_reg)
+}
+
+#[cfg(test)]
+fn max_actual_live_gp_point(
+    program: &MachineProgram,
+    first_fp_reg: u16,
+) -> Result<GpPeakLivePoint, WasmError> {
+    let liveness = build_gp_liveness(program, first_fp_reg)?;
+    let mut peak = GpPeakLivePoint {
+        block: MachineBlockId(0),
+        stage: "unreachable".into(),
+        live_regs: Vec::new(),
+    };
+    for block in &program.blocks {
+        let block_index = block.id.as_usize();
+        consider_peak_live(
+            &mut peak,
+            block.id,
+            "block entry".into(),
+            &liveness.live_in[block_index],
+        );
+
+        let mut live = liveness.live_out[block_index].clone();
+        let mut term_uses = Vec::new();
+        collect_term_gp_uses(&block.terminator, first_fp_reg, &mut term_uses)?;
+        for reg in term_uses {
+            mark_gp_live(&mut live, reg, first_fp_reg);
+        }
+        consider_peak_live(
+            &mut peak,
+            block.id,
+            alloc::format!("before terminator {:?}", block.terminator),
+            &live,
+        );
+
+        for (inst_index, inst) in block.ops.iter().enumerate().rev() {
+            let mut uses = Vec::new();
+            let mut defs = Vec::new();
+            collect_inst_gp_uses_defs(&inst.kind, first_fp_reg, &mut uses, &mut defs)?;
+            for reg in defs {
+                clear_gp_live(&mut live, reg, first_fp_reg);
+            }
+            for reg in uses {
+                mark_gp_live(&mut live, reg, first_fp_reg);
+            }
+            consider_peak_live(
+                &mut peak,
+                block.id,
+                alloc::format!("before op{} {:?}", inst_index, inst.kind),
+                &live,
+            );
+        }
+    }
+    Ok(peak)
+}
+
+#[cfg(test)]
+fn consider_peak_live(
+    peak: &mut GpPeakLivePoint,
+    block: MachineBlockId,
+    stage: String,
+    live: &[bool],
+) {
+    let live_regs = live_regs_from_bitset(live);
+    if live_regs.len() > peak.live_regs.len() {
+        *peak = GpPeakLivePoint {
+            block,
+            stage,
+            live_regs,
+        };
+    }
+}
+
+#[cfg(test)]
+fn live_regs_from_bitset(live: &[bool]) -> Vec<MachineReg> {
+    live.iter()
+        .enumerate()
+        .filter_map(|(reg, is_live)| is_live.then_some(MachineReg(reg as u16)))
+        .collect()
+}
+
+#[cfg(test)]
+fn collect_extra_gp_debug_info(
+    program: &MachineProgram,
+    used_gp: &[bool],
+    interference: &[Vec<bool>],
+    gp_map: &[Option<MachineReg>],
+    free_gp_slots: &[MachineReg],
+    max_gp_regs: u16,
+) -> Result<Vec<GpExtraRegDebugInfo>, WasmError> {
+    let mut extra_regs = Vec::new();
+    for reg_index in max_gp_regs..program.first_fp_reg {
+        if !used_gp[reg_index as usize] {
+            continue;
+        }
+        extra_regs.push(GpExtraRegDebugInfo {
+            reg: MachineReg(reg_index),
+            candidate_slots: candidate_gp_slots(
+                interference,
+                gp_map,
+                free_gp_slots,
+                MachineReg(reg_index),
+            ),
+            pair_low_regs: Vec::new(),
+            samples: Vec::new(),
+        });
+    }
+    for block in &program.blocks {
+        for param in &block.params {
+            record_extra_gp_sample(
+                &mut extra_regs,
+                param.reg,
+                None,
+                alloc::format!("block{} param", block.id.0),
+            );
+        }
+        for inst in &block.ops {
+            collect_inst_extra_gp_debug(&mut extra_regs, &inst.kind);
+        }
+    }
+    for info in &mut extra_regs {
+        info.pair_low_regs.sort_by_key(|reg| reg.0);
+        info.pair_low_regs.dedup();
+    }
+    Ok(extra_regs)
+}
+
+#[cfg(test)]
+fn collect_inst_extra_gp_debug(extra_regs: &mut [GpExtraRegDebugInfo], inst: &MachineInstKind) {
+    match inst {
+        MachineInstKind::Move { dst, src, .. } => {
+            record_extra_gp_sample(
+                extra_regs,
+                *dst,
+                None,
+                alloc::format!("move dst <- {:?}", src),
+            );
+            if let MachineValue::Reg(src) = src {
+                record_extra_gp_sample(
+                    extra_regs,
+                    *src,
+                    None,
+                    alloc::format!("move src -> r{}", dst.0),
+                );
+            }
+        }
+        MachineInstKind::Load { dst, addr, .. } => {
+            record_extra_gp_sample(
+                extra_regs,
+                *dst,
+                None,
+                alloc::format!("load dst from [r{}+{}]", addr.base.0, addr.offset),
+            );
+            record_extra_gp_sample(
+                extra_regs,
+                addr.base,
+                None,
+                alloc::format!("load base for r{}", dst.0),
+            );
+        }
+        MachineInstKind::Store { addr, src, .. } => {
+            record_extra_gp_sample(
+                extra_regs,
+                addr.base,
+                None,
+                alloc::format!("store base [r{}+{}]", addr.base.0, addr.offset),
+            );
+            if let MachineValue::Reg(src) = src {
+                record_extra_gp_sample(
+                    extra_regs,
+                    *src,
+                    None,
+                    alloc::format!("store src -> [r{}+{}]", addr.base.0, addr.offset),
+                );
+            }
+        }
+        MachineInstKind::Int64PairBinary {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            op,
+        } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                alloc::format!("pair {op:?} dst_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *lhs_hi,
+                *lhs_lo,
+                alloc::format!("pair {op:?} lhs_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *rhs_hi,
+                *rhs_lo,
+                alloc::format!("pair {op:?} rhs_hi"),
+            );
+        }
+        MachineInstKind::Int64PairDivRem {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            sign,
+            rem,
+        } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                alloc::format!("pair divrem rem={rem} {sign:?} dst_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *lhs_hi,
+                *lhs_lo,
+                alloc::format!("pair divrem rem={rem} {sign:?} lhs_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *rhs_hi,
+                *rhs_lo,
+                alloc::format!("pair divrem rem={rem} {sign:?} rhs_hi"),
+            );
+        }
+        MachineInstKind::Int64PairUnary {
+            dst_lo,
+            dst_hi,
+            src_lo,
+            src_hi,
+            op,
+        } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                alloc::format!("pair {op:?} dst_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *src_hi,
+                *src_lo,
+                alloc::format!("pair {op:?} src_hi"),
+            );
+        }
+        MachineInstKind::Int64PairShift {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            op,
+            ..
+        } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                alloc::format!("pair {op:?} dst_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *lhs_hi,
+                *lhs_lo,
+                alloc::format!("pair {op:?} lhs_hi"),
+            );
+        }
+        MachineInstKind::Int64PairCompare {
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            kind,
+            sign,
+            ..
+        } => {
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *lhs_hi,
+                *lhs_lo,
+                alloc::format!("pair cmp {kind:?}/{sign:?} lhs_hi"),
+            );
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *rhs_hi,
+                *rhs_lo,
+                alloc::format!("pair cmp {kind:?}/{sign:?} rhs_hi"),
+            );
+        }
+        MachineInstKind::ConvertI64PairToFloat {
+            src_lo,
+            src_hi,
+            width,
+            sign,
+            ..
+        } => {
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *src_hi,
+                *src_lo,
+                alloc::format!("convert i64->{width:?} {sign:?} src_hi"),
+            );
+        }
+        MachineInstKind::ConvertFloatToI64Pair {
+            dst_lo, dst_hi, op, ..
+        } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                alloc::format!("convert {op:?} dst_hi"),
+            );
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            record_extra_gp_pair_sample(
+                extra_regs,
+                *dst_hi,
+                *dst_lo,
+                "reinterpret_f64 dst_hi".into(),
+            );
+        }
+        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
+            record_extra_gp_value_pair_sample(
+                extra_regs,
+                *src_hi,
+                *src_lo,
+                "reinterpret_i64 src_hi".into(),
+            );
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+fn record_extra_gp_pair_sample(
+    extra_regs: &mut [GpExtraRegDebugInfo],
+    hi_reg: MachineReg,
+    lo_reg: MachineReg,
+    sample: String,
+) {
+    if let Some(info) = extra_regs.iter_mut().find(|info| info.reg == hi_reg) {
+        if !info.pair_low_regs.contains(&lo_reg) {
+            info.pair_low_regs.push(lo_reg);
+        }
+        record_sample(info, sample);
+    }
+}
+
+#[cfg(test)]
+fn record_extra_gp_value_pair_sample(
+    extra_regs: &mut [GpExtraRegDebugInfo],
+    hi_value: MachineValue,
+    lo_value: MachineValue,
+    sample: String,
+) {
+    let (MachineValue::Reg(hi_reg), MachineValue::Reg(lo_reg)) = (hi_value, lo_value) else {
+        return;
+    };
+    record_extra_gp_pair_sample(extra_regs, hi_reg, lo_reg, sample);
+}
+
+#[cfg(test)]
+fn record_extra_gp_sample(
+    extra_regs: &mut [GpExtraRegDebugInfo],
+    reg: MachineReg,
+    lo_reg: Option<MachineReg>,
+    sample: String,
+) {
+    if let Some(info) = extra_regs.iter_mut().find(|info| info.reg == reg) {
+        if let Some(lo_reg) = lo_reg {
+            if !info.pair_low_regs.contains(&lo_reg) {
+                info.pair_low_regs.push(lo_reg);
+            }
+        }
+        record_sample(info, sample);
+    }
+}
+
+#[cfg(test)]
+fn record_sample(info: &mut GpExtraRegDebugInfo, sample: String) {
+    if info.samples.len() < 8 && !info.samples.contains(&sample) {
+        info.samples.push(sample);
+    }
+}
+
+fn push_gp_use(uses: &mut Vec<MachineReg>, reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg {
+        uses.push(reg);
+    }
+}
+
+fn push_gp_def(defs: &mut Vec<MachineReg>, reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg {
+        defs.push(reg);
+    }
+}
+
+fn push_gp_value_use(uses: &mut Vec<MachineReg>, value: MachineValue, first_fp_reg: u16) {
+    if let MachineValue::Reg(reg) = value {
+        push_gp_use(uses, reg, first_fp_reg);
+    }
+}
+
+fn mark_gp_use(use_set: &mut [bool], def_set: &[bool], reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg && !def_set[reg.0 as usize] {
+        use_set[reg.0 as usize] = true;
+    }
+}
+
+fn mark_gp_def(def_set: &mut [bool], reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg {
+        def_set[reg.0 as usize] = true;
+    }
+}
+
+fn mark_gp_live(live: &mut [bool], reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg {
+        live[reg.0 as usize] = true;
+    }
+}
+
+fn clear_gp_live(live: &mut [bool], reg: MachineReg, first_fp_reg: u16) {
+    if reg.0 < first_fp_reg {
+        live[reg.0 as usize] = false;
+    }
+}
+
+fn mark_gp_used(used: &mut [bool], reg: MachineReg) -> Result<(), WasmError> {
+    if let Some(slot) = used.get_mut(reg.0 as usize) {
+        *slot = true;
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn collect_value_gp_regs(value: MachineValue, used: &mut [bool]) -> Result<(), WasmError> {
+    if let MachineValue::Reg(reg) = value {
+        mark_gp_used(used, reg)?;
+    }
+    Ok(())
+}
+
+fn collect_branch_cond_gp_regs(
+    cond: &MachineBranchCond,
+    used: &mut [bool],
+) -> Result<(), WasmError> {
+    match cond {
+        MachineBranchCond::Value(value) => collect_value_gp_regs(*value, used),
+        MachineBranchCond::IntCompare { lhs, rhs, .. }
+        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            collect_value_gp_regs(*lhs, used)?;
+            collect_value_gp_regs(*rhs, used)
+        }
+    }
+}
+
+fn collect_edge_gp_regs(edge: &MachineEdge, used: &mut [bool]) -> Result<(), WasmError> {
+    for arg in &edge.args {
+        collect_value_gp_regs(*arg, used)?;
+    }
+    Ok(())
+}
+
+fn collect_inst_gp_regs(inst: &MachineInstKind, used: &mut [bool]) -> Result<(), WasmError> {
+    match inst {
+        MachineInstKind::Move { dst, src, .. } | MachineInstKind::Convert { dst, src, .. } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*src, used)?;
+        }
+        MachineInstKind::FloatConst { .. } => {}
+        MachineInstKind::Lea { dst, addr } => {
+            mark_gp_used(used, *dst)?;
+            mark_gp_used(used, addr.base)?;
+        }
+        MachineInstKind::Load { dst, addr, .. } => {
+            mark_gp_used(used, *dst)?;
+            mark_gp_used(used, addr.base)?;
+        }
+        MachineInstKind::Store { addr, src, .. } => {
+            mark_gp_used(used, addr.base)?;
+            collect_value_gp_regs(*src, used)?;
+        }
+        MachineInstKind::IntUnary { dst, src, .. }
+        | MachineInstKind::FloatUnary { dst, src, .. } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*src, used)?;
+        }
+        MachineInstKind::IntBinary { dst, lhs, rhs, .. }
+        | MachineInstKind::IntCompare { dst, lhs, rhs, .. }
+        | MachineInstKind::FloatBinary { dst, lhs, rhs, .. }
+        | MachineInstKind::FloatCompare { dst, lhs, rhs, .. } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*lhs, used)?;
+            collect_value_gp_regs(*rhs, used)?;
+        }
+        MachineInstKind::IntMulWide {
+            dst_lo,
+            dst_hi,
+            lhs,
+            rhs,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*lhs, used)?;
+            collect_value_gp_regs(*rhs, used)?;
+        }
+        MachineInstKind::Int64PairBinary {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*lhs_lo, used)?;
+            collect_value_gp_regs(*lhs_hi, used)?;
+            collect_value_gp_regs(*rhs_lo, used)?;
+            collect_value_gp_regs(*rhs_hi, used)?;
+        }
+        MachineInstKind::Int64PairUnary {
+            dst_lo,
+            dst_hi,
+            src_lo,
+            src_hi,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*src_lo, used)?;
+            collect_value_gp_regs(*src_hi, used)?;
+        }
+        MachineInstKind::Int64PairDivRem {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*lhs_lo, used)?;
+            collect_value_gp_regs(*lhs_hi, used)?;
+            collect_value_gp_regs(*rhs_lo, used)?;
+            collect_value_gp_regs(*rhs_hi, used)?;
+        }
+        MachineInstKind::Int64PairCompare {
+            dst,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*lhs_lo, used)?;
+            collect_value_gp_regs(*lhs_hi, used)?;
+            collect_value_gp_regs(*rhs_lo, used)?;
+            collect_value_gp_regs(*rhs_hi, used)?;
+        }
+        MachineInstKind::Int64PairShift {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*lhs_lo, used)?;
+            collect_value_gp_regs(*lhs_hi, used)?;
+            collect_value_gp_regs(*rhs, used)?;
+        }
+        MachineInstKind::ConvertI64PairToFloat {
+            dst,
+            src_lo,
+            src_hi,
+            ..
+        } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*src_lo, used)?;
+            collect_value_gp_regs(*src_hi, used)?;
+        }
+        MachineInstKind::ConvertFloatToI64Pair {
+            dst_lo,
+            dst_hi,
+            src,
+            ..
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*src, used)?;
+        }
+        MachineInstKind::ReinterpretF64ToI64Pair {
+            dst_lo,
+            dst_hi,
+            src,
+        } => {
+            mark_gp_used(used, *dst_lo)?;
+            mark_gp_used(used, *dst_hi)?;
+            collect_value_gp_regs(*src, used)?;
+        }
+        MachineInstKind::ReinterpretI64PairToF64 {
+            dst,
+            src_lo,
+            src_hi,
+        } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*src_lo, used)?;
+            collect_value_gp_regs(*src_hi, used)?;
+        }
+        MachineInstKind::Select {
+            dst,
+            on_true,
+            on_false,
+            cond,
+            ..
+        } => {
+            mark_gp_used(used, *dst)?;
+            collect_value_gp_regs(*on_true, used)?;
+            collect_value_gp_regs(*on_false, used)?;
+            collect_value_gp_regs(*cond, used)?;
+        }
+        MachineInstKind::TrapIf { cond, .. } => collect_branch_cond_gp_regs(cond, used)?,
+        MachineInstKind::CallHelper(_) => {}
+    }
+    Ok(())
+}
+
+fn collect_term_gp_regs(term: &MachineTerminator, used: &mut [bool]) -> Result<(), WasmError> {
+    match term {
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::Jump(edge) => collect_edge_gp_regs(edge, used)?,
+        MachineTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
+            collect_branch_cond_gp_regs(cond, used)?;
+            collect_edge_gp_regs(then_edge, used)?;
+            collect_edge_gp_regs(else_edge, used)?;
+        }
+        MachineTerminator::JumpTable { index, entries } => {
+            collect_value_gp_regs(*index, used)?;
+            for edge in entries {
+                collect_edge_gp_regs(edge, used)?;
+            }
+        }
+        MachineTerminator::CallDirect {
+            callee_frame_base, ..
+        } => mark_gp_used(used, *callee_frame_base)?,
+        MachineTerminator::CallIndirect {
+            callee_target,
+            callee_frame_base,
+            ..
+        } => {
+            collect_value_gp_regs(*callee_target, used)?;
+            mark_gp_used(used, *callee_frame_base)?;
+        }
+    }
+    Ok(())
+}
+
 fn remap_inst_regs(
     inst: &mut MachineInstKind,
     remap: &mut impl FnMut(MachineReg) -> Result<MachineReg, WasmError>,
@@ -2045,6 +3533,22 @@ fn remap_inst_regs(
             remap_value(lhs, remap)?;
             remap_value(rhs, remap)?;
         }
+        MachineInstKind::Int64PairBinary {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            *dst_lo = remap(*dst_lo)?;
+            *dst_hi = remap(*dst_hi)?;
+            remap_value(lhs_lo, remap)?;
+            remap_value(lhs_hi, remap)?;
+            remap_value(rhs_lo, remap)?;
+            remap_value(rhs_hi, remap)?;
+        }
         MachineInstKind::Int64PairUnary {
             dst_lo,
             dst_hi,
@@ -2068,6 +3572,20 @@ fn remap_inst_regs(
         } => {
             *dst_lo = remap(*dst_lo)?;
             *dst_hi = remap(*dst_hi)?;
+            remap_value(lhs_lo, remap)?;
+            remap_value(lhs_hi, remap)?;
+            remap_value(rhs_lo, remap)?;
+            remap_value(rhs_hi, remap)?;
+        }
+        MachineInstKind::Int64PairCompare {
+            dst,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            *dst = remap(*dst)?;
             remap_value(lhs_lo, remap)?;
             remap_value(lhs_hi, remap)?;
             remap_value(rhs_lo, remap)?;
@@ -2300,6 +3818,52 @@ fn simulate_inst(
                 "wide mul high destination",
             )?;
         }
+        MachineInstKind::Int64PairBinary {
+            dst_lo,
+            dst_hi,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            require_value_type_if_reg(
+                state,
+                *lhs_lo,
+                MachineStorageType::GpWord,
+                "pair binary lhs low",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *lhs_hi,
+                MachineStorageType::GpWord,
+                "pair binary lhs high",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *rhs_lo,
+                MachineStorageType::GpWord,
+                "pair binary rhs low",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *rhs_hi,
+                MachineStorageType::GpWord,
+                "pair binary rhs high",
+            )?;
+            write_reg_type(
+                state,
+                *dst_lo,
+                MachineStorageType::GpWord,
+                "pair binary low destination",
+            )?;
+            write_reg_type(
+                state,
+                *dst_hi,
+                MachineStorageType::GpWord,
+                "pair binary high destination",
+            )?;
+        }
         MachineInstKind::Int64PairUnary {
             dst_lo,
             dst_hi,
@@ -2427,6 +3991,45 @@ fn simulate_inst(
                 *dst,
                 MachineStorageType::GpWord,
                 "integer compare destination",
+            )?;
+        }
+        MachineInstKind::Int64PairCompare {
+            dst,
+            lhs_lo,
+            lhs_hi,
+            rhs_lo,
+            rhs_hi,
+            ..
+        } => {
+            require_value_type_if_reg(
+                state,
+                *lhs_lo,
+                MachineStorageType::GpWord,
+                "pair compare lhs low",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *lhs_hi,
+                MachineStorageType::GpWord,
+                "pair compare lhs high",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *rhs_lo,
+                MachineStorageType::GpWord,
+                "pair compare rhs low",
+            )?;
+            require_value_type_if_reg(
+                state,
+                *rhs_hi,
+                MachineStorageType::GpWord,
+                "pair compare rhs high",
+            )?;
+            write_reg_type(
+                state,
+                *dst,
+                MachineStorageType::GpWord,
+                "pair compare destination",
             )?;
         }
         MachineInstKind::FloatUnary {

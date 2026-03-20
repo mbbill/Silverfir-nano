@@ -97,6 +97,19 @@ pub enum MachineInstKind {
         lhs: MachineValue,
         rhs: MachineValue,
     },
+    /// 64-bit integer binary op over legalized 32-bit GP register pairs.
+    ///
+    /// This keeps the shared 32-bit MachineIR compact for the operations that
+    /// would otherwise explode into temp-heavy carry/borrow sequences.
+    Int64PairBinary {
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    },
     /// 64-bit div/rem over legalized 32-bit GP register pairs.
     ///
     /// This is introduced by the 32-bit legalizer for ops that are awkward to
@@ -145,6 +158,21 @@ pub enum MachineInstKind {
         dst: MachineReg,
         lhs: MachineValue,
         rhs: MachineValue,
+    },
+    /// Compare two legalized 64-bit GP-word pairs and materialize a GP-word
+    /// boolean result.
+    ///
+    /// This exists so the 32-bit legalizer does not need to manufacture
+    /// multiple temporary compare-result registers just to compute one Wasm
+    /// boolean.
+    Int64PairCompare {
+        kind: MachineCompareKind,
+        sign: MachineSign,
+        dst: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
     },
     /// 64-bit integer to float conversion from legalized GP register pairs.
     ///

@@ -83,7 +83,7 @@ pub struct LoweredMachineModule {
 }
 
 pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule, WasmError> {
-    let regfile = MachineRegFile::new(input.backend)?;
+    let max_regfile = MachineRegFile::for_backend_capacity(input.backend)?;
     let call_link = MachineCallLinkLayout {
         continuation_offset: 0,
         caller_frame_offset: 8,
@@ -117,8 +117,8 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
             *function,
+            input.backend,
             input.backend.gp_unit_bytes,
-            &regfile,
             &function_runtime,
             call_link,
             &mut sidecar,
@@ -136,7 +136,7 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
         .enumerate()
         .map(|(index, function)| {
             function.unwrap_or_else(|| {
-                stub_machine_function(MachineFuncId(index as u32), regfile.reg_count())
+                stub_machine_function(MachineFuncId(index as u32), max_regfile.reg_count())
             })
         })
         .collect();
@@ -183,13 +183,15 @@ fn lower_function_runtime(
 
 fn lower_function(
     input: LowerFunctionInput<'_>,
+    backend: BackendConfig,
     gp_reg_width: u8,
-    regfile: &MachineRegFile,
     runtime: &[MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
     sidecar: &mut SidecarBuilder,
     guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
+    let regfile =
+        MachineRegFile::for_function(backend, input.lir.local_cache.gp_preferred_slots.len())?;
     let caller_runtime = runtime.get(input.id.0 as usize).copied().ok_or_else(|| {
         WasmError::internal("machine runtime metadata missing for function".into())
     })?;
@@ -201,7 +203,7 @@ fn lower_function(
     for block in &input.lir.blocks {
         let target = block.id;
         let mut lower = BlockLowerContext::new(
-            regfile,
+            &regfile,
             input.frame,
             input.lir,
             &input.lir.local_cache,
@@ -560,7 +562,7 @@ fn lower_function(
         first_fp_reg: regfile.first_fp_reg(),
         reg_count: regfile.reg_count(),
         fp_transient_count: regfile.fp_transient_count() as u16,
-        fp_reg_init_widths: fp_reg_init_widths(regfile, &input.lir.local_cache)?,
+        fp_reg_init_widths: fp_reg_init_widths(&regfile, &input.lir.local_cache)?,
         blocks,
     };
     program.validate()?;

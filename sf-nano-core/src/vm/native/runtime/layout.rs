@@ -91,7 +91,7 @@ pub const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntimeAbiLay
     let function_view = function_view_abi_layout();
 
     let stack_end_offset = 0;
-    let mem0_base_offset = stack_end_offset + ptr;
+    let mem0_base_offset = align_up(stack_end_offset + ptr, ptr);
     let mem0_size_offset = align_up(mem0_base_offset + ptr, 8);
     let globals_view_offset = mem0_size_offset + 8;
     let globals_view_base_offset = globals_view_offset + pointer_len_view.base_offset;
