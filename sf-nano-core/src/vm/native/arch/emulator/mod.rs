@@ -860,7 +860,6 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         }
         MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::CallStackExhausted => WasmError::exhaustion("call stack exhausted".into()),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
     }

@@ -3037,8 +3037,7 @@ fn trap_kind_to_u32(kind: MachineTrapKind) -> u32 {
         MachineTrapKind::IndirectCallTypeMismatch => 4,
         MachineTrapKind::IntegerDivideByZero => 5,
         MachineTrapKind::IntegerOverflow => 6,
-        MachineTrapKind::CallStackExhausted => 7,
-        MachineTrapKind::StackOverflow => 8,
-        MachineTrapKind::HelperFailure => 9,
+        MachineTrapKind::StackOverflow => 7,
+        MachineTrapKind::HelperFailure => 8,
     }
 }

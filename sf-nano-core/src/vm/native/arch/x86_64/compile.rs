@@ -48,7 +48,6 @@ enum LabelKind {
     Block,
     Edge,
     StackOverflow,
-    CallDepthExhausted,
     ReturnOk,
     ReturnError,
 }
@@ -148,7 +147,6 @@ struct FunctionCompiler<'a> {
     current_op_index: Option<usize>,
     current_edge_target: Option<MachineBlockId>,
     stack_overflow_label: usize,
-    call_depth_label: usize,
     return_ok_label: usize,
     return_error_label: usize,
     shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
@@ -417,9 +415,6 @@ fn compile_function(
     compiler.bind_label(compiler.stack_overflow_label);
     compiler.emit_trap(MachineTrapKind::StackOverflow);
 
-    compiler.bind_label(compiler.call_depth_label);
-    compiler.emit_trap(MachineTrapKind::CallStackExhausted);
-
     compiler.bind_label(compiler.return_error_label);
     compiler.emit_epilogue();
 
@@ -499,15 +494,11 @@ impl<'a> FunctionCompiler<'a> {
         }
         let stack_overflow_label = labels.len();
         labels.push(None);
-        let call_depth_label = labels.len();
-        labels.push(None);
         let return_ok_label = labels.len();
         labels.push(None);
         let return_error_label = labels.len();
         labels.push(None);
         let mut shared_trap_labels = [None; MACHINE_TRAP_KIND_COUNT];
-        shared_trap_labels[trap_kind_index(MachineTrapKind::CallStackExhausted)] =
-            Some(call_depth_label);
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
         Self {
@@ -552,7 +543,6 @@ impl<'a> FunctionCompiler<'a> {
             current_op_index: None,
             current_edge_target: None,
             stack_overflow_label,
-            call_depth_label,
             return_ok_label,
             return_error_label,
             shared_trap_labels,
@@ -3467,13 +3457,12 @@ fn trap_code(kind: MachineTrapKind) -> u64 {
         MachineTrapKind::IndirectCallTypeMismatch => 4,
         MachineTrapKind::IntegerDivideByZero => 5,
         MachineTrapKind::IntegerOverflow => 6,
-        MachineTrapKind::CallStackExhausted => 7,
-        MachineTrapKind::StackOverflow => 8,
-        MachineTrapKind::HelperFailure => 9,
+        MachineTrapKind::StackOverflow => 7,
+        MachineTrapKind::HelperFailure => 8,
     }
 }
 
-const MACHINE_TRAP_KIND_COUNT: usize = 10;
+const MACHINE_TRAP_KIND_COUNT: usize = 9;
 
 fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize

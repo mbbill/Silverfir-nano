@@ -212,7 +212,6 @@ pub enum MachineTrapKind {
     IndirectCallTypeMismatch,
     IntegerDivideByZero,
     IntegerOverflow,
-    CallStackExhausted,
     StackOverflow,
     HelperFailure,
 }
