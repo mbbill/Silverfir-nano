@@ -26,6 +26,7 @@ use super::{
     abi::{
         emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, is_fp_machine_reg,
         map_fixed_reg, map_reg, max_gp_mapped_regs, max_total_machine_regs, FP_SCRATCH0, SCRATCH0,
+        SCRATCH1,
     },
     armv7a_f32_trunc_i64s, armv7a_f32_trunc_i64u, armv7a_f64_trunc_i64s, armv7a_f64_trunc_i64u,
     armv7a_i64s_to_f32, armv7a_i64s_to_f64, armv7a_i64u_to_f32, armv7a_i64u_to_f64,
@@ -2599,27 +2600,69 @@ fn compile_select(
         return Ok(());
     }
 
-    // GP select
-    let dst_hw = map_reg(dst)?;
-
-    // Load false value first
-    match false_val {
-        MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
-            let sd = map_fp_dreg(*r)?;
-            fc.text.emit_u32(enc::vmov_rr_d(dst_hw, Arm32Reg::R1, sd));
-        }
-        MachineValue::Reg(r) => {
-            let src = map_reg(*r)?;
-            if dst_hw != src {
-                fc.text.emit_u32(enc::mov_reg(dst_hw, src));
-            }
-        }
-        MachineValue::Imm64(v) => {
-            fc.emit_load_u32(dst_hw, *v as u32);
+    fn gp_value_aliases_dst(
+        value: &MachineValue,
+        dst_hw: Arm32Reg,
+    ) -> Result<bool, WasmError> {
+        match value {
+            MachineValue::Reg(r) if !is_fp_machine_reg(*r) => Ok(map_reg(*r)? == dst_hw),
+            _ => Ok(false),
         }
     }
 
-    // Test condition
+    fn emit_gp_select_value(
+        fc: &mut FunctionCompiler<'_>,
+        dst_hw: Arm32Reg,
+        value: &MachineValue,
+    ) -> Result<(), WasmError> {
+        match value {
+            MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
+                let sd = map_fp_dreg(*r)?;
+                fc.text.emit_u32(enc::vmov_rr_d(dst_hw, Arm32Reg::R1, sd));
+            }
+            MachineValue::Reg(r) => {
+                let src = map_reg(*r)?;
+                if dst_hw != src {
+                    fc.text.emit_u32(enc::mov_reg(dst_hw, src));
+                }
+            }
+            MachineValue::Imm64(v) => {
+                fc.emit_load_u32(dst_hw, *v as u32);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_gp_select_value_cond(
+        fc: &mut FunctionCompiler<'_>,
+        dst_hw: Arm32Reg,
+        value: &MachineValue,
+        cond: Cond,
+    ) -> Result<(), WasmError> {
+        match value {
+            MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
+                let skip = fc.alloc_label(LabelKind::Block);
+                fc.emit_branch(BranchFixupKind::BCond(cond.invert()), skip);
+                let sd = map_fp_dreg(*r)?;
+                fc.text.emit_u32(enc::vmov_rr_d(dst_hw, Arm32Reg::R1, sd));
+                fc.bind_label(skip);
+            }
+            MachineValue::Reg(r) => {
+                let src = map_reg(*r)?;
+                fc.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, src));
+            }
+            MachineValue::Imm64(v) => {
+                fc.emit_load_u32(SCRATCH0, *v as u32);
+                fc.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, SCRATCH0));
+            }
+        }
+        Ok(())
+    }
+
+    // GP select
+    let dst_hw = map_reg(dst)?;
+
+    // Test condition before touching dst so dst == cond is safe.
     let cond_hw = match condition {
         MachineValue::Reg(r) => map_reg(*r)?,
         MachineValue::Imm64(v) => {
@@ -2629,25 +2672,15 @@ fn compile_select(
     };
     fc.text.emit_u32(enc::cmp_imm(cond_hw, 0, 0));
 
-    // Conditionally move true value (if condition != 0)
-    match true_val {
-        MachineValue::Reg(r) if is_fp_machine_reg(*r) => {
-            // Can't conditional-VMOV, use branch
-            let skip = fc.alloc_label(LabelKind::Block);
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Eq), skip);
-            let sd = map_fp_dreg(*r)?;
-            fc.text.emit_u32(enc::vmov_rr_d(dst_hw, Arm32Reg::R1, sd));
-            fc.bind_label(skip);
-        }
-        MachineValue::Reg(r) => {
-            let src = map_reg(*r)?;
-            fc.text.emit_u32(enc::mov_reg_cond(Cond::Ne, dst_hw, src));
-        }
-        MachineValue::Imm64(v) => {
-            fc.emit_load_u32(SCRATCH0, *v as u32);
-            fc.text
-                .emit_u32(enc::mov_reg_cond(Cond::Ne, dst_hw, SCRATCH0));
-        }
+    if gp_value_aliases_dst(true_val, dst_hw)? {
+        // Loading the false arm first would clobber the live true source when
+        // `dst` reuses that register. Seed `dst` with the true arm, then
+        // overwrite it on the false path.
+        emit_gp_select_value(fc, dst_hw, true_val)?;
+        emit_gp_select_value_cond(fc, dst_hw, false_val, Cond::Eq)?;
+    } else {
+        emit_gp_select_value(fc, dst_hw, false_val)?;
+        emit_gp_select_value_cond(fc, dst_hw, true_val, Cond::Ne)?;
     }
 
     Ok(())
@@ -2883,11 +2916,16 @@ fn compile_terminator(
                 }
             };
             let max_idx = (entries.len() - 1) as u32;
-            fc.emit_load_u32(Arm32Reg::R3, max_idx);
-            fc.text.emit_u32(enc::cmp_reg(index_hw, Arm32Reg::R3));
+            let clamp_hw = if index_hw == SCRATCH0 {
+                SCRATCH1
+            } else {
+                SCRATCH0
+            };
+            fc.emit_load_u32(clamp_hw, max_idx);
+            fc.text.emit_u32(enc::cmp_reg(index_hw, clamp_hw));
             // If index > max, use max (conditional move)
             fc.text
-                .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, Arm32Reg::R3));
+                .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, clamp_hw));
 
             // Emit edge stubs and collect their labels
             let mut edge_label_ids = Vec::with_capacity(entries.len());
@@ -2896,17 +2934,16 @@ fn compile_terminator(
                 edge_label_ids.push(label);
             }
 
-            // PC-relative table jump: PC + index*4
-            // ADD PC, PC, index, LSL #2
-            // Each table entry is a B instruction (relative branch)
-            fc.text.emit_u32(
-                enc::cond_bits(Cond::Al)
-                    | (0b00001000 << 20) // ADD, S=0
-                    | (0b1111 << 16)     // Rn = PC
-                    | (0b1111 << 12)     // Rd = PC
-                    | (0b00001 << 7)     // shift_imm = 2 (LSL #2)
-                    | (index_hw.idx()),
-            );
+            // ARM reads PC as current+8 for data-processing instructions, so
+            // keep one 4-byte padding slot between the dispatch ADD and the
+            // first branch-table entry.
+            fc.text.emit_u32(enc::add_reg_lsl_imm(
+                Arm32Reg::R15,
+                Arm32Reg::R15,
+                index_hw,
+                2,
+            ));
+            fc.text.emit_u32(enc::nop());
 
             // Emit branch table entries (will be patched by resolve_fixups)
             for &label_id in &edge_label_ids {

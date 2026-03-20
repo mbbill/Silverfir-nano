@@ -195,8 +195,10 @@ pub(crate) extern "C" fn armv7a_udiv(num: u32, den: u32) -> u32 {
 
 /// Signed 32-bit division. Returns quotient.
 pub(crate) extern "C" fn armv7a_sdiv(num: i32, den: i32) -> i32 {
-    // Caller guarantees den != 0 and !(num == i32::MIN && den == -1)
-    num / den
+    // The backend emits the Wasm overflow trap for i32.div_s before calling
+    // this helper. Use wrapping semantics here anyway so helper-backed
+    // remainder paths can safely compute INT_MIN / -1 as an intermediate.
+    num.wrapping_div(den)
 }
 
 // ─── i64 ↔ float conversion helpers ─────────────────────────────────────────

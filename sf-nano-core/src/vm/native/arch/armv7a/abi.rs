@@ -46,6 +46,7 @@ use crate::{
 use super::{emit::Arm32TextEmitter, enc, reg::Arm32Reg};
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
+pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
 
 /// FP scratch registers (caller-saved, not used for values or parameters).
 pub(super) const FP_SCRATCH0: u32 = 0; // D0

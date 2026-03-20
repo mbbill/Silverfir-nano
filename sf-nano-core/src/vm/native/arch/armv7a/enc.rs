@@ -174,6 +174,12 @@ pub fn add_reg(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
     dp_reg(Cond::Al, 0b0100, false, dst, lhs, rhs)
 }
 
+/// ADD Rd, Rn, Rm, LSL #imm
+#[inline]
+pub fn add_reg_lsl_imm(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b0100, false, dst, lhs, rhs, 0b00, shift_imm)
+}
+
 /// ADDS Rd, Rn, Rm (sets flags)
 #[inline]
 pub fn adds_reg(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
@@ -428,7 +434,7 @@ pub fn tst_imm(src: Arm32Reg, imm8: u32, rotate: u32) -> u32 {
 #[inline]
 pub fn mul(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
     // MUL encoding: cond 0000 000S Rd 0000 Rs 1001 Rm
-    cond_bits(Cond::Al) | (rn(dst) >> 4) | rs(rhs) | (0b1001 << 4) | rm(lhs)
+    cond_bits(Cond::Al) | rn(dst) | rs(rhs) | (0b1001 << 4) | rm(lhs)
 }
 
 /// UMULL RdLo, RdHi, Rm, Rs (unsigned 32x32→64)
@@ -463,7 +469,7 @@ pub fn smull(dst_lo: Arm32Reg, dst_hi: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -
 #[inline]
 pub fn clz(dst: Arm32Reg, src: Arm32Reg) -> u32 {
     // CLZ: cond 0001 0110 1111 Rd 1111 0001 Rm
-    cond_bits(Cond::Al) | (0b000101101111 << 16) | rd(dst) | (0b11110001 << 0) | rm(src)
+    cond_bits(Cond::Al) | (0b000101101111 << 16) | rd(dst) | (0b1111 << 8) | (0b0001 << 4) | rm(src)
 }
 
 // ─── Load / Store (immediate offset) ────────────────────────────────────────
@@ -718,13 +724,13 @@ pub fn bl(byte_offset: i32) -> u32 {
 /// BX Rm (branch and exchange — return via LR or indirect call)
 #[inline]
 pub fn bx(reg: Arm32Reg) -> u32 {
-    cond_bits(Cond::Al) | (0b0001_0010_1111_1111_1111_0001 << 0) | rm(reg)
+    cond_bits(Cond::Al) | (0b0001_0010_1111_1111_1111_0001 << 4) | rm(reg)
 }
 
 /// BLX Rm (branch with link and exchange — indirect call)
 #[inline]
 pub fn blx_reg(reg: Arm32Reg) -> u32 {
-    cond_bits(Cond::Al) | (0b0001_0010_1111_1111_1111_0011 << 0) | rm(reg)
+    cond_bits(Cond::Al) | (0b0001_0010_1111_1111_1111_0011 << 4) | rm(reg)
 }
 
 // ─── Sign/Zero extend (ARMv6+) ─────────────────────────────────────────────
@@ -1342,7 +1348,7 @@ pub fn vcvt_d_s32(dd: u32, sm: u32) -> u32 {
         | (0b111000 << 16)
         | (vd << 12)
         | (0b1011 << 8)
-        | (0b01 << 6)
+        | (0b11 << 6)
         | (m << 5)
         | vm
 }
@@ -1360,7 +1366,7 @@ pub fn vcvt_d_u32(dd: u32, sm: u32) -> u32 {
         | (0b111000 << 16)
         | (vd << 12)
         | (0b1011 << 8)
-        | (0b11 << 6)
+        | (0b01 << 6)
         | (m << 5)
         | vm
 }
@@ -1378,7 +1384,7 @@ pub fn vcvt_s_s32(sd: u32, sm: u32) -> u32 {
         | (0b111000 << 16)
         | (vd << 12)
         | (0b1010 << 8)
-        | (0b01 << 6)
+        | (0b11 << 6)
         | (m << 5)
         | vm
 }
@@ -1396,7 +1402,7 @@ pub fn vcvt_s_u32(sd: u32, sm: u32) -> u32 {
         | (0b111000 << 16)
         | (vd << 12)
         | (0b1010 << 8)
-        | (0b11 << 6)
+        | (0b01 << 6)
         | (m << 5)
         | vm
 }
@@ -1455,4 +1461,47 @@ pub fn vpop_d(first_d: u32, count: u32) -> u32 {
         | (vd << 12)
         | (0b1011 << 8)
         | (count * 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::native::arch::armv7a::reg::Arm32Reg;
+
+    #[test]
+    fn encodes_bx_and_blx_register_forms_at_the_correct_bit_position() {
+        assert_eq!(bx(Arm32Reg::R12), 0xe12fff1c);
+        assert_eq!(bx(Arm32Reg::R0), 0xe12fff10);
+        assert_eq!(blx_reg(Arm32Reg::R12), 0xe12fff3c);
+        assert_eq!(blx_reg(Arm32Reg::R0), 0xe12fff30);
+    }
+
+    #[test]
+    fn encodes_signed_and_unsigned_vcvt_integer_conversions() {
+        // Verified against clang integrated assembler for armv7-linux-gnueabihf.
+        assert_eq!(vcvt_s_s32(0, 1), 0xeeb80ae0);
+        assert_eq!(vcvt_s_u32(2, 3), 0xeeb81a61);
+        assert_eq!(vcvt_d_s32(0, 1), 0xeeb80be0);
+        assert_eq!(vcvt_d_u32(1, 3), 0xeeb81b61);
+    }
+
+    #[test]
+    fn encodes_add_pc_pc_with_lsl_two_for_jump_table_dispatch() {
+        assert_eq!(
+            add_reg_lsl_imm(Arm32Reg::R15, Arm32Reg::R15, Arm32Reg::R3, 2),
+            0xe08ff103
+        );
+    }
+
+    #[test]
+    fn encodes_mul_destination_in_rd_field() {
+        assert_eq!(mul(Arm32Reg::R3, Arm32Reg::R3, Arm32Reg::R12), 0xe0030c93);
+        assert_eq!(mul(Arm32Reg::R0, Arm32Reg::R3, Arm32Reg::R12), 0xe0000c93);
+    }
+
+    #[test]
+    fn encodes_clz_with_the_fixed_low_nibbles() {
+        assert_eq!(clz(Arm32Reg::R3, Arm32Reg::R3), 0xe16f3f13);
+        assert_eq!(clz(Arm32Reg::R0, Arm32Reg::R1), 0xe16f0f11);
+    }
 }
