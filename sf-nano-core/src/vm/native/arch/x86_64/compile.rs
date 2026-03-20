@@ -3029,8 +3029,6 @@ impl<'a> FunctionCompiler<'a> {
             + self.compiled.runtime().call_link.continuation_offset as i32;
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
-        self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-
         // Load continuation address via movabs (patched after label resolution).
         // mov_ri_64 emits REX.W B8+rd imm64 (2 + 8 = 10 bytes).
         enc::movabs_ri_64(&mut self.text, SCRATCH0, 0); // placeholder (patched later)
@@ -3245,31 +3243,7 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
-    // ── Stack overflow / call depth ──────────────────────────────────────────
-
-    fn emit_stack_overflow_check(
-        &mut self,
-        callee_fp: X86Reg,
-        callee_total_frame_slots: u16,
-    ) -> Result<(), WasmError> {
-        let callee_end_bytes = u64::from(callee_total_frame_slots) * 8;
-        // SCRATCH0 = callee_fp + callee_end_bytes
-        if callee_end_bytes <= i32::MAX as u64 {
-            enc::lea_64(&mut self.text, SCRATCH0, callee_fp, callee_end_bytes as i32);
-        } else {
-            self.materialize_u64(SCRATCH0, callee_end_bytes);
-            enc::add_rr_64(&mut self.text, SCRATCH0, callee_fp);
-        }
-        enc::load_64(
-            &mut self.text,
-            SCRATCH1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::STACK_END as i32,
-        );
-        enc::cmp_rr_64(&mut self.text, SCRATCH0, SCRATCH1);
-        self.emit_jcc(Cc::A, self.stack_overflow_label);
-        Ok(())
-    }
+    // (Stack overflow check is now emitted at MachineIR level by the lowerer.)
 
     // ── Parallel moves ───────────────────────────────────────────────────────
 

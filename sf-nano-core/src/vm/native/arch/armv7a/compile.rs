@@ -503,31 +503,6 @@ impl<'a> FunctionCompiler<'a> {
 
     // ─── Call infrastructure ────────────────────────────────────────────
 
-    fn emit_stack_overflow_check(
-        &mut self,
-        callee_fp: Arm32Reg,
-        callee_total_frame_slots: u16,
-    ) -> Result<(), WasmError> {
-        let callee_end_bytes = u32::from(callee_total_frame_slots) * 8;
-        if let Some((imm8, rot)) = enc::encode_arm_imm(callee_end_bytes) {
-            self.text
-                .emit_u32(enc::add_imm(SCRATCH0, callee_fp, imm8, rot));
-        } else {
-            self.emit_load_u32(SCRATCH0, callee_end_bytes);
-            self.text
-                .emit_u32(enc::add_reg(SCRATCH0, callee_fp, SCRATCH0));
-        }
-        // Load stack_end from NativeContext
-        self.text.emit_u32(enc::ldr_imm(
-            Arm32Reg::R3,
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::STACK_END as i32,
-        ));
-        self.text.emit_u32(enc::cmp_reg(SCRATCH0, Arm32Reg::R3));
-        self.emit_branch(BranchFixupKind::BCond(Cond::Hi), self.stack_overflow_label);
-        Ok(())
-    }
-
     fn emit_call_direct(
         &mut self,
         callee: MachineFuncId,
@@ -546,9 +521,6 @@ impl<'a> FunctionCompiler<'a> {
         let callee_total = callee_runtime.total_frame_slots;
 
         let callee_fp = map_reg(callee_frame_base)?;
-
-        // Stack overflow check
-        self.emit_stack_overflow_check(callee_fp, callee_total)?;
 
         // Store continuation address (patchable) into callee frame
         let cont_patch = self.emit_patchable_addr(SCRATCH0);

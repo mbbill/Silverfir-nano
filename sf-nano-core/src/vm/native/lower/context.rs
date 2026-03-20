@@ -696,6 +696,55 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
+    /// Emit a stack-overflow precheck before writing into the callee frame.
+    ///
+    /// Loads `stack_end` from the runtime context, subtracts the callee frame
+    /// size, and traps if `callee_frame_base > stack_end - callee_size`.
+    pub(super) fn emit_direct_call_stack_precheck(
+        &mut self,
+        callee_frame_base: MachineReg,
+        stack_limit: MachineReg,
+        callee_total_frame_slots: u16,
+    ) -> Result<(), WasmError> {
+        use crate::vm::native::ir::machine::{
+            MachineBranchCond, MachineCompareKind, MachineInstKind, MachineLoadExtension,
+            MachineSign, MachineTrapKind,
+        };
+        let callee_total_bytes = slot_offset_bytes(FrameSlot(callee_total_frame_slots))? as u64;
+        let stack_end_offset =
+            crate::vm::native::runtime::context::ctx_offset::STACK_END;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                dst: stack_limit,
+                addr: self.runtime_addr(stack_end_offset),
+                width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                dst: stack_limit,
+                lhs: MachineValue::Reg(stack_limit),
+                rhs: MachineValue::Imm64(callee_total_bytes),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::StackOverflow,
+                cond: MachineBranchCond::IntCompare {
+                    width: crate::vm::native::ir::machine::MachineIntWidth::I64,
+                    kind: MachineCompareKind::Gt,
+                    sign: MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(callee_frame_base),
+                    rhs: MachineValue::Reg(stack_limit),
+                },
+            },
+        });
+        Ok(())
+    }
+
     pub(super) fn frame_addr_from(
         &self,
         base: MachineReg,

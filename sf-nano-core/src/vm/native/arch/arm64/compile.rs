@@ -1088,8 +1088,6 @@ impl<'a> FunctionCompiler<'a> {
             + (self.compiled.runtime().call_link.continuation_offset / 8) as u16;
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
 
-        self.emit_stack_overflow_check(callee_fp, callee_runtime.total_frame_slots)?;
-
         let continuation_load = self.text.emit_u32(enc::ldr_lit_64(SCRATCH0, 0));
         if continuation_slot < 4096 {
             self.text
@@ -1343,33 +1341,6 @@ impl<'a> FunctionCompiler<'a> {
         self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, Arm64Reg::X2));
         self.emit_b_cond(Cond::Lo, loop_label);
         self.bind_label(done);
-        Ok(())
-    }
-
-    fn emit_stack_overflow_check(
-        &mut self,
-        callee_fp: Arm64Reg,
-        callee_total_frame_slots: u16,
-    ) -> Result<(), WasmError> {
-        let callee_end_bytes = u64::from(callee_total_frame_slots) * 8;
-        if callee_end_bytes < 4096 {
-            self.text.emit_u32(enc::add_imm_64(
-                SCRATCH0,
-                callee_fp,
-                callee_end_bytes as u32,
-            ));
-        } else {
-            self.materialize_u64(SCRATCH0, callee_end_bytes);
-            self.text
-                .emit_u32(enc::add_reg_64(SCRATCH0, callee_fp, SCRATCH0));
-        }
-        self.text.emit_u32(enc::ldr_64(
-            SCRATCH1,
-            map_fixed_reg(MACHINE_CTX_REG),
-            (ctx_offset::STACK_END / 8) as u32,
-        ));
-        self.text.emit_u32(enc::cmp_reg_64(SCRATCH0, SCRATCH1));
-        self.emit_b_cond(Cond::Hi, self.stack_overflow_label);
         Ok(())
     }
 

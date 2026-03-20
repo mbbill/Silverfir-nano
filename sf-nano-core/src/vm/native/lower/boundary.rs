@@ -10,8 +10,9 @@ use crate::{
             },
             ir::{
                 machine::{
-                    MachineBlockId, MachineFuncId, MachineHelperCall, MachineInst, MachineInstKind,
-                    MachineReg, MachineTerminator, MachineValue,
+                    MachineBranchCond, MachineBlockId, MachineCompareKind, MachineFuncId,
+                    MachineHelperCall, MachineInst, MachineInstKind, MachineLoadExtension,
+                    MachineReg, MachineSign, MachineTerminator, MachineTrapKind, MachineValue,
                 },
                 runtime::{MachineFrameRegion, MachineHelperSymbol},
             },
@@ -63,7 +64,9 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_all_cached_locals()?;
 
-        let callee_frame_base = self.borrow_free_transients(1)?[0];
+        let call_regs = self.borrow_free_transients(2)?;
+        let callee_frame_base = call_regs[0];
+        let stack_limit = call_regs[1];
 
         // Native local calls reuse the caller operand span as the callee frame
         // prefix, so arguments are already in place when control transfers.
@@ -76,6 +79,16 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Imm64(slot_offset_bytes(args.start)? as u64),
             },
         });
+
+        // Stack overflow precheck: verify the callee frame fits before writing
+        // anything into the callee region. The old approach checked inside the
+        // backend codegen *after* partially setting up the call link, which
+        // could corrupt memory on overflow.
+        self.emit_direct_call_stack_precheck(
+            callee_frame_base,
+            stack_limit,
+            callee_runtime.total_frame_slots,
+        )?;
 
         for slot in args.count..callee_runtime.frame_prefix_slots {
             self.emit_machine_inst(MachineInst {
