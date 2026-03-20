@@ -108,7 +108,12 @@ pub struct SemanticProgram {
     /// When non-empty, `local_types.len() == local_count`.
     /// When empty, downstream consumers should treat all values as untyped.
     pub local_types: Vec<ValueType>,
-    /// Per-op result types for calls and block-type-producing ops.
+    /// Function result types in signature order.
+    ///
+    /// When non-empty, `result_types.len() == results`.
+    pub result_types: Vec<ValueType>,
+    /// Per-op result types for dynamic producers and structured control
+    /// signatures.
     ///
     /// Maps semantic op index to result value types for ops that push
     /// results whose types are not deterministic from the opcode alone
@@ -174,6 +179,15 @@ impl SemanticProgram {
             }
         }
 
+        // Validate result_types length when present.
+        if !self.result_types.is_empty() && self.result_types.len() != self.results as usize {
+            return Err(WasmError::internal(alloc::format!(
+                "semantic result_types length {} does not match results {}",
+                self.result_types.len(),
+                self.results,
+            )));
+        }
+
         // Validate local_types length when present.
         if !self.local_types.is_empty() && self.local_types.len() != self.local_count as usize {
             return Err(WasmError::internal(alloc::format!(
@@ -196,16 +210,20 @@ impl SemanticProgram {
                 let expected_results = match &op.kind {
                     SemanticOpKind::CallExternal { results, .. }
                     | SemanticOpKind::CallInternal { results, .. }
-                    | SemanticOpKind::CallIndirect { results, .. } => *results as usize,
+                    | SemanticOpKind::CallIndirect { results, .. } => Some(*results as usize),
+                    SemanticOpKind::Block { results, .. }
+                    | SemanticOpKind::Loop { results, .. }
+                    | SemanticOpKind::If { results, .. } => Some(*results as usize),
                     SemanticOpKind::Primitive(kind) => {
-                        super::primitive_op::stack_effect(kind).1 as usize
+                        Some(super::primitive_op::stack_effect(kind).1 as usize)
                     }
-                    _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "op_result_types entry at op {} attached to a non-producing op",
-                            op_idx,
-                        )));
-                    }
+                    _ => None,
+                };
+                let Some(expected_results) = expected_results else {
+                    return Err(WasmError::internal(alloc::format!(
+                        "op_result_types entry at op {} attached to a non-producing op",
+                        op_idx,
+                    )));
                 };
                 if result_types.len() != expected_results {
                     return Err(WasmError::internal(alloc::format!(
@@ -260,6 +278,20 @@ impl SemanticProgram {
     #[inline]
     pub fn reachable_ops(&self) -> Vec<bool> {
         Vec::new()
+    }
+}
+
+/// Returns the result arity of a semantic op, if it produces values.
+pub fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
+    match kind {
+        SemanticOpKind::CallExternal { results, .. }
+        | SemanticOpKind::CallInternal { results, .. }
+        | SemanticOpKind::CallIndirect { results, .. } => Some(*results as usize),
+        SemanticOpKind::Block { results, .. }
+        | SemanticOpKind::Loop { results, .. }
+        | SemanticOpKind::If { results, .. } => Some(*results as usize),
+        SemanticOpKind::Primitive(kind) => Some(super::primitive_op::stack_effect(kind).1 as usize),
+        _ => None,
     }
 }
 
@@ -375,6 +407,7 @@ mod tests {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -399,6 +432,7 @@ mod tests {
                 },
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -419,6 +453,7 @@ mod tests {
                 kind: SemanticOpKind::ReturnVoid,
             }],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 

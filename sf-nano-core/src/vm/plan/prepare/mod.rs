@@ -154,6 +154,7 @@ fn make_block_params(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
     use crate::vm::{
         lir::ir::{LirBoundaryOp, LirInstKind},
         plan::{
@@ -194,6 +195,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -249,6 +251,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::from([(
                 1usize,
                 alloc::vec![ValueType::funcref()],
@@ -301,6 +304,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -354,6 +358,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -418,6 +423,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -472,6 +478,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -551,6 +558,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -625,6 +633,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::I64, ValueType::I64, ValueType::I64],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::from([(
                 2usize,
                 alloc::vec![ValueType::I64, ValueType::I32],
@@ -687,6 +696,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -779,6 +789,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -830,6 +841,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -889,6 +901,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -990,6 +1003,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1062,6 +1076,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1139,6 +1154,7 @@ mod tests {
             max_stack_height: 16,
             ops,
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1177,6 +1193,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1232,6 +1249,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1300,6 +1318,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1350,6 +1369,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::F64],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -1444,6 +1464,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![ValueType::F64, ValueType::I32],
+            result_types: Vec::new(),
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 

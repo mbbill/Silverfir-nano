@@ -523,6 +523,7 @@ mod tests {
                 },
             ],
             local_types: alloc::vec![],
+            result_types: alloc::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 

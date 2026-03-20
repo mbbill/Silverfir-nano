@@ -79,6 +79,7 @@ impl SemanticBuilder {
         local_count: u16,
         max_stack_height: u16,
         local_types: Vec<ValueType>,
+        result_types: Vec<ValueType>,
         op_result_types: BTreeMap<usize, Vec<ValueType>>,
     ) -> SemanticProgram {
         SemanticProgram {
@@ -88,6 +89,7 @@ impl SemanticBuilder {
             max_stack_height,
             ops: self.ops,
             local_types,
+            result_types,
             op_result_types,
         }
     }
@@ -374,6 +376,7 @@ impl<'a> DecodeContext<'a> {
             self.compile.local_count,
             self.max_height as u16,
             self.compile.local_types.to_vec(),
+            self.compile.result_types.to_vec(),
             self.op_result_types,
         )
     }
@@ -802,24 +805,30 @@ impl<'a> DecodeContext<'a> {
 
             OP(BLOCK) => {
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
-                self.push_op(SemanticOpKind::Block { params, results });
+                let result_types = self.compile.resolve_block_result_types_from_imm(imm);
+                let idx = self.push_op(SemanticOpKind::Block { params, results });
+                self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
                 self.enter_block(DecodeBlockKind::Block, params, results, target);
             }
             OP(LOOP) => {
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
-                self.push_op(SemanticOpKind::Loop { params, results });
+                let result_types = self.compile.resolve_block_result_types_from_imm(imm);
+                let idx = self.push_op(SemanticOpKind::Loop { params, results });
+                self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
                 self.enter_block(DecodeBlockKind::Loop, params, results, target);
             }
             OP(IF) => {
                 self.pop_values(1);
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
+                let result_types = self.compile.resolve_block_result_types_from_imm(imm);
                 let idx = self.push_op(SemanticOpKind::If {
                     params,
                     results,
                     else_target: SemanticTarget::pending(),
                 });
+                self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
                 self.enter_block(DecodeBlockKind::If, params, results, target);
                 self.set_if_inst(idx);

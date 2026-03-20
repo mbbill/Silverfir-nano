@@ -962,30 +962,43 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    assert_eq!(call_block.ops.len(), 5);
+    // ops[0] = callee_frame_base computation (IntBinary Add)
+    // ops[1] = stack precheck: Load stack_end
+    // ops[2] = stack precheck: Sub callee_size
+    // ops[3] = stack precheck: TrapIf StackOverflow
+    // ops[4..7] = zero-fill + call-link stores
+    assert_eq!(call_block.ops.len(), 8);
     assert!(matches!(
         call_block.ops[1].kind,
+        MachineInstKind::Load { .. }
+    ));
+    assert!(matches!(
+        call_block.ops[3].kind,
+        MachineInstKind::TrapIf { .. }
+    ));
+    assert!(matches!(
+        call_block.ops[4].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(0),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[2].kind,
+        call_block.ops[5].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(1),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[3].kind,
+        call_block.ops[6].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(1)),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[4].kind,
+        call_block.ops[7].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(40),
             ..
