@@ -29,18 +29,18 @@ pub(super) struct MachineRegFile {
 
 impl MachineRegFile {
     pub(super) fn new(config: BackendConfig) -> Result<Self, WasmError> {
-        if config.gp_lane_count == 0 {
+        if config.gp_transient_budget == 0 {
             return Err(WasmError::internal(
                 "native lowering requires at least one GP lane register".into(),
             ));
         }
 
         let mut next = MACHINE_FIXED_REG_COUNT;
-        let gp_local_cache = collect_regs(&mut next, config.gp_local_cache_count);
-        let gp_transient = collect_regs(&mut next, config.gp_lane_count);
+        let gp_local_cache = collect_regs(&mut next, config.gp_local_cache_budget);
+        let gp_transient = collect_regs(&mut next, config.gp_transient_budget);
         let first_fp_reg = next;
-        let fp_transient = collect_regs(&mut next, config.fp_lane_count);
-        let fp_local_cache = collect_regs(&mut next, config.fp_local_cache_count);
+        let fp_transient = collect_regs(&mut next, config.fp_transient_budget);
+        let fp_local_cache = collect_regs(&mut next, config.fp_local_cache_budget);
 
         // Layout: [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
         //                                                              ^ first_fp_reg

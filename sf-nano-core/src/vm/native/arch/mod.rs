@@ -1,6 +1,21 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::vm::backend::BackendConfig;
+
+/// Reference backend operating mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceBackendMode {
+    Disabled = 0,
+    Emu64 = 1,
+    Emu32 = 2,
+}
+
+impl ReferenceBackendMode {
+    #[inline]
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 pub mod arm64;
@@ -43,7 +58,7 @@ pub enum NativeBackend {
 }
 
 #[inline]
-pub const fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
+pub fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
     match backend {
         // Each backend returns an explicit budget preset. Physical register
         // mapping and ABI constraints stay in the backend-specific ABI/layout
@@ -58,7 +73,7 @@ pub const fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
             debug_assertions,
             not(any(target_arch = "aarch64", target_arch = "x86_64"))
         ))]
-        NativeBackend::Reference => emulator::config::compile_backend_config(),
+        NativeBackend::Reference => emulator::config::compile_backend_config(active_reference_mode()),
     }
 }
 
@@ -82,7 +97,17 @@ impl NativeBackend {
 }
 
 cfg_has_reference! {
-    static FORCE_REFERENCE: AtomicBool = AtomicBool::new(false);
+    static REFERENCE_MODE: AtomicU8 = AtomicU8::new(ReferenceBackendMode::Disabled as u8);
+}
+
+cfg_has_reference! {
+    fn active_reference_mode() -> ReferenceBackendMode {
+        match REFERENCE_MODE.load(Ordering::Relaxed) {
+            x if x == ReferenceBackendMode::Emu32 as u8 => ReferenceBackendMode::Emu32,
+            x if x == ReferenceBackendMode::Emu64 as u8 => ReferenceBackendMode::Emu64,
+            _ => ReferenceBackendMode::Disabled,
+        }
+    }
 }
 
 #[inline]
@@ -112,7 +137,7 @@ pub fn active_native_backend() -> Result<NativeBackend, &'static str> {
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
     ))]
     {
-        if FORCE_REFERENCE.load(Ordering::Relaxed) {
+        if active_reference_mode().is_enabled() {
             return Ok(NativeBackend::Reference);
         }
     }
@@ -139,19 +164,35 @@ pub fn active_backend_config() -> Result<BackendConfig, &'static str> {
 }
 
 pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
+    set_reference_backend_mode(if enabled {
+        ReferenceBackendMode::Emu64
+    } else {
+        ReferenceBackendMode::Disabled
+    })
+}
+
+pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
     #[cfg(any(
         debug_assertions,
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
     ))]
     {
-        FORCE_REFERENCE.store(enabled, Ordering::Relaxed);
+        REFERENCE_MODE.store(mode as u8, Ordering::Relaxed);
         return Ok(());
     }
 
     #[allow(unreachable_code)]
-    if enabled {
+    if mode.is_enabled() {
         Err("reference backend is only available in debug builds")
     } else {
         Ok(())
     }
+}
+
+pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
+    active_native_backend().map(|b| b.as_str())
+}
+
+pub fn backend_display_name(backend: NativeBackend) -> &'static str {
+    backend.as_str()
 }

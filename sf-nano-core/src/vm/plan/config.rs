@@ -38,10 +38,10 @@ impl PlanConfig {
     #[inline]
     pub const fn from_backend_config(value: BackendConfig, call_scratch_slots: u16) -> Self {
         Self {
-            gp_cached_locals: value.gp_local_cache_count,
-            gp_lir_lanes: value.gp_lane_count,
-            fp_cached_locals: value.fp_local_cache_count,
-            fp_lir_lanes: value.fp_lane_count,
+            gp_cached_locals: value.gp_local_cache_budget,
+            gp_lir_lanes: value.gp_transient_budget,
+            fp_cached_locals: value.fp_local_cache_budget,
+            fp_lir_lanes: value.fp_transient_budget,
             call_scratch_slots,
         }
     }

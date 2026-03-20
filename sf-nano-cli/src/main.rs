@@ -5,7 +5,10 @@ mod discover_fusion;
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
-use sf_nano_core::{active_runtime_engine, set_backend_mode, set_reference_backend, BackendMode};
+use sf_nano_core::{
+    active_runtime_engine, set_backend_mode, set_reference_backend_mode, BackendMode,
+    ReferenceBackendMode,
+};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -17,7 +20,9 @@ fn main() {
         eprintln!("Silverfir-nano — WebAssembly interpreter");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu] [--dir <path>] <wasm-file> [args...]");
+        eprintln!(
+            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu|--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
+        );
         #[cfg(all(feature = "profile", feature = "interp"))]
         {
             eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
@@ -40,7 +45,7 @@ fn main() {
     // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
     let mut backend_mode = BackendMode::Native;
-    let mut emulator_backend = false;
+    let mut reference_mode = ReferenceBackendMode::Disabled;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
@@ -66,8 +71,18 @@ fn main() {
                     );
                     process::exit(1);
                 });
-            } else if args[i] == "--emu" {
-                emulator_backend = true;
+            } else if args[i] == "--emu" || args[i] == "--emu64" {
+                if reference_mode == ReferenceBackendMode::Emu32 {
+                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+                    process::exit(1);
+                }
+                reference_mode = ReferenceBackendMode::Emu64;
+            } else if args[i] == "--emu32" {
+                if reference_mode == ReferenceBackendMode::Emu64 {
+                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+                    process::exit(1);
+                }
+                reference_mode = ReferenceBackendMode::Emu32;
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -81,7 +96,7 @@ fn main() {
     }
 
     set_backend_mode(backend_mode);
-    if let Err(err) = set_reference_backend(emulator_backend) {
+    if let Err(err) = set_reference_backend_mode(reference_mode) {
         eprintln!("Error: {}", err);
         process::exit(1);
     }
