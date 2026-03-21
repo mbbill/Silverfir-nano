@@ -66,18 +66,7 @@ pub fn prepare_function(
         input.config.fp_local_cache_budget,
         frame,
     );
-    let gp_unused_cache = input
-        .config
-        .gp_local_cache_budget
-        .saturating_sub(local_cache.gp_preferred_slots.len() as u8);
-    let effective_config = PlanConfig {
-        gp_transient_budget: input
-            .config
-            .gp_transient_budget
-            .saturating_add(gp_unused_cache),
-        ..input.config
-    };
-    let prepared = prepare_semantic_ops(semantic, frame, effective_config)?;
+    let prepared = prepare_semantic_ops(semantic, frame, input.config)?;
 
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
@@ -110,9 +99,9 @@ pub fn prepare_function(
         let state = BlockState::from_entry(
             &prepared.entry_states[semantic_range.start],
             &params,
-            effective_config.gp_unit_bytes,
-            effective_config.gp_transient_budget,
-            effective_config.fp_transient_budget,
+            input.config.gp_unit_bytes,
+            input.config.gp_transient_budget,
+            input.config.fp_transient_budget,
         )?;
         let block = lower_block_range(
             semantic_range.clone(),
@@ -1367,46 +1356,6 @@ mod tests {
         assert!(
             count_loads(&prepared_32) >= 1,
             "four i64 values should require a spill/fill under a six-register 32-bit GP budget",
-        );
-    }
-
-    #[test]
-    fn unused_gp_cache_budget_extends_32bit_transient_capacity() {
-        let semantic = SemanticProgram {
-            params: 0,
-            results: 1,
-            local_count: 0,
-            max_stack_height: 3,
-            ops: alloc::vec![
-                SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 1 }),
-                },
-                SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I64Const { value: 2 }),
-                },
-                SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
-                },
-                SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Select),
-                },
-                SemanticOp {
-                    kind: SemanticOpKind::ReturnOne,
-                },
-            ],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
-        };
-
-        prepare_function(
-            PrepareInput {
-                config: PlanConfig::new_with_gp_unit_bytes(4, 4, 0, 0, 3, 4),
-            },
-            &semantic,
-        )
-        .expect(
-            "functions with no cached GP locals should be able to borrow that unused budget for 32-bit transient stack pressure",
         );
     }
 

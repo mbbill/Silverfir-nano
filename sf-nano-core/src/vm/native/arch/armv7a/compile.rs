@@ -2314,6 +2314,23 @@ fn compile_int64_pair_binary(
             restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
             Ok(())
         }
+        MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
+            let dst_lo_hw = map_reg(dst_lo)?;
+            let dst_hi_hw = map_reg(dst_hi)?;
+            materialize_gp_into(fc, dst_lo_hw, lhs_lo)?;
+            materialize_gp_into(fc, dst_hi_hw, lhs_hi)?;
+            let rhs_lo_hw = materialize_gp_value(fc, rhs_lo, SCRATCH0)?;
+            let rhs_hi_hw = materialize_gp_value(fc, rhs_hi, SCRATCH1)?;
+            let emit = match op {
+                MachineIntBinaryOp::And => enc::and_reg,
+                MachineIntBinaryOp::Or => enc::orr_reg,
+                MachineIntBinaryOp::Xor => enc::eor_reg,
+                _ => unreachable!(),
+            };
+            fc.text.emit_u32(emit(dst_lo_hw, dst_lo_hw, rhs_lo_hw));
+            fc.text.emit_u32(emit(dst_hi_hw, dst_hi_hw, rhs_hi_hw));
+            Ok(())
+        }
         other => Err(WasmError::invalid(alloc::format!(
             "armv7a: unsupported i64 pair binary op {:?}",
             other
@@ -2332,24 +2349,50 @@ fn compile_int64_pair_unary(
     let dst_lo_hw = map_reg(dst_lo)?;
     let dst_hi_hw = map_reg(dst_hi)?;
     spill_caller_saved_gp_regs(fc);
-    emit_pair_args_to_r0_r1(fc, src_lo, src_hi)?;
-    emit_host_call(
-        fc,
-        match op {
-            MachineIntUnaryOp::Clz => armv7a_i64_clz as usize,
-            MachineIntUnaryOp::Ctz => armv7a_i64_ctz as usize,
-            MachineIntUnaryOp::Popcnt => armv7a_i64_popcnt as usize,
-            other => {
-                return Err(WasmError::invalid(alloc::format!(
-                    "armv7a: unsupported i64 pair unary op {:?}",
-                    other
-                )));
+    match op {
+        MachineIntUnaryOp::Clz | MachineIntUnaryOp::Ctz | MachineIntUnaryOp::Popcnt => {
+            emit_pair_args_to_r0_r1(fc, src_lo, src_hi)?;
+            emit_host_call(
+                fc,
+                match op {
+                    MachineIntUnaryOp::Clz => armv7a_i64_clz as usize,
+                    MachineIntUnaryOp::Ctz => armv7a_i64_ctz as usize,
+                    MachineIntUnaryOp::Popcnt => armv7a_i64_popcnt as usize,
+                    _ => unreachable!(),
+                },
+            );
+            emit_pair_results_from_r0_r1(fc, dst_lo, dst_hi)?;
+            restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
+            Ok(())
+        }
+        MachineIntUnaryOp::Extend8S => {
+            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            fc.text.emit_u32(enc::sxtb(dst_lo_hw, src_lo_hw));
+            fc.text.emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
+            restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
+            Ok(())
+        }
+        MachineIntUnaryOp::Extend16S => {
+            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            fc.text.emit_u32(enc::sxth(dst_lo_hw, src_lo_hw));
+            fc.text.emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
+            restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
+            Ok(())
+        }
+        MachineIntUnaryOp::Extend32S => {
+            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            if dst_lo_hw != src_lo_hw {
+                fc.text.emit_u32(enc::mov_reg(dst_lo_hw, src_lo_hw));
             }
-        },
-    );
-    emit_pair_results_from_r0_r1(fc, dst_lo, dst_hi)?;
-    restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
-    Ok(())
+            fc.text.emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
+            restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
+            Ok(())
+        }
+        other => Err(WasmError::invalid(alloc::format!(
+            "armv7a: unsupported i64 pair unary op {:?}",
+            other
+        ))),
+    }
 }
 
 fn compile_int64_pair_div_rem(

@@ -11,17 +11,17 @@ use super::types::{
 type ValidateResult = Result<(), WasmError>;
 
 impl MachineProgram {
-    pub fn validate_finalized_32bit_backend(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+    pub fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
         if self.first_fp_reg != max_gp_regs {
             return Err(WasmError::internal(alloc::format!(
-                "expected first_fp_reg {} after 32-bit finalization, found {}",
+                "expected first_fp_reg {} for 32-bit GP target MachineIR, found {}",
                 max_gp_regs,
                 self.first_fp_reg,
             )));
         }
         if self.reg_count < self.first_fp_reg {
             return Err(WasmError::internal(alloc::format!(
-                "machine reg_count {} is below finalized 32-bit fp boundary {}",
+                "machine reg_count {} is below 32-bit GP-target fp boundary {}",
                 self.reg_count,
                 self.first_fp_reg,
             )));
@@ -29,12 +29,12 @@ impl MachineProgram {
 
         for block in &self.blocks {
             for (param_index, param) in block.params.iter().enumerate() {
-                validate_finalized_32bit_param(block.id, param_index, *param)?;
+                validate_32bit_gp_target_param(block.id, param_index, *param)?;
             }
             for (inst_index, inst) in block.ops.iter().enumerate() {
-                validate_finalized_32bit_inst(block.id, inst_index, &inst.kind)?;
+                validate_32bit_gp_target_inst(block.id, inst_index, &inst.kind)?;
             }
-            validate_finalized_32bit_term(block.id, &block.terminator)?;
+            validate_32bit_gp_target_term(block.id, &block.terminator)?;
         }
 
         Ok(())
@@ -201,6 +201,9 @@ impl MachineProgram {
                     super::types::MachineIntBinaryOp::Add
                         | super::types::MachineIntBinaryOp::Sub
                         | super::types::MachineIntBinaryOp::Mul
+                        | super::types::MachineIntBinaryOp::And
+                        | super::types::MachineIntBinaryOp::Or
+                        | super::types::MachineIntBinaryOp::Xor
                 ) {
                     return Err(WasmError::internal(
                         "machine Int64PairBinary requires a supported i64 binary op".into(),
@@ -253,6 +256,9 @@ impl MachineProgram {
                     super::types::MachineIntUnaryOp::Clz
                         | super::types::MachineIntUnaryOp::Ctz
                         | super::types::MachineIntUnaryOp::Popcnt
+                        | super::types::MachineIntUnaryOp::Extend8S
+                        | super::types::MachineIntUnaryOp::Extend16S
+                        | super::types::MachineIntUnaryOp::Extend32S
                 ) {
                     return Err(WasmError::internal(
                         "machine Int64PairUnary requires a supported i64 unary op".into(),
@@ -577,13 +583,13 @@ impl MachineProgram {
 }
 
 impl MachineModule {
-    pub fn validate_finalized_32bit_backend(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+    pub fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
         for func in &self.functions {
             func.program
-                .validate_finalized_32bit_backend(max_gp_regs)
+                .validate_32bit_gp_target(max_gp_regs)
                 .map_err(|err| {
                     WasmError::internal(alloc::format!(
-                        "machine function {} is not finalized 32-bit MachineIR: {}",
+                        "machine function {} is not valid 32-bit GP-target MachineIR: {}",
                         func.id.0,
                         err
                     ))
@@ -700,14 +706,14 @@ impl MachineModule {
     }
 }
 
-fn validate_finalized_32bit_param(
+fn validate_32bit_gp_target_param(
     block_id: MachineBlockId,
     param_index: usize,
     param: MachineBlockParam,
 ) -> ValidateResult {
     if matches!(param.ty, MachineStorageType::GpI64) {
         return Err(WasmError::internal(alloc::format!(
-            "block {} param {} still uses GpI64 after 32-bit finalization",
+            "block {} param {} still uses GpI64 on a 32-bit GP target",
             block_id.0,
             param_index,
         )));
@@ -715,7 +721,7 @@ fn validate_finalized_32bit_param(
     Ok(())
 }
 
-fn validate_finalized_32bit_inst(
+fn validate_32bit_gp_target_inst(
     block_id: MachineBlockId,
     inst_index: usize,
     inst: &MachineInstKind,
@@ -758,7 +764,7 @@ fn validate_finalized_32bit_inst(
     Ok(())
 }
 
-fn validate_finalized_32bit_term(
+fn validate_32bit_gp_target_term(
     block_id: MachineBlockId,
     term: &MachineTerminator,
 ) -> ValidateResult {

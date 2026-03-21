@@ -87,14 +87,47 @@ impl<'a> BlockLowerContext<'a> {
         )?;
 
         for slot in args.count..callee_runtime.frame_prefix_slots {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: crate::vm::native::ir::machine::MachineStorageType::GpI64,
-                    addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
-                    width: crate::vm::native::ir::machine::MachineMemWidth::U64,
-                    src: MachineValue::Imm64(0),
-                },
-            });
+            if self.gp_reg_width() == 4 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                        addr: self.frame_region_addr(
+                            callee_frame_base,
+                            MachineFrameRegion {
+                                base_slot: slot,
+                                slots: 1,
+                            },
+                            0,
+                        )?,
+                        width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpWord,
+                        addr: self.frame_region_addr(
+                            callee_frame_base,
+                            MachineFrameRegion {
+                                base_slot: slot,
+                                slots: 1,
+                            },
+                            4,
+                        )?,
+                        width: crate::vm::native::ir::machine::MachineMemWidth::U32,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+            } else {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: crate::vm::native::ir::machine::MachineStorageType::GpI64,
+                        addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
+                        width: crate::vm::native::ir::machine::MachineMemWidth::U64,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+            }
         }
 
         self.store_call_link(callee_frame_base, call_scratch, continuation, results)?;

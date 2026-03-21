@@ -40,14 +40,22 @@ use crate::vm::lir::ir::CachedLocalInfo;
 struct CachedLocal {
     slot: FrameSlot,
     reg: MachineReg,
+    hi_reg: Option<MachineReg>,
     ty: MachineStorageType,
     info: CachedLocalInfo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ValueRegs {
+    pub lo: MachineReg,
+    pub hi: Option<MachineReg>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ValueLocation {
     value: LirValue,
     reg: MachineReg,
+    hi_reg: Option<MachineReg>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,7 +72,7 @@ pub(super) struct BlockLowerContext<'a> {
     runtime: MachineFunctionRuntime,
     all_runtime: &'a [MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
-    machine_params: Vec<MachineReg>,
+    machine_params: Vec<ValueRegs>,
     gp_reg_width: u8,
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
@@ -94,10 +102,11 @@ impl<'a> BlockLowerContext<'a> {
                 "GP cached-local slot/type metadata length mismatch".into(),
             ));
         }
-        let machine_params = target_param_regs(&block.params, program, regfile)?;
+        let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
         let mut cached_locals = Vec::new();
+        let mut gp_cache_index = 0usize;
         for (index, slot) in cache_prefs.gp_preferred_slots.iter().copied().enumerate() {
-            let Some(reg) = regfile.gp_local_cache(index) else {
+            let Some(reg) = regfile.gp_local_cache(gp_cache_index) else {
                 break;
             };
             let ty = cache_prefs
@@ -123,12 +132,24 @@ impl<'a> BlockLowerContext<'a> {
                 .get(index)
                 .copied()
                 .unwrap_or_default();
+            let hi_reg = if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                Some(regfile.gp_local_cache(gp_cache_index + 1).ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "GP cached local {:?} requires a second cache register on 32-bit targets",
+                        slot
+                    ))
+                })?)
+            } else {
+                None
+            };
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
+                hi_reg,
                 ty,
                 info,
             });
+            gp_cache_index += if hi_reg.is_some() { 2 } else { 1 };
         }
         for (index, slot) in cache_prefs.fp_preferred_slots.iter().copied().enumerate() {
             let Some(reg) = regfile.fp_local_cache(index) else {
@@ -160,6 +181,7 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals.push(CachedLocal {
                 slot,
                 reg,
+                hi_reg: None,
                 ty,
                 info,
             });
@@ -188,10 +210,26 @@ impl<'a> BlockLowerContext<'a> {
         };
 
         let machine_params = lower.machine_params.clone();
-        for (param, reg) in block.params.iter().copied().zip(machine_params.into_iter()) {
-            lower.values.push(ValueLocation { value: param, reg });
+        for (param, regs) in block
+            .params
+            .iter()
+            .copied()
+            .zip(machine_params.iter().copied())
+        {
+            lower.values.push(ValueLocation {
+                value: param,
+                reg: regs.lo,
+                hi_reg: regs.hi,
+            });
             let ty = lir_value_storage_type(lower.program, param);
-            lower.set_transient(reg, Some(param), Some(ty))?;
+            if lower.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                lower.set_transient(regs.lo, Some(param), Some(MachineStorageType::GpWord))?;
+                if let Some(hi) = regs.hi {
+                    lower.set_transient(hi, Some(param), Some(MachineStorageType::GpWord))?;
+                }
+            } else {
+                lower.set_transient(regs.lo, Some(param), Some(ty))?;
+            }
         }
         lower.release_dead_values()?;
 
@@ -202,7 +240,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(lower)
     }
 
-    pub(super) fn machine_params(&self) -> &[MachineReg] {
+    pub(super) fn machine_params(&self) -> &[ValueRegs] {
         &self.machine_params
     }
 
@@ -275,8 +313,63 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_inst(&mut self, inst: &LirInst) -> Result<(), WasmError> {
         match &inst.kind {
             LirInstKind::LoadSlot { slot, dst } => {
-                let dst_reg = self.alloc_slot_load_value(*dst)?;
                 let ty = lir_value_storage_type(self.program, *dst);
+                if self.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                    let (dst_lo, dst_hi) = self.alloc_i64_value_pair(*dst)?;
+                    if let Some(cached_index) = self.cached_local_index(*slot) {
+                        let cached = self.cached_locals[cached_index];
+                        if cached.ty != ty {
+                            return Err(WasmError::internal(alloc::format!(
+                                "typed LIR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
+                                slot,
+                                ty,
+                                dst,
+                                cached.ty,
+                            )));
+                        }
+                        let cached_hi = cached.hi_reg.ok_or_else(|| {
+                            WasmError::internal(
+                                "cached i64 local is missing a high-half register".into(),
+                            )
+                        })?;
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                ty: MachineStorageType::GpWord,
+                                dst: dst_lo,
+                                src: MachineValue::Reg(cached.reg),
+                            },
+                        });
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                ty: MachineStorageType::GpWord,
+                                dst: dst_hi,
+                                src: MachineValue::Reg(cached_hi),
+                            },
+                        });
+                    } else {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Load {
+                                ty: MachineStorageType::GpWord,
+                                dst: dst_lo,
+                                addr: self.frame_addr_offset(*slot, 0)?,
+                                width: MachineMemWidth::U32,
+                                extension: MachineLoadExtension::None,
+                            },
+                        });
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Load {
+                                ty: MachineStorageType::GpWord,
+                                dst: dst_hi,
+                                addr: self.frame_addr_offset(*slot, 4)?,
+                                width: MachineMemWidth::U32,
+                                extension: MachineLoadExtension::None,
+                            },
+                        });
+                    }
+                    return Ok(());
+                }
+
+                let dst_reg = self.alloc_slot_load_value(*dst)?;
                 let width = canonical_value_mem_width_for_value(self.program, *dst);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     let cached = self.cached_locals[cached_index];
@@ -309,8 +402,62 @@ impl<'a> BlockLowerContext<'a> {
                 }
             }
             LirInstKind::StoreSlot { slot, src } => {
-                let src_reg = self.use_value(*src)?;
                 let ty = lir_value_storage_type(self.program, *src);
+                if self.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                    let (src_lo, src_hi) = self.use_i64_value_pair(*src)?;
+                    if let Some(cached_index) = self.cached_local_index(*slot) {
+                        let cached = self.cached_locals[cached_index];
+                        if cached.ty != ty {
+                            return Err(WasmError::internal(alloc::format!(
+                                "typed LIR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
+                                slot,
+                                ty,
+                                src,
+                                cached.ty,
+                            )));
+                        }
+                        let cache_hi = cached.hi_reg.ok_or_else(|| {
+                            WasmError::internal(
+                                "cached i64 local is missing a high-half register".into(),
+                            )
+                        })?;
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                ty: MachineStorageType::GpWord,
+                                dst: cached.reg,
+                                src: MachineValue::Reg(src_lo),
+                            },
+                        });
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                ty: MachineStorageType::GpWord,
+                                dst: cache_hi,
+                                src: MachineValue::Reg(src_hi),
+                            },
+                        });
+                    } else {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Store {
+                                ty: MachineStorageType::GpWord,
+                                addr: self.frame_addr_offset(*slot, 0)?,
+                                width: MachineMemWidth::U32,
+                                src: MachineValue::Reg(src_lo),
+                            },
+                        });
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Store {
+                                ty: MachineStorageType::GpWord,
+                                addr: self.frame_addr_offset(*slot, 4)?,
+                                width: MachineMemWidth::U32,
+                                src: MachineValue::Reg(src_hi),
+                            },
+                        });
+                    }
+                    self.release_dead_values()?;
+                    return Ok(());
+                }
+
+                let src_reg = self.use_value(*src)?;
                 let width = canonical_value_mem_width_for_value(self.program, *src);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     let cached = self.cached_locals[cached_index];
@@ -627,7 +774,11 @@ impl<'a> BlockLowerContext<'a> {
                         "missing LIR edge binding for target param during native lowering".into(),
                     )
                 })?;
-            args.push(MachineValue::Reg(self.value_reg(binding.value)?));
+            let regs = self.value_regs(binding.value)?;
+            args.push(MachineValue::Reg(regs.0));
+            if let Some(hi) = regs.1 {
+                args.push(MachineValue::Reg(hi));
+            }
         }
         Ok(MachineEdge {
             target: target_block,
@@ -658,44 +809,29 @@ impl<'a> BlockLowerContext<'a> {
                 }
             }
             let cached = self.cached_locals[index];
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: cached.ty,
-                    dst: cached.reg,
-                    addr: self.frame_addr(cached.slot)?,
-                    width: canonical_cached_local_mem_width(cached),
-                    extension: MachineLoadExtension::None,
-                },
-            });
-        }
-        Ok(())
-    }
-
-    /// Initialize cached locals at function entry.
-    ///
-    /// Parameters are loaded from the frame (the caller already wrote them).
-    /// Non-parameter locals that may be read before written need a zero
-    /// materialisation (Wasm locals start at zero).  Locals that are
-    /// *definitely* written before any read can be left undefined — the
-    /// `reads_before_write` analysis in `local_cache.rs` is a whole-function
-    /// dataflow pass that is sound for this purpose.
-    ///
-    /// **32-bit exception (`gp_reg_width == 4`):** all non-param cached
-    /// locals must be zero-initialised unconditionally.  The 32-bit
-    /// legalization pass (`legalize.rs`) runs a storage-flow analysis that
-    /// tracks the *type* of every register (`GpWord` vs `GpI64`) at every
-    /// program point so it can decide which operations to split into hi/lo
-    /// pairs.  `save_all_cached_locals` (emitted before calls) stores every
-    /// cached local to the frame; if a register is still `Undefined` the
-    /// legalizer cannot determine its type and the analysis correctly
-    /// rejects it.  On 64-bit targets this is a non-issue because all GP
-    /// registers have a single width.
-    fn emit_entry_cached_locals(&mut self) -> Result<(), WasmError> {
-        let must_zero_all = self.gp_reg_width == 4;
-        for index in 0..self.cached_locals.len() {
-            let cached = self.cached_locals[index];
-            if cached.info.is_param {
-                // Argument — caller wrote a real value, must load from frame.
+            if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+                let cached_hi = cached.hi_reg.ok_or_else(|| {
+                    WasmError::internal("cached i64 local is missing a high-half register".into())
+                })?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: cached.reg,
+                        addr: self.frame_addr_offset(cached.slot, 0)?,
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: cached_hi,
+                        addr: self.frame_addr_offset(cached.slot, 4)?,
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            } else {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
                         ty: cached.ty,
@@ -705,11 +841,84 @@ impl<'a> BlockLowerContext<'a> {
                         extension: MachineLoadExtension::None,
                     },
                 });
-            } else if must_zero_all || cached.info.reads_before_write {
+            }
+        }
+        Ok(())
+    }
+
+    /// Initialize cached locals at function entry.
+    ///
+    /// Parameters are loaded from the frame (the caller already wrote them).
+    /// Non-parameter locals that may be read before written need a zero
+    /// materialisation (Wasm locals start at zero). Locals that are definitely
+    /// written before any read can be left undefined; the `reads_before_write`
+    /// analysis in `local_cache.rs` is a whole-function dataflow pass that is
+    /// sound for this purpose on both 32-bit and 64-bit targets.
+    fn emit_entry_cached_locals(&mut self) -> Result<(), WasmError> {
+        for index in 0..self.cached_locals.len() {
+            let cached = self.cached_locals[index];
+            if cached.info.is_param {
+                // Argument — caller wrote a real value, must load from frame.
+                if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+                    let cached_hi = cached.hi_reg.ok_or_else(|| {
+                        WasmError::internal(
+                            "cached i64 local is missing a high-half register".into(),
+                        )
+                    })?;
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            ty: MachineStorageType::GpWord,
+                            dst: cached.reg,
+                            addr: self.frame_addr_offset(cached.slot, 0)?,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            ty: MachineStorageType::GpWord,
+                            dst: cached_hi,
+                            addr: self.frame_addr_offset(cached.slot, 4)?,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            ty: cached.ty,
+                            dst: cached.reg,
+                            addr: self.frame_addr(cached.slot)?,
+                            width: canonical_cached_local_mem_width(cached),
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                }
+            } else if cached.info.reads_before_write {
                 // Non-param local that may be read before written (or 32-bit
                 // target requiring type-defined registers) — zero the
                 // register (Wasm locals are initialised to zero).
-                if let Some(width) = cached.ty.float_width() {
+                if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+                    let cached_hi = cached.hi_reg.ok_or_else(|| {
+                        WasmError::internal(
+                            "cached i64 local is missing a high-half register".into(),
+                        )
+                    })?;
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
+                            dst: cached.reg,
+                            src: MachineValue::Imm64(0),
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
+                            dst: cached_hi,
+                            src: MachineValue::Imm64(0),
+                        },
+                    });
+                } else if let Some(width) = cached.ty.float_width() {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::FloatConst {
                             width,
@@ -735,14 +944,36 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn emit_save_all_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals.len() {
             let cached = self.cached_locals[index];
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: cached.ty,
-                    addr: self.frame_addr(cached.slot)?,
-                    width: canonical_cached_local_mem_width(cached),
-                    src: MachineValue::Reg(cached.reg),
-                },
-            });
+            if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+                let cached_hi = cached.hi_reg.ok_or_else(|| {
+                    WasmError::internal("cached i64 local is missing a high-half register".into())
+                })?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(cached.slot, 0)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(cached.reg),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(cached.slot, 4)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(cached_hi),
+                    },
+                });
+            } else {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: cached.ty,
+                        addr: self.frame_addr(cached.slot)?,
+                        width: canonical_cached_local_mem_width(cached),
+                        src: MachineValue::Reg(cached.reg),
+                    },
+                });
+            }
         }
         Ok(())
     }
@@ -776,6 +1007,19 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
         self.frame_addr_from(self.regfile.frame_base(), slot)
+    }
+
+    pub(super) fn frame_addr_offset(
+        &self,
+        slot: FrameSlot,
+        byte_offset: i32,
+    ) -> Result<MachineAddr, WasmError> {
+        let mut addr = self.frame_addr(slot)?;
+        addr.offset = addr
+            .offset
+            .checked_add(byte_offset)
+            .ok_or_else(|| WasmError::internal("frame byte offset overflow".into()))?;
+        Ok(addr)
     }
 
     pub(super) fn runtime_addr(&self, offset: u32) -> MachineAddr {
@@ -895,6 +1139,30 @@ impl<'a> BlockLowerContext<'a> {
         Ok(reg)
     }
 
+    pub(super) fn use_value_regs(
+        &mut self,
+        value: LirValue,
+    ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
+        let regs = self.value_regs(value)?;
+        if let Some(remaining) = self.remaining_uses.get_mut(&value) {
+            *remaining = remaining.saturating_sub(1);
+        }
+        Ok(regs)
+    }
+
+    pub(super) fn use_i64_value_pair(
+        &mut self,
+        value: LirValue,
+    ) -> Result<(MachineReg, MachineReg), WasmError> {
+        let (lo, hi) = self.use_value_regs(value)?;
+        hi.map(|hi| (lo, hi)).ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "LIR i64 value {:?} does not have a paired machine-register mapping",
+                value
+            ))
+        })
+    }
+
     /// Free transient registers for values with no remaining uses. With
     /// linear SSA, each op's inputs become dead after a single use, so this
     /// typically frees exactly the consumed operands. Must be called after
@@ -906,8 +1174,12 @@ impl<'a> BlockLowerContext<'a> {
             let remaining = self.remaining_uses.get(&value).copied().unwrap_or(0);
             if remaining == 0 {
                 let reg = self.values[index].reg;
+                let hi_reg = self.values[index].hi_reg;
                 self.values.swap_remove(index);
                 self.clear_transient(reg)?;
+                if let Some(hi_reg) = hi_reg {
+                    self.clear_transient(hi_reg)?;
+                }
             } else {
                 index += 1;
             }
@@ -937,6 +1209,14 @@ impl<'a> BlockLowerContext<'a> {
                     &mut params,
                     machine_block_param(entry.reg, self.storage_type_for_reg(entry.reg)),
                 );
+                if let Some(hi_reg) = entry.hi_reg {
+                    if self.is_transient_reg(hi_reg) && !all_defined.contains(&hi_reg) {
+                        push_unique_param(
+                            &mut params,
+                            machine_block_param(hi_reg, self.storage_type_for_reg(hi_reg)),
+                        );
+                    }
+                }
             }
         }
 
@@ -983,10 +1263,26 @@ impl<'a> BlockLowerContext<'a> {
         self.try_value_reg(value)
     }
 
+    fn try_value_regs(&self, value: LirValue) -> Option<(MachineReg, Option<MachineReg>)> {
+        self.values
+            .iter()
+            .find(|entry| entry.value == value)
+            .map(|entry| (entry.reg, entry.hi_reg))
+    }
+
     fn value_reg(&self, value: LirValue) -> Result<MachineReg, WasmError> {
         self.try_value_reg(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
                 "no machine register assigned for LIR value {:?}",
+                value
+            ))
+        })
+    }
+
+    fn value_regs(&self, value: LirValue) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
+        self.try_value_regs(value).ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "no machine register pair assigned for LIR value {:?}",
                 value
             ))
         })
@@ -1008,9 +1304,105 @@ impl<'a> BlockLowerContext<'a> {
                 value.0,
             )));
         };
-        self.values.push(ValueLocation { value, reg });
+        self.values.push(ValueLocation {
+            value,
+            reg,
+            hi_reg: None,
+        });
         self.set_transient(reg, Some(value), Some(ty))?;
         Ok(reg)
+    }
+
+    pub(super) fn alloc_i64_value_pair(
+        &mut self,
+        value: LirValue,
+    ) -> Result<(MachineReg, MachineReg), WasmError> {
+        if let Some((lo, Some(hi))) = self.try_value_regs(value) {
+            return Ok((lo, hi));
+        }
+        if self.try_value_reg(value).is_some() {
+            return Err(WasmError::internal(alloc::format!(
+                "LIR value {:?} already has a scalar machine-register mapping; cannot also allocate a pair",
+                value
+            )));
+        }
+
+        let Some((lo, hi)) = self.first_free_gp_pair_transient() else {
+            return Err(WasmError::internal(alloc::format!(
+                "prepared LIR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                self.block.id.0,
+                value.0,
+            )));
+        };
+        self.values.push(ValueLocation {
+            value,
+            reg: lo,
+            hi_reg: Some(hi),
+        });
+        // Pair-aware 32-bit lowering treats both halves as GP-word registers.
+        self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
+        self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+        Ok((lo, hi))
+    }
+
+    pub(super) fn alloc_i64_value_pair_reusing_dead_inputs(
+        &mut self,
+        value: LirValue,
+        candidates: &[LirValue],
+    ) -> Result<(MachineReg, MachineReg), WasmError> {
+        if let Some((lo, Some(hi))) = self.try_value_regs(value) {
+            return Ok((lo, hi));
+        }
+
+        for candidate in candidates {
+            if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            if let Some(index) = self
+                .values
+                .iter()
+                .position(|entry| entry.value == *candidate && entry.hi_reg.is_some())
+            {
+                let lo = self.values[index].reg;
+                let hi = self.values[index]
+                    .hi_reg
+                    .expect("pair candidate must have hi reg");
+                self.values[index].value = value;
+                self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
+                self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+                return Ok((lo, hi));
+            }
+        }
+
+        for candidate in candidates {
+            if self.remaining_uses.get(candidate).copied().unwrap_or(0) != 0 {
+                continue;
+            }
+            if let Some(index) = self
+                .values
+                .iter()
+                .position(|entry| entry.value == *candidate && entry.hi_reg.is_none())
+            {
+                let lo = self.values[index].reg;
+                if self.is_fp_reg(lo) {
+                    continue;
+                }
+                let Some(hi) = self.first_free_transient(MachineStorageType::GpWord) else {
+                    return Err(WasmError::internal(alloc::format!(
+                        "prepared LIR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                        self.block.id.0,
+                        value.0,
+                    )));
+                };
+                self.values[index].value = value;
+                self.values[index].hi_reg = Some(hi);
+                self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
+                self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+                return Ok((lo, hi));
+            }
+        }
+
+        self.alloc_i64_value_pair(value)
     }
 
     fn alloc_value_in_bank_reusing_dead_inputs(
@@ -1031,6 +1423,13 @@ impl<'a> BlockLowerContext<'a> {
                 entry.value == *candidate && self.is_fp_reg(entry.reg) == ty.is_fp()
             }) {
                 let reg = self.values[index].reg;
+                if let Some(hi_reg) = self.values[index].hi_reg {
+                    if ty.is_fp() {
+                        continue;
+                    }
+                    self.clear_transient(hi_reg)?;
+                    self.values[index].hi_reg = None;
+                }
                 self.values[index].value = value;
                 self.set_transient(reg, Some(value), Some(ty))?;
                 return Ok(reg);
@@ -1059,6 +1458,21 @@ impl<'a> BlockLowerContext<'a> {
                     self.regfile.gp_transient(index - start)
                 };
             }
+        }
+        None
+    }
+
+    fn first_free_gp_pair_transient(&self) -> Option<(MachineReg, MachineReg)> {
+        let mut first = None;
+        for index in 0..self.regfile.gp_transient_count() {
+            if self.transient_state[index].value.is_some() {
+                continue;
+            }
+            let reg = self.regfile.gp_transient(index)?;
+            if let Some(first_reg) = first {
+                return Some((first_reg, reg));
+            }
+            first = Some(reg);
         }
         None
     }
@@ -1121,8 +1535,17 @@ impl<'a> BlockLowerContext<'a> {
         }
         self.cached_locals
             .iter()
-            .find(|cached| cached.reg == reg)
-            .map(|cached| cached.ty)
+            .find_map(|cached| {
+                if cached.reg == reg || cached.hi_reg == Some(reg) {
+                    Some(if cached.hi_reg.is_some() {
+                        MachineStorageType::GpWord
+                    } else {
+                        cached.ty
+                    })
+                } else {
+                    None
+                }
+            })
             .unwrap_or(MachineStorageType::GpWord)
     }
 
@@ -1406,6 +1829,21 @@ fn canonical_value_mem_width_for_value(program: &LirProgram, value: LirValue) ->
 fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {
     if !params.iter().any(|candidate| candidate.reg == param.reg) {
         params.push(param);
+    }
+}
+
+pub(super) fn machine_block_params_for_value(
+    regs: ValueRegs,
+    ty: MachineStorageType,
+) -> alloc::vec::Vec<MachineBlockParam> {
+    match (ty, regs.hi) {
+        (MachineStorageType::GpI64, Some(hi)) => {
+            alloc::vec![
+                MachineBlockParam::gp_word(regs.lo),
+                MachineBlockParam::gp_word(hi)
+            ]
+        }
+        _ => alloc::vec![machine_block_param(regs.lo, ty)],
     }
 }
 
@@ -1737,5 +2175,133 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use super::*;
+    use crate::vm::{
+        backend::BackendConfig,
+        lir::{
+            ir::{LirBlock, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue},
+            target::LirTarget,
+        },
+        native::ir::runtime::MachineCallLinkLayout,
+        plan::frame::plan_frame_layout,
+    };
+
+    fn make_test_context(value_types: Vec<ValueType>) -> BlockLowerContext<'static> {
+        let frame = plan_frame_layout(0, 4, 0);
+        let program = Box::leak(Box::new(LirProgram {
+            entry: LirTarget(0),
+            local_cache: LirLocalCachePrefs::default(),
+            blocks: alloc::vec![LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return { results: None },
+            }],
+            value_types,
+        }));
+        let regfile = Box::leak(Box::new(
+            MachineRegFile::new(BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 0, 4))
+                .expect("regfile"),
+        ));
+        let runtime = MachineFunctionRuntime::default();
+        let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
+        let call_link = MachineCallLinkLayout {
+            continuation_offset: 0,
+            caller_frame_offset: 8,
+            caller_result_base_offset: 16,
+            slot_count: 3,
+        };
+
+        BlockLowerContext::new(
+            regfile,
+            frame,
+            program,
+            &program.local_cache,
+            &program.blocks[0],
+            runtime,
+            all_runtime,
+            call_link,
+            4,
+            true,
+            #[cfg(has_guard_pages)]
+            false,
+        )
+        .expect("lower context")
+    }
+
+    #[test]
+    fn alloc_i64_value_pair_reserves_two_gp_word_transients() {
+        let mut lower = make_test_context(alloc::vec![ValueType::I64]);
+        let (lo, hi) = lower.alloc_i64_value_pair(LirValue(0)).expect("pair alloc");
+        assert_ne!(lo, hi);
+        assert_eq!(
+            lower.use_i64_value_pair(LirValue(0)).expect("pair use"),
+            (lo, hi)
+        );
+        assert_eq!(lower.storage_type_for_reg(lo), MachineStorageType::GpWord);
+        assert_eq!(lower.storage_type_for_reg(hi), MachineStorageType::GpWord);
+
+        let lo_index = lower.transient_index(lo).expect("lo transient");
+        let hi_index = lower.transient_index(hi).expect("hi transient");
+        assert_eq!(lower.transient_state[lo_index].value, Some(LirValue(0)));
+        assert_eq!(lower.transient_state[hi_index].value, Some(LirValue(0)));
+
+        lower.release_dead_values().expect("release pair");
+        assert!(lower.try_value_regs(LirValue(0)).is_none());
+        assert!(lower.transient_state[lo_index].value.is_none());
+        assert!(lower.transient_state[hi_index].value.is_none());
+    }
+
+    #[test]
+    fn scalar_reuse_can_claim_low_half_of_dead_pair_and_frees_high_half() {
+        let mut lower = make_test_context(alloc::vec![ValueType::I64, ValueType::I32]);
+        let (pair_lo, pair_hi) = lower.alloc_i64_value_pair(LirValue(0)).expect("pair alloc");
+        let scalar = lower
+            .alloc_value_in_bank_reusing_dead_inputs(
+                LirValue(1),
+                &[LirValue(0)],
+                MachineStorageType::GpWord,
+            )
+            .expect("scalar alloc");
+
+        assert_eq!(scalar, pair_lo);
+        assert_eq!(lower.try_value_regs(LirValue(0)), None);
+        assert_eq!(lower.try_value_regs(LirValue(1)), Some((pair_lo, None)));
+        let hi_index = lower.transient_index(pair_hi).expect("hi transient");
+        assert!(lower.transient_state[hi_index].value.is_none());
+    }
+
+    #[test]
+    fn pair_reuse_can_claim_low_half_of_dead_scalar_and_allocate_only_high_half() {
+        let mut lower = make_test_context(alloc::vec![ValueType::I32, ValueType::I64]);
+        let scalar = lower
+            .alloc_value_in_bank(LirValue(0), MachineStorageType::GpWord)
+            .expect("scalar alloc");
+        let (pair_lo, pair_hi) = lower
+            .alloc_i64_value_pair_reusing_dead_inputs(LirValue(1), &[LirValue(0)])
+            .expect("pair alloc reusing dead scalar");
+
+        assert_eq!(pair_lo, scalar);
+        assert_ne!(pair_lo, pair_hi);
+        assert_eq!(lower.try_value_regs(LirValue(0)), None);
+        assert_eq!(
+            lower.try_value_regs(LirValue(1)),
+            Some((pair_lo, Some(pair_hi)))
+        );
+        assert_eq!(
+            lower.storage_type_for_reg(pair_lo),
+            MachineStorageType::GpWord
+        );
+        assert_eq!(
+            lower.storage_type_for_reg(pair_hi),
+            MachineStorageType::GpWord
+        );
     }
 }

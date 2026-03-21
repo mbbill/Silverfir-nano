@@ -9,8 +9,8 @@ use crate::{
             ir::machine::{
                 machine_ptr_width, MachineBlockId, MachineBranchCond, MachineCompareKind,
                 MachineConvertOp, MachineFloatWidth, MachineInst, MachineInstKind,
-                MachineLoadExtension, MachineMemWidth, MachineStorageType, MachineTerminator,
-                MachineTrapKind, MachineValue,
+                MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+                MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             },
             runtime::layout::native_runtime_abi_layout,
         },
@@ -101,6 +101,10 @@ impl<'a> BlockLowerContext<'a> {
         use PrimitiveOpKind as P;
         let primitive = op.primitive();
 
+        if self.gp_reg_width() == 4 && self.lower_i64_pair_leaf(primitive, args, results)? {
+            return Ok(());
+        }
+
         match primitive {
             P::Drop | P::Nop => {
                 for arg in args {
@@ -148,6 +152,355 @@ impl<'a> BlockLowerContext<'a> {
                     primitive
                 )))
             }
+        }
+    }
+
+    fn lower_i64_pair_leaf(
+        &mut self,
+        primitive: &PrimitiveOpKind,
+        args: &[LirValue],
+        results: &[LirValue],
+    ) -> Result<bool, WasmError> {
+        use crate::vm::native::ir::machine::{
+            MachineCompareKind as Cmp, MachineFloatWidth as Fw, MachineIntBinaryOp as BinOp,
+            MachineIntUnaryOp as UnOp, MachineSign as Sign, MachineStorageType as Ty,
+        };
+        use PrimitiveOpKind as P;
+
+        let result_ty = results
+            .first()
+            .copied()
+            .map(|value| self.value_storage_type(value));
+
+        match primitive {
+            P::I64Const { value } => {
+                let (dst_lo, dst_hi) = self.alloc_i64_value_pair(single_result(results)?)?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: Ty::GpWord,
+                        dst: dst_lo,
+                        src: MachineValue::Imm64(*value as u32 as u64),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: Ty::GpWord,
+                        dst: dst_hi,
+                        src: MachineValue::Imm64((*value >> 32) as u32 as u64),
+                    },
+                });
+                Ok(true)
+            }
+            P::Select if matches!(result_ty, Some(Ty::GpI64)) => {
+                if args.len() != 3 {
+                    return Err(WasmError::internal("select expects three arguments".into()));
+                }
+                let (true_lo, true_hi) = self.use_i64_value_pair(args[0])?;
+                let (false_lo, false_hi) = self.use_i64_value_pair(args[1])?;
+                let cond = self.use_value(args[2])?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, args)?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Select {
+                        ty: Ty::GpWord,
+                        dst: dst_lo,
+                        on_true: MachineValue::Reg(true_lo),
+                        on_false: MachineValue::Reg(false_lo),
+                        cond: MachineValue::Reg(cond),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Select {
+                        ty: Ty::GpWord,
+                        dst: dst_hi,
+                        on_true: MachineValue::Reg(true_hi),
+                        on_false: MachineValue::Reg(false_hi),
+                        cond: MachineValue::Reg(cond),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64Add | P::I64Sub | P::I64Mul | P::I64And | P::I64Or | P::I64Xor => {
+                let (lhs_value, rhs_value) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, args)?;
+                let op = machine_int_binary(primitive)
+                    .ok_or_else(|| WasmError::internal("missing i64 binary lowering".into()))?
+                    .1;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op,
+                        dst_lo,
+                        dst_hi,
+                        lhs_lo: MachineValue::Reg(lhs_lo),
+                        lhs_hi: MachineValue::Reg(lhs_hi),
+                        rhs_lo: MachineValue::Reg(rhs_lo),
+                        rhs_hi: MachineValue::Reg(rhs_hi),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64DivS | P::I64DivU | P::I64RemS | P::I64RemU => {
+                let (lhs_value, rhs_value) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, args)?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairDivRem {
+                        sign: match primitive {
+                            P::I64DivS | P::I64RemS => Sign::Signed,
+                            _ => Sign::Unsigned,
+                        },
+                        rem: matches!(primitive, P::I64RemS | P::I64RemU),
+                        dst_lo,
+                        dst_hi,
+                        lhs_lo: MachineValue::Reg(lhs_lo),
+                        lhs_hi: MachineValue::Reg(lhs_hi),
+                        rhs_lo: MachineValue::Reg(rhs_lo),
+                        rhs_hi: MachineValue::Reg(rhs_hi),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64Shl | P::I64ShrS | P::I64ShrU | P::I64Rotl | P::I64Rotr => {
+                let (lhs_value, rhs_value) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
+                let (rhs_lo, _) = self.use_i64_value_pair(rhs_value)?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, args)?;
+                let op = machine_int_binary(primitive)
+                    .ok_or_else(|| WasmError::internal("missing i64 shift lowering".into()))?
+                    .1;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairShift {
+                        op,
+                        dst_lo,
+                        dst_hi,
+                        lhs_lo: MachineValue::Reg(lhs_lo),
+                        lhs_hi: MachineValue::Reg(lhs_hi),
+                        rhs: MachineValue::Reg(rhs_lo),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64Eq
+            | P::I64Ne
+            | P::I64LtS
+            | P::I64LtU
+            | P::I64GtS
+            | P::I64GtU
+            | P::I64LeS
+            | P::I64LeU
+            | P::I64GeS
+            | P::I64GeU => {
+                let (lhs_value, rhs_value) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let dst = self.alloc_value_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[lhs_value, rhs_value],
+                )?;
+                let (_, kind, sign) = machine_int_compare(primitive)
+                    .ok_or_else(|| WasmError::internal("missing i64 compare lowering".into()))?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairCompare {
+                        kind,
+                        sign,
+                        dst,
+                        lhs_lo: MachineValue::Reg(lhs_lo),
+                        lhs_hi: MachineValue::Reg(lhs_hi),
+                        rhs_lo: MachineValue::Reg(rhs_lo),
+                        rhs_hi: MachineValue::Reg(rhs_hi),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64Eqz => {
+                let src_value = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let dst =
+                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairCompare {
+                        kind: Cmp::Eq,
+                        sign: Sign::Unsigned,
+                        dst,
+                        lhs_lo: MachineValue::Reg(src_lo),
+                        lhs_hi: MachineValue::Reg(src_hi),
+                        rhs_lo: MachineValue::Imm64(0),
+                        rhs_hi: MachineValue::Imm64(0),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64Clz
+            | P::I64Ctz
+            | P::I64Popcnt
+            | P::I64Extend8S
+            | P::I64Extend16S
+            | P::I64Extend32S => {
+                let src_value = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                )?;
+                let op = machine_int_unary(primitive)
+                    .ok_or_else(|| WasmError::internal("missing i64 unary lowering".into()))?
+                    .1;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Int64PairUnary {
+                        op,
+                        dst_lo,
+                        dst_hi,
+                        src_lo: MachineValue::Reg(src_lo),
+                        src_hi: MachineValue::Reg(src_hi),
+                    },
+                });
+                Ok(true)
+            }
+            P::I32WrapI64 => {
+                let src_value = single_arg(args)?;
+                let (src_lo, _) = self.use_i64_value_pair(src_value)?;
+                let dst =
+                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: Ty::GpWord,
+                        dst,
+                        src: MachineValue::Reg(src_lo),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64ExtendI32S | P::I64ExtendI32U => {
+                let src_value = single_arg(args)?;
+                let src = self.use_value(src_value)?;
+                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                )?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: Ty::GpWord,
+                        dst: dst_lo,
+                        src: MachineValue::Reg(src),
+                    },
+                });
+                match primitive {
+                    P::I64ExtendI32S => {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::IntBinary {
+                                width: self.gp_word_int_width(),
+                                op: BinOp::ShrS,
+                                dst: dst_hi,
+                                lhs: MachineValue::Reg(src),
+                                rhs: MachineValue::Imm64(31),
+                            },
+                        });
+                    }
+                    P::I64ExtendI32U => {
+                        self.emit_machine_inst(MachineInst {
+                            kind: MachineInstKind::Move {
+                                ty: Ty::GpWord,
+                                dst: dst_hi,
+                                src: MachineValue::Imm64(0),
+                            },
+                        });
+                    }
+                    _ => unreachable!("filtered i64 extend"),
+                }
+                Ok(true)
+            }
+            P::F32ConvertI64S | P::F32ConvertI64U | P::F64ConvertI64S | P::F64ConvertI64U => {
+                let src_value = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let width = match primitive {
+                    P::F32ConvertI64S | P::F32ConvertI64U => Fw::F32,
+                    _ => Fw::F64,
+                };
+                let dst = self.alloc_float_value_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                    width,
+                )?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::ConvertI64PairToFloat {
+                        width,
+                        sign: match primitive {
+                            P::F32ConvertI64S | P::F64ConvertI64S => Sign::Signed,
+                            _ => Sign::Unsigned,
+                        },
+                        dst,
+                        src_lo: MachineValue::Reg(src_lo),
+                        src_hi: MachineValue::Reg(src_hi),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64TruncF32S
+            | P::I64TruncF32U
+            | P::I64TruncF64S
+            | P::I64TruncF64U
+            | P::I64TruncSatF32S
+            | P::I64TruncSatF32U
+            | P::I64TruncSatF64S
+            | P::I64TruncSatF64U => {
+                let src_value = single_arg(args)?;
+                let src = self.use_value(src_value)?;
+                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                )?;
+                let op = machine_convert(primitive)
+                    .ok_or_else(|| WasmError::internal("missing i64 trunc lowering".into()))?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::ConvertFloatToI64Pair {
+                        op,
+                        dst_lo,
+                        dst_hi,
+                        src: MachineValue::Reg(src),
+                    },
+                });
+                Ok(true)
+            }
+            P::I64ReinterpretF64 => {
+                let src_value = single_arg(args)?;
+                let src = self.use_value(src_value)?;
+                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                )?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::ReinterpretF64ToI64Pair {
+                        dst_lo,
+                        dst_hi,
+                        src: MachineValue::Reg(src),
+                    },
+                });
+                Ok(true)
+            }
+            P::F64ReinterpretI64 => {
+                let src_value = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let dst = self.alloc_float_value_reusing_dead_inputs(
+                    single_result(results)?,
+                    &[src_value],
+                    Fw::F64,
+                )?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::ReinterpretI64PairToF64 {
+                        dst,
+                        src_lo: MachineValue::Reg(src_lo),
+                        src_hi: MachineValue::Reg(src_hi),
+                    },
+                });
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -202,11 +555,50 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;
-        let dst = self.alloc_result_value(result)?;
         let ty = self.value_storage_type(result);
+        let runtime_layout = self.runtime_abi_layout();
+        if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
+            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            let lo_addr = self.indexed_addr(
+                dst_hi,
+                idx,
+                core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                global_offset::RAW,
+            )?;
+            let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_lo,
+                    addr: lo_addr,
+                    width: MachineMemWidth::U32,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    addr: hi_addr,
+                    width: MachineMemWidth::U32,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            return Ok(());
+        }
+
+        let dst = self.alloc_result_value(result)?;
         let width = self.canonical_value_mem_width_for_value(result);
         let base = self.borrow_free_transients(1)?[0];
-        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 ty: MachineStorageType::GpWord,
@@ -235,11 +627,49 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
-        let src = self.use_value(src_value)?;
         let ty = self.value_storage_type(src_value);
+        let runtime_layout = self.runtime_abi_layout();
+        if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
+            let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+            let base = self.borrow_free_transients(1)?[0];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: base,
+                    addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            let lo_addr = self.indexed_addr(
+                base,
+                idx,
+                core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                global_offset::RAW,
+            )?;
+            let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: lo_addr,
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Reg(src_lo),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: hi_addr,
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Reg(src_hi),
+                },
+            });
+            return Ok(());
+        }
+
+        let src = self.use_value(src_value)?;
         let width = self.canonical_value_mem_width_for_value(src_value);
         let base = self.borrow_free_transients(1)?[0];
-        let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 ty: MachineStorageType::GpWord,
@@ -381,6 +811,9 @@ impl<'a> BlockLowerContext<'a> {
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
+        if self.gp_reg_width() == 4 && matches!(spec.ty, MachineStorageType::GpI64) {
+            return self.lower_i64_memory_load(spec, args, results);
+        }
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
         let fp_load_usable = spec.ty.float_width().is_some()
@@ -444,6 +877,9 @@ impl<'a> BlockLowerContext<'a> {
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
+        if self.gp_reg_width() == 4 && matches!(spec.ty, MachineStorageType::GpI64) {
+            return self.lower_i64_memory_store(spec, args);
+        }
         let (addr_value, src_value) = two_args(args)?;
         let addr = self.use_value(addr_value)?;
         let src = self.use_value(src_value)?;
@@ -478,6 +914,104 @@ impl<'a> BlockLowerContext<'a> {
                 residual,
                 None,
                 Some((src, spec.ty, spec.width)),
+            )?);
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    fn lower_i64_memory_load(
+        &mut self,
+        spec: MemoryLoadSpec,
+        args: &[LirValue],
+        results: &[LirValue],
+    ) -> Result<LeafLowering, WasmError> {
+        let addr_value = single_arg(args)?;
+        let addr = self.use_value(addr_value)?;
+        let (dst_lo, dst_hi) =
+            self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
+        let access_bytes = spec.access_bytes();
+        if spec.memidx == 0 {
+            let addr32 = dst_lo;
+            let residual =
+                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            self.emit_machine_ops(self.lower_mem0_i64_load_continuation(
+                addr32,
+                residual,
+                dst_lo,
+                dst_hi,
+                spec.width,
+                spec.extension,
+            )?);
+        } else {
+            let addr32 = dst_lo;
+            let base = dst_hi;
+            let residual = self.emit_memory_bounds_trap_if(
+                spec.memidx,
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+            )?;
+            self.emit_machine_ops(self.lower_memory_i64_load_continuation(
+                spec.memidx,
+                addr32,
+                base,
+                residual,
+                dst_lo,
+                dst_hi,
+                spec.width,
+                spec.extension,
+            )?);
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    fn lower_i64_memory_store(
+        &mut self,
+        spec: MemoryStoreSpec,
+        args: &[LirValue],
+    ) -> Result<LeafLowering, WasmError> {
+        let (addr_value, src_value) = two_args(args)?;
+        let addr = self.use_value(addr_value)?;
+        let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+        let access_bytes = spec.access_bytes();
+        if spec.memidx == 0 {
+            let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
+                addr32
+            } else {
+                self.borrow_free_transients(1)?[0]
+            };
+            let residual =
+                self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            self.emit_machine_ops(
+                self.lower_mem0_i64_store_continuation(
+                    addr32, residual, src_lo, src_hi, spec.width,
+                )?,
+            );
+        } else {
+            let (addr32, base) = if let Some(addr32) = self.dead_value_reg(addr_value) {
+                (addr32, self.borrow_free_transients(1)?[0])
+            } else {
+                let scratch = self.borrow_free_transients(2)?;
+                (scratch[0], scratch[1])
+            };
+            let residual = self.emit_memory_bounds_trap_if(
+                spec.memidx,
+                spec.offset,
+                access_bytes,
+                addr,
+                addr32,
+                base,
+            )?;
+            self.emit_machine_ops(self.lower_memory_i64_store_continuation(
+                spec.memidx,
+                addr32,
+                base,
+                residual,
+                src_lo,
+                src_hi,
+                spec.width,
             )?);
         }
         Ok(LeafLowering::InPlace)
@@ -727,6 +1261,57 @@ impl<'a> BlockLowerContext<'a> {
         Ok(ops)
     }
 
+    fn lower_memory_i64_load_continuation(
+        &self,
+        memidx: u32,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        base: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        dst_lo: crate::vm::native::ir::machine::MachineReg,
+        dst_hi: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        emit_memory_base_load_ops(
+            &mut ops,
+            self.runtime_base_reg(),
+            memidx,
+            base,
+            self.gp_reg_width(),
+        )?;
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: base,
+                lhs: MachineValue::Reg(base),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        append_i64_load_ops(
+            &mut ops,
+            self.gp_word_int_width(),
+            base,
+            dst_lo,
+            dst_hi,
+            width,
+            extension,
+        );
+        Ok(ops)
+    }
+
     fn lower_mem0_load_continuation(
         &self,
         addr32: crate::vm::native::ir::machine::MachineReg,
@@ -772,6 +1357,48 @@ impl<'a> BlockLowerContext<'a> {
         Ok(ops)
     }
 
+    fn lower_mem0_i64_load_continuation(
+        &self,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        dst_lo: crate::vm::native::ir::machine::MachineReg,
+        dst_hi: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(self.mem0_base_reg()),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        append_i64_load_ops(
+            &mut ops,
+            self.gp_word_int_width(),
+            addr32,
+            dst_lo,
+            dst_hi,
+            width,
+            extension,
+        );
+        Ok(ops)
+    }
+
     fn lower_mem0_store_continuation(
         &self,
         addr32: crate::vm::native::ir::machine::MachineReg,
@@ -812,6 +1439,81 @@ impl<'a> BlockLowerContext<'a> {
                 src: MachineValue::Reg(src),
             },
         });
+        Ok(ops)
+    }
+
+    fn lower_memory_i64_store_continuation(
+        &self,
+        memidx: u32,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        base: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        src_lo: crate::vm::native::ir::machine::MachineReg,
+        src_hi: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        emit_memory_base_load_ops(
+            &mut ops,
+            self.runtime_base_reg(),
+            memidx,
+            base,
+            self.gp_reg_width(),
+        )?;
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: base,
+                lhs: MachineValue::Reg(base),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        append_i64_store_ops(&mut ops, base, src_lo, src_hi, width)?;
+        Ok(ops)
+    }
+
+    fn lower_mem0_i64_store_continuation(
+        &self,
+        addr32: crate::vm::native::ir::machine::MachineReg,
+        access_bytes: u32,
+        src_lo: crate::vm::native::ir::machine::MachineReg,
+        src_hi: crate::vm::native::ir::machine::MachineReg,
+        width: MachineMemWidth,
+    ) -> Result<Vec<MachineInst>, WasmError> {
+        let mut ops = Vec::new();
+        if access_bytes != 0 {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: crate::vm::native::ir::machine::MachineIntBinaryOp::Sub,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(addr32),
+                    rhs: MachineValue::Imm64(access_bytes as u64),
+                },
+            });
+        }
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: crate::vm::native::ir::machine::MachineIntBinaryOp::Add,
+                dst: addr32,
+                lhs: MachineValue::Reg(self.mem0_base_reg()),
+                rhs: MachineValue::Reg(addr32),
+            },
+        });
+        append_i64_store_ops(&mut ops, addr32, src_lo, src_hi, width)?;
         Ok(ops)
     }
 
@@ -1546,6 +2248,145 @@ fn mem_width_bytes(width: MachineMemWidth) -> u32 {
         MachineMemWidth::U32 => 4,
         MachineMemWidth::U64 => 8,
     }
+}
+
+fn addr_with_byte_offset(
+    mut addr: crate::vm::native::ir::machine::MachineAddr,
+    byte_offset: i32,
+) -> Result<crate::vm::native::ir::machine::MachineAddr, WasmError> {
+    addr.offset = addr
+        .offset
+        .checked_add(byte_offset)
+        .ok_or_else(|| WasmError::internal("machine address byte offset overflow".into()))?;
+    Ok(addr)
+}
+
+fn append_i64_load_ops(
+    ops: &mut Vec<MachineInst>,
+    gp_word_int_width: MachineIntWidth,
+    base: crate::vm::native::ir::machine::MachineReg,
+    dst_lo: crate::vm::native::ir::machine::MachineReg,
+    dst_hi: crate::vm::native::ir::machine::MachineReg,
+    width: MachineMemWidth,
+    extension: MachineLoadExtension,
+) {
+    match width {
+        MachineMemWidth::U64 => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 4 },
+                    width: MachineMemWidth::U32,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_lo,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 0 },
+                    width: MachineMemWidth::U32,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
+        MachineMemWidth::U8 | MachineMemWidth::U16 => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_lo,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 0 },
+                    width,
+                    extension,
+                },
+            });
+            append_i64_load_hi_fill_ops(ops, gp_word_int_width, dst_lo, dst_hi, extension);
+        }
+        MachineMemWidth::U32 => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_lo,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 0 },
+                    width,
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            append_i64_load_hi_fill_ops(ops, gp_word_int_width, dst_lo, dst_hi, extension);
+        }
+    }
+}
+
+fn append_i64_load_hi_fill_ops(
+    ops: &mut Vec<MachineInst>,
+    gp_word_int_width: MachineIntWidth,
+    dst_lo: crate::vm::native::ir::machine::MachineReg,
+    dst_hi: crate::vm::native::ir::machine::MachineReg,
+    extension: MachineLoadExtension,
+) {
+    match extension {
+        MachineLoadExtension::SignExtend => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: gp_word_int_width,
+                    op: MachineIntBinaryOp::ShrS,
+                    dst: dst_hi,
+                    lhs: MachineValue::Reg(dst_lo),
+                    rhs: MachineValue::Imm64(31),
+                },
+            });
+        }
+        MachineLoadExtension::ZeroExtend | MachineLoadExtension::None => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        }
+    }
+}
+
+fn append_i64_store_ops(
+    ops: &mut Vec<MachineInst>,
+    base: crate::vm::native::ir::machine::MachineReg,
+    src_lo: crate::vm::native::ir::machine::MachineReg,
+    src_hi: crate::vm::native::ir::machine::MachineReg,
+    width: MachineMemWidth,
+) -> Result<(), WasmError> {
+    match width {
+        MachineMemWidth::U64 => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 0 },
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Reg(src_lo),
+                },
+            });
+            ops.push(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 4 },
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Reg(src_hi),
+                },
+            });
+        }
+        MachineMemWidth::U8 | MachineMemWidth::U16 | MachineMemWidth::U32 => {
+            ops.push(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: crate::vm::native::ir::machine::MachineAddr { base, offset: 0 },
+                    width,
+                    src: MachineValue::Reg(src_lo),
+                },
+            });
+        }
+    }
+    Ok(())
 }
 
 fn emit_effective_addr_ops(

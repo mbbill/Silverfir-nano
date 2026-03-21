@@ -83,7 +83,7 @@ impl BackendConfig {
     }
 
     #[inline]
-    pub const fn needs_32bit_gp_legalization(self) -> bool {
+    pub const fn is_32bit_gp_target(self) -> bool {
         self.gp_unit_bytes == 4
     }
 }
@@ -105,9 +105,9 @@ mod tests {
     }
 
     #[test]
-    fn backend_config_detects_32bit_gp_legalization_targets() {
-        assert!(BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4).needs_32bit_gp_legalization());
-        assert!(!BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 8).needs_32bit_gp_legalization());
+    fn backend_config_detects_32bit_gp_targets() {
+        assert!(BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4).is_32bit_gp_target());
+        assert!(!BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 8).is_32bit_gp_target());
     }
 }
 

@@ -1506,6 +1506,9 @@ fn eval_i64_pair_binary(
         MachineIntBinaryOp::Add => lhs.wrapping_add(rhs),
         MachineIntBinaryOp::Sub => lhs.wrapping_sub(rhs),
         MachineIntBinaryOp::Mul => lhs.wrapping_mul(rhs),
+        MachineIntBinaryOp::And => lhs & rhs,
+        MachineIntBinaryOp::Or => lhs | rhs,
+        MachineIntBinaryOp::Xor => lhs ^ rhs,
         _ => {
             return Err(WasmError::internal(
                 "machine Int64PairBinary requires a supported i64 binary op".into(),
@@ -1525,6 +1528,9 @@ fn eval_i64_pair_unary(
         MachineIntUnaryOp::Clz => u64::from(src.leading_zeros()),
         MachineIntUnaryOp::Ctz => u64::from(src.trailing_zeros()),
         MachineIntUnaryOp::Popcnt => u64::from(src.count_ones()),
+        MachineIntUnaryOp::Extend8S => (src as u8 as i8 as i64) as u64,
+        MachineIntUnaryOp::Extend16S => (src as u16 as i16 as i64) as u64,
+        MachineIntUnaryOp::Extend32S => (src as u32 as i32 as i64) as u64,
         _ => {
             return Err(WasmError::internal(
                 "machine Int64PairUnary requires a supported i64 unary op".into(),
@@ -2394,9 +2400,11 @@ mod tests {
             },
             MachineRuntimeContract::default(),
         )
-        .expect_err("emu32 should reject unfinalized scalar gpi64 IR");
+        .expect_err("emu32 should reject scalar gpi64 IR on a 32-bit GP target");
 
-        assert!(err.message().contains("not finalized 32-bit MachineIR"));
+        assert!(err
+            .message()
+            .contains("not valid 32-bit GP-target MachineIR"));
         assert!(err.message().contains("GpI64"));
     }
 
@@ -2444,11 +2452,11 @@ mod tests {
             },
             MachineRuntimeContract::default(),
         )
-        .expect_err("emu32 should reject machine IR with a non-finalized GP/FP bank boundary");
+        .expect_err("emu32 should reject machine IR with a wrong 32-bit GP/FP bank boundary");
 
         assert!(err
             .message()
-            .contains("expected first_fp_reg 12 after 32-bit finalization"));
+            .contains("expected first_fp_reg 12 for 32-bit GP target MachineIR"));
     }
 
     #[test]

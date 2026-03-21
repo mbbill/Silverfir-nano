@@ -267,7 +267,7 @@ mod tests {
         set_reference_backend_mode(ReferenceBackendMode::Disabled).expect("reset reference mode");
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 8);
-        assert_eq!(config.gp_transient_budget, 6);
+        assert_eq!(config.gp_transient_budget, 4);
     }
 
     #[test]

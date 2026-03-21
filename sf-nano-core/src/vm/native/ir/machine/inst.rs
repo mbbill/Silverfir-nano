@@ -86,10 +86,10 @@ pub enum MachineInstKind {
     },
     /// Full-width product of two native-word integer operands.
     ///
-    /// This is introduced by the 32-bit legalizer to model the one primitive
-    /// existing MachineIR cannot express with plain i32 ops: `32x32 -> 64`
-    /// multiply. Inputs are native-word GP values; outputs are the low/high
-    /// word halves of the product.
+    /// On 32-bit GP targets this is the primitive used to express
+    /// `32x32 -> 64` multiply without re-inflating the IR back into scalar
+    /// `GpI64` values. Inputs are native-word GP values; outputs are the
+    /// low/high word halves of the product.
     IntMulWide {
         sign: MachineSign,
         dst_lo: MachineReg,
@@ -112,9 +112,9 @@ pub enum MachineInstKind {
     },
     /// 64-bit div/rem over legalized 32-bit GP register pairs.
     ///
-    /// This is introduced by the 32-bit legalizer for ops that are awkward to
-    /// express as short carry chains. Inputs and outputs are split low/high
-    /// GP-word halves.
+    /// This keeps 32-bit native MachineIR pair-aware without forcing the
+    /// lowerer or backend to explode div/rem into long scalar helper-shaped
+    /// sequences up front.
     Int64PairDivRem {
         sign: MachineSign,
         rem: bool,
@@ -127,9 +127,9 @@ pub enum MachineInstKind {
     },
     /// 64-bit unary integer op over legalized 32-bit GP register pairs.
     ///
-    /// This currently covers the i64 operations whose result is still i64 but
-    /// whose implementation is much simpler to keep as an explicit pair-aware
-    /// semantic op during 32-bit bringup.
+    /// This keeps the shared 32-bit native IR compact for i64 operations whose
+    /// result is still a pair and whose backend lowering is simpler when kept
+    /// explicit.
     Int64PairUnary {
         op: MachineIntUnaryOp,
         dst_lo: MachineReg,
@@ -139,10 +139,9 @@ pub enum MachineInstKind {
     },
     /// 64-bit shift/rotate over legalized 32-bit GP register pairs.
     ///
-    /// This is another 32-bit legalizer bridge op. The value being shifted is
-    /// split into low/high GP-word halves, while the shift count is already
-    /// reduced to the low native word because Wasm shift counts only observe
-    /// the low 6 bits for i64 operations.
+    /// The value being shifted is split into low/high GP-word halves, while
+    /// the shift count is already reduced to the low native word because Wasm
+    /// shift counts only observe the low 6 bits for i64 operations.
     Int64PairShift {
         op: MachineIntBinaryOp,
         dst_lo: MachineReg,
@@ -162,9 +161,8 @@ pub enum MachineInstKind {
     /// Compare two legalized 64-bit GP-word pairs and materialize a GP-word
     /// boolean result.
     ///
-    /// This exists so the 32-bit legalizer does not need to manufacture
-    /// multiple temporary compare-result registers just to compute one Wasm
-    /// boolean.
+    /// This keeps one compare result in MachineIR rather than forcing the
+    /// producer to manufacture multiple temporary boolean registers first.
     Int64PairCompare {
         kind: MachineCompareKind,
         sign: MachineSign,
@@ -176,8 +174,7 @@ pub enum MachineInstKind {
     },
     /// 64-bit integer to float conversion from legalized GP register pairs.
     ///
-    /// Like `Int64PairDivRem`, this is a legalizer-only bridge op for 32-bit
-    /// targets until the backend has native pair-aware lowering.
+    /// This is the pair-aware 32-bit native form for i64-to-float conversion.
     ConvertI64PairToFloat {
         width: MachineFloatWidth,
         sign: MachineSign,

@@ -15,7 +15,7 @@ use crate::vm::{
         ir::machine::{
             MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
             MachineInstKind, MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg,
-            MachineStorageType, MachineTerminator, MachineValue,
+            MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
         ir::runtime::MachineHelperSymbol,
         lower::{lower_module, LowerFunctionInput, LowerModuleInput},
@@ -23,6 +23,16 @@ use crate::vm::{
     plan::frame::plan_frame_layout,
     wasm::primitive_op::PrimitiveOpKind,
 };
+
+fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) {
+    assert!(backend.is_32bit_gp_target());
+    let max_gp_regs = MACHINE_FIXED_REG_COUNT
+        + backend.gp_local_cache_budget as u16
+        + backend.gp_transient_budget as u16;
+    module
+        .validate_32bit_gp_target(max_gp_regs)
+        .unwrap_or_else(|err| panic!("32-bit lowered module must already validate: {err}"));
+}
 
 #[test]
 fn lowers_simple_slot_and_add_block() {
@@ -439,6 +449,379 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
 }
 
 #[test]
+fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![
+            LirBlock {
+                id: LirTarget(0),
+                params: alloc::vec![LirValue(0)],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Goto(LirEdge {
+                    target: LirTarget(1),
+                    bindings: alloc::vec![LirBinding {
+                        param: LirValue(1),
+                        value: LirValue(0),
+                    }],
+                }),
+            },
+            LirBlock {
+                id: LirTarget(1),
+                params: alloc::vec![LirValue(1)],
+                ops: alloc::vec![],
+                terminator: LirTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::I64, ValueType::I64],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame: plan_frame_layout(0, 2, 2),
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 param lowering should succeed");
+
+    let block0 = &lowered.module.functions[0].program.blocks[0];
+    assert_eq!(block0.params.len(), 2);
+    assert!(matches!(
+        block0.params[0],
+        crate::vm::native::ir::machine::MachineBlockParam {
+            reg: MachineReg(4),
+            ty: MachineStorageType::GpWord,
+        }
+    ));
+    assert!(matches!(
+        block0.params[1],
+        crate::vm::native::ir::machine::MachineBlockParam {
+            reg: MachineReg(5),
+            ty: MachineStorageType::GpWord,
+        }
+    ));
+
+    let MachineTerminator::Jump(edge) = &block0.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(
+        edge.args,
+        alloc::vec![
+            MachineValue::Reg(MachineReg(4)),
+            MachineValue::Reg(MachineReg(5))
+        ]
+    );
+
+    let block1 = &lowered.module.functions[0].program.blocks[1];
+    assert_eq!(block1.params.len(), 2);
+    assert!(matches!(block1.params[0].ty, MachineStorageType::GpWord));
+    assert!(matches!(block1.params[1].ty, MachineStorageType::GpWord));
+}
+
+#[test]
+fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
+    let backend = BackendConfig::new_with_gp_unit_bytes(0, 6, 0, 2, 4);
+    let frame = plan_frame_layout(1, 4, 4);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x0123_4567_89ab_cdef,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::LoadSlot {
+                        slot: frame.local_slot(0),
+                        dst: LirValue(1),
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x1111_2222_3333_4444,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(2)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
+                        args: alloc::vec![LirValue(1), LirValue(2)],
+                        results: alloc::vec![LirValue(3)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64
+        ],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 slot and add lowering should succeed");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Int64PairBinary {
+                op: MachineIntBinaryOp::Add,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
+    let backend = BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4);
+    let frame = plan_frame_layout(0, 1, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                            .unwrap(),
+                        args: alloc::vec![LirValue(0)],
+                        results: alloc::vec![],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I64, ValueType::I64],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit global get/set lowering should succeed");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+}
+
+#[test]
+fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
+    let backend = BackendConfig::new_with_gp_unit_bytes(0, 5, 0, 2, 4);
+    let frame = plan_frame_layout(0, 3, 3);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x8877_6655_4433_2211,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(1)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Store {
+                            offset: 0,
+                            memidx: 0,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(0), LirValue(1)],
+                        results: alloc::vec![],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(2)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Load {
+                            offset: 0,
+                            memidx: 0,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![LirValue(2)],
+                        results: alloc::vec![LirValue(3)],
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![
+            ValueType::I32,
+            ValueType::I64,
+            ValueType::I32,
+            ValueType::I64
+        ],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 memory load/store lowering should succeed");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+}
+
+#[test]
+fn lowers_direct_local_call_to_legal_32bit_machineir() {
+    let backend = BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4);
+    let caller_frame = plan_frame_layout(1, 4, 4);
+    let callee_frame = plan_frame_layout(3, 2, 4);
+
+    let caller = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![LirInst {
+                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                    callee: 1,
+                    args: crate::vm::plan::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
+                    results: crate::vm::plan::frame::FrameSpan::new(
+                        caller_frame.operand_slot(0),
+                        1,
+                    ),
+                    skip_reload: alloc::vec![],
+                }),
+            }],
+            terminator: LirTerminator::TrapUnreachable,
+        }],
+        value_types: alloc::vec![],
+    };
+    let callee = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs::default(),
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: LirTerminator::Return {
+                results: Some(crate::vm::plan::frame::FrameSpan::new(
+                    callee_frame.operand_slot(0),
+                    1,
+                )),
+            },
+        }],
+        value_types: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(0),
+                frame: caller_frame,
+                lir: &caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: crate::vm::native::ir::machine::MachineFuncId(1),
+                frame: callee_frame,
+                lir: &callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("32-bit direct local call lowering should succeed");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+}
+
+#[test]
 fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     let frame = plan_frame_layout(1, 2, 2);
     let lir = LirProgram {
@@ -521,6 +904,74 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         MachineInstKind::Move {
             dst: MachineReg(4),
             src: MachineValue::Imm64(7),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
+    let backend = BackendConfig::new_with_gp_unit_bytes(1, 4, 0, 2, 4);
+    let frame = plan_frame_layout(1, 2, 2);
+    let lir = LirProgram {
+        entry: LirTarget(0),
+        local_cache: LirLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_types: alloc::vec![ValueType::I32],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: false,
+                reads_before_write: false,
+            }],
+            fp_local_info: alloc::vec![],
+        },
+        blocks: alloc::vec![LirBlock {
+            id: LirTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                LirInst {
+                    kind: LirInstKind::Value {
+                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![LirValue(0)],
+                    },
+                },
+                LirInst {
+                    kind: LirInstKind::StoreSlot {
+                        slot: frame.local_slot(0),
+                        src: LirValue(0),
+                    },
+                },
+            ],
+            terminator: LirTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I32],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::native::ir::machine::MachineFuncId(0),
+            frame,
+            lir: &lir,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit lowering should not zero unread cached locals");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Imm64(9),
             ..
         }
     ));
@@ -2001,10 +2452,11 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     assert_eq!(
         store_widths,
         alloc::vec![
-            MachineMemWidth::U64,
-            MachineMemWidth::U64,
-            MachineMemWidth::U64,
-            MachineMemWidth::U64,
+            MachineMemWidth::U32,
+            MachineMemWidth::U32,
+            MachineMemWidth::U32,
+            MachineMemWidth::U32,
+            MachineMemWidth::U32,
         ]
     );
 }
@@ -2845,6 +3297,14 @@ fn lowers_f32_const_to_fp_machine_const() {
                 bits: 0x4120_0000,
                 dst,
             } if dst.0 >= program.first_fp_reg
+        ) || matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                ty: MachineStorageType::Fp32,
+                width: MachineMemWidth::U32,
+                src: MachineValue::Imm64(0x4120_0000),
+                ..
+            }
         )
     }));
 }

@@ -52,7 +52,10 @@ use crate::{
 };
 
 use self::{
-    context::BlockLowerContext, ops::LeafLowering, regfile::MachineRegFile, sidecar::SidecarBuilder,
+    context::{machine_block_params_for_value, BlockLowerContext, ValueRegs},
+    ops::LeafLowering,
+    regfile::MachineRegFile,
+    sidecar::SidecarBuilder,
 };
 
 /// One prepared function ready for LIR -> MachineIR lowering.
@@ -83,7 +86,7 @@ pub struct LoweredMachineModule {
 }
 
 pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule, WasmError> {
-    let max_regfile = MachineRegFile::for_backend_capacity(input.backend)?;
+    let max_regfile = MachineRegFile::new(input.backend)?;
     let call_link = MachineCallLinkLayout {
         continuation_offset: 0,
         caller_frame_offset: 8,
@@ -117,8 +120,8 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
             *function,
-            input.backend,
             input.backend.gp_unit_bytes,
+            &max_regfile,
             &function_runtime,
             call_link,
             &mut sidecar,
@@ -136,7 +139,11 @@ pub fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule,
         .enumerate()
         .map(|(index, function)| {
             function.unwrap_or_else(|| {
-                stub_machine_function(MachineFuncId(index as u32), max_regfile.reg_count())
+                stub_machine_function(
+                    MachineFuncId(index as u32),
+                    max_regfile.first_fp_reg(),
+                    max_regfile.reg_count(),
+                )
             })
         })
         .collect();
@@ -183,15 +190,13 @@ fn lower_function_runtime(
 
 fn lower_function(
     input: LowerFunctionInput<'_>,
-    backend: BackendConfig,
     gp_reg_width: u8,
+    regfile: &MachineRegFile,
     runtime: &[MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
     sidecar: &mut SidecarBuilder,
     guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
-    let regfile =
-        MachineRegFile::for_function(backend, input.lir.local_cache.gp_preferred_slots.len())?;
     let caller_runtime = runtime.get(input.id.0 as usize).copied().ok_or_else(|| {
         WasmError::internal("machine runtime metadata missing for function".into())
     })?;
@@ -203,7 +208,7 @@ fn lower_function(
     for block in &input.lir.blocks {
         let target = block.id;
         let mut lower = BlockLowerContext::new(
-            &regfile,
+            regfile,
             input.frame,
             input.lir,
             &input.lir.local_cache,
@@ -217,15 +222,18 @@ fn lower_function(
             guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
-        let mut current_params = lower
+        let mut current_params = Vec::new();
+        for (regs, value) in lower
             .machine_params()
             .iter()
             .copied()
             .zip(block.params.iter().copied())
-            .map(|(reg, value)| {
-                machine_block_param(reg, program_value_storage_type(input.lir, value))
-            })
-            .collect::<Vec<_>>();
+        {
+            current_params.extend(machine_block_params_for_value(
+                regs,
+                program_value_storage_type(input.lir, value),
+            ));
+        }
 
         for inst in &block.ops {
             match &inst.kind {
@@ -573,12 +581,12 @@ fn lower_function(
     })
 }
 
-fn stub_machine_function(id: MachineFuncId, reg_count: u16) -> MachineFunction {
+fn stub_machine_function(id: MachineFuncId, first_fp_reg: u16, reg_count: u16) -> MachineFunction {
     MachineFunction {
         id,
         program: MachineProgram {
             entry: MachineBlockId(0),
-            first_fp_reg: reg_count,
+            first_fp_reg,
             reg_count,
             fp_transient_count: 0,
             fp_reg_init_widths: Vec::new(),
@@ -723,20 +731,37 @@ fn target_param_regs(
     params: &[LirValue],
     program: &LirProgram,
     regfile: &MachineRegFile,
-) -> Result<Vec<MachineReg>, WasmError> {
+    gp_reg_width: u8,
+) -> Result<Vec<ValueRegs>, WasmError> {
     let mut regs = Vec::with_capacity(params.len());
     let mut gp_index = 0usize;
     let mut fp_index = 0usize;
     for param in params {
-        if program_value_storage_type(program, *param).is_fp() {
-            regs.push(regfile.fp_transient(fp_index).ok_or_else(|| {
-                WasmError::internal("target params exceed FP transient register budget".into())
-            })?);
+        let ty = program_value_storage_type(program, *param);
+        if ty.is_fp() {
+            regs.push(ValueRegs {
+                lo: regfile.fp_transient(fp_index).ok_or_else(|| {
+                    WasmError::internal("target params exceed FP transient register budget".into())
+                })?,
+                hi: None,
+            });
             fp_index += 1;
-        } else {
-            regs.push(regfile.gp_transient(gp_index).ok_or_else(|| {
+        } else if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+            let lo = regfile.gp_transient(gp_index).ok_or_else(|| {
                 WasmError::internal("target params exceed GP transient register budget".into())
-            })?);
+            })?;
+            let hi = regfile.gp_transient(gp_index + 1).ok_or_else(|| {
+                WasmError::internal("target i64 params exceed GP transient pair budget".into())
+            })?;
+            regs.push(ValueRegs { lo, hi: Some(hi) });
+            gp_index += 2;
+        } else {
+            regs.push(ValueRegs {
+                lo: regfile.gp_transient(gp_index).ok_or_else(|| {
+                    WasmError::internal("target params exceed GP transient register budget".into())
+                })?,
+                hi: None,
+            });
             gp_index += 1;
         }
     }

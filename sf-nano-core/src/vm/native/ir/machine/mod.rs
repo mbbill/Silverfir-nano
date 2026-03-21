@@ -17,7 +17,6 @@
 
 mod cfg;
 mod inst;
-mod legalize;
 mod module;
 pub mod peephole;
 mod regs;
@@ -29,7 +28,6 @@ mod tests;
 
 pub use cfg::*;
 pub use inst::*;
-pub(crate) use legalize::*;
 pub use module::*;
 pub use regs::*;
 pub use types::*;
