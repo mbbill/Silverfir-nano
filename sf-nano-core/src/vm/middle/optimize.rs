@@ -237,17 +237,16 @@ mod tests {
     use crate::value_type::ValueType;
     use crate::vm::{
         middle::{
-            frame::plan_frame_layout,
+            frame::{plan_frame_layout, FrameSlot},
             lir::{
                 ir::{LirBlock, LirInstKind, LirProgram, LirTerminator, LirValue},
                 leaf::LirLeafOp,
-                slot::FrameSlot,
                 target::LirTarget,
             },
-            prepare::optimize::optimize_lir,
         },
         wasm::primitive_op::PrimitiveOpKind,
     };
+    use super::optimize_lir;
 
     #[test]
     fn forwards_store_reload_when_source_already_lives_long_enough() {

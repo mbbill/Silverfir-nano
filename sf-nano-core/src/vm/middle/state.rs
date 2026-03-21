@@ -266,7 +266,7 @@ impl BlockState {
     }
 }
 
-pub(super) fn count_live_bank_budget_units(
+pub(crate) fn count_live_bank_budget_units(
     types: &[ValueType],
     gp_unit_bytes: u8,
 ) -> (usize, usize) {
@@ -282,7 +282,7 @@ pub(super) fn count_live_bank_budget_units(
 }
 
 #[inline]
-pub(super) fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
+pub(crate) fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
     debug_assert!(gp_unit_bytes != 0, "gp_unit_bytes must be non-zero");
     match ty {
         ValueType::I64 => {

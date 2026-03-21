@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-use super::state::{BlockState, EntryState};
+use crate::vm::middle::state::{BlockState, EntryState};
 
 pub(super) fn goto_next(
     semantic_index: usize,

@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     state::{BlockState, ValueAlloc},
-    steps::{PrepAction, PreparedOp},
+    spill_plan::{PrepAction, PreparedOp},
 };
 
 pub(super) fn lower_prefix_actions(

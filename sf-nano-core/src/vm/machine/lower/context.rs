@@ -18,14 +18,13 @@ use crate::{
             },
         },
         middle::{
-            frame::FrameLayoutPlan,
+            frame::{FrameLayoutPlan, FrameSlot},
             lir::{
                 ir::{
                     LirBlock, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs, LirProgram,
                     LirTerminator, LirValue,
                 },
                 leaf::LirLeafOp,
-                slot::FrameSlot,
             },
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},

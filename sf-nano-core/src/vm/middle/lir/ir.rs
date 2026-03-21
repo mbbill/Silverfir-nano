@@ -11,11 +11,8 @@ use alloc::vec::Vec;
 
 use crate::value_type::ValueType;
 
-use super::{
-    leaf::LirLeafOp,
-    slot::{FrameSlot, FrameSpan},
-    target::LirTarget,
-};
+use super::{leaf::LirLeafOp, target::LirTarget};
+use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
 /// One SSA value in prepared LIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-use super::state::{count_live_bank_budget_units, gp_value_budget_units, EntryState};
+use crate::vm::middle::state::{count_live_bank_budget_units, gp_value_budget_units, EntryState};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PrepAction {

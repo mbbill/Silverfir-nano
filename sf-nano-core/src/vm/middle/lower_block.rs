@@ -19,10 +19,10 @@ use crate::{
 };
 
 use super::{
-    ops::lower_block_body_op,
+    lower_ops::lower_block_body_op,
     state::{BlockState, EntryState, ValueAlloc},
-    steps::PreparedOp,
-    terminator::{
+    spill_plan::PreparedOp,
+    lower_term::{
         canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator,
         maybe_publish_live_window_for_targets,
     },

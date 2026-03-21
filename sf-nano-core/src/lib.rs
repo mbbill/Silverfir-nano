@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(unused)]
+#![warn(unreachable_pub)]
 
 extern crate alloc;
 

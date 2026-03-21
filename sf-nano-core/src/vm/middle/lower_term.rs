@@ -24,14 +24,14 @@ use crate::{
 };
 
 use super::{
-    edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
-    ops::{
+    lower_edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
+    lower_ops::{
         branch_payload, lower_boundary_primitive, lower_call_external, lower_call_indirect,
         lower_call_internal, lower_local_get, lower_local_set, lower_local_tee,
         lower_prefix_actions, lower_primitive, return_results,
     },
     state::{BlockState, EntryState, ValueAlloc},
-    steps::PreparedOp,
+    spill_plan::PreparedOp,
 };
 
 pub(super) fn lower_block_terminator(

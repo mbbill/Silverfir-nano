@@ -31,13 +31,12 @@ use crate::{
             MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
-            frame::FrameLayoutPlan,
+            frame::{FrameLayoutPlan, FrameSpan},
             lir::{
                 ir::{
                     LirBoundaryOp, LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator,
                     LirValue,
                 },
-                slot::FrameSpan,
                 validate::validate_program,
             },
         },

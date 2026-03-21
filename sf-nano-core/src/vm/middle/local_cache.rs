@@ -15,6 +15,7 @@ use crate::vm::{
 };
 
 use super::frame::FrameLayoutPlan;
+use super::state::gp_value_budget_units;
 
 /// Returns `(cache_prefs, continuation_skip_reload)`.
 ///
@@ -196,16 +197,6 @@ fn compare_selection_state(lhs: &(u64, Vec<u32>), rhs: &(u64, Vec<u32>)) -> core
         .then_with(|| rhs.1.cmp(&lhs.1))
 }
 
-#[inline]
-fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
-    match ty {
-        ValueType::I64 => {
-            let width = usize::from(gp_unit_bytes.max(1));
-            8usize.div_ceil(width)
-        }
-        _ => 1,
-    }
-}
 
 /// For each local, determine whether its initial zero value may be observed
 /// on any execution path from function entry. Uses a structured must-set

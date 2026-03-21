@@ -10,7 +10,7 @@ use crate::{
             lower::{lower_module, LowerFunctionInput, LowerModuleInput},
             mir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
         },
-        middle::{config::PlanConfig, prepare::PrepareInput, prepare_function, PreparedFunction},
+        middle::{config::PlanConfig, PrepareInput, prepare_function, PreparedFunction},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
         store::Store,
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
