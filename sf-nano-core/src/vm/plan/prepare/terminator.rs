@@ -448,6 +448,9 @@ pub(super) fn lower_block_terminator(
                 return_results(frame, *arity)
             },
         })),
+        SemanticOpKind::Legalized(_) => Err(WasmError::internal(
+            "legalized op must not appear as a prepared LIR block terminator".into(),
+        )),
     }
 }
 

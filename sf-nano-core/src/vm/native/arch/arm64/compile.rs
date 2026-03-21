@@ -782,6 +782,15 @@ impl<'a> FunctionCompiler<'a> {
                 cond,
             } => self.emit_select(*dst, *on_true, *on_false, *cond),
             MachineInstKind::TrapIf { kind, cond } => self.emit_trap_if(*kind, cond),
+            MachineInstKind::IntAddCarryOut { .. }
+            | MachineInstKind::IntAddWithCarry { .. }
+            | MachineInstKind::IntSubBorrowOut { .. }
+            | MachineInstKind::IntSubWithBorrow { .. }
+            | MachineInstKind::IntMulWide { .. } => {
+                return Err(WasmError::internal(
+                    "32-bit carry/borrow/wide-mul ops must not appear on 64-bit targets".into(),
+                ));
+            }
             MachineInstKind::CallHelper(call) => {
                 self.emit_call_helper(call.target.0 as usize, call.metadata.0 as usize)
             }
@@ -4309,7 +4318,12 @@ fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -4340,6 +4354,19 @@ fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
             value_is_reg(*on_true, reg) || value_is_reg(*on_false, reg) || value_is_reg(*cond, reg)
         }
         MachineInstKind::TrapIf { cond, .. } => branch_cond_uses_reg(cond, reg),
+        MachineInstKind::IntAddCarryOut { lhs, rhs, .. }
+        | MachineInstKind::IntSubBorrowOut { lhs, rhs, .. } => {
+            value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg)
+        }
+        MachineInstKind::IntAddWithCarry { lhs, rhs, carry_in, .. } => {
+            value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg) || value_is_reg(*carry_in, reg)
+        }
+        MachineInstKind::IntSubWithBorrow { lhs, rhs, borrow_in, .. } => {
+            value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg) || value_is_reg(*borrow_in, reg)
+        }
+        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg)
+        }
         MachineInstKind::CallHelper(_) => false,
     }
 }

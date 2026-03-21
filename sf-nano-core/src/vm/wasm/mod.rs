@@ -14,5 +14,6 @@ pub mod context;
 pub mod control;
 pub mod decode;
 pub mod inline;
+pub mod legalized_op;
 pub mod primitive_op;
 pub mod semantic_ir;

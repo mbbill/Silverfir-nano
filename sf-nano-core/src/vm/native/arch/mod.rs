@@ -4,13 +4,13 @@ use crate::vm::backend::BackendConfig;
 
 /// Reference backend operating mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReferenceBackendMode {
+pub enum EmulatorMode {
     Disabled = 0,
     Emu64 = 1,
     Emu32 = 2,
 }
 
-impl ReferenceBackendMode {
+impl EmulatorMode {
     #[inline]
     pub const fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
@@ -73,7 +73,7 @@ pub fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
             debug_assertions,
             not(any(target_arch = "aarch64", target_arch = "x86_64"))
         ))]
-        NativeBackend::Reference => emulator::config::compile_backend_config(active_reference_mode()),
+        NativeBackend::Reference => emulator::config::compile_backend_config(active_emulator_mode()),
     }
 }
 
@@ -97,15 +97,15 @@ impl NativeBackend {
 }
 
 cfg_has_reference! {
-    static REFERENCE_MODE: AtomicU8 = AtomicU8::new(ReferenceBackendMode::Disabled as u8);
+    static EMULATOR_MODE: AtomicU8 = AtomicU8::new(EmulatorMode::Disabled as u8);
 }
 
 cfg_has_reference! {
-    fn active_reference_mode() -> ReferenceBackendMode {
-        match REFERENCE_MODE.load(Ordering::Relaxed) {
-            x if x == ReferenceBackendMode::Emu32 as u8 => ReferenceBackendMode::Emu32,
-            x if x == ReferenceBackendMode::Emu64 as u8 => ReferenceBackendMode::Emu64,
-            _ => ReferenceBackendMode::Disabled,
+    fn active_emulator_mode() -> EmulatorMode {
+        match EMULATOR_MODE.load(Ordering::Relaxed) {
+            x if x == EmulatorMode::Emu32 as u8 => EmulatorMode::Emu32,
+            x if x == EmulatorMode::Emu64 as u8 => EmulatorMode::Emu64,
+            _ => EmulatorMode::Disabled,
         }
     }
 }
@@ -137,7 +137,7 @@ pub fn active_native_backend() -> Result<NativeBackend, &'static str> {
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
     ))]
     {
-        if active_reference_mode().is_enabled() {
+        if active_emulator_mode().is_enabled() {
             return Ok(NativeBackend::Reference);
         }
     }
@@ -163,21 +163,21 @@ pub fn active_backend_config() -> Result<BackendConfig, &'static str> {
     active_native_backend().map(compile_backend_config)
 }
 
-pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
-    set_reference_backend_mode(if enabled {
-        ReferenceBackendMode::Emu64
+pub fn set_emulator_backend(enabled: bool) -> Result<(), &'static str> {
+    set_emulator_mode(if enabled {
+        EmulatorMode::Emu64
     } else {
-        ReferenceBackendMode::Disabled
+        EmulatorMode::Disabled
     })
 }
 
-pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
+pub fn set_emulator_mode(mode: EmulatorMode) -> Result<(), &'static str> {
     #[cfg(any(
         debug_assertions,
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
     ))]
     {
-        REFERENCE_MODE.store(mode as u8, Ordering::Relaxed);
+        EMULATOR_MODE.store(mode as u8, Ordering::Relaxed);
         return Ok(());
     }
 

@@ -85,25 +85,22 @@ pub(super) fn lower_primitive(
     let result_ty = if push == 0 {
         ValueType::I64 // unused — no LirValue created
     } else if matches!(kind, PrimitiveOpKind::Select) {
-        let ty = args.first().map(|v| values.value_type(*v));
-        debug_assert!(
-            ty.is_some(),
-            "select has no on_true operand to derive type from"
-        );
-        ty.unwrap_or(ValueType::I64)
+        args.first().map(|v| values.value_type(*v)).unwrap_or_else(|| {
+            debug_assert!(false, "select has no on_true operand to derive type from");
+            ValueType::I32
+        })
     } else if let Some(ty) = primitive_op::result_type(kind) {
         ty
     } else {
-        let ty = op_result_types
-            .get(&semantic_index)
-            .and_then(|v| v.first().copied());
-        debug_assert!(
-            ty.is_some(),
-            "context-dependent primitive {:?} at op {} has no op_result_types entry",
-            kind,
-            semantic_index,
-        );
-        ty.unwrap_or(ValueType::I64)
+        match op_result_types.get(&semantic_index).and_then(|v| v.first().copied()) {
+            Some(ty) => ty,
+            None => {
+                return Err(WasmError::internal(alloc::format!(
+                    "context-dependent primitive {:?} at op {} has no op_result_types entry",
+                    kind, semantic_index,
+                )));
+            }
+        }
     };
     state.consume_top(pop as usize)?;
     let results: alloc::vec::Vec<_> = (0..push).map(|_| values.fresh_typed(result_ty)).collect();
@@ -194,14 +191,16 @@ pub(super) fn lower_local_get(
     values: &mut ValueAlloc,
     local_types: &[ValueType],
 ) -> Result<(), WasmError> {
-    let ty = local_types.get(local_idx as usize).copied();
-    debug_assert!(
-        ty.is_some() || local_types.is_empty(),
-        "local {} has no entry in local_types (len={})",
-        local_idx,
-        local_types.len(),
-    );
-    let ty = ty.unwrap_or(ValueType::I64);
+    let ty = if local_types.is_empty() {
+        ValueType::I64 // untyped path (no legalization)
+    } else {
+        *local_types.get(local_idx as usize).ok_or_else(|| {
+            WasmError::internal(alloc::format!(
+                "local {} has no entry in local_types (len={})",
+                local_idx, local_types.len(),
+            ))
+        })?
+    };
     let dst = values.fresh_typed(ty);
     state.ops.push(LirInst {
         kind: LirInstKind::LoadSlot {
@@ -434,5 +433,33 @@ pub(super) fn lower_block_body_op(
         | SemanticOpKind::Return { .. } => Err(WasmError::internal(
             "control-flow terminators must end a prepared LIR block".into(),
         )),
+        SemanticOpKind::Legalized(ref leg) => {
+            let lir_op = crate::vm::lir::legalized::from_semantic(leg);
+            let (pops, pushes) = lir_op.stack_effect();
+            let args = state.top_values(pops as usize).map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "prepared legalized op {:?} could not read {} live operands: {}",
+                    lir_op,
+                    pops,
+                    err
+                ))
+            })?;
+            state.consume_top(pops as usize)?;
+            let result_types: alloc::vec::Vec<_> = (0..pushes)
+                .map(|i| lir_op.result_type(i))
+                .collect();
+            let results: alloc::vec::Vec<_> = result_types
+                .iter()
+                .map(|ty| values.fresh_typed(*ty))
+                .collect();
+            state.ops.push(LirInst {
+                kind: LirInstKind::Legalized {
+                    op: lir_op,
+                    args,
+                    results: results.clone(),
+                },
+            });
+            state.push_results(results, result_types)
+        }
     }
 }

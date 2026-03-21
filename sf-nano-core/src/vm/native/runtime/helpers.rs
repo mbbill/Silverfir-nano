@@ -15,8 +15,8 @@ use crate::{
         native::{
             helper::meta::{
                 CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta,
-                TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta,
+                MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
             },
             ir::runtime::MachineHelperSymbol,
             runtime::context::NativeContext,
@@ -884,6 +884,7 @@ fn elem_drop_helper(
     }
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {

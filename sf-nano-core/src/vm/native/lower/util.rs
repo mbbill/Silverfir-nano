@@ -9,7 +9,7 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
     let mut uses = BTreeMap::new();
     for inst in &block.ops {
         match &inst.kind {
-            LirInstKind::Value { args, .. } => {
+            LirInstKind::Value { args, .. } | LirInstKind::Legalized { args, .. } => {
                 for value in args {
                     *uses.entry(*value).or_insert(0) += 1;
                 }
@@ -62,7 +62,7 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
         let mut op_uses: BTreeMap<LirValue, u32> = BTreeMap::new();
         for inst in &block.ops {
             match &inst.kind {
-                LirInstKind::Value { args, .. } => {
+                LirInstKind::Value { args, .. } | LirInstKind::Legalized { args, .. } => {
                     for value in args {
                         *op_uses.entry(*value).or_insert(0) += 1;
                     }

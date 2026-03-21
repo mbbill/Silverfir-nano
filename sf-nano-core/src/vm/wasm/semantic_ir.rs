@@ -17,6 +17,7 @@ use crate::error::WasmError;
 use crate::value_type::ValueType;
 
 use super::common::{BrTableEntry, SemanticTarget};
+use super::legalized_op::LegalizedOpKind;
 use super::primitive_op::PrimitiveOpKind;
 
 /// One semantic Wasm operation.
@@ -93,6 +94,11 @@ pub enum SemanticOpKind {
     Return {
         arity: u16,
     },
+    /// A legalized 32-bit op introduced by early i64 legalization.
+    ///
+    /// These only appear in legalized semantic IR for 32-bit targets. They
+    /// are never produced by Wasm decode and must not appear on 64-bit targets.
+    Legalized(LegalizedOpKind),
 }
 
 /// Semantic program for one function body.
@@ -291,6 +297,9 @@ pub fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
         | SemanticOpKind::Loop { results, .. }
         | SemanticOpKind::If { results, .. } => Some(*results as usize),
         SemanticOpKind::Primitive(kind) => Some(super::primitive_op::stack_effect(kind).1 as usize),
+        SemanticOpKind::Legalized(ref leg) => {
+            Some(super::legalized_op::legalized_stack_effect(leg).1 as usize)
+        }
         _ => None,
     }
 }
@@ -322,6 +331,7 @@ pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
         SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
             (0, 0)
         }
+        SemanticOpKind::Legalized(ref leg) => super::legalized_op::legalized_stack_effect(leg),
     }
 }
 

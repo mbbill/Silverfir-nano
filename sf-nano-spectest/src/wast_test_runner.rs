@@ -1232,7 +1232,7 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
 mod tests {
     use super::*;
     use sf_nano_core::module::Module;
-    use sf_nano_core::set_reference_backend;
+    use sf_nano_core::{set_emulator_mode, EmulatorMode};
     use sf_nano_core::vm::backend::{set_backend_mode, BackendMode};
     use sf_nano_core::vm::entities::FunctionInst;
     use sf_nano_core::vm::value::Value;
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn native_regress_repeated_local_calls_and_aliasing() {
-        set_reference_backend(true).expect("enable emulator backend");
+        set_emulator_mode(EmulatorMode::Emu64).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn native_if_params_id_break_uses_emulator_join_payload() {
-        set_reference_backend(true).expect("enable emulator backend");
+        set_emulator_mode(EmulatorMode::Emu64).expect("enable emulator backend");
         let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
         let instance = runner.instances.values_mut().next().expect("instance");
 
@@ -1458,6 +1458,6 @@ mod tests {
             .expect("invoke export");
         assert_eq!(ret_true, vec![Value::I32(3)]);
 
-        set_reference_backend(false).expect("restore default backend");
+        set_emulator_mode(EmulatorMode::Disabled).expect("restore default backend");
     }
 }

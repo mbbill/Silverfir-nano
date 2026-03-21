@@ -101,7 +101,7 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
         }
         for inst in &block.ops {
             match &inst.kind {
-                LirInstKind::Value { args, results, .. } => {
+                LirInstKind::Value { args, results, .. } | LirInstKind::Legalized { args, results, .. } => {
                     for a in args {
                         check(*a, &alloc::format!("{bctx} Value arg"))?;
                     }

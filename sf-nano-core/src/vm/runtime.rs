@@ -10,17 +10,17 @@ use crate::vm::interp;
 #[cfg(feature = "micro-jit")]
 use crate::vm::native;
 #[cfg(feature = "micro-jit")]
-pub use crate::vm::native::arch::ReferenceBackendMode;
+pub use crate::vm::native::arch::EmulatorMode;
 #[cfg(not(feature = "micro-jit"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReferenceBackendMode {
+pub enum EmulatorMode {
     Disabled,
     Emu64,
     Emu32,
 }
 
 #[cfg(not(feature = "micro-jit"))]
-impl ReferenceBackendMode {
+impl EmulatorMode {
     #[inline]
     pub const fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
@@ -67,10 +67,10 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
     }
 }
 
-pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
+pub fn set_emulator_backend(enabled: bool) -> Result<(), &'static str> {
     #[cfg(feature = "micro-jit")]
     {
-        native::arch::set_reference_backend(enabled)
+        native::arch::set_emulator_backend(enabled)
     }
 
     #[cfg(not(feature = "micro-jit"))]
@@ -83,10 +83,10 @@ pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
     }
 }
 
-pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
+pub fn set_emulator_mode(mode: EmulatorMode) -> Result<(), &'static str> {
     #[cfg(feature = "micro-jit")]
     {
-        native::arch::set_reference_backend_mode(mode)
+        native::arch::set_emulator_mode(mode)
     }
 
     #[cfg(not(feature = "micro-jit"))]

@@ -99,6 +99,15 @@ pub enum LirInstKind {
         args: Vec<LirValue>,
         results: Vec<LirValue>,
     },
+    /// A legalized 32-bit op from early i64 legalization.
+    ///
+    /// Only appears on 32-bit targets. The lowerer maps these to MachineIR
+    /// (inline or via helper call depending on the op).
+    Legalized {
+        op: super::legalized::LirLegalizedOp,
+        args: Vec<LirValue>,
+        results: Vec<LirValue>,
+    },
     /// Read a canonical frame slot, usually a local slot.
     LoadSlot { slot: FrameSlot, dst: LirValue },
     /// Write a canonical frame slot, usually a local slot.

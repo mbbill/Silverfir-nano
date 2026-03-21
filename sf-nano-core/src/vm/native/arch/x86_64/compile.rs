@@ -680,6 +680,15 @@ impl<'a> FunctionCompiler<'a> {
                 rhs,
             } => self.emit_float_compare(*width, *kind, *dst, *lhs, *rhs),
             MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
+            MachineInstKind::IntAddCarryOut { .. }
+            | MachineInstKind::IntAddWithCarry { .. }
+            | MachineInstKind::IntSubBorrowOut { .. }
+            | MachineInstKind::IntSubWithBorrow { .. }
+            | MachineInstKind::IntMulWide { .. } => {
+                return Err(WasmError::internal(
+                    "32-bit carry/borrow/wide-mul ops must not appear on 64-bit targets".into(),
+                ));
+            }
         }
     }
 

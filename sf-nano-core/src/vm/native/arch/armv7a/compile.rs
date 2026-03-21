@@ -1069,6 +1069,16 @@ fn compile_function(
 
 // ─── Instruction compilation ────────────────────────────────────────────────
 
+/// Map a MachineValue that must be a register to its ARM32 physical register.
+fn map_value_reg(val: &MachineValue) -> Result<Arm32Reg, WasmError> {
+    match val {
+        MachineValue::Reg(r) => map_reg(*r),
+        MachineValue::Imm64(_) => Err(WasmError::internal(
+            "armv7a: carry/borrow/wide-mul operand must be a register, not immediate".into(),
+        )),
+    }
+}
+
 fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(), WasmError> {
     match &inst.kind {
         MachineInstKind::Move { dst, src } => {
@@ -1259,6 +1269,65 @@ fn compile_inst(fc: &mut FunctionCompiler<'_>, inst: &MachineInst) -> Result<(),
 
         MachineInstKind::TrapIf { kind, cond } => {
             compile_trap_if(fc, *kind, cond)?;
+        }
+
+        // ── 32-bit carry/borrow/wide-mul primitives ─────────────────────
+        MachineInstKind::IntAddCarryOut { dst, carry_out, lhs, rhs } => {
+            let dst_hw = map_reg(*dst)?;
+            let carry_hw = map_reg(*carry_out)?;
+            let lhs_hw = map_value_reg(lhs)?;
+            let rhs_hw = map_value_reg(rhs)?;
+            // ADDS dst, lhs, rhs  — sets C = carry
+            fc.text.emit_u32(enc::adds_reg(dst_hw, lhs_hw, rhs_hw));
+            // carry_out = C: MOV carry, #0 ; ADC carry, carry, #0
+            fc.text.emit_u32(enc::mov_imm(carry_hw, 0, 0));
+            fc.text.emit_u32(enc::adc_reg(carry_hw, carry_hw, carry_hw));
+            // adc_reg(carry, carry, carry) = carry + carry + C = 0 + 0 + C = C
+            // (carry was just set to 0, so carry + carry = 0, plus C flag)
+        }
+        MachineInstKind::IntAddWithCarry { dst, lhs, rhs, carry_in } => {
+            let dst_hw = map_reg(*dst)?;
+            let lhs_hw = map_value_reg(lhs)?;
+            let rhs_hw = map_value_reg(rhs)?;
+            let carry_hw = map_value_reg(carry_in)?;
+            // CMP carry_in, #1  — sets C = (carry_in >= 1) = carry_in for 0/1
+            fc.text.emit_u32(enc::cmp_imm(carry_hw, 1, 0));
+            // ADC dst, lhs, rhs  — dst = lhs + rhs + C
+            fc.text.emit_u32(enc::adc_reg(dst_hw, lhs_hw, rhs_hw));
+        }
+        MachineInstKind::IntSubBorrowOut { dst, borrow_out, lhs, rhs } => {
+            let dst_hw = map_reg(*dst)?;
+            let borrow_hw = map_reg(*borrow_out)?;
+            let lhs_hw = map_value_reg(lhs)?;
+            let rhs_hw = map_value_reg(rhs)?;
+            // SUBS dst, lhs, rhs  — C = NOT(borrow)
+            fc.text.emit_u32(enc::subs_reg(dst_hw, lhs_hw, rhs_hw));
+            // Extract borrow = NOT(C):
+            // MOV borrow, #0; ADC borrow, borrow, borrow → borrow = NOT(borrow)
+            fc.text.emit_u32(enc::mov_imm(borrow_hw, 0, 0));
+            fc.text.emit_u32(enc::adc_reg(borrow_hw, borrow_hw, borrow_hw));
+            // Now borrow_hw = C = NOT(borrow). Invert: borrow = 1 - borrow_hw
+            fc.text.emit_u32(enc::rsb_imm(borrow_hw, borrow_hw, 1, 0));
+        }
+        MachineInstKind::IntSubWithBorrow { dst, lhs, rhs, borrow_in } => {
+            let dst_hw = map_reg(*dst)?;
+            let lhs_hw = map_value_reg(lhs)?;
+            let rhs_hw = map_value_reg(rhs)?;
+            let borrow_hw = map_value_reg(borrow_in)?;
+            // dst = lhs - rhs - borrow_in (wrapping)
+            // Use SCRATCH0 to avoid aliasing issues.
+            fc.text.emit_u32(enc::sub_reg(SCRATCH0, lhs_hw, rhs_hw));
+            fc.text.emit_u32(enc::sub_reg(dst_hw, SCRATCH0, borrow_hw));
+        }
+        MachineInstKind::IntMulWide { sign, dst_lo, dst_hi, lhs, rhs } => {
+            let lo_hw = map_reg(*dst_lo)?;
+            let hi_hw = map_reg(*dst_hi)?;
+            let lhs_hw = map_value_reg(lhs)?;
+            let rhs_hw = map_value_reg(rhs)?;
+            match sign {
+                MachineSign::Unsigned => fc.text.emit_u32(enc::umull(lo_hw, hi_hw, lhs_hw, rhs_hw)),
+                MachineSign::Signed => fc.text.emit_u32(enc::smull(lo_hw, hi_hw, lhs_hw, rhs_hw)),
+            }
         }
 
         MachineInstKind::CallHelper(call) => {

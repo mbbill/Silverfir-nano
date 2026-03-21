@@ -107,6 +107,49 @@ pub enum MachineInstKind {
         on_false: MachineValue,
         cond: MachineValue,
     },
+    /// Add two word values, producing a sum and a carry-out (0 or 1).
+    ///
+    /// Used by the 32-bit legalizer for the low half of a legalized i64 add.
+    IntAddCarryOut {
+        dst: MachineReg,
+        carry_out: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    /// Add two word values plus a carry-in, producing a sum.
+    ///
+    /// Used by the 32-bit legalizer for the high half of a legalized i64 add.
+    IntAddWithCarry {
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+        carry_in: MachineValue,
+    },
+    /// Subtract two word values, producing a difference and a borrow-out (0 or 1).
+    IntSubBorrowOut {
+        dst: MachineReg,
+        borrow_out: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
+    /// Subtract two word values minus a borrow-in, producing a difference.
+    IntSubWithBorrow {
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+        borrow_in: MachineValue,
+    },
+    /// Full-width product of two native-word integer operands.
+    ///
+    /// Inputs are native-word GP values; outputs are the low/high word halves
+    /// of the product.
+    IntMulWide {
+        sign: MachineSign,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
     TrapIf {
         kind: MachineTrapKind,
         cond: MachineBranchCond,

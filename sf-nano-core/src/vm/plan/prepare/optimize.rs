@@ -44,7 +44,7 @@ fn forward_slot_values(block: &mut LirBlock, frame: FrameLayoutPlan) {
             LirInstKind::Boundary(_) => {
                 slot_values.fill(None);
             }
-            LirInstKind::Value { .. } => {}
+            LirInstKind::Value { .. } | LirInstKind::Legalized { .. } => {}
         }
 
         rewritten.push(inst);
@@ -59,7 +59,7 @@ fn max_value_index(block: &LirBlock) -> Option<LirValue> {
 
     for inst in &block.ops {
         match &inst.kind {
-            LirInstKind::Value { args, results, .. } => {
+            LirInstKind::Value { args, results, .. } | LirInstKind::Legalized { args, results, .. } => {
                 max_value = max_value.max(args.iter().copied().max());
                 max_value = max_value.max(results.iter().copied().max());
             }
@@ -104,7 +104,7 @@ fn compute_last_uses(block: &LirBlock, len: usize) -> Vec<Option<u32>> {
     for (index, inst) in block.ops.iter().enumerate() {
         let pos = index as u32;
         match &inst.kind {
-            LirInstKind::Value { args, .. } => {
+            LirInstKind::Value { args, .. } | LirInstKind::Legalized { args, .. } => {
                 for value in args {
                     last_uses[value.0 as usize] = Some(pos);
                 }
@@ -158,7 +158,7 @@ fn can_forward_load(src: LirValue, dst: LirValue, last_uses: &[Option<u32>]) -> 
 
 fn rewrite_inst_uses(kind: &mut LirInstKind, aliases: &[Option<LirValue>]) {
     match kind {
-        LirInstKind::Value { args, .. } => {
+        LirInstKind::Value { args, .. } | LirInstKind::Legalized { args, .. } => {
             for value in args {
                 *value = resolve_alias(*value, aliases);
             }

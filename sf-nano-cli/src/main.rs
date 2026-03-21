@@ -6,8 +6,8 @@ use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
 use sf_nano_core::{
-    active_runtime_engine, set_backend_mode, set_reference_backend_mode, BackendMode,
-    ReferenceBackendMode,
+    active_runtime_engine, set_backend_mode, set_emulator_mode, BackendMode,
+    EmulatorMode,
 };
 
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!(
-            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu|--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
+            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
         );
         #[cfg(all(feature = "profile", feature = "interp"))]
         {
@@ -45,7 +45,7 @@ fn main() {
     // Parse global runtime options.
     let mut dir: Option<PathBuf> = None;
     let mut backend_mode = BackendMode::Native;
-    let mut reference_mode = ReferenceBackendMode::Disabled;
+    let mut emulator_mode = EmulatorMode::Disabled;
     let mut remaining_args: Vec<String> = Vec::new();
     {
         let mut i = 1;
@@ -71,18 +71,18 @@ fn main() {
                     );
                     process::exit(1);
                 });
-            } else if args[i] == "--emu" || args[i] == "--emu64" {
-                if reference_mode == ReferenceBackendMode::Emu32 {
-                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+            } else if args[i] == "--emu64" {
+                if emulator_mode == EmulatorMode::Emu32 {
+                    eprintln!("Error: --emu32 and --emu64 are mutually exclusive");
                     process::exit(1);
                 }
-                reference_mode = ReferenceBackendMode::Emu64;
+                emulator_mode = EmulatorMode::Emu64;
             } else if args[i] == "--emu32" {
-                if reference_mode == ReferenceBackendMode::Emu64 {
-                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+                if emulator_mode == EmulatorMode::Emu64 {
+                    eprintln!("Error: --emu32 and --emu64 are mutually exclusive");
                     process::exit(1);
                 }
-                reference_mode = ReferenceBackendMode::Emu32;
+                emulator_mode = EmulatorMode::Emu32;
             } else {
                 remaining_args.push(args[i].clone());
             }
@@ -96,7 +96,7 @@ fn main() {
     }
 
     set_backend_mode(backend_mode);
-    if let Err(err) = set_reference_backend_mode(reference_mode) {
+    if let Err(err) = set_emulator_mode(emulator_mode) {
         eprintln!("Error: {}", err);
         process::exit(1);
     }

@@ -11,6 +11,7 @@ pub mod dump;
 pub mod frame_effects;
 pub mod ir;
 pub mod leaf;
+pub mod legalized;
 pub mod slot;
 pub mod target;
 pub mod validate;

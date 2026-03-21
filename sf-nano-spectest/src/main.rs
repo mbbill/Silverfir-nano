@@ -6,7 +6,8 @@ mod wast_test_runner;
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
-    active_runtime_engine, reset_native_runtime_state, set_backend_mode, set_reference_backend,
+    active_runtime_engine, reset_native_runtime_state, set_backend_mode,
+    set_emulator_mode, EmulatorMode,
     BackendMode,
 };
 use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
@@ -35,9 +36,13 @@ struct Cli {
     #[structopt(long = "backend")]
     backend: Option<String>,
 
-    /// Use the debug-only native emulator backend
-    #[structopt(long = "emu")]
-    emu: bool,
+    /// Use the debug-only native emulator backend (64-bit)
+    #[structopt(long = "emu64")]
+    emu64: bool,
+
+    /// Use the debug-only native emulator backend (32-bit)
+    #[structopt(long = "emu32")]
+    emu32: bool,
 }
 
 fn main() {
@@ -53,7 +58,14 @@ fn main() {
         });
         set_backend_mode(mode);
     }
-    if let Err(err) = set_reference_backend(args.emu) {
+    let emu_mode = if args.emu32 {
+        EmulatorMode::Emu32
+    } else if args.emu64 {
+        EmulatorMode::Emu64
+    } else {
+        EmulatorMode::Disabled
+    };
+    if let Err(err) = set_emulator_mode(emu_mode) {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }

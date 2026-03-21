@@ -16,8 +16,9 @@ use crate::{
         native::{
             ir::machine::{
                 machine_ptr_width, MachineAddr, MachineBlockId, MachineBlockParam,
-                MachineBranchCond, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst,
-                MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
+                MachineBranchCond, MachineCompareKind, MachineEdge, MachineFloatWidth,
+                MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+                MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
                 MachineTerminator, MachineTrapKind, MachineValue,
             },
             ir::runtime::{MachineCallLinkLayout, MachineFrameRegion, MachineFunctionRuntime},
@@ -172,6 +173,10 @@ impl<'a> BlockLowerContext<'a> {
         &self.machine_params
     }
 
+    pub(super) fn frame_layout(&self) -> FrameLayoutPlan {
+        self.frame
+    }
+
     pub(super) fn take_ops(&mut self) -> Vec<MachineInst> {
         mem::take(&mut self.ops)
     }
@@ -289,6 +294,10 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }
+            LirInstKind::Legalized { op, args, results } => {
+                self.lower_legalized(op, args, results)?;
+                self.release_dead_values()?;
+            }
             LirInstKind::Boundary(boundary) => {
                 return Err(WasmError::internal(alloc::format!(
                     "boundary op {:?} must be lowered through its specialized native path",
@@ -320,6 +329,234 @@ impl<'a> BlockLowerContext<'a> {
         let dst = self.alloc_float_value(single_result(results)?, width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatConst { width, dst, bits },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_legalized(
+        &mut self,
+        op: &crate::vm::lir::legalized::LirLegalizedOp,
+        args: &[LirValue],
+        results: &[LirValue],
+    ) -> Result<(), WasmError> {
+        use crate::vm::native::ir::machine::{MachineSign, MachineIntWidth, MachineIntBinaryOp, MachineCompareKind};
+        use crate::vm::lir::legalized::LirLegalizedOp;
+
+        match op {
+            LirLegalizedOp::AddCarryOut => {
+                let (lhs_val, rhs_val) = super::util::two_args(args)?;
+                let lhs = self.use_value(lhs_val)?;
+                let rhs = self.use_value(rhs_val)?;
+                let dst = self.alloc_value(results[0])?;
+                let carry = self.alloc_value(results[1])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntAddCarryOut {
+                        dst, carry_out: carry,
+                        lhs: MachineValue::Reg(lhs), rhs: MachineValue::Reg(rhs),
+                    },
+                });
+                Ok(())
+            }
+            LirLegalizedOp::AddWithCarry => {
+                let (lhs, rhs, carry) = (
+                    self.use_value(args[0])?,
+                    self.use_value(args[1])?,
+                    self.use_value(args[2])?,
+                );
+                let dst = self.alloc_value(results[0])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntAddWithCarry {
+                        dst,
+                        lhs: MachineValue::Reg(lhs), rhs: MachineValue::Reg(rhs),
+                        carry_in: MachineValue::Reg(carry),
+                    },
+                });
+                Ok(())
+            }
+            LirLegalizedOp::SubBorrowOut => {
+                let (lhs_val, rhs_val) = super::util::two_args(args)?;
+                let lhs = self.use_value(lhs_val)?;
+                let rhs = self.use_value(rhs_val)?;
+                let dst = self.alloc_value(results[0])?;
+                let borrow = self.alloc_value(results[1])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntSubBorrowOut {
+                        dst, borrow_out: borrow,
+                        lhs: MachineValue::Reg(lhs), rhs: MachineValue::Reg(rhs),
+                    },
+                });
+                Ok(())
+            }
+            LirLegalizedOp::SubWithBorrow => {
+                let (lhs, rhs, borrow) = (
+                    self.use_value(args[0])?,
+                    self.use_value(args[1])?,
+                    self.use_value(args[2])?,
+                );
+                let dst = self.alloc_value(results[0])?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntSubWithBorrow {
+                        dst,
+                        lhs: MachineValue::Reg(lhs), rhs: MachineValue::Reg(rhs),
+                        borrow_in: MachineValue::Reg(borrow),
+                    },
+                });
+                Ok(())
+            }
+            LirLegalizedOp::MulWide { signed } => {
+                let (lhs_val, rhs_val) = super::util::two_args(args)?;
+                let lhs = self.use_value(lhs_val)?;
+                let rhs = self.use_value(rhs_val)?;
+                let dst_lo = self.alloc_value(results[0])?;
+                let dst_hi = self.alloc_value(results[1])?;
+                let sign = if *signed { MachineSign::Signed } else { MachineSign::Unsigned };
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntMulWide {
+                        sign, dst_lo, dst_hi,
+                        lhs: MachineValue::Reg(lhs), rhs: MachineValue::Reg(rhs),
+                    },
+                });
+                Ok(())
+            }
+            LirLegalizedOp::PairCompare { kind, signed } => {
+                self.lower_pair_compare(args, results, *kind, *signed)
+            }
+            LirLegalizedOp::PairMul => {
+                self.lower_pair_mul(args, results)
+            }
+            // Helper-backed ops are intercepted at the block level in mod.rs
+            // via needs_helper(). If we reach here, it's a routing error.
+            other => Err(WasmError::internal(alloc::format!(
+                "legalized op {:?} has no inline lowering path",
+                other,
+            ))),
+        }
+    }
+
+    /// Inline-lower I64PairCompare: (a_lo, a_hi, b_lo, b_hi) → (bool_i32)
+    ///
+    /// result = (hi_strict_cmp) || (hi_eq && lo_cmp)
+    /// Uses 1 scratch transient (budgeted via extra_inline_scratch).
+    fn lower_pair_compare(
+        &mut self,
+        args: &[LirValue],
+        results: &[LirValue],
+        kind: crate::vm::lir::legalized::CompareKind,
+        signed: bool,
+    ) -> Result<(), WasmError> {
+        use crate::vm::lir::legalized::CompareKind;
+
+        let a_lo = self.use_value(args[0])?;
+        let a_hi = self.use_value(args[1])?;
+        let b_lo = self.use_value(args[2])?;
+        let b_hi = self.use_value(args[3])?;
+        let dst = self.alloc_value(results[0])?;
+        let scratch = self.first_free_transient(None).ok_or_else(|| {
+            WasmError::internal("no free GP transient for PairCompare scratch".into())
+        })?;
+
+        let hi_sign = if signed { MachineSign::Signed } else { MachineSign::Unsigned };
+        let (hi_cmp_kind, lo_cmp_kind) = match kind {
+            CompareKind::Lt => (MachineCompareKind::Lt, MachineCompareKind::Lt),
+            CompareKind::Le => (MachineCompareKind::Lt, MachineCompareKind::Le),
+            CompareKind::Gt => (MachineCompareKind::Gt, MachineCompareKind::Gt),
+            CompareKind::Ge => (MachineCompareKind::Gt, MachineCompareKind::Ge),
+        };
+
+        // dst = (a_lo <lo_cmp> b_lo)
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntCompare {
+                width: MachineIntWidth::I32, kind: lo_cmp_kind,
+                sign: MachineSign::Unsigned, dst,
+                lhs: MachineValue::Reg(a_lo), rhs: MachineValue::Reg(b_lo),
+            },
+        });
+        // scratch = (a_hi == b_hi)
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntCompare {
+                width: MachineIntWidth::I32, kind: MachineCompareKind::Eq,
+                sign: MachineSign::Unsigned, dst: scratch,
+                lhs: MachineValue::Reg(a_hi), rhs: MachineValue::Reg(b_hi),
+            },
+        });
+        // dst = lo_cmp & hi_eq
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::And,
+                dst, lhs: MachineValue::Reg(dst), rhs: MachineValue::Reg(scratch),
+            },
+        });
+        // scratch = (a_hi <hi_strict_cmp> b_hi)
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntCompare {
+                width: MachineIntWidth::I32, kind: hi_cmp_kind,
+                sign: hi_sign, dst: scratch,
+                lhs: MachineValue::Reg(a_hi), rhs: MachineValue::Reg(b_hi),
+            },
+        });
+        // dst = (lo_cmp & hi_eq) | hi_strict_cmp
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::Or,
+                dst, lhs: MachineValue::Reg(dst), rhs: MachineValue::Reg(scratch),
+            },
+        });
+        Ok(())
+    }
+
+    /// Inline-lower I64PairMul: (a_lo, a_hi, b_lo, b_hi) → (res_lo, res_hi)
+    ///
+    /// res_lo = low32(a_lo * b_lo), res_hi = high32(a_lo * b_lo) + a_hi*b_lo + a_lo*b_hi
+    /// Uses 1 scratch transient (budgeted via extra_inline_scratch).
+    fn lower_pair_mul(
+        &mut self,
+        args: &[LirValue],
+        results: &[LirValue],
+    ) -> Result<(), WasmError> {
+        let a_lo = self.use_value(args[0])?;
+        let a_hi = self.use_value(args[1])?;
+        let b_lo = self.use_value(args[2])?;
+        let b_hi = self.use_value(args[3])?;
+        let res_lo = self.alloc_value(results[0])?;
+        let res_hi = self.alloc_value(results[1])?;
+        let scratch = self.first_free_transient(None).ok_or_else(|| {
+            WasmError::internal("no free GP transient for I64PairMul scratch".into())
+        })?;
+
+        // (res_lo, res_hi) = MulWide(a_lo, b_lo)
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntMulWide {
+                sign: MachineSign::Unsigned, dst_lo: res_lo, dst_hi: res_hi,
+                lhs: MachineValue::Reg(a_lo), rhs: MachineValue::Reg(b_lo),
+            },
+        });
+        // scratch = a_hi * b_lo
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::Mul,
+                dst: scratch, lhs: MachineValue::Reg(a_hi), rhs: MachineValue::Reg(b_lo),
+            },
+        });
+        // res_hi += scratch
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::Add,
+                dst: res_hi, lhs: MachineValue::Reg(res_hi), rhs: MachineValue::Reg(scratch),
+            },
+        });
+        // scratch = a_lo * b_hi
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::Mul,
+                dst: scratch, lhs: MachineValue::Reg(a_lo), rhs: MachineValue::Reg(b_hi),
+            },
+        });
+        // res_hi += scratch
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: MachineIntWidth::I32, op: MachineIntBinaryOp::Add,
+                dst: res_hi, lhs: MachineValue::Reg(res_hi), rhs: MachineValue::Reg(scratch),
+            },
         });
         Ok(())
     }
@@ -1274,8 +1511,13 @@ fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => Some(*dst),
-        MachineInstKind::Store { .. }
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => Some(*dst),
+        MachineInstKind::IntMulWide { .. }
+        | MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
     }
@@ -1312,6 +1554,22 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         }
         MachineInstKind::TrapIf { cond, .. } => {
             visit_branch_cond_regs(cond, &mut visit);
+        }
+        MachineInstKind::IntAddCarryOut { lhs, rhs, .. }
+        | MachineInstKind::IntSubBorrowOut { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::IntAddWithCarry { lhs, rhs, carry_in, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+            visit_value_reg(carry_in, &mut visit);
+        }
+        MachineInstKind::IntSubWithBorrow { lhs, rhs, borrow_in, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+            visit_value_reg(borrow_in, &mut visit);
         }
         MachineInstKind::CallHelper(_) => {}
     }
@@ -1409,7 +1667,12 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -1430,7 +1693,16 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::IntBinary { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
-        | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
+        | MachineInstKind::FloatCompare { lhs, rhs, .. }
+        | MachineInstKind::IntAddCarryOut { lhs, rhs, .. }
+        | MachineInstKind::IntSubBorrowOut { lhs, rhs, .. }
+        | MachineInstKind::IntMulWide { lhs, rhs, .. } => is(lhs) || is(rhs),
+        MachineInstKind::IntAddWithCarry { lhs, rhs, carry_in, .. } => {
+            is(lhs) || is(rhs) || is(carry_in)
+        }
+        MachineInstKind::IntSubWithBorrow { lhs, rhs, borrow_in, .. } => {
+            is(lhs) || is(rhs) || is(borrow_in)
+        }
         MachineInstKind::Select {
             on_true,
             on_false,
@@ -1455,8 +1727,13 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst = new_dst,
-        MachineInstKind::Store { .. }
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => *dst = new_dst,
+        MachineInstKind::IntMulWide { .. }
+        | MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => {}
     }

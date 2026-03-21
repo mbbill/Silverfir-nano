@@ -103,14 +103,15 @@ impl PrepareState {
     }
 
     fn local_type(&self, idx: u16) -> ValueType {
-        let ty = self.local_types.get(idx as usize).copied();
-        debug_assert!(
-            ty.is_some() || self.local_types.is_empty(),
-            "local {} has no entry in local_types (len={})",
-            idx,
-            self.local_types.len(),
-        );
-        ty.unwrap_or(ValueType::I64)
+        if self.local_types.is_empty() {
+            return ValueType::I64; // untyped path (no legalization)
+        }
+        self.local_types.get(idx as usize).copied().unwrap_or_else(|| {
+            // This is a contract violation — local_types should cover all locals.
+            // Panic in debug, I64 in release (over-approximation to avoid unsound undercount).
+            debug_assert!(false, "local {} out of range in local_types (len={})", idx, self.local_types.len());
+            ValueType::I64
+        })
     }
 
     /// Extract types for a range of the type stack.
@@ -270,6 +271,9 @@ fn plan_prefix(
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => spill_all(&mut prefix, state, frame),
+        SemanticOpKind::Legalized(_) => {
+            // Legalized ops behave like ordinary leaf primitives for planning.
+        }
     }
 
     prefix
@@ -479,13 +483,33 @@ fn apply_semantic_effect(
         SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
             state.mark_unreachable();
         }
+        SemanticOpKind::Legalized(ref leg) => {
+            if !state.unreachable {
+                // Use the LIR-level op for stack effect and scratch budget.
+                let lir_op = crate::vm::lir::legalized::from_semantic(leg);
+                let (pops, pushes) = lir_op.stack_effect();
+                let extra_scratch = lir_op.extra_inline_scratch() as u16;
+                state.height = state
+                    .height
+                    .saturating_sub(pops as u16)
+                    .saturating_add(pushes as u16);
+                state.height = state.height.saturating_add(extra_scratch);
+                state.spill_depth = state.spill_depth.min(state.height);
+                state.height = state.height.saturating_sub(extra_scratch);
+                let base = state.height.saturating_sub(pushes as u16) as usize;
+                state.type_stack.truncate(base);
+                for i in 0..pushes {
+                    state.type_stack.push(lir_op.result_type(i));
+                }
+            }
+        }
     }
 }
 
 /// Push result types from the op_result_types sidecar.
 ///
-/// Asserts in debug mode that the sidecar has an entry for every call with
-/// results. Falls back to I64 in release for robustness.
+/// Panics if a result-producing op has no op_result_types entry — typed
+/// metadata is a hard prerequisite for all stages after decode.
 fn push_result_types(
     type_stack: &mut Vec<ValueType>,
     results: u16,
@@ -493,7 +517,7 @@ fn push_result_types(
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
 ) {
     if let Some(types) = op_result_types.get(&op_index) {
-        debug_assert_eq!(
+        assert_eq!(
             types.len(),
             results as usize,
             "op_result_types at op {} has {} types but call expects {} results",
@@ -502,16 +526,12 @@ fn push_result_types(
             results,
         );
         type_stack.extend_from_slice(types);
-    } else {
-        debug_assert!(
-            results == 0,
+    } else if results > 0 {
+        panic!(
             "call at op {} produces {} results but has no op_result_types entry",
             op_index,
             results,
         );
-        for _ in 0..results {
-            type_stack.push(ValueType::I64);
-        }
     }
 }
 

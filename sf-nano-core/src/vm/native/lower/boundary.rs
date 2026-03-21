@@ -5,8 +5,9 @@ use crate::{
         native::{
             helper::meta::{
                 CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta,
-                TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
+                HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta,
+                MemoryGrowMeta, MemoryInitMeta, TableCopyMeta, TableFillMeta, TableGrowMeta,
+                TableInitMeta,
             },
             ir::{
                 machine::{
@@ -335,6 +336,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         Ok(())
     }
+
 }
 
 fn span_region_with_slots(

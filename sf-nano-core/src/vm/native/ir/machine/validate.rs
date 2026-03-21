@@ -151,6 +151,36 @@ impl MachineProgram {
             MachineInstKind::TrapIf { cond, .. } => {
                 self.validate_branch_cond(*cond)?;
             }
+            MachineInstKind::IntAddCarryOut { dst, carry_out, lhs, rhs } => {
+                self.validate_reg(*dst)?;
+                self.validate_reg(*carry_out)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+            }
+            MachineInstKind::IntAddWithCarry { dst, lhs, rhs, carry_in } => {
+                self.validate_reg(*dst)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+                self.validate_value(*carry_in)?;
+            }
+            MachineInstKind::IntSubBorrowOut { dst, borrow_out, lhs, rhs } => {
+                self.validate_reg(*dst)?;
+                self.validate_reg(*borrow_out)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+            }
+            MachineInstKind::IntSubWithBorrow { dst, lhs, rhs, borrow_in } => {
+                self.validate_reg(*dst)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+                self.validate_value(*borrow_in)?;
+            }
+            MachineInstKind::IntMulWide { dst_lo, dst_hi, lhs, rhs, .. } => {
+                self.validate_reg(*dst_lo)?;
+                self.validate_reg(*dst_hi)?;
+                self.validate_value(*lhs)?;
+                self.validate_value(*rhs)?;
+            }
             MachineInstKind::CallHelper(_) => {}
         }
         Ok(())

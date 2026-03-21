@@ -168,6 +168,11 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
             SemanticOpKind::LocalGet { .. } => depth += 1,
             SemanticOpKind::LocalSet { .. } => depth -= 1,
             SemanticOpKind::LocalTee { .. } => {} // no change
+            SemanticOpKind::Legalized(ref leg) => {
+                let (pops, pushes) = super::legalized_op::legalized_stack_effect(leg);
+                depth -= pops as i32;
+                depth += pushes as i32;
+            }
         }
     }
 
@@ -184,7 +189,7 @@ pub fn inline_calls_in_function(
     caller: &mut SemanticProgram,
     caller_func_idx: u32,
     semantics: &[Option<SemanticProgram>],
-) -> bool {
+) -> Result<bool, crate::error::WasmError> {
     // Collect inline sites (process back-to-front so earlier indices stay valid).
     let mut sites: Vec<(usize, u32)> = Vec::new(); // (op_index, callee_func_idx)
     for (i, op) in caller.ops.iter().enumerate() {
@@ -200,23 +205,27 @@ pub fn inline_calls_in_function(
         }
     }
     if sites.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     // Process sites back-to-front so insertions don't shift earlier indices.
     sites.reverse();
     for &(site_idx, callee_func_idx) in &sites {
         let callee = semantics[callee_func_idx as usize].as_ref().unwrap();
-        inline_single_call(caller, site_idx, callee);
+        inline_single_call(caller, site_idx, callee)?;
     }
 
     // Recompute max_stack_height from the final ops.
     caller.max_stack_height = recompute_max_stack_height(caller);
-    true
+    Ok(true)
 }
 
 /// Replace `caller.ops[site]` (a `CallInternal`) with the inlined callee body.
-fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &SemanticProgram) {
+fn inline_single_call(
+    caller: &mut SemanticProgram,
+    site: usize,
+    callee: &SemanticProgram,
+) -> Result<(), crate::error::WasmError> {
     let call_op = &caller.ops[site];
     let (call_params, call_results) = match &call_op.kind {
         SemanticOpKind::CallInternal {
@@ -229,16 +238,16 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     let local_offset = caller.local_count;
     let callee_total_locals = callee.local_count;
     caller.local_count += callee_total_locals;
-    // Extend local_types if the caller tracks them.
-    if !caller.local_types.is_empty() {
+    // Always maintain local_types across inlining — legalization requires it.
+    // If the caller had no locals, local_types is empty but valid (length == 0).
+    // We must start tracking once locals are added.
+    if callee_total_locals > 0 {
         if callee.local_types.is_empty() {
-            // Callee has no type info — fill with I64 as a safe default.
-            for _ in 0..callee_total_locals {
-                caller.local_types.push(ValueType::I64);
-            }
-        } else {
-            caller.local_types.extend_from_slice(&callee.local_types);
+            return Err(crate::error::WasmError::internal(
+                "inliner: callee has locals but empty local_types — typed metadata is required".into(),
+            ));
         }
+        caller.local_types.extend_from_slice(&callee.local_types);
     }
 
     // --- Build the replacement op sequence ---
@@ -372,6 +381,7 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     }
 
     // max_stack_height is recomputed by the caller after all sites are inlined.
+    Ok(())
 }
 
 /// Walk the semantic ops and compute the true max operand stack height.
@@ -465,6 +475,11 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             SemanticOpKind::LocalGet { .. } => depth += 1,
             SemanticOpKind::LocalSet { .. } => depth -= 1,
             SemanticOpKind::LocalTee { .. } => {}
+            SemanticOpKind::Legalized(ref leg) => {
+                let (pops, pushes) = super::legalized_op::legalized_stack_effect(leg);
+                depth -= pops as i32;
+                depth += pushes as i32;
+            }
         }
         if depth > max_depth {
             max_depth = depth;

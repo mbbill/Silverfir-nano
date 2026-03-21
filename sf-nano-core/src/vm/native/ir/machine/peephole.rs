@@ -469,7 +469,12 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => *dst == reg,
+        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
@@ -489,7 +494,12 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => Some(*dst),
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IntAddCarryOut { dst, .. }
+        | MachineInstKind::IntAddWithCarry { dst, .. }
+        | MachineInstKind::IntSubBorrowOut { dst, .. }
+        | MachineInstKind::IntSubWithBorrow { dst, .. } => Some(*dst),
+        MachineInstKind::IntMulWide { .. } => None, // two dests, not single
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
@@ -607,6 +617,25 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
             f(cond);
         }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
+        MachineInstKind::IntAddCarryOut { lhs, rhs, .. }
+        | MachineInstKind::IntSubBorrowOut { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        MachineInstKind::IntAddWithCarry { lhs, rhs, carry_in, .. } => {
+            f(lhs);
+            f(rhs);
+            f(carry_in);
+        }
+        MachineInstKind::IntSubWithBorrow { lhs, rhs, borrow_in, .. } => {
+            f(lhs);
+            f(rhs);
+            f(borrow_in);
+        }
+        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
         MachineInstKind::CallHelper(_) => {}
     }
 }
@@ -707,6 +736,25 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(cond, aliases);
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
+        MachineInstKind::IntAddCarryOut { lhs, rhs, .. }
+        | MachineInstKind::IntSubBorrowOut { lhs, rhs, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
+        MachineInstKind::IntAddWithCarry { lhs, rhs, carry_in, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+            rewrite_value(carry_in, aliases);
+        }
+        MachineInstKind::IntSubWithBorrow { lhs, rhs, borrow_in, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+            rewrite_value(borrow_in, aliases);
+        }
+        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
         MachineInstKind::CallHelper(_) => {}
     }
 }

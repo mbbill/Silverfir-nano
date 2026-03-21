@@ -88,7 +88,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 continue;
             }
             let mut caller = semantics[func_idx].take().unwrap();
-            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
+            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics)? {
                 any_inlined = true;
             }
             semantics[func_idx] = Some(caller);

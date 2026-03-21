@@ -305,6 +305,12 @@ fn render_lir_inst(kind: &LirInstKind) -> String {
             vals(args),
             vals(results),
         ),
+        LirInstKind::Legalized { op, args, results } => format!(
+            "leg32 {:?} args=[{}] results=[{}]",
+            op,
+            vals(args),
+            vals(results),
+        ),
         LirInstKind::LoadSlot { slot, dst } => {
             format!("load_slot v{} <- fp[{}]", dst.0, slot.0)
         }
@@ -589,6 +595,21 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         }
         MachineInstKind::TrapIf { kind, cond } => {
             format!("trap_if {:?} {}", kind, render_branch_cond(cond))
+        }
+        MachineInstKind::IntAddCarryOut { dst, carry_out, lhs, rhs } => {
+            format!("add_carry_out r{}, r{} <- {}, {}", dst.0, carry_out.0, mval(lhs), mval(rhs))
+        }
+        MachineInstKind::IntAddWithCarry { dst, lhs, rhs, carry_in } => {
+            format!("add_with_carry r{} <- {}, {}, {}", dst.0, mval(lhs), mval(rhs), mval(carry_in))
+        }
+        MachineInstKind::IntSubBorrowOut { dst, borrow_out, lhs, rhs } => {
+            format!("sub_borrow_out r{}, r{} <- {}, {}", dst.0, borrow_out.0, mval(lhs), mval(rhs))
+        }
+        MachineInstKind::IntSubWithBorrow { dst, lhs, rhs, borrow_in } => {
+            format!("sub_with_borrow r{} <- {}, {}, {}", dst.0, mval(lhs), mval(rhs), mval(borrow_in))
+        }
+        MachineInstKind::IntMulWide { sign, dst_lo, dst_hi, lhs, rhs } => {
+            format!("mul_wide.{:?} r{}, r{} <- {}, {}", sign, dst_lo.0, dst_hi.0, mval(lhs), mval(rhs))
         }
         MachineInstKind::CallHelper(call) => {
             format!(

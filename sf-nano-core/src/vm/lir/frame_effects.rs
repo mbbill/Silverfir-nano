@@ -9,7 +9,7 @@ use super::{
 
 pub fn reads_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
     match kind {
-        LirInstKind::Value { .. } | LirInstKind::StoreSlot { .. } => Vec::new(),
+        LirInstKind::Value { .. } | LirInstKind::Legalized { .. } | LirInstKind::StoreSlot { .. } => Vec::new(),
         LirInstKind::LoadSlot { slot, .. } => {
             alloc::vec![FrameSpan::single(*slot)]
         }
@@ -19,7 +19,7 @@ pub fn reads_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
 
 pub fn writes_frame(kind: &LirInstKind) -> Vec<FrameSpan> {
     match kind {
-        LirInstKind::Value { .. } | LirInstKind::LoadSlot { .. } => Vec::new(),
+        LirInstKind::Value { .. } | LirInstKind::Legalized { .. } | LirInstKind::LoadSlot { .. } => Vec::new(),
         LirInstKind::StoreSlot { slot, .. } => {
             alloc::vec![FrameSpan::single(*slot)]
         }

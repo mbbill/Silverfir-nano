@@ -369,6 +369,44 @@ impl<'a> Emulator<'a> {
                     return Err(trap_from_kind(*kind));
                 }
             }
+            MachineInstKind::IntAddCarryOut { dst, carry_out, lhs, rhs } => {
+                let a = self.read_value(*lhs)? as u32;
+                let b = self.read_value(*rhs)? as u32;
+                let (sum, overflow) = a.overflowing_add(b);
+                self.write_reg(*dst, u64::from(sum))?;
+                self.write_reg(*carry_out, u64::from(overflow as u32))?;
+            }
+            MachineInstKind::IntAddWithCarry { dst, lhs, rhs, carry_in } => {
+                let a = self.read_value(*lhs)? as u32;
+                let b = self.read_value(*rhs)? as u32;
+                let c = self.read_value(*carry_in)? as u32;
+                let sum = a.wrapping_add(b).wrapping_add(c);
+                self.write_reg(*dst, u64::from(sum))?;
+            }
+            MachineInstKind::IntSubBorrowOut { dst, borrow_out, lhs, rhs } => {
+                let a = self.read_value(*lhs)? as u32;
+                let b = self.read_value(*rhs)? as u32;
+                let (diff, borrow) = a.overflowing_sub(b);
+                self.write_reg(*dst, u64::from(diff))?;
+                self.write_reg(*borrow_out, u64::from(borrow as u32))?;
+            }
+            MachineInstKind::IntSubWithBorrow { dst, lhs, rhs, borrow_in } => {
+                let a = self.read_value(*lhs)? as u32;
+                let b = self.read_value(*rhs)? as u32;
+                let c = self.read_value(*borrow_in)? as u32;
+                let diff = a.wrapping_sub(b).wrapping_sub(c);
+                self.write_reg(*dst, u64::from(diff))?;
+            }
+            MachineInstKind::IntMulWide { sign, dst_lo, dst_hi, lhs, rhs } => {
+                let a = self.read_value(*lhs)? as u32;
+                let b = self.read_value(*rhs)? as u32;
+                let result = match sign {
+                    MachineSign::Unsigned => u64::from(a) * u64::from(b),
+                    MachineSign::Signed => (a as i32 as i64 * b as i32 as i64) as u64,
+                };
+                self.write_reg(*dst_lo, u64::from(result as u32))?;
+                self.write_reg(*dst_hi, u64::from((result >> 32) as u32))?;
+            }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
         }
         Ok(())
@@ -1518,7 +1556,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{Caller, FunctionInst, ModuleInst},
-            native::{arch::set_reference_backend, build::ensure_module_compiled},
+            native::{arch::{set_emulator_mode, EmulatorMode}, build::ensure_module_compiled},
             runtime,
             store::Store,
             value::Value,
@@ -1536,7 +1574,7 @@ mod tests {
 
     #[test]
     fn evaluates_native_machine_module_with_helper_external_call() {
-        set_reference_backend(true).expect("reference backend");
+        set_emulator_mode(EmulatorMode::Emu64).expect("emulator backend");
 
         let ty = Rc::new(FunctionType::new(
             vec![ValueType::I32],
@@ -1570,7 +1608,7 @@ mod tests {
 
     #[test]
     fn runtime_eval_uses_emulator_backend() {
-        set_reference_backend(true).expect("reference backend");
+        set_emulator_mode(EmulatorMode::Emu64).expect("emulator backend");
 
         let ty = Rc::new(FunctionType::new(
             vec![ValueType::I32],
@@ -1594,7 +1632,7 @@ mod tests {
 
     #[test]
     fn runtime_eval_preserves_first_local_call_result_across_second_local_call() {
-        set_reference_backend(true).expect("reference backend");
+        set_emulator_mode(EmulatorMode::Emu64).expect("emulator backend");
 
         let malloc_ty = Rc::new(FunctionType::new(
             vec![ValueType::I32],

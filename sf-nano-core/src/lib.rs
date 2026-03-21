@@ -49,8 +49,7 @@ pub use vm::native::{
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
 pub use vm::runtime::{
-    active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
-    RuntimeEngine,
+    active_runtime_engine, set_emulator_mode, EmulatorMode, RuntimeEngine,
 };
 pub use vm::value::Value;
 
