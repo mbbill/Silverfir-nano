@@ -17,7 +17,7 @@ use crate::value_type::ValueType;
 #[cfg(feature = "interp")]
 use crate::vm::interp::fast_code::{FastCode, FastCodeCache};
 #[cfg(feature = "micro-jit")]
-use crate::vm::native::code::{NativeCode, NativeCodeCache};
+use crate::vm::runtime::code::{NativeCode, NativeCodeCache};
 use core::cell::UnsafeCell;
 
 pub use super::type_defs::FunctionType;

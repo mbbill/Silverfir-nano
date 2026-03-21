@@ -43,7 +43,7 @@ pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKin
 pub use vm::entities::ExternalFn;
 pub use vm::instance::{Import, ImportValue, Instance};
 #[cfg(feature = "micro-jit")]
-pub use vm::native::{
+pub use vm::machine::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
@@ -60,7 +60,7 @@ pub use vm::value::Value;
 pub fn reset_native_runtime_state() {
     #[cfg(has_guard_pages)]
     {
-        crate::vm::native::trap_signal::reset_debug_state();
-        crate::vm::native::trap_signal::clear_registered_jit_ranges();
+        crate::vm::runtime::trap_signal::reset_debug_state();
+        crate::vm::runtime::trap_signal::clear_registered_jit_ranges();
     }
 }

@@ -55,7 +55,7 @@ mod imp {
     use crate::vm::entities::{FunctionInst, ModuleInst};
     #[cfg(feature = "interp")]
     use crate::vm::interp::{context as interp_ctx, instruction::Instruction};
-    use crate::vm::native::runtime::context::NativeContext;
+    use crate::vm::runtime::context::NativeContext;
     use crate::vm::store::Store;
 
     const TRACE_ENV: &str = "SF_FUNCTION_TRACE";
