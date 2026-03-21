@@ -1,60 +1,60 @@
 /// One generic machine register.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineReg(pub u16);
+pub(crate) struct MachineReg(pub(crate) u16);
 
 /// One machine CFG block id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineBlockId(pub u32);
+pub(crate) struct MachineBlockId(pub(crate) u32);
 
 impl MachineBlockId {
     #[inline]
-    pub const fn as_usize(self) -> usize {
+    pub(crate) const fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
 
 /// One local-function identifier in the machine-level call graph.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineFuncId(pub u32);
+pub(crate) struct MachineFuncId(pub(crate) u32);
 
 /// One opaque external target id referenced from machine IR.
 ///
 /// The machine IR does not know whether this resolves to a helper wrapper or
 /// some other external native target. Sidecar binding data owns that meaning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineExternId(pub u32);
+pub(crate) struct MachineExternId(pub(crate) u32);
 
 /// One read-only sidecar constant record referenced from machine IR.
 ///
 /// This is used for immutable helper metadata or other finalized constant data
 /// that should live beside code, not inside writable frame scratch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MachineConstId(pub u32);
+pub(crate) struct MachineConstId(pub(crate) u32);
 
 /// One readable machine operand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineValue {
+pub(crate) enum MachineValue {
     Reg(MachineReg),
     Imm64(u64),
 }
 
 /// One explicit machine address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MachineAddr {
+pub(crate) struct MachineAddr {
     pub base: MachineReg,
     pub offset: i32,
 }
 
 /// Scalar integer width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineIntWidth {
+pub(crate) enum MachineIntWidth {
     I32,
     I64,
 }
 
 /// Scalar float width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineFloatWidth {
+pub(crate) enum MachineFloatWidth {
     F32,
     F64,
 }
@@ -72,7 +72,7 @@ pub enum MachineFloatWidth {
 /// `eax`/`rax` or `w0`/`x0`, but that is still one physical GP register slot,
 /// not a separate storage class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineStorageType {
+pub(crate) enum MachineStorageType {
     GpWord,
     GpI64,
     Fp32,
@@ -81,12 +81,12 @@ pub enum MachineStorageType {
 
 impl MachineStorageType {
     #[inline]
-    pub const fn is_fp(self) -> bool {
+    pub(crate) const fn is_fp(self) -> bool {
         matches!(self, Self::Fp32 | Self::Fp64)
     }
 
     #[inline]
-    pub const fn float_width(self) -> Option<MachineFloatWidth> {
+    pub(crate) const fn float_width(self) -> Option<MachineFloatWidth> {
         match self {
             Self::Fp32 => Some(MachineFloatWidth::F32),
             Self::Fp64 => Some(MachineFloatWidth::F64),
@@ -97,7 +97,7 @@ impl MachineStorageType {
 
 /// Width of one memory access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineMemWidth {
+pub(crate) enum MachineMemWidth {
     U8,
     U16,
     U32,
@@ -110,7 +110,7 @@ pub enum MachineMemWidth {
 /// Shared lowering must key off the backend ABI it is targeting, not the host
 /// compiler's `usize`, because armv7a lowering runs on 64-bit hosts.
 #[inline]
-pub const fn machine_ptr_width(gp_reg_width: u8) -> MachineMemWidth {
+pub(crate) const fn machine_ptr_width(gp_reg_width: u8) -> MachineMemWidth {
     match gp_reg_width {
         4 => MachineMemWidth::U32,
         8 => MachineMemWidth::U64,
@@ -120,7 +120,7 @@ pub const fn machine_ptr_width(gp_reg_width: u8) -> MachineMemWidth {
 
 /// Returns the scalar integer width matching one native GP register.
 #[inline]
-pub const fn machine_word_int_width(gp_reg_width: u8) -> MachineIntWidth {
+pub(crate) const fn machine_word_int_width(gp_reg_width: u8) -> MachineIntWidth {
     match gp_reg_width {
         4 => MachineIntWidth::I32,
         8 => MachineIntWidth::I64,
@@ -130,14 +130,14 @@ pub const fn machine_word_int_width(gp_reg_width: u8) -> MachineIntWidth {
 
 /// Integer sign mode where it matters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineSign {
+pub(crate) enum MachineSign {
     Signed,
     Unsigned,
 }
 
 /// Integer unary ALU op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineIntUnaryOp {
+pub(crate) enum MachineIntUnaryOp {
     Eqz,
     Clz,
     Ctz,
@@ -149,7 +149,7 @@ pub enum MachineIntUnaryOp {
 
 /// Integer binary ALU op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineIntBinaryOp {
+pub(crate) enum MachineIntBinaryOp {
     Add,
     Sub,
     Mul,
@@ -169,7 +169,7 @@ pub enum MachineIntBinaryOp {
 
 /// Float unary ALU op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineFloatUnaryOp {
+pub(crate) enum MachineFloatUnaryOp {
     Abs,
     Neg,
     Ceil,
@@ -181,7 +181,7 @@ pub enum MachineFloatUnaryOp {
 
 /// Float binary ALU op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineFloatBinaryOp {
+pub(crate) enum MachineFloatBinaryOp {
     Add,
     Sub,
     Mul,
@@ -193,7 +193,7 @@ pub enum MachineFloatBinaryOp {
 
 /// Compare relation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineCompareKind {
+pub(crate) enum MachineCompareKind {
     Eq,
     Ne,
     Lt,
@@ -204,7 +204,7 @@ pub enum MachineCompareKind {
 
 /// One conversion / reinterpret op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineConvertOp {
+pub(crate) enum MachineConvertOp {
     I32WrapI64,
     I64ExtendI32S,
     I64ExtendI32U,
@@ -242,7 +242,7 @@ pub enum MachineConvertOp {
 
 /// Memory load extension mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineLoadExtension {
+pub(crate) enum MachineLoadExtension {
     None,
     SignExtend,
     ZeroExtend,
@@ -250,7 +250,7 @@ pub enum MachineLoadExtension {
 
 /// Machine-level traps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineTrapKind {
+pub(crate) enum MachineTrapKind {
     Unreachable,
     MemoryOutOfBounds,
     TableOutOfBounds,

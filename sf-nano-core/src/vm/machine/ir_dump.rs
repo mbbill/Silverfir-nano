@@ -36,7 +36,7 @@ use std::{
 
 /// One debug region within a compiled function (for profiler symbols).
 #[derive(Clone, Debug)]
-pub struct DebugRegion {
+pub(crate) struct DebugRegion {
     /// Byte offset within the function text.
     pub offset: usize,
     /// Byte length of this region.
@@ -46,18 +46,18 @@ pub struct DebugRegion {
 }
 
 /// Per-function LIR data for the dump.
-pub struct DumpFunctionLir<'a> {
+pub(crate) struct DumpFunctionLir<'a> {
     pub func_idx: u32,
     pub lir: &'a LirProgram,
 }
 
 /// Per-function debug regions from compilation.
-pub struct DumpFunctionRegions {
+pub(crate) struct DumpFunctionRegions {
     pub func_idx: u32,
     pub regions: Vec<DebugRegion>,
 }
 
-pub fn dump_enabled() -> bool {
+pub(crate) fn dump_enabled() -> bool {
     #[cfg(any(feature = "std", feature = "wasi", test))]
     {
         env::var_os("SF_NATIVE_DUMP_DIR").is_some()
@@ -73,7 +73,7 @@ pub fn dump_enabled() -> bool {
 ///
 /// `code_slices` contains `(func_idx, code_bytes)` for each compiled function.
 /// `debug_regions_by_func` provides per-block code region metadata.
-pub fn write_module_dump(
+pub(crate) fn write_module_dump(
     module_name: &str,
     function_count: usize,
     lir_inputs: &[DumpFunctionLir<'_>],

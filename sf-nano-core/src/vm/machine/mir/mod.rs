@@ -17,9 +17,9 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use cfg::*;
-pub use contract::*;
-pub use inst::*;
-pub use module::*;
-pub use regs::*;
-pub use types::*;
+pub(crate) use cfg::*;
+pub(crate) use contract::*;
+pub(crate) use inst::*;
+pub(crate) use module::*;
+pub(crate) use regs::*;
+pub(crate) use types::*;

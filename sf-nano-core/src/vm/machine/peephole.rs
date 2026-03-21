@@ -52,7 +52,7 @@ struct TrackedLoad {
 /// prefix of the FP bank with length `program.fp_transient_count`. Only
 /// transient registers are candidates for copy/constant rewriting; fixed and
 /// cached-local registers must not be disturbed.
-pub fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width: u8) {
+pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width: u8) {
     let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
     let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
     for block in &mut program.blocks {
@@ -1611,7 +1611,7 @@ fn term_edge_uses_value(term: &MachineTerminator, reg: MachineReg) -> bool {
 /// Returns true if `reg` is provably dead at the beginning of `target`:
 /// either the block defines it before any use, the block has it as a
 /// parameter, or the block never touches it.
-pub fn reg_dead_at_block_entry(
+pub(crate) fn reg_dead_at_block_entry(
     blocks: &[MachineBlock],
     target: MachineBlockId,
     reg: MachineReg,

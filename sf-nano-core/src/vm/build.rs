@@ -7,7 +7,7 @@ use crate::{
         arch,
         machine::{
             ir_dump,
-            lower::{lower_module, LowerFunctionInput, LowerModuleInput},
+            {lower_module, LowerFunctionInput, LowerModuleInput},
             mir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
         },
         middle::{config::PlanConfig, PrepareInput, prepare_function, PreparedFunction},

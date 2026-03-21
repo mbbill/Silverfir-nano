@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    context::BlockLowerContext,
-    util::{single_arg, single_result, two_args},
+    lower_context::BlockLowerContext,
+    lower_util::{single_arg, single_result, two_args},
 };
 
 pub(super) enum LeafLowering {

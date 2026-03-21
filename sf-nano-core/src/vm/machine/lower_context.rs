@@ -6,7 +6,6 @@ use crate::{
     value_type::ValueType,
     vm::{
         machine::{
-            lower::{slot_offset_bytes, target_param_regs},
             mir::{
                 machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
                 MachineBlockParam, MachineBranchCond, MachineCallLinkLayout, MachineCompareKind,
@@ -32,8 +31,9 @@ use crate::{
 };
 
 use super::{
-    regfile::MachineRegFile,
-    util::{compute_remaining_uses, single_arg, single_result, two_args},
+    slot_offset_bytes, target_param_regs,
+    lower_regfile::MachineRegFile,
+    lower_util::{compute_remaining_uses, single_arg, single_result, two_args},
 };
 
 use crate::vm::middle::lir::ir::CachedLocalInfo;

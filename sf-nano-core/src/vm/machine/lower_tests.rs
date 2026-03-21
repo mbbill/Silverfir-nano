@@ -4,7 +4,7 @@ use crate::value_type::ValueType;
 use crate::vm::{
     backend::BackendConfig,
     machine::{
-        lower::{lower_module, LowerFunctionInput, LowerModuleInput},
+        lower_module, LowerFunctionInput, LowerModuleInput,
         mir::{
             MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
             MachineHelperSymbol, MachineInstKind, MachineIntBinaryOp, MachineMemWidth,

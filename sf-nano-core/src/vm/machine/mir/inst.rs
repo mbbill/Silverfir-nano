@@ -9,7 +9,7 @@ use super::types::{
 
 /// Helper call that falls through in the same function.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MachineHelperCall {
+pub(crate) struct MachineHelperCall {
     /// Opaque external target id. Sidecar binding data resolves this to the
     /// real Rust helper wrapper address during backend finalization.
     pub target: MachineExternId,
@@ -24,13 +24,13 @@ pub struct MachineHelperCall {
 
 /// One machine instruction.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MachineInst {
+pub(crate) struct MachineInst {
     pub kind: MachineInstKind,
 }
 
 /// Straight-line machine instruction vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MachineInstKind {
+pub(crate) enum MachineInstKind {
     /// Copy-like transfer.
     ///
     /// For GP storage classes, move-like operations define width adaptation in

@@ -8,14 +8,14 @@ use super::types::{
 
 /// One explicit machine block parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MachineBlockParam {
+pub(crate) struct MachineBlockParam {
     pub reg: MachineReg,
     pub ty: MachineStorageType,
 }
 
 impl MachineBlockParam {
     #[inline]
-    pub const fn gp_word(reg: MachineReg) -> Self {
+    pub(crate) const fn gp_word(reg: MachineReg) -> Self {
         Self {
             reg,
             ty: MachineStorageType::GpWord,
@@ -23,7 +23,7 @@ impl MachineBlockParam {
     }
 
     #[inline]
-    pub const fn gp_i64(reg: MachineReg) -> Self {
+    pub(crate) const fn gp_i64(reg: MachineReg) -> Self {
         Self {
             reg,
             ty: MachineStorageType::GpI64,
@@ -31,7 +31,7 @@ impl MachineBlockParam {
     }
 
     #[inline]
-    pub const fn fp(reg: MachineReg, width: MachineFloatWidth) -> Self {
+    pub(crate) const fn fp(reg: MachineReg, width: MachineFloatWidth) -> Self {
         Self {
             reg,
             ty: match width {
@@ -44,14 +44,14 @@ impl MachineBlockParam {
 
 /// One explicit edge into another block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MachineEdge {
+pub(crate) struct MachineEdge {
     pub target: MachineBlockId,
     pub args: Vec<MachineValue>,
 }
 
 /// One explicit branch condition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MachineBranchCond {
+pub(crate) enum MachineBranchCond {
     Value(MachineValue),
     IntCompare {
         width: MachineIntWidth,
@@ -70,7 +70,7 @@ pub enum MachineBranchCond {
 
 /// One machine terminator.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MachineTerminator {
+pub(crate) enum MachineTerminator {
     Jump(MachineEdge),
     Branch {
         cond: MachineBranchCond,
@@ -116,7 +116,7 @@ pub enum MachineTerminator {
 
 /// One machine IR block.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MachineBlock {
+pub(crate) struct MachineBlock {
     pub id: MachineBlockId,
     /// Block parameters are generic registers. Incoming values are supplied by
     /// the predecessor edge, the root public shim, or a local-call boundary.

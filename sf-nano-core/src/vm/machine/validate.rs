@@ -11,7 +11,7 @@ use super::mir::{
 type ValidateResult = Result<(), WasmError>;
 
 impl MachineProgram {
-    pub fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+    pub(crate) fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
         if self.first_fp_reg != max_gp_regs {
             return Err(WasmError::internal(alloc::format!(
                 "expected first_fp_reg {} for 32-bit GP target MachineIR, found {}",
@@ -41,7 +41,7 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         if self.blocks.is_empty() {
             if self.entry.as_usize() != 0 {
                 return Err(WasmError::internal(
@@ -97,7 +97,7 @@ impl MachineProgram {
 
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         Ok(())
     }
 
@@ -583,7 +583,7 @@ impl MachineProgram {
 }
 
 impl MachineModule {
-    pub fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
+    pub(crate) fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
         for func in &self.functions {
             func.program
                 .validate_32bit_gp_target(max_gp_regs)
@@ -599,7 +599,7 @@ impl MachineModule {
     }
 
     #[cfg(any(debug_assertions, test))]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         for (index, konst) in self.consts.iter().enumerate() {
             if konst.id.0 as usize != index {
                 return Err(WasmError::internal(alloc::format!(
@@ -627,7 +627,7 @@ impl MachineModule {
 
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         Ok(())
     }
 
