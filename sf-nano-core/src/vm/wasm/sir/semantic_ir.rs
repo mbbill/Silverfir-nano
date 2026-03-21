@@ -21,7 +21,7 @@ use super::primitive_op::PrimitiveOpKind;
 
 /// One semantic Wasm operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SemanticOp {
+pub(crate) struct SemanticOp {
     pub kind: SemanticOpKind,
 }
 
@@ -31,7 +31,7 @@ pub struct SemanticOp {
 /// calls, returns, structured control markers, and branch metadata. Ordinary
 /// non-structural ops are represented as `Primitive(PrimitiveOpKind)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SemanticOpKind {
+pub(crate) enum SemanticOpKind {
     Primitive(PrimitiveOpKind),
     LocalGet {
         idx: u16,
@@ -97,7 +97,7 @@ pub enum SemanticOpKind {
 
 /// Semantic program for one function body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SemanticProgram {
+pub(crate) struct SemanticProgram {
     pub params: u16,
     pub results: u16,
     pub local_count: u16,
@@ -135,7 +135,7 @@ pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
 
 impl SemanticProgram {
     #[cfg(any(debug_assertions, test))]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         let len = self.ops.len();
 
         for (index, op) in self.ops.iter().enumerate() {
@@ -239,12 +239,12 @@ impl SemanticProgram {
 
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
-    pub fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self) -> Result<(), WasmError> {
         Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]
-    pub fn reachable_ops(&self) -> Vec<bool> {
+    pub(crate) fn reachable_ops(&self) -> Vec<bool> {
         if self.ops.is_empty() {
             return Vec::new();
         }
@@ -274,7 +274,7 @@ impl SemanticProgram {
 
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
-    pub fn reachable_ops(&self) -> Vec<bool> {
+    pub(crate) fn reachable_ops(&self) -> Vec<bool> {
         Vec::new()
     }
 }
@@ -288,7 +288,7 @@ impl From<PrimitiveOpKind> for SemanticOpKind {
 
 /// Semantic stack effect.
 #[inline]
-pub fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
+pub(crate) fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
     match kind {
         SemanticOpKind::Primitive(kind) => super::primitive_op::stack_effect(kind),
         SemanticOpKind::LocalGet { .. } => (0, 1),

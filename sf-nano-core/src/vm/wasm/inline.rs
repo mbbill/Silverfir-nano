@@ -180,7 +180,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
 ///
 /// Returns `true` if any inlining was performed (the caller's program was
 /// modified).
-pub fn inline_calls_in_function(
+pub(crate) fn inline_calls_in_function(
     caller: &mut SemanticProgram,
     caller_func_idx: u32,
     semantics: &[Option<SemanticProgram>],

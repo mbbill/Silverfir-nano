@@ -41,7 +41,7 @@ pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::Limitable;
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
-pub use vm::entities::ExternalFn;
+pub use vm::entities::{Caller, ExternalFn, FunctionInst};
 pub use vm::instance::{Import, ImportValue, Instance};
 #[cfg(feature = "micro-jit")]
 pub use vm::machine::{
@@ -53,7 +53,13 @@ pub use vm::runtime::{
     active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
     RuntimeEngine,
 };
-pub use vm::value::Value;
+pub use vm::value::{RefHandle, Value};
+#[cfg(all(feature = "interp", feature = "fusion", feature = "profile"))]
+pub mod fusion_discovery {
+    pub use crate::vm::interp::fast::fusion::discovery::{self, DiscoveryConfig};
+    pub use crate::vm::interp::fast::fusion::pattern_trie::PatternTrie;
+    pub use crate::vm::interp::fast::fusion::profiler;
+}
 
 /// Reset process-global native runtime state that does not track module
 /// lifetimes on its own. Harnesses that repeatedly construct and drop native

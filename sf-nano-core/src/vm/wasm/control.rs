@@ -8,7 +8,7 @@ use super::common::{SemanticIndex, SemanticTarget};
 
 /// Structured Wasm block kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BlockKind {
+pub(crate) enum BlockKind {
     Block,
     Loop,
     If,
@@ -16,7 +16,7 @@ pub enum BlockKind {
 
 /// One semantic control-frame entry during decode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ControlFrame {
+pub(crate) struct ControlFrame {
     pub kind: BlockKind,
     pub entry: SemanticIndex,
     pub end_target: SemanticTarget,
@@ -26,32 +26,32 @@ pub struct ControlFrame {
 
 /// Semantic control stack.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ControlStack {
+pub(crate) struct ControlStack {
     pub frames: alloc::vec::Vec<ControlFrame>,
 }
 
 impl ControlStack {
     #[inline]
-    pub fn push(&mut self, frame: ControlFrame) {
+    pub(crate) fn push(&mut self, frame: ControlFrame) {
         self.frames.push(frame);
     }
 
     #[inline]
-    pub fn pop(&mut self) -> Option<ControlFrame> {
+    pub(crate) fn pop(&mut self) -> Option<ControlFrame> {
         self.frames.pop()
     }
 
     #[inline]
-    pub fn current(&self) -> Option<&ControlFrame> {
+    pub(crate) fn current(&self) -> Option<&ControlFrame> {
         self.frames.last()
     }
 
     #[inline]
-    pub fn current_mut(&mut self) -> Option<&mut ControlFrame> {
+    pub(crate) fn current_mut(&mut self) -> Option<&mut ControlFrame> {
         self.frames.last_mut()
     }
 
-    pub fn branch_target(&self, depth: u32) -> Option<SemanticTarget> {
+    pub(crate) fn branch_target(&self, depth: u32) -> Option<SemanticTarget> {
         let idx = self.frames.len().checked_sub(depth as usize + 1)?;
         let frame = self.frames.get(idx)?;
         match frame.kind {

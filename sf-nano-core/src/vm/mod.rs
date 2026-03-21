@@ -7,23 +7,23 @@
 //! - `arch/` compiles MIR into native code
 //! - `runtime/` provides execution infrastructure
 
-pub mod backend;
+pub(crate) mod backend;
 #[cfg(feature = "micro-jit")]
-pub mod build;
-pub mod debug;
-pub mod entities;
-pub mod expr_eval;
-pub mod instance;
+pub(crate) mod build;
+pub(crate) mod debug;
+pub(crate) mod entities;
+pub(crate) mod expr_eval;
+pub(crate) mod instance;
 #[cfg(feature = "interp")]
-pub mod interp;
+pub(crate) mod interp;
 #[cfg(feature = "micro-jit")]
-pub mod machine;
-pub mod middle;
+pub(crate) mod machine;
+pub(crate) mod middle;
 #[cfg(feature = "micro-jit")]
-pub mod arch;
-pub mod raw_value;
-pub mod runtime;
-pub mod stack;
-pub mod store;
-pub mod value;
-pub mod wasm;
+pub(crate) mod arch;
+pub(crate) mod raw_value;
+pub(crate) mod runtime;
+pub(crate) mod stack;
+pub(crate) mod store;
+pub(crate) mod value;
+pub(crate) mod wasm;

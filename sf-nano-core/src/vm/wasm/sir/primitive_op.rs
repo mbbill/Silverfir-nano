@@ -210,12 +210,12 @@ macro_rules! define_primitive_ops {
         /// control, and branch metadata live in `SemanticOpKind`, which embeds
         /// `PrimitiveOpKind` instead of expanding this enum into a whole-function IR.
         #[derive(Clone, Debug, PartialEq, Eq)]
-        pub enum PrimitiveOpKind {
+        pub(crate) enum PrimitiveOpKind {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
         #[inline]
-        pub fn stack_effect(kind: &PrimitiveOpKind) -> (u8, u8) {
+        pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (u8, u8) {
             match kind {
                 $( PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
             }
@@ -230,7 +230,7 @@ for_each_primitive_op!(define_primitive_ops);
 /// Returns `None` for ops that produce zero results (stores, drops, etc.) or
 /// ops whose result type depends on context (Select, GlobalGet).
 #[inline]
-pub fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueType> {
+pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueType> {
     use crate::value_type::ValueType;
 
     Some(match kind {

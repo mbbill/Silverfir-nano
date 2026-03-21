@@ -16,11 +16,11 @@ use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
 /// One SSA value in prepared LIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LirValue(pub u32);
+pub(crate) struct LirValue(pub u32);
 
 /// Analysis facts about a cached local, carried from planning to the backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CachedLocalInfo {
+pub(crate) struct CachedLocalInfo {
     /// True if this local is a function parameter (local index < param count).
     pub is_param: bool,
     /// True if this non-param local may be read before being written at
@@ -30,7 +30,7 @@ pub struct CachedLocalInfo {
 
 /// Preferred canonical local-slot ranking selected by planning, per bank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LirLocalCachePrefs {
+pub(crate) struct LirLocalCachePrefs {
     /// GP-bank cached local slots (i32, i64, ref).
     pub gp_preferred_slots: Vec<FrameSlot>,
     /// Semantic types for `gp_preferred_slots`, kept in the same order.
@@ -47,7 +47,7 @@ pub struct LirLocalCachePrefs {
 
 /// Full prepared LIR program for one function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LirProgram {
+pub(crate) struct LirProgram {
     pub entry: LirTarget,
     pub local_cache: LirLocalCachePrefs,
     pub blocks: Vec<LirBlock>,
@@ -61,7 +61,7 @@ pub struct LirProgram {
 
 /// One LIR basic block.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LirBlock {
+pub(crate) struct LirBlock {
     pub id: LirTarget,
     /// Live SSA parameters required on block entry.
     pub params: Vec<LirValue>,
@@ -72,27 +72,27 @@ pub struct LirBlock {
 /// One explicit mapping from a predecessor live-out value to a successor block
 /// parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LirBinding {
+pub(crate) struct LirBinding {
     pub param: LirValue,
     pub value: LirValue,
 }
 
 /// One control-flow edge with explicit live-in bindings for the successor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LirEdge {
+pub(crate) struct LirEdge {
     pub target: LirTarget,
     pub bindings: Vec<LirBinding>,
 }
 
 /// One SSA operation inside a block body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LirInst {
+pub(crate) struct LirInst {
     pub kind: LirInstKind,
 }
 
 /// Prepared frontend operation vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LirInstKind {
+pub(crate) enum LirInstKind {
     Value {
         op: LirLeafOp,
         args: Vec<LirValue>,
@@ -108,7 +108,7 @@ pub enum LirInstKind {
 
 /// Prepared slot-based boundary operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LirBoundaryOp {
+pub(crate) enum LirBoundaryOp {
     MemoryGrow {
         mem_idx: u32,
         io: FrameSpan,
@@ -181,7 +181,7 @@ pub enum LirBoundaryOp {
 
 /// Explicit CFG terminator.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LirTerminator {
+pub(crate) enum LirTerminator {
     Goto(LirEdge),
     Branch {
         cond: LirValue,

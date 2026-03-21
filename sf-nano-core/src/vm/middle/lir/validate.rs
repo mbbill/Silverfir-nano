@@ -10,7 +10,7 @@ use super::ir::{
 use crate::vm::middle::frame::FrameSlot;
 
 #[cfg(any(debug_assertions, test))]
-pub fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
+pub(crate) fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
     if program.blocks.is_empty() {
         if program.entry.as_usize() != 0 {
             return Err(WasmError::internal(
@@ -290,7 +290,7 @@ fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: Va
 
 #[cfg(not(any(debug_assertions, test)))]
 #[inline]
-pub fn validate_program(_program: &LirProgram) -> Result<(), WasmError> {
+pub(crate) fn validate_program(_program: &LirProgram) -> Result<(), WasmError> {
     Ok(())
 }
 

@@ -7,6 +7,6 @@
 //! This module contains ONLY definitions — no decoding, no inlining, no
 //! transformation logic.
 
-pub mod common;
-pub mod primitive_op;
-pub mod semantic_ir;
+pub(crate) mod common;
+pub(crate) mod primitive_op;
+pub(crate) mod semantic_ir;

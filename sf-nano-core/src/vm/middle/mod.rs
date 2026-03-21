@@ -13,9 +13,9 @@
 //! - `state.rs` — preparation state (value allocation, budget tracking)
 //! - `optimize.rs` — post-construction LIR optimization
 
-pub mod config;
-pub mod frame;
-pub mod lir;
+pub(crate) mod config;
+pub(crate) mod frame;
+pub(crate) mod lir;
 
 mod local_cache;
 mod lower_block;
@@ -55,22 +55,22 @@ use self::{
     frame::{plan_frame_layout, FrameLayoutPlan},
 };
 
-pub use local_cache::analyze_local_cache_prefs;
+use local_cache::analyze_local_cache_prefs;
 
 /// Preparation input bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PrepareInput {
+pub(crate) struct PrepareInput {
     pub config: PlanConfig,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreparedFunction {
+pub(crate) struct PreparedFunction {
     pub frame: FrameLayoutPlan,
     pub lir: LirProgram,
 }
 
-pub fn prepare_function(
+pub(crate) fn prepare_function(
     input: PrepareInput,
     semantic: &SemanticProgram,
 ) -> Result<PreparedFunction, WasmError> {

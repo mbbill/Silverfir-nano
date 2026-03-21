@@ -8,9 +8,9 @@
 //! instruction statistics are frequency-averaged across workloads to produce
 //! fusion patterns that generalize across diverse programs.
 
-use sf_nano_core::vm::interp::fast::fusion::discovery::{self, DiscoveryConfig};
-use sf_nano_core::vm::interp::fast::fusion::pattern_trie::PatternTrie;
-use sf_nano_core::vm::interp::fast::fusion::profiler;
+use sf_nano_core::fusion_discovery::discovery::{self, DiscoveryConfig};
+use sf_nano_core::fusion_discovery::pattern_trie::PatternTrie;
+use sf_nano_core::fusion_discovery::profiler;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::{set_backend_mode, BackendMode, Instance};
 

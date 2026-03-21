@@ -4,9 +4,7 @@ use log::debug;
 use sf_nano_core::module::entities::FunctionDef;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, RefType};
-use sf_nano_core::vm::entities::Caller;
-use sf_nano_core::vm::value::RefHandle;
-use sf_nano_core::{ExternalFn, Import, Instance, Limitable, Value, WasmError};
+use sf_nano_core::{Caller, ExternalFn, Import, Instance, Limitable, RefHandle, Value, WasmError};
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
     core::{WastArgCore, WastRetCore},
@@ -1233,9 +1231,7 @@ mod tests {
     use super::*;
     use sf_nano_core::module::Module;
     use sf_nano_core::set_reference_backend;
-    use sf_nano_core::vm::backend::{set_backend_mode, BackendMode};
-    use sf_nano_core::vm::entities::FunctionInst;
-    use sf_nano_core::vm::value::Value;
+    use sf_nano_core::{set_backend_mode, BackendMode, FunctionInst, Value};
     use std::path::PathBuf;
 
     fn instantiate_first_module_with_backend(path: &str, backend: BackendMode) -> WastTestRunner {

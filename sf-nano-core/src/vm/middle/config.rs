@@ -15,7 +15,7 @@ use crate::vm::backend::BackendConfig;
 /// There is intentionally no `fp_unit_bytes` today: all current backends
 /// charge both `f32` and `f64` as one FP budget unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlanConfig {
+pub(crate) struct PlanConfig {
     pub gp_unit_bytes: u8,
     pub gp_local_cache_budget: u8,
     pub gp_transient_budget: u8,
@@ -26,7 +26,7 @@ pub struct PlanConfig {
 
 impl PlanConfig {
     #[inline]
-    pub const fn new(
+    pub(crate) const fn new(
         gp_local_cache_budget: u8,
         gp_transient_budget: u8,
         fp_local_cache_budget: u8,
@@ -44,7 +44,7 @@ impl PlanConfig {
     }
 
     #[inline]
-    pub const fn new_with_gp_unit_bytes(
+    pub(crate) const fn new_with_gp_unit_bytes(
         gp_local_cache_budget: u8,
         gp_transient_budget: u8,
         fp_local_cache_budget: u8,
@@ -63,7 +63,7 @@ impl PlanConfig {
     }
 
     #[inline]
-    pub const fn from_backend_config(value: BackendConfig, call_scratch_slots: u16) -> Self {
+    pub(crate) const fn from_backend_config(value: BackendConfig, call_scratch_slots: u16) -> Self {
         Self {
             gp_unit_bytes: value.gp_unit_bytes,
             gp_local_cache_budget: value.gp_local_cache_budget,

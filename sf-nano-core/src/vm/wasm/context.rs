@@ -16,7 +16,7 @@ use crate::{
 
 /// Immutable decode context for one function body.
 #[derive(Clone, Copy)]
-pub struct CompileContext<'a> {
+pub(crate) struct CompileContext<'a> {
     pub types: &'a TypeContext,
     pub store: &'a Store,
     pub module: &'a ModuleInst,
@@ -32,7 +32,7 @@ pub struct CompileContext<'a> {
 
 impl<'a> CompileContext<'a> {
     #[inline]
-    pub const fn new(
+    pub(crate) const fn new(
         types: &'a TypeContext,
         store: &'a Store,
         module: &'a ModuleInst,
@@ -53,7 +53,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub const fn with_value_types(
+    pub(crate) const fn with_value_types(
         types: &'a TypeContext,
         store: &'a Store,
         module: &'a ModuleInst,
@@ -76,7 +76,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_block_type(&self, block_type: &BlockType) -> (u16, u16) {
+    pub(crate) fn resolve_block_type(&self, block_type: &BlockType) -> (u16, u16) {
         match block_type {
             BlockType::Empty => (0, 0),
             BlockType::ValueType(_) => (0, 1),
@@ -89,7 +89,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_block_type_from_imm(&self, imm: &Immediate) -> (u16, u16) {
+    pub(crate) fn resolve_block_type_from_imm(&self, imm: &Immediate) -> (u16, u16) {
         match imm {
             Immediate::Block(block_type) => self.resolve_block_type(block_type),
             _ => (0, 0),
@@ -97,7 +97,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_block_result_types(&self, block_type: &BlockType) -> Vec<ValueType> {
+    pub(crate) fn resolve_block_result_types(&self, block_type: &BlockType) -> Vec<ValueType> {
         match block_type {
             BlockType::Empty => Vec::new(),
             BlockType::ValueType(value_type) => alloc::vec![*value_type],
@@ -110,7 +110,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_block_result_types_from_imm(&self, imm: &Immediate) -> Vec<ValueType> {
+    pub(crate) fn resolve_block_result_types_from_imm(&self, imm: &Immediate) -> Vec<ValueType> {
         match imm {
             Immediate::Block(block_type) => self.resolve_block_result_types(block_type),
             _ => Vec::new(),
@@ -118,7 +118,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_type_index(&self, type_idx: u32) -> (u16, u16) {
+    pub(crate) fn resolve_type_index(&self, type_idx: u32) -> (u16, u16) {
         self.types
             .get(type_idx)
             .map(|ty| (ty.params().len() as u16, ty.results().len() as u16))
@@ -126,19 +126,19 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub fn resolve_func_type(&self, func_idx: u32) -> (u16, u16) {
+    pub(crate) fn resolve_func_type(&self, func_idx: u32) -> (u16, u16) {
         let func = self.store.function(func_idx as usize);
         let ty = func.func_type();
         (ty.params().len() as u16, ty.results().len() as u16)
     }
 
     #[inline]
-    pub fn is_func_internal(&self, func_idx: u32) -> bool {
+    pub(crate) fn is_func_internal(&self, func_idx: u32) -> bool {
         !self.store.function(func_idx as usize).is_external()
     }
 
     #[inline]
-    pub fn get_func_inst(&self, func_idx: u32) -> Option<&FunctionInst> {
+    pub(crate) fn get_func_inst(&self, func_idx: u32) -> Option<&FunctionInst> {
         Some(self.store.function(func_idx as usize))
     }
 }

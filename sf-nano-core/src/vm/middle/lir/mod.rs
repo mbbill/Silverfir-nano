@@ -6,7 +6,7 @@
 //! - explicit slot traffic makes operand-slot publication visible to the
 //!   backend
 
-pub mod ir;
-pub mod leaf;
-pub mod target;
-pub mod validate;
+pub(crate) mod ir;
+pub(crate) mod leaf;
+pub(crate) mod target;
+pub(crate) mod validate;

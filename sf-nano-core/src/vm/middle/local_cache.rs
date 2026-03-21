@@ -24,7 +24,7 @@ use super::state::gp_value_budget_units;
 /// cached-local ordering (GP then FP).  Each entry is moved onto the
 /// corresponding `LirBoundaryOp::skip_reload` field and never stored
 /// persistently.
-pub fn analyze_local_cache_prefs(
+pub(super) fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,
     gp_unit_bytes: u8,
     gp_budget_units: u8,
@@ -418,7 +418,7 @@ fn entry_scope_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
 /// Returns one `Vec<bool>` per call site (in SemanticProgram op order), with
 /// one entry per cached local (GP then FP, same order as the preferred-slots
 /// vectors).  `true` = skip reload.
-pub fn continuation_skip_reload(
+fn continuation_skip_reload(
     semantic: &SemanticProgram,
     cached_local_indices: &[u32],
 ) -> Vec<Vec<bool>> {

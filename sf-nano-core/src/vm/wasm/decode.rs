@@ -29,23 +29,23 @@ use super::{
 
 /// Semantic IR builder used by Wasm decode.
 #[derive(Default)]
-pub struct SemanticBuilder {
+pub(crate) struct SemanticBuilder {
     ops: alloc::vec::Vec<SemanticOp>,
 }
 
 impl SemanticBuilder {
     #[inline]
-    pub fn current_index(&self) -> SemanticIndex {
+    pub(crate) fn current_index(&self) -> SemanticIndex {
         SemanticIndex::new(self.ops.len())
     }
 
-    pub fn push(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
+    pub(crate) fn push(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
         let idx = self.current_index();
         self.ops.push(SemanticOp { kind: kind.into() });
         idx
     }
 
-    pub fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
+    pub(crate) fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
         if let Some(op) = self.ops.get_mut(idx.as_usize()) {
             match &mut op.kind {
                 SemanticOpKind::If { else_target, .. } => *else_target = target,
@@ -57,7 +57,7 @@ impl SemanticBuilder {
         }
     }
 
-    pub fn patch_br_table_target(
+    pub(crate) fn patch_br_table_target(
         &mut self,
         idx: SemanticIndex,
         entry_idx: usize,
@@ -72,7 +72,7 @@ impl SemanticBuilder {
         }
     }
 
-    pub fn finish(
+    pub(crate) fn finish(
         self,
         params: u16,
         results: u16,
@@ -121,7 +121,7 @@ struct DecodeControlFrame {
 }
 
 /// Decode-time semantic context.
-pub struct DecodeContext<'a> {
+pub(crate) struct DecodeContext<'a> {
     compile: CompileContext<'a>,
     builder: SemanticBuilder,
     control: Vec<DecodeControlFrame>,
@@ -133,7 +133,7 @@ pub struct DecodeContext<'a> {
 }
 
 impl<'a> DecodeContext<'a> {
-    pub fn new(compile: CompileContext<'a>) -> Self {
+    pub(crate) fn new(compile: CompileContext<'a>) -> Self {
         Self {
             compile,
             builder: SemanticBuilder::default(),
@@ -154,22 +154,22 @@ impl<'a> DecodeContext<'a> {
     }
 
     #[inline]
-    pub fn current_index(&self) -> SemanticIndex {
+    pub(crate) fn current_index(&self) -> SemanticIndex {
         self.builder.current_index()
     }
 
     #[inline]
-    pub fn push_op(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
+    pub(crate) fn push_op(&mut self, kind: impl Into<SemanticOpKind>) -> SemanticIndex {
         self.builder.push(kind)
     }
 
     #[inline]
-    pub fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
+    pub(crate) fn patch_target(&mut self, idx: SemanticIndex, target: SemanticTarget) {
         self.builder.patch_target(idx, target);
     }
 
     #[inline]
-    pub fn patch_br_table_target(
+    pub(crate) fn patch_br_table_target(
         &mut self,
         idx: SemanticIndex,
         entry_idx: usize,
@@ -992,7 +992,7 @@ impl<'a> DecodeContext<'a> {
     }
 }
 
-pub fn decode_to_semantic_ir(
+pub(crate) fn decode_to_semantic_ir(
     code: &[u8],
     compile: CompileContext<'_>,
 ) -> Result<SemanticProgram, WasmError> {

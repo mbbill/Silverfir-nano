@@ -7,30 +7,30 @@
 
 /// Explicit `fp[...]` frame-relative slot selected during preparation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FrameSlot(pub u16);
+pub(crate) struct FrameSlot(pub u16);
 
 impl FrameSlot {
     #[inline]
-    pub const fn advance(self, slots: u16) -> Self {
+    pub(crate) const fn advance(self, slots: u16) -> Self {
         Self(self.0 + slots)
     }
 }
 
 /// Explicit contiguous `fp[...]` frame-relative range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FrameSpan {
+pub(crate) struct FrameSpan {
     pub start: FrameSlot,
     pub count: u16,
 }
 
 impl FrameSpan {
     #[inline]
-    pub const fn new(start: FrameSlot, count: u16) -> Self {
+    pub(crate) const fn new(start: FrameSlot, count: u16) -> Self {
         Self { start, count }
     }
 
     #[inline]
-    pub const fn single(slot: FrameSlot) -> Self {
+    pub(crate) const fn single(slot: FrameSlot) -> Self {
         Self {
             start: slot,
             count: 1,
@@ -38,14 +38,14 @@ impl FrameSpan {
     }
 
     #[inline]
-    pub const fn end(self) -> FrameSlot {
+    pub(crate) const fn end(self) -> FrameSlot {
         self.start.advance(self.count)
     }
 }
 
 /// Canonical frame layout for one function.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FrameLayoutPlan {
+pub(crate) struct FrameLayoutPlan {
     pub locals: FrameSpan,
     pub call_scratch: Option<FrameSpan>,
     pub operands: FrameSpan,
@@ -55,17 +55,17 @@ pub struct FrameLayoutPlan {
 
 impl FrameLayoutPlan {
     #[inline]
-    pub const fn local_slot(self, idx: u16) -> FrameSlot {
+    pub(crate) const fn local_slot(self, idx: u16) -> FrameSlot {
         self.locals.start.advance(idx)
     }
 
     #[inline]
-    pub const fn operand_slot(self, idx: u16) -> FrameSlot {
+    pub(crate) const fn operand_slot(self, idx: u16) -> FrameSlot {
         self.operands.start.advance(idx)
     }
 
     #[inline]
-    pub const fn call_scratch_slots(self) -> u16 {
+    pub(crate) const fn call_scratch_slots(self) -> u16 {
         match self.call_scratch {
             Some(span) => span.count,
             None => 0,
@@ -73,18 +73,18 @@ impl FrameLayoutPlan {
     }
 
     #[inline]
-    pub const fn total_slots(self) -> u16 {
+    pub(crate) const fn total_slots(self) -> u16 {
         self.operands.end().0
     }
 
     #[inline]
-    pub const fn return_results(self, count: u16) -> FrameSpan {
+    pub(crate) const fn return_results(self, count: u16) -> FrameSpan {
         FrameSpan::new(self.operand_slot(0), count)
     }
 }
 
 #[inline]
-pub const fn plan_frame_layout(
+pub(crate) const fn plan_frame_layout(
     local_count: u16,
     max_stack_height: u16,
     call_scratch_slots: u16,
