@@ -31,7 +31,7 @@ use crate::{
 };
 
 use super::{
-    slot_offset_bytes, target_param_regs,
+    lower_module::{slot_offset_bytes, target_param_regs},
     lower_regfile::MachineRegFile,
     lower_util::{compute_remaining_uses, single_arg, single_result, two_args},
 };

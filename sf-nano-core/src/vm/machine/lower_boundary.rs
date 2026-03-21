@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-use super::{lower_context::BlockLowerContext, lower_sidecar::SidecarBuilder, slot_offset_bytes};
+use super::{lower_context::BlockLowerContext, lower_module::slot_offset_bytes, lower_sidecar::SidecarBuilder};
 
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_call_internal(

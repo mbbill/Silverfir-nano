@@ -44,7 +44,7 @@ pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKin
 pub use vm::entities::{Caller, ExternalFn, FunctionInst};
 pub use vm::instance::{Import, ImportValue, Instance};
 #[cfg(feature = "micro-jit")]
-pub use vm::machine::{
+pub use vm::build::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,

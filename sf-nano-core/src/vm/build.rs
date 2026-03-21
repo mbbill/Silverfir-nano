@@ -1,4 +1,49 @@
 use alloc::{rc::Rc, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// Minimal native stats surface for CLI/debug output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeStatsSnapshot {
+    pub groups: usize,
+    pub ops: usize,
+    pub bytes_emitted: usize,
+    pub groups_skipped: usize,
+    pub ops_skipped: usize,
+}
+
+static STATS_GROUPS: AtomicUsize = AtomicUsize::new(0);
+static STATS_OPS: AtomicUsize = AtomicUsize::new(0);
+static STATS_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_native_stats(groups: usize, ops: usize, bytes_emitted: usize) {
+    STATS_GROUPS.store(groups, Ordering::Relaxed);
+    STATS_OPS.store(ops, Ordering::Relaxed);
+    STATS_BYTES.store(bytes_emitted, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn native_stats_snapshot() -> NativeStatsSnapshot {
+    NativeStatsSnapshot {
+        groups: STATS_GROUPS.load(Ordering::Relaxed),
+        ops: STATS_OPS.load(Ordering::Relaxed),
+        bytes_emitted: STATS_BYTES.load(Ordering::Relaxed),
+        groups_skipped: 0,
+        ops_skipped: 0,
+    }
+}
+
+#[inline]
+pub fn native_stats() -> (usize, usize) {
+    (
+        STATS_GROUPS.load(Ordering::Relaxed),
+        STATS_OPS.load(Ordering::Relaxed),
+    )
+}
+
+#[inline]
+pub const fn native_capacity_skips() -> (usize, usize) {
+    (0, 0)
+}
 
 use crate::{
     error::WasmError,
@@ -233,7 +278,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 .filter_map(|e| e.as_ref().map(|e| e.text_len))
                 .sum();
         }
-        crate::vm::machine::set_native_stats(groups, ops, bytes);
+        set_native_stats(groups, ops, bytes);
     }
 
     // Write dump if SF_NATIVE_DUMP_DIR is set
