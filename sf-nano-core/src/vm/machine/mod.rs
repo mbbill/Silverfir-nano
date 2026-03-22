@@ -8,10 +8,14 @@
 
 pub(crate) mod ir_dump;
 mod lower_boundary;
+mod lower_cached;
 mod lower_context;
+mod lower_inst;
+mod lower_leaf_arith;
+mod lower_leaf_i64;
+mod lower_leaf_special;
 mod lower_module;
-mod lower_ops;
-mod lower_regfile;
+mod lower_regalloc;
 mod lower_sidecar;
 mod lower_util;
 pub(crate) mod machine_ir;

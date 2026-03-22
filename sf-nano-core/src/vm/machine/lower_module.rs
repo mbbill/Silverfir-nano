@@ -37,9 +37,9 @@ use crate::{
 };
 
 use super::{
-    lower_context::{machine_block_params_for_value, BlockLowerContext, ValueRegs},
-    lower_ops::LeafLowering,
-    lower_regfile::MachineRegFile,
+    lower_context::{BlockLowerContext, ValueRegs},
+    lower_inst::LeafLowering,
+    lower_regalloc::{machine_block_params_for_value, MachineRegFile},
     lower_sidecar::SidecarBuilder,
 };
 
@@ -223,7 +223,7 @@ fn lower_function(
         for inst in &block.ops {
             match &inst.kind {
                 SsaInstKind::Value { op, args, results } => {
-                    if let Some(lowered) = lower.lower_special_leaf(
+                    if let Some(lowered) = lower.lower_leaf_special(
                         op,
                         args,
                         results,
