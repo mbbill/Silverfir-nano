@@ -1,5 +1,11 @@
 mod abi;
 pub mod compile;
+mod compile_control;
+mod compile_fusion;
+mod compile_helpers;
+mod compile_inst;
+#[cfg(test)]
+mod compile_tests;
 pub mod config;
 mod emit;
 mod enc;

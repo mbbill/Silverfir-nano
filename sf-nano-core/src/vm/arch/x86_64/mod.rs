@@ -1,5 +1,8 @@
 mod abi;
 pub mod compile;
+mod compile_control;
+mod compile_helpers;
+mod compile_inst;
 pub mod config;
 mod emit;
 mod enc;
