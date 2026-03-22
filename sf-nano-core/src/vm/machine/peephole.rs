@@ -208,9 +208,10 @@ fn fold_constants(
 
         let next = &block.ops[i + 1].kind;
         let use_count = count_value_uses(next, dst);
+        let replaceable_use_count = count_replaceable_value_uses(next, dst);
         let is_dst_of_next = inst_defines(next, dst);
 
-        if use_count == 1 && !is_dst_of_next {
+        if use_count == 1 && replaceable_use_count == 1 && !is_dst_of_next {
             let safe = is_last_use_before_redef(block, i + 1, dst);
             if safe {
                 let imm_val = MachineValue::Imm64(imm);
@@ -580,49 +581,6 @@ fn is_last_use_before_redef(block: &MachineBlock, start_idx: usize, reg: Machine
     true // not used again in the block
 }
 
-#[derive(Clone, Copy)]
-enum ReplaceableUseSite {
-    Op(usize),
-    Terminator,
-}
-
-fn find_single_replaceable_use_before_redef(
-    block: &MachineBlock,
-    def_index: usize,
-    reg: MachineReg,
-) -> Option<ReplaceableUseSite> {
-    let mut use_site = None;
-    for (offset, inst) in block.ops[def_index + 1..].iter().enumerate() {
-        let total_uses = count_value_uses(&inst.kind, reg);
-        let replaceable_uses = count_replaceable_value_uses(&inst.kind, reg);
-        if total_uses != replaceable_uses || replaceable_uses > 1 {
-            return None;
-        }
-        if replaceable_uses == 1 {
-            if use_site.is_some() {
-                return None;
-            }
-            use_site = Some(ReplaceableUseSite::Op(def_index + 1 + offset));
-        }
-        if inst_defines(&inst.kind, reg) {
-            return use_site;
-        }
-    }
-
-    let total_term_uses = count_terminator_value_uses(&block.terminator, reg);
-    let replaceable_term_uses = count_replaceable_terminator_value_uses(&block.terminator, reg);
-    if total_term_uses != replaceable_term_uses || replaceable_term_uses > 1 {
-        return None;
-    }
-    if replaceable_term_uses == 1 {
-        if use_site.is_some() {
-            return None;
-        }
-        use_site = Some(ReplaceableUseSite::Terminator);
-    }
-    use_site
-}
-
 /// Check if a terminator reads from `reg`.
 fn terminator_uses_reg(term: &super::machine_ir::MachineTerminator, reg: MachineReg) -> bool {
     match term {
@@ -669,26 +627,6 @@ fn branch_cond_uses_reg(cond: &super::machine_ir::MachineBranchCond, reg: Machin
 
 fn value_is_reg(v: &MachineValue, reg: MachineReg) -> bool {
     matches!(v, MachineValue::Reg(r) if *r == reg)
-}
-
-fn count_terminator_value_uses(term: &MachineTerminator, reg: MachineReg) -> usize {
-    let mut count = 0;
-    visit_terminator_values(term, |value| {
-        if value_is_reg(value, reg) {
-            count += 1;
-        }
-    });
-    count
-}
-
-fn count_replaceable_terminator_value_uses(term: &MachineTerminator, reg: MachineReg) -> usize {
-    let mut count = 0;
-    visit_replaceable_terminator_values(term, |value| {
-        if value_is_reg(value, reg) {
-            count += 1;
-        }
-    });
-    count
 }
 
 /// Visit all source (read) values in an instruction.

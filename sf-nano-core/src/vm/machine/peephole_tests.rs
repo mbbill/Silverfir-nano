@@ -1024,7 +1024,7 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
 }
 
 #[test]
-fn folds_single_use_constant_into_later_store_in_same_block() {
+fn does_not_fold_constant_past_non_adjacent_instruction() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         first_fp_reg: 9,
@@ -1068,15 +1068,23 @@ fn folds_single_use_constant_into_later_store_in_same_block() {
     crate::vm::machine::peephole::optimize(&mut program, 7, 4);
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 2);
+    assert_eq!(block.ops.len(), 3);
     assert!(matches!(
         block.ops[0].kind,
-        MachineInstKind::FloatConst { .. }
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Imm64(0),
+            ..
+        }
     ));
     assert!(matches!(
         block.ops[1].kind,
+        MachineInstKind::FloatConst { .. }
+    ));
+    assert!(matches!(
+        block.ops[2].kind,
         MachineInstKind::Store {
-            src: MachineValue::Imm64(0),
+            src: MachineValue::Reg(MachineReg(7)),
             ..
         }
     ));
