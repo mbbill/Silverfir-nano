@@ -13,7 +13,7 @@ use std::{
 #[cfg(any(feature = "wasi", feature = "std", test))]
 static JITDUMP_FILE: OnceLock<Option<Mutex<JitDumpWriter>>> = OnceLock::new();
 
-pub fn record_function(code_start: *const u8, code_bytes: &[u8], symbol_name: &str) {
+pub(crate) fn record_function(code_start: *const u8, code_bytes: &[u8], symbol_name: &str) {
     #[cfg(any(feature = "wasi", feature = "std", test))]
     {
         let Some(writer) = writer() else {

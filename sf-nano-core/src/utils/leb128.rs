@@ -21,7 +21,7 @@ impl fmt::Display for ReadError {
     }
 }
 
-pub fn read_leb128_u32(data: &[u8]) -> Result<(u32, usize), ReadError> {
+pub(crate) fn read_leb128_u32(data: &[u8]) -> Result<(u32, usize), ReadError> {
     let mut result: u32 = 0;
     let mut shift: u32 = 0;
     let mut ptr = data.iter();
@@ -48,7 +48,7 @@ pub fn read_leb128_u32(data: &[u8]) -> Result<(u32, usize), ReadError> {
     Ok((result, consumed))
 }
 
-pub fn read_leb128_i32(data: &[u8]) -> Result<(i32, usize), ReadError> {
+pub(crate) fn read_leb128_i32(data: &[u8]) -> Result<(i32, usize), ReadError> {
     let mut result: i32 = 0;
     let mut shift: u32 = 0;
     let mut ptr = data.iter();
@@ -81,7 +81,7 @@ pub fn read_leb128_i32(data: &[u8]) -> Result<(i32, usize), ReadError> {
     Ok((result, consumed))
 }
 
-pub fn read_leb128_i64(data: &[u8]) -> Result<(i64, usize), ReadError> {
+pub(crate) fn read_leb128_i64(data: &[u8]) -> Result<(i64, usize), ReadError> {
     let mut result: i64 = 0;
     let mut shift: u32 = 0;
     let mut ptr = data.iter();
@@ -114,7 +114,7 @@ pub fn read_leb128_i64(data: &[u8]) -> Result<(i64, usize), ReadError> {
     Ok((result, consumed))
 }
 
-pub fn read_leb128_u64(data: &[u8]) -> Result<(u64, usize), ReadError> {
+pub(crate) fn read_leb128_u64(data: &[u8]) -> Result<(u64, usize), ReadError> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
     let mut ptr = data.iter();
@@ -142,7 +142,7 @@ pub fn read_leb128_u64(data: &[u8]) -> Result<(u64, usize), ReadError> {
 }
 
 /// Write a signed 32-bit value as LEB128
-pub fn write_leb128_i32(value: i32) -> alloc::vec::Vec<u8> {
+pub(crate) fn write_leb128_i32(value: i32) -> alloc::vec::Vec<u8> {
     let mut result = alloc::vec::Vec::new();
     let mut value = value;
     let mut more = true;

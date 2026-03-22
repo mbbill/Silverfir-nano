@@ -1,7 +1,7 @@
 use crate::vm::{backend::BackendConfig, arch::ReferenceBackendMode};
 
 #[inline]
-pub const fn compile_backend_config(mode: ReferenceBackendMode) -> BackendConfig {
+pub(crate) const fn compile_backend_config(mode: ReferenceBackendMode) -> BackendConfig {
     match mode {
         // Emulator profiles are reference-target policies, not aliases for a
         // concrete ISA backend. Their numbers may happen to match a native

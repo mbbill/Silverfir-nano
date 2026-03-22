@@ -15,7 +15,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-pub struct FunctionValidator<'a> {
+pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
     function: &'a FunctionSpec,
     context: Context,
@@ -88,7 +88,7 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 }
 
 impl<'a> FunctionValidator<'a> {
-    pub fn new(module: &'a Module, function: &'a FunctionSpec) -> Result<Self, WasmError> {
+    pub(super) fn new(module: &'a Module, function: &'a FunctionSpec) -> Result<Self, WasmError> {
         let mut context = Context::new(
             function.func_type().params(),
             function.locals(),

@@ -20,80 +20,80 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeMemoryView {
-    pub base: *mut u8,
-    pub len: usize,
+pub(crate) struct NativeMemoryView {
+    pub(crate) base: *mut u8,
+    pub(crate) len: usize,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeTableView {
-    pub elements_base: *mut RefHandle,
-    pub elements_len: usize,
+pub(crate) struct NativeTableView {
+    pub(crate) elements_base: *mut RefHandle,
+    pub(crate) elements_len: usize,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeGlobalsView {
-    pub base: *mut GlobalInst,
-    pub len: usize,
+pub(crate) struct NativeGlobalsView {
+    pub(crate) base: *mut GlobalInst,
+    pub(crate) len: usize,
 }
 
-pub mod function_kind {
-    pub const LOCAL: u32 = 0;
-    pub const EXTERNAL: u32 = 1;
+pub(crate) mod function_kind {
+    pub(crate) const LOCAL: u32 = 0;
+    pub(crate) const EXTERNAL: u32 = 1;
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeFunctionView {
-    pub kind: u32,
+pub(crate) struct NativeFunctionView {
+    pub(crate) kind: u32,
     /// Canonical equivalence class for the callee signature within the current
     /// module type context. `call_indirect` compares this against the cached
     /// canonical id for the expected type index instead of comparing raw type
     /// indices directly.
-    pub type_canon: u32,
+    pub(crate) type_canon: u32,
     /// Native-local target token for `MachineTerminator::CallIndirect`.
     ///
     /// The current lowering path keeps machine function ids aligned with the
     /// module function index space, so local callees use that machine-call
     /// target id directly here.
-    pub local_target: u32,
+    pub(crate) local_target: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct NativeContext {
-    pub stack_end: *mut u64,
-    pub mem0_base: *mut u8,
-    pub mem0_size: u64,
-    pub globals_view: NativeGlobalsView,
-    pub memory_views_base: *const NativeMemoryView,
-    pub memory_views_len: usize,
-    pub table_views_base: *const NativeTableView,
-    pub table_views_len: usize,
-    pub function_views_base: *const NativeFunctionView,
-    pub function_views_len: usize,
-    pub type_canon_base: *const u32,
-    pub type_canon_len: usize,
-    pub store: *mut Store,
-    pub current_module: *const ModuleInst,
-    pub error: Option<WasmError>,
+pub(crate) struct NativeContext {
+    pub(crate) stack_end: *mut u64,
+    pub(crate) mem0_base: *mut u8,
+    pub(crate) mem0_size: u64,
+    pub(crate) globals_view: NativeGlobalsView,
+    pub(crate) memory_views_base: *const NativeMemoryView,
+    pub(crate) memory_views_len: usize,
+    pub(crate) table_views_base: *const NativeTableView,
+    pub(crate) table_views_len: usize,
+    pub(crate) function_views_base: *const NativeFunctionView,
+    pub(crate) function_views_len: usize,
+    pub(crate) type_canon_base: *const u32,
+    pub(crate) type_canon_len: usize,
+    pub(crate) store: *mut Store,
+    pub(crate) current_module: *const ModuleInst,
+    pub(crate) error: Option<WasmError>,
     /// Trap kind set by the guard-page signal handler (no allocation needed).
     /// 0 = no trap, 1 = memory out of bounds.
     #[cfg(has_guard_pages)]
-    pub trap_kind: u32,
+    pub(crate) trap_kind: u32,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
     function_views: Vec<NativeFunctionView>,
     type_canon: Vec<u32>,
     #[cfg(feature = "function-trace")]
-    pub trace_stack: std::vec::Vec<u32>,
+    pub(crate) trace_stack: std::vec::Vec<u32>,
 }
 
 impl NativeContext {
     #[inline]
-    pub fn new(store: *mut Store, stack_end: *mut u64) -> Self {
+    pub(crate) fn new(store: *mut Store, stack_end: *mut u64) -> Self {
         let mut ctx = Self {
             stack_end,
             mem0_base: core::ptr::null_mut(),
@@ -124,7 +124,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_cached_views(&mut self) {
+    pub(crate) fn refresh_cached_views(&mut self) {
         if let Some(store) = self.store() {
             self.current_module = store.module() as *const ModuleInst;
         } else {
@@ -138,7 +138,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_memory_views(&mut self) {
+    pub(crate) fn refresh_memory_views(&mut self) {
         let Some(store) = self.store() else {
             self.mem0_base = core::ptr::null_mut();
             self.mem0_size = 0;
@@ -181,7 +181,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_table_views(&mut self) {
+    pub(crate) fn refresh_table_views(&mut self) {
         let Some(store) = self.store() else {
             self.table_views.clear();
             self.table_views_base = core::ptr::null();
@@ -214,7 +214,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_globals_view(&mut self) {
+    pub(crate) fn refresh_globals_view(&mut self) {
         let Some(store) = self.store() else {
             self.globals_view = NativeGlobalsView::default();
             return;
@@ -232,7 +232,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_function_views(&mut self) {
+    pub(crate) fn refresh_function_views(&mut self) {
         let Some(store) = self.store() else {
             self.function_views.clear();
             self.function_views_base = core::ptr::null();
@@ -282,7 +282,7 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn refresh_type_canon(&mut self) {
+    pub(crate) fn refresh_type_canon(&mut self) {
         let Some(store) = self.store() else {
             self.type_canon.clear();
             self.type_canon_base = core::ptr::null();
@@ -315,67 +315,67 @@ impl NativeContext {
     }
 
     #[inline]
-    pub fn store(&self) -> Option<&Store> {
+    pub(crate) fn store(&self) -> Option<&Store> {
         unsafe { self.store.as_ref() }
     }
 
     #[inline]
-    pub fn store_mut(&mut self) -> Option<&mut Store> {
+    pub(crate) fn store_mut(&mut self) -> Option<&mut Store> {
         unsafe { self.store.as_mut() }
     }
 }
 
-pub mod ctx_offset {
+pub(crate) mod ctx_offset {
     use super::NativeContext;
 
-    pub const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
-    pub const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
-    pub const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
-    pub const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
-    pub const MEMORY_VIEWS_BASE: u32 =
+    pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
+    pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
+    pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
+    pub(crate) const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
+    pub(crate) const MEMORY_VIEWS_BASE: u32 =
         core::mem::offset_of!(NativeContext, memory_views_base) as u32;
-    pub const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
-    pub const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
-    pub const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
-    pub const FUNCTION_VIEWS_BASE: u32 =
+    pub(crate) const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
+    pub(crate) const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
+    pub(crate) const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
+    pub(crate) const FUNCTION_VIEWS_BASE: u32 =
         core::mem::offset_of!(NativeContext, function_views_base) as u32;
-    pub const FUNCTION_VIEWS_LEN: u32 =
+    pub(crate) const FUNCTION_VIEWS_LEN: u32 =
         core::mem::offset_of!(NativeContext, function_views_len) as u32;
-    pub const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
-    pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
-    pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
-    pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
+    pub(crate) const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
+    pub(crate) const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
+    pub(crate) const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
+    pub(crate) const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
     #[cfg(has_guard_pages)]
-    pub const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
+    pub(crate) const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
 }
 
-pub mod memory_view_offset {
+pub(crate) mod memory_view_offset {
     use super::NativeMemoryView;
 
-    pub const BASE: u32 = core::mem::offset_of!(NativeMemoryView, base) as u32;
-    pub const LEN: u32 = core::mem::offset_of!(NativeMemoryView, len) as u32;
+    pub(crate) const BASE: u32 = core::mem::offset_of!(NativeMemoryView, base) as u32;
+    pub(crate) const LEN: u32 = core::mem::offset_of!(NativeMemoryView, len) as u32;
 }
 
-pub mod table_view_offset {
+pub(crate) mod table_view_offset {
     use super::NativeTableView;
 
-    pub const ELEMENTS_BASE: u32 = core::mem::offset_of!(NativeTableView, elements_base) as u32;
-    pub const ELEMENTS_LEN: u32 = core::mem::offset_of!(NativeTableView, elements_len) as u32;
+    pub(crate) const ELEMENTS_BASE: u32 = core::mem::offset_of!(NativeTableView, elements_base) as u32;
+    pub(crate) const ELEMENTS_LEN: u32 = core::mem::offset_of!(NativeTableView, elements_len) as u32;
 }
 
-pub mod globals_view_offset {
+pub(crate) mod globals_view_offset {
     use super::NativeGlobalsView;
 
-    pub const BASE: u32 = core::mem::offset_of!(NativeGlobalsView, base) as u32;
-    pub const LEN: u32 = core::mem::offset_of!(NativeGlobalsView, len) as u32;
+    pub(crate) const BASE: u32 = core::mem::offset_of!(NativeGlobalsView, base) as u32;
+    pub(crate) const LEN: u32 = core::mem::offset_of!(NativeGlobalsView, len) as u32;
 }
 
-pub mod function_view_offset {
+pub(crate) mod function_view_offset {
     use super::NativeFunctionView;
 
-    pub const KIND: u32 = core::mem::offset_of!(NativeFunctionView, kind) as u32;
-    pub const TYPE_CANON: u32 = core::mem::offset_of!(NativeFunctionView, type_canon) as u32;
-    pub const LOCAL_TARGET: u32 = core::mem::offset_of!(NativeFunctionView, local_target) as u32;
+    pub(crate) const KIND: u32 = core::mem::offset_of!(NativeFunctionView, kind) as u32;
+    pub(crate) const TYPE_CANON: u32 = core::mem::offset_of!(NativeFunctionView, type_canon) as u32;
+    pub(crate) const LOCAL_TARGET: u32 = core::mem::offset_of!(NativeFunctionView, local_target) as u32;
 }
 
 #[cfg(test)]

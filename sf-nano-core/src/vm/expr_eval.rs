@@ -10,7 +10,7 @@ use crate::value_type::{HeapType, RefType};
 use crate::vm::entities::ModuleInst;
 use crate::vm::value::{RefHandle, Value};
 
-pub fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, WasmError> {
+pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, WasmError> {
     let bytes: &[u8] = expr;
     let mut code: Payload = bytes.into();
 

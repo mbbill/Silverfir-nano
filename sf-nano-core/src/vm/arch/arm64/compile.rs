@@ -132,7 +132,7 @@ struct Arm64FunctionInfo {
 const ARM64_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Arm64FunctionInfo>();
 
 #[derive(Clone, Debug)]
-pub struct CompiledArm64Entry {
+pub(crate) struct CompiledArm64Entry {
     pub entry: Arm64RootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
@@ -188,7 +188,7 @@ pub(super) enum IndexedMemFusion {
     },
 }
 
-pub fn compile_module(
+pub(crate) fn compile_module(
     module: &ModuleInst,
     compiled: &CompiledNativeModule,
 ) -> Result<Vec<Option<CompiledArm64Entry>>, WasmError> {

@@ -15,7 +15,7 @@
 use crate::vm::backend::BackendConfig;
 
 #[inline]
-pub const fn compile_backend_config() -> BackendConfig {
+pub(crate) const fn compile_backend_config() -> BackendConfig {
     // Policy choice within the ARM64 ABI capacity from `abi.rs`:
     // 13 GP cached locals (X23-X28 callee-saved + X9-X15 caller-saved),
     //  6 GP transients    (X3-X8),

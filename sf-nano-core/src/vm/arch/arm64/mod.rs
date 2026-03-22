@@ -1,12 +1,12 @@
 mod abi;
-pub mod compile;
+pub(crate) mod compile;
 mod compile_control;
 mod compile_fusion;
 mod compile_helpers;
 mod compile_inst;
 #[cfg(test)]
 mod compile_tests;
-pub mod config;
+pub(crate) mod config;
 mod emit;
 mod enc;
 mod reg;
@@ -34,7 +34,7 @@ use crate::vm::debug::function_trace;
 
 const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
 
-pub fn eval(
+pub(crate) fn eval(
     spec: &FunctionSpec,
     code: &NativeCode,
     store: &mut Store,

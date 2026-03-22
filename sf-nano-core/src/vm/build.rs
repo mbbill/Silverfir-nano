@@ -15,7 +15,7 @@ static STATS_GROUPS: AtomicUsize = AtomicUsize::new(0);
 static STATS_OPS: AtomicUsize = AtomicUsize::new(0);
 static STATS_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-pub fn set_native_stats(groups: usize, ops: usize, bytes_emitted: usize) {
+pub(crate) fn set_native_stats(groups: usize, ops: usize, bytes_emitted: usize) {
     STATS_GROUPS.store(groups, Ordering::Relaxed);
     STATS_OPS.store(ops, Ordering::Relaxed);
     STATS_BYTES.store(bytes_emitted, Ordering::Relaxed);
@@ -63,11 +63,11 @@ use crate::{
 };
 
 #[inline]
-pub const fn native_plan_config(backend: BackendConfig) -> PlanConfig {
+pub(crate) const fn native_plan_config(backend: BackendConfig) -> PlanConfig {
     PlanConfig::from_backend_config(backend, 3)
 }
 
-pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
+pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
         .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
     let backend = arch::active_backend_config()

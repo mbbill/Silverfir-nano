@@ -10,14 +10,14 @@ use alloc::{string::String, vec::Vec};
 use crate::vm::value::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TraceEventKind {
+pub(crate) enum TraceEventKind {
     Entry,
     Exit,
     Trap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionTraceId {
+pub(crate) struct FunctionTraceId {
     pub ordinal: u64,
     pub func_idx: u32,
     pub call_depth: u32,
@@ -25,7 +25,7 @@ pub struct FunctionTraceId {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FunctionTraceEvent {
+pub(crate) struct FunctionTraceEvent {
     pub id: FunctionTraceId,
     pub result_values: Vec<Value>,
     pub globals_hash: u64,
@@ -33,7 +33,7 @@ pub struct FunctionTraceEvent {
     pub error_class: Option<String>,
 }
 
-pub trait FunctionTraceSink {
+pub(crate) trait FunctionTraceSink {
     fn record(&mut self, event: FunctionTraceEvent);
 }
 
@@ -587,10 +587,10 @@ pub use imp::*;
 
 #[cfg(not(feature = "function-trace"))]
 #[inline]
-pub fn init_from_env() {}
+pub(crate) fn init_from_env() {}
 
 #[cfg(not(feature = "function-trace"))]
 #[inline]
-pub const fn enabled() -> bool {
+pub(crate) const fn enabled() -> bool {
     false
 }

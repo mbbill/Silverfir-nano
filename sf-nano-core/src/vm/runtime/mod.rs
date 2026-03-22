@@ -28,25 +28,25 @@ impl ReferenceBackendMode {
 // --- Native runtime infrastructure (micro-jit only) ---
 
 #[cfg(feature = "micro-jit")]
-pub mod code;
+pub(crate) mod code;
 #[cfg(feature = "micro-jit")]
-pub mod code_buf;
+pub(crate) mod code_buf;
 #[cfg(feature = "micro-jit")]
-pub mod context;
+pub(crate) mod context;
 #[cfg(feature = "micro-jit")]
 #[cfg(has_guard_pages)]
-pub mod guard_pages;
+pub(crate) mod guard_pages;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod helper_meta;
 #[cfg(feature = "micro-jit")]
-pub mod helpers;
+pub(crate) mod helpers;
 #[cfg(feature = "micro-jit")]
-pub mod layout;
+pub(crate) mod layout;
 #[cfg(feature = "micro-jit")]
-pub mod profiler;
+pub(crate) mod profiler;
 #[cfg(feature = "micro-jit")]
 #[cfg(has_guard_pages)]
-pub mod trap_signal;
+pub(crate) mod trap_signal;
 
 #[cfg(feature = "micro-jit")]
 mod native_eval;
@@ -125,7 +125,7 @@ pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'st
     }
 }
 
-pub fn eval(
+pub(crate) fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],

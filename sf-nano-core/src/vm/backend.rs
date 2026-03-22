@@ -31,7 +31,7 @@ pub enum BackendKind {
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BackendConfig {
+pub(crate) struct BackendConfig {
     /// Size in bytes of one GP budget unit on the target backend.
     ///
     /// This is separate from the frame-slot contract. Wasm values still
@@ -50,7 +50,7 @@ pub struct BackendConfig {
 
 impl BackendConfig {
     #[inline]
-    pub const fn new(
+    pub(crate) const fn new(
         gp_local_cache_budget: u8,
         gp_transient_budget: u8,
         fp_local_cache_budget: u8,
@@ -66,7 +66,7 @@ impl BackendConfig {
     }
 
     #[inline]
-    pub const fn new_with_gp_unit_bytes(
+    pub(crate) const fn new_with_gp_unit_bytes(
         gp_local_cache_budget: u8,
         gp_transient_budget: u8,
         fp_local_cache_budget: u8,
@@ -83,7 +83,7 @@ impl BackendConfig {
     }
 
     #[inline]
-    pub const fn is_32bit_gp_target(self) -> bool {
+    pub(crate) const fn is_32bit_gp_target(self) -> bool {
         self.gp_unit_bytes == 4
     }
 }
@@ -180,7 +180,7 @@ pub fn set_backend_mode(mode: BackendMode) {
     ACTIVE_BACKEND_MODE.store(mode as u8, Ordering::Relaxed);
 }
 
-pub fn active_backend_mode() -> BackendMode {
+pub(crate) fn active_backend_mode() -> BackendMode {
     match ACTIVE_BACKEND_MODE.load(Ordering::Relaxed) {
         x if x == BackendMode::Base as u8 => BackendMode::Base,
         x if x == BackendMode::Fusion as u8 => BackendMode::Fusion,
@@ -193,7 +193,7 @@ pub fn backend_mode() -> BackendMode {
     active_backend_mode()
 }
 
-pub fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static str> {
+pub(crate) fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static str> {
     match mode {
         BackendMode::Base => {
             #[cfg(feature = "interp")]

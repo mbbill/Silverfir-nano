@@ -17,7 +17,7 @@ use crate::vm::entities::{Caller, ExternalFn};
 use crate::vm::instance::Import;
 use crate::vm::value::Value;
 
-mod preview1;
+pub(crate) mod preview1;
 
 pub const WASI_SNAPSHOT_PREVIEW1: &str = "wasi_snapshot_preview1";
 pub const WASI_UNSTABLE: &str = "wasi_unstable";

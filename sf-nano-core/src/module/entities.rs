@@ -202,22 +202,22 @@ impl FunctionSpec {
 
     #[cfg(feature = "micro-jit")]
     #[inline(always)]
-    pub fn native_cache(&self) -> NativeCodeCache {
+    pub(crate) fn native_cache(&self) -> NativeCodeCache {
         unsafe { *self.native_cache.get() }
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn get_native_code(&self) -> Option<&NativeCode> {
+    pub(crate) fn get_native_code(&self) -> Option<&NativeCode> {
         unsafe { (*self.native_code.get()).as_ref() }
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn with_native_code_mut<R>(&self, f: impl FnOnce(&mut NativeCode) -> R) -> Option<R> {
+    pub(crate) fn with_native_code_mut<R>(&self, f: impl FnOnce(&mut NativeCode) -> R) -> Option<R> {
         unsafe { (*self.native_code.get()).as_mut().map(f) }
     }
 
     #[cfg(feature = "micro-jit")]
-    pub fn set_native_code(&self, code: NativeCode, cache: NativeCodeCache) {
+    pub(crate) fn set_native_code(&self, code: NativeCode, cache: NativeCodeCache) {
         unsafe {
             *self.native_code.get() = Some(code);
             *self.native_cache.get() = cache;

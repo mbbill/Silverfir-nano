@@ -254,7 +254,7 @@ fn io_error_to_errno(e: &std::io::Error) -> i32 {
 // proc_exit
 // ---------------------------------------------------------------------------
 
-pub fn proc_exit(
+pub(crate) fn proc_exit(
     _caller: &mut Caller,
     args: &[Value],
     _results: &mut [Value],
@@ -267,7 +267,7 @@ pub fn proc_exit(
 // args_sizes_get
 // ---------------------------------------------------------------------------
 
-pub fn args_sizes_get(
+pub(crate) fn args_sizes_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -293,7 +293,7 @@ pub fn args_sizes_get(
 // args_get
 // ---------------------------------------------------------------------------
 
-pub fn args_get(
+pub(crate) fn args_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -323,7 +323,7 @@ pub fn args_get(
 // environ_sizes_get
 // ---------------------------------------------------------------------------
 
-pub fn environ_sizes_get(
+pub(crate) fn environ_sizes_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -354,7 +354,7 @@ pub fn environ_sizes_get(
 // environ_get
 // ---------------------------------------------------------------------------
 
-pub fn environ_get(
+pub(crate) fn environ_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -383,7 +383,7 @@ pub fn environ_get(
 // fd_write
 // ---------------------------------------------------------------------------
 
-pub fn fd_write(
+pub(crate) fn fd_write(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -475,7 +475,7 @@ pub fn fd_write(
 // fd_read
 // ---------------------------------------------------------------------------
 
-pub fn fd_read(
+pub(crate) fn fd_read(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -594,7 +594,7 @@ pub fn fd_read(
 // fd_close
 // ---------------------------------------------------------------------------
 
-pub fn fd_close(
+pub(crate) fn fd_close(
     _caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -632,7 +632,7 @@ pub fn fd_close(
 // fd_seek
 // ---------------------------------------------------------------------------
 
-pub fn fd_seek(
+pub(crate) fn fd_seek(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -698,7 +698,7 @@ pub fn fd_seek(
 // fd_tell
 // ---------------------------------------------------------------------------
 
-pub fn fd_tell(
+pub(crate) fn fd_tell(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -739,7 +739,7 @@ pub fn fd_tell(
 // fd_prestat_get
 // ---------------------------------------------------------------------------
 
-pub fn fd_prestat_get(
+pub(crate) fn fd_prestat_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -781,7 +781,7 @@ pub fn fd_prestat_get(
 // fd_prestat_dir_name
 // ---------------------------------------------------------------------------
 
-pub fn fd_prestat_dir_name(
+pub(crate) fn fd_prestat_dir_name(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -820,7 +820,7 @@ pub fn fd_prestat_dir_name(
 // fd_fdstat_get
 // ---------------------------------------------------------------------------
 
-pub fn fd_fdstat_get(
+pub(crate) fn fd_fdstat_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -947,7 +947,7 @@ pub fn fd_fdstat_get(
 // clock_time_get
 // ---------------------------------------------------------------------------
 
-pub fn clock_time_get(
+pub(crate) fn clock_time_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -971,7 +971,7 @@ pub fn clock_time_get(
 // clock_res_get
 // ---------------------------------------------------------------------------
 
-pub fn clock_res_get(
+pub(crate) fn clock_res_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -989,7 +989,7 @@ pub fn clock_res_get(
 // random_get — simple xorshift PRNG (no external deps)
 // ---------------------------------------------------------------------------
 
-pub fn random_get(
+pub(crate) fn random_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -1032,7 +1032,7 @@ pub fn random_get(
 // path_open
 // ---------------------------------------------------------------------------
 
-pub fn path_open(
+pub(crate) fn path_open(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -1272,7 +1272,7 @@ pub fn path_open(
 // WASI preview1 functions — stubs
 // ===========================================================================
 
-pub fn fd_fdstat_set_flags(
+pub(crate) fn fd_fdstat_set_flags(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1281,7 +1281,7 @@ pub fn fd_fdstat_set_flags(
     Ok(())
 }
 
-pub fn fd_fdstat_set_rights(
+pub(crate) fn fd_fdstat_set_rights(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1290,7 +1290,7 @@ pub fn fd_fdstat_set_rights(
     Ok(())
 }
 
-pub fn fd_renumber(
+pub(crate) fn fd_renumber(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1299,7 +1299,7 @@ pub fn fd_renumber(
     Ok(())
 }
 
-pub fn fd_filestat_get(
+pub(crate) fn fd_filestat_get(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1308,7 +1308,7 @@ pub fn fd_filestat_get(
     Ok(())
 }
 
-pub fn fd_filestat_set_size(
+pub(crate) fn fd_filestat_set_size(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1317,7 +1317,7 @@ pub fn fd_filestat_set_size(
     Ok(())
 }
 
-pub fn fd_filestat_set_times(
+pub(crate) fn fd_filestat_set_times(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1326,7 +1326,7 @@ pub fn fd_filestat_set_times(
     Ok(())
 }
 
-pub fn fd_sync(
+pub(crate) fn fd_sync(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1335,7 +1335,7 @@ pub fn fd_sync(
     Ok(())
 }
 
-pub fn fd_datasync(
+pub(crate) fn fd_datasync(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1344,7 +1344,7 @@ pub fn fd_datasync(
     Ok(())
 }
 
-pub fn fd_readdir(
+pub(crate) fn fd_readdir(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1353,7 +1353,7 @@ pub fn fd_readdir(
     Ok(())
 }
 
-pub fn fd_pread(
+pub(crate) fn fd_pread(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1362,7 +1362,7 @@ pub fn fd_pread(
     Ok(())
 }
 
-pub fn fd_pwrite(
+pub(crate) fn fd_pwrite(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1371,7 +1371,7 @@ pub fn fd_pwrite(
     Ok(())
 }
 
-pub fn fd_allocate(
+pub(crate) fn fd_allocate(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1380,7 +1380,7 @@ pub fn fd_allocate(
     Ok(())
 }
 
-pub fn fd_advise(
+pub(crate) fn fd_advise(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1389,7 +1389,7 @@ pub fn fd_advise(
     Ok(())
 }
 
-pub fn sched_yield(
+pub(crate) fn sched_yield(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1398,7 +1398,7 @@ pub fn sched_yield(
     Ok(())
 }
 
-pub fn sock_shutdown(
+pub(crate) fn sock_shutdown(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1407,7 +1407,7 @@ pub fn sock_shutdown(
     Ok(())
 }
 
-pub fn poll_oneoff(
+pub(crate) fn poll_oneoff(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1416,7 +1416,7 @@ pub fn poll_oneoff(
     Ok(())
 }
 
-pub fn path_create_directory(
+pub(crate) fn path_create_directory(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1425,7 +1425,7 @@ pub fn path_create_directory(
     Ok(())
 }
 
-pub fn path_filestat_get(
+pub(crate) fn path_filestat_get(
     caller: &mut Caller,
     args: &[Value],
     results: &mut [Value],
@@ -1541,7 +1541,7 @@ pub fn path_filestat_get(
     Ok(())
 }
 
-pub fn path_filestat_set_times(
+pub(crate) fn path_filestat_set_times(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1550,7 +1550,7 @@ pub fn path_filestat_set_times(
     Ok(())
 }
 
-pub fn path_readlink(
+pub(crate) fn path_readlink(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1559,7 +1559,7 @@ pub fn path_readlink(
     Ok(())
 }
 
-pub fn path_remove_directory(
+pub(crate) fn path_remove_directory(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1568,7 +1568,7 @@ pub fn path_remove_directory(
     Ok(())
 }
 
-pub fn path_unlink_file(
+pub(crate) fn path_unlink_file(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1577,7 +1577,7 @@ pub fn path_unlink_file(
     Ok(())
 }
 
-pub fn path_rename(
+pub(crate) fn path_rename(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1586,7 +1586,7 @@ pub fn path_rename(
     Ok(())
 }
 
-pub fn path_link(
+pub(crate) fn path_link(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],
@@ -1595,7 +1595,7 @@ pub fn path_link(
     Ok(())
 }
 
-pub fn path_symlink(
+pub(crate) fn path_symlink(
     _caller: &mut Caller,
     _args: &[Value],
     results: &mut [Value],

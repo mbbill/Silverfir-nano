@@ -14,19 +14,19 @@ use crate::{
 };
 
 #[cfg(target_arch = "aarch64")]
-pub type Arm64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+pub(crate) type Arm64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
 #[cfg(target_arch = "aarch64")]
-pub type Arm64CodePtr = *const u8;
+pub(crate) type Arm64CodePtr = *const u8;
 
 #[cfg(target_arch = "arm")]
-pub type Armv7aRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+pub(crate) type Armv7aRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
 #[cfg(target_arch = "arm")]
-pub type Armv7aCodePtr = *const u8;
+pub(crate) type Armv7aCodePtr = *const u8;
 
 #[cfg(target_arch = "x86_64")]
-pub type X86_64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+pub(crate) type X86_64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
 #[cfg(target_arch = "x86_64")]
-pub type X86_64CodePtr = *const u8;
+pub(crate) type X86_64CodePtr = *const u8;
 
 #[derive(Clone, Debug)]
 struct AlignedConstData {
@@ -62,7 +62,7 @@ impl AlignedConstData {
 }
 
 #[derive(Debug)]
-pub struct CompiledNativeModule {
+pub(crate) struct CompiledNativeModule {
     backend_kind: NativeBackend,
     backend: BackendConfig,
     module: MachineModule,
@@ -71,7 +71,7 @@ pub struct CompiledNativeModule {
 }
 
 impl CompiledNativeModule {
-    pub fn new(
+    pub(crate) fn new(
         backend_kind: NativeBackend,
         backend: BackendConfig,
         module: MachineModule,
@@ -97,32 +97,32 @@ impl CompiledNativeModule {
     }
 
     #[inline]
-    pub const fn backend(&self) -> BackendConfig {
+    pub(crate) const fn backend(&self) -> BackendConfig {
         self.backend
     }
 
     #[inline]
-    pub const fn backend_kind(&self) -> NativeBackend {
+    pub(crate) const fn backend_kind(&self) -> NativeBackend {
         self.backend_kind
     }
 
     #[inline]
-    pub const fn module(&self) -> &MachineModule {
+    pub(crate) const fn module(&self) -> &MachineModule {
         &self.module
     }
 
     #[inline]
-    pub const fn runtime(&self) -> &MachineRuntimeContract {
+    pub(crate) const fn runtime(&self) -> &MachineRuntimeContract {
         &self.runtime
     }
 
     #[inline]
-    pub fn function(&self, id: MachineFuncId) -> Option<&MachineFunction> {
+    pub(crate) fn function(&self, id: MachineFuncId) -> Option<&MachineFunction> {
         self.module.functions.get(id.0 as usize)
     }
 
     #[inline]
-    pub fn const_ptr(&self, id: MachineConstId) -> Option<*const u8> {
+    pub(crate) fn const_ptr(&self, id: MachineConstId) -> Option<*const u8> {
         self.aligned_consts
             .get(id.0 as usize)
             .map(AlignedConstData::as_ptr)
@@ -130,7 +130,7 @@ impl CompiledNativeModule {
 }
 
 #[derive(Clone, Debug)]
-pub struct NativeCode {
+pub(crate) struct NativeCode {
     compiled: Rc<CompiledNativeModule>,
     func_id: MachineFuncId,
     #[cfg(target_arch = "aarch64")]
@@ -149,7 +149,7 @@ pub struct NativeCode {
 
 impl NativeCode {
     #[inline]
-    pub fn new(compiled: Rc<CompiledNativeModule>, func_id: MachineFuncId) -> Self {
+    pub(crate) fn new(compiled: Rc<CompiledNativeModule>, func_id: MachineFuncId) -> Self {
         Self {
             compiled,
             func_id,
@@ -170,7 +170,7 @@ impl NativeCode {
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub fn with_arm64_entry(
+    pub(crate) fn with_arm64_entry(
         mut self,
         entry: Option<Arm64RootEntry>,
         root_return: Option<Arm64CodePtr>,
@@ -181,35 +181,35 @@ impl NativeCode {
     }
 
     #[inline]
-    pub const fn func_id(&self) -> MachineFuncId {
+    pub(crate) const fn func_id(&self) -> MachineFuncId {
         self.func_id
     }
 
     #[inline]
-    pub fn compiled(&self) -> &CompiledNativeModule {
+    pub(crate) fn compiled(&self) -> &CompiledNativeModule {
         &self.compiled
     }
 
     #[inline]
-    pub fn compiled_rc(&self) -> &Rc<CompiledNativeModule> {
+    pub(crate) fn compiled_rc(&self) -> &Rc<CompiledNativeModule> {
         &self.compiled
     }
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub const fn arm64_entry(&self) -> Option<Arm64RootEntry> {
+    pub(crate) const fn arm64_entry(&self) -> Option<Arm64RootEntry> {
         self.arm64_entry
     }
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub const fn arm64_root_return(&self) -> Option<Arm64CodePtr> {
+    pub(crate) const fn arm64_root_return(&self) -> Option<Arm64CodePtr> {
         self.arm64_root_return
     }
 
     #[cfg(target_arch = "arm")]
     #[inline]
-    pub fn with_armv7a_entry(
+    pub(crate) fn with_armv7a_entry(
         mut self,
         entry: Option<Armv7aRootEntry>,
         root_return: Option<Armv7aCodePtr>,
@@ -221,19 +221,19 @@ impl NativeCode {
 
     #[cfg(target_arch = "arm")]
     #[inline]
-    pub const fn armv7a_entry(&self) -> Option<Armv7aRootEntry> {
+    pub(crate) const fn armv7a_entry(&self) -> Option<Armv7aRootEntry> {
         self.armv7a_entry
     }
 
     #[cfg(target_arch = "arm")]
     #[inline]
-    pub const fn armv7a_root_return(&self) -> Option<Armv7aCodePtr> {
+    pub(crate) const fn armv7a_root_return(&self) -> Option<Armv7aCodePtr> {
         self.armv7a_root_return
     }
 
     #[cfg(target_arch = "x86_64")]
     #[inline]
-    pub fn with_x86_64_entry(
+    pub(crate) fn with_x86_64_entry(
         mut self,
         entry: Option<X86_64RootEntry>,
         root_return: Option<X86_64CodePtr>,
@@ -245,35 +245,35 @@ impl NativeCode {
 
     #[cfg(target_arch = "x86_64")]
     #[inline]
-    pub const fn x86_64_entry(&self) -> Option<X86_64RootEntry> {
+    pub(crate) const fn x86_64_entry(&self) -> Option<X86_64RootEntry> {
         self.x86_64_entry
     }
 
     #[cfg(target_arch = "x86_64")]
     #[inline]
-    pub const fn x86_64_root_return(&self) -> Option<X86_64CodePtr> {
+    pub(crate) const fn x86_64_root_return(&self) -> Option<X86_64CodePtr> {
         self.x86_64_root_return
     }
 
     #[inline]
-    pub fn program(&self) -> Option<&MachineFunction> {
+    pub(crate) fn program(&self) -> Option<&MachineFunction> {
         self.compiled.function(self.func_id)
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeCodeCache {
+pub(crate) struct NativeCodeCache {
     compiled: bool,
 }
 
 impl NativeCodeCache {
     #[inline]
-    pub const fn is_compiled(self) -> bool {
+    pub(crate) const fn is_compiled(self) -> bool {
         self.compiled
     }
 
     #[inline]
-    pub const fn compiled() -> Self {
+    pub(crate) const fn compiled() -> Self {
         Self { compiled: true }
     }
 }

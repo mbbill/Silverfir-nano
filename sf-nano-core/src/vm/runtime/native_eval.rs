@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-pub fn eval(
+pub(super) fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],

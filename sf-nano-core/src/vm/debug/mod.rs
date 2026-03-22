@@ -2,8 +2,8 @@
 //!
 //! This layer should stay optional and off the release path by default.
 
-pub mod dump_layout;
-pub mod function_trace;
+pub(crate) mod dump_layout;
+pub(crate) mod function_trace;
 #[cfg(feature = "micro-jit")]
-pub mod ir_dump;
-pub mod trace_compare;
+pub(crate) mod ir_dump;
+pub(crate) mod trace_compare;

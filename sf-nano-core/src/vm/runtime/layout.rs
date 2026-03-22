@@ -10,14 +10,14 @@ use super::context::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PointerLenAbiLayout {
+pub(crate) struct PointerLenAbiLayout {
     pub base_offset: u32,
     pub len_offset: u32,
     pub stride: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FunctionViewAbiLayout {
+pub(crate) struct FunctionViewAbiLayout {
     pub kind_offset: u32,
     pub type_canon_offset: u32,
     pub local_target_offset: u32,
@@ -25,7 +25,7 @@ pub struct FunctionViewAbiLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeContextAbiLayout {
+pub(crate) struct NativeContextAbiLayout {
     pub stack_end_offset: u32,
     pub mem0_base_offset: u32,
     pub mem0_size_offset: u32,
@@ -46,7 +46,7 @@ pub struct NativeContextAbiLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeRuntimeAbiLayout {
+pub(crate) struct NativeRuntimeAbiLayout {
     pub gp_unit_bytes: u8,
     pub pointer_len_view: PointerLenAbiLayout,
     pub function_view: FunctionViewAbiLayout,
@@ -60,7 +60,7 @@ const fn align_up(value: u32, align: u32) -> u32 {
 }
 
 #[inline]
-pub const fn pointer_len_abi_layout(gp_unit_bytes: u8) -> PointerLenAbiLayout {
+pub(crate) const fn pointer_len_abi_layout(gp_unit_bytes: u8) -> PointerLenAbiLayout {
     let ptr = gp_unit_bytes as u32;
     PointerLenAbiLayout {
         base_offset: 0,
@@ -70,7 +70,7 @@ pub const fn pointer_len_abi_layout(gp_unit_bytes: u8) -> PointerLenAbiLayout {
 }
 
 #[inline]
-pub const fn function_view_abi_layout() -> FunctionViewAbiLayout {
+pub(crate) const fn function_view_abi_layout() -> FunctionViewAbiLayout {
     FunctionViewAbiLayout {
         kind_offset: 0,
         type_canon_offset: 4,
@@ -80,7 +80,7 @@ pub const fn function_view_abi_layout() -> FunctionViewAbiLayout {
 }
 
 #[inline]
-pub const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntimeAbiLayout {
+pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntimeAbiLayout {
     match gp_unit_bytes {
         4 | 8 => {}
         _ => panic!("unsupported GP unit size"),

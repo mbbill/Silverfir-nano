@@ -5,7 +5,7 @@
 //! is to execute finalized MachineIR the same way a real ISA backend will.
 
 mod address_space;
-pub mod config;
+pub(crate) mod config;
 
 use self::address_space::EmulatorAddressSpace;
 use crate::{
@@ -120,7 +120,7 @@ pub(crate) fn eval_root_with_context(
     .run()
 }
 
-pub fn eval(
+pub(crate) fn eval(
     spec: &FunctionSpec,
     code: &NativeCode,
     store: &mut Store,

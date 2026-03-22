@@ -9,24 +9,24 @@ use crate::vm::raw_value::{
 };
 
 #[derive(Debug)]
-pub struct InterpreterStack {
+pub(crate) struct InterpreterStack {
     buffer: Vec<RawValue>,
     sp: usize,
 }
 
 impl InterpreterStack {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_capacity(1024)
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(capacity),
             sp: 0,
         }
     }
 
-    pub fn with_exact_capacity(total_capacity: usize) -> Self {
+    pub(crate) fn with_exact_capacity(total_capacity: usize) -> Self {
         Self {
             buffer: vec![0; total_capacity],
             sp: 0,
@@ -34,7 +34,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn push(&mut self, value: RawValue) {
+    pub(crate) fn push(&mut self, value: RawValue) {
         debug_assert!(
             self.sp < self.buffer.len(),
             "InterpreterStack overflow: ensure_capacity/with_exact_capacity must guarantee space"
@@ -46,51 +46,51 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn pop(&mut self) -> RawValue {
+    pub(crate) fn pop(&mut self) -> RawValue {
         debug_assert!(self.sp > 0, "Stack underflow");
         self.sp -= 1;
         unsafe { *self.buffer.get_unchecked(self.sp) }
     }
 
     #[inline(always)]
-    pub fn peek(&self) -> RawValue {
+    pub(crate) fn peek(&self) -> RawValue {
         debug_assert!(self.sp > 0, "Stack underflow");
         unsafe { *self.buffer.get_unchecked(self.sp - 1) }
     }
 
     #[inline(always)]
-    pub fn peek_at_index(&self, index: usize) -> RawValue {
+    pub(crate) fn peek_at_index(&self, index: usize) -> RawValue {
         debug_assert!(index < self.sp, "Stack index out of bounds");
         unsafe { *self.buffer.get_unchecked(index) }
     }
 
     #[inline(always)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.sp
     }
 
     #[inline(always)]
-    pub fn pop_n(&mut self, n: usize) -> &[RawValue] {
+    pub(crate) fn pop_n(&mut self, n: usize) -> &[RawValue] {
         debug_assert!(self.sp >= n, "Stack underflow");
         self.sp -= n;
         unsafe { self.buffer.get_unchecked(self.sp..self.sp + n) }
     }
 
     #[inline(always)]
-    pub fn get_local(&self, base: usize, index: usize) -> RawValue {
+    pub(crate) fn get_local(&self, base: usize, index: usize) -> RawValue {
         debug_assert!(base + index < self.sp, "Local access out of bounds");
         unsafe { *self.buffer.get_unchecked(base + index) }
     }
 
     #[inline(always)]
-    pub fn set_local(&mut self, base: usize, index: usize, value: RawValue) {
+    pub(crate) fn set_local(&mut self, base: usize, index: usize, value: RawValue) {
         debug_assert!(base + index < self.sp, "Local access out of bounds");
         unsafe {
             *self.buffer.get_unchecked_mut(base + index) = value;
         }
     }
 
-    pub fn push_locals(&mut self, value_types: &[ValueType]) {
+    pub(crate) fn push_locals(&mut self, value_types: &[ValueType]) {
         let count = value_types.len();
         if count == 0 {
             return;
@@ -103,14 +103,14 @@ impl InterpreterStack {
         self.sp = new_sp;
     }
 
-    pub fn ensure_capacity(&mut self, required_capacity: usize) {
+    pub(crate) fn ensure_capacity(&mut self, required_capacity: usize) {
         if self.buffer.len() < required_capacity {
             self.buffer.resize(required_capacity, 0);
         }
     }
 
     #[inline(always)]
-    pub fn reduce_i32<F: FnOnce(i32, i32) -> i32>(&mut self, f: F) {
+    pub(crate) fn reduce_i32<F: FnOnce(i32, i32) -> i32>(&mut self, f: F) {
         debug_assert!(self.sp >= 2, "Stack underflow on reduce_i32");
         unsafe {
             let rhs = as_i32(*self.buffer.get_unchecked(self.sp - 1));
@@ -122,7 +122,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn reduce_i64<F: FnOnce(i64, i64) -> i64>(&mut self, f: F) {
+    pub(crate) fn reduce_i64<F: FnOnce(i64, i64) -> i64>(&mut self, f: F) {
         debug_assert!(self.sp >= 2, "Stack underflow on reduce_i64");
         unsafe {
             let rhs = as_i64(*self.buffer.get_unchecked(self.sp - 1));
@@ -134,7 +134,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn reduce_f32<F: FnOnce(f32, f32) -> f32>(&mut self, f: F) {
+    pub(crate) fn reduce_f32<F: FnOnce(f32, f32) -> f32>(&mut self, f: F) {
         debug_assert!(self.sp >= 2, "Stack underflow on reduce_f32");
         unsafe {
             let rhs = as_f32(*self.buffer.get_unchecked(self.sp - 1));
@@ -146,7 +146,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn reduce_f64<F: FnOnce(f64, f64) -> f64>(&mut self, f: F) {
+    pub(crate) fn reduce_f64<F: FnOnce(f64, f64) -> f64>(&mut self, f: F) {
         debug_assert!(self.sp >= 2, "Stack underflow on reduce_f64");
         unsafe {
             let rhs = as_f64(*self.buffer.get_unchecked(self.sp - 1));
@@ -158,7 +158,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn unop_i32<F: FnOnce(i32) -> i32>(&mut self, f: F) {
+    pub(crate) fn unop_i32<F: FnOnce(i32) -> i32>(&mut self, f: F) {
         debug_assert!(self.sp >= 1, "Stack underflow on unop_i32");
         unsafe {
             let top_i = self.sp - 1;
@@ -168,7 +168,7 @@ impl InterpreterStack {
     }
 
     #[inline(always)]
-    pub fn unop_i64<F: FnOnce(i64) -> i64>(&mut self, f: F) {
+    pub(crate) fn unop_i64<F: FnOnce(i64) -> i64>(&mut self, f: F) {
         debug_assert!(self.sp >= 1, "Stack underflow on unop_i64");
         unsafe {
             let top_i = self.sp - 1;
@@ -177,7 +177,7 @@ impl InterpreterStack {
         }
     }
 
-    pub fn shift_results(&mut self, top_n: usize, local_start: usize) {
+    pub(crate) fn shift_results(&mut self, top_n: usize, local_start: usize) {
         if local_start >= self.sp {
             return;
         }

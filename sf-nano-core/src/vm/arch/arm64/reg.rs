@@ -1,6 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Arm64Reg {
+pub(super) enum Arm64Reg {
     X0 = 0,
     X1 = 1,
     X2 = 2,
@@ -35,10 +35,10 @@ pub enum Arm64Reg {
 }
 
 impl Arm64Reg {
-    pub const SP: Self = Self::Xzr;
+    pub(super) const SP: Self = Self::Xzr;
 
     #[inline]
-    pub const fn idx(self) -> u32 {
+    pub(super) const fn idx(self) -> u32 {
         self as u32
     }
 }

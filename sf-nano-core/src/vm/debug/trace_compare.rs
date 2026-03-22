@@ -3,14 +3,14 @@
 use crate::vm::debug::function_trace::FunctionTraceEvent;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct TraceMismatch {
+pub(crate) struct TraceMismatch {
     pub left_index: usize,
     pub right_index: usize,
     pub left: Option<FunctionTraceEvent>,
     pub right: Option<FunctionTraceEvent>,
 }
 
-pub fn compare_sparse_traces(
+pub(crate) fn compare_sparse_traces(
     left: &[FunctionTraceEvent],
     right: &[FunctionTraceEvent],
 ) -> Result<(), TraceMismatch> {

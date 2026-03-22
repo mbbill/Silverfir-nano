@@ -227,10 +227,10 @@ impl GlobalInst {
     }
 }
 
-pub mod global_offset {
+pub(crate) mod global_offset {
     use super::GlobalInst;
 
-    pub const RAW: u32 = core::mem::offset_of!(GlobalInst, raw) as u32;
+    pub(crate) const RAW: u32 = core::mem::offset_of!(GlobalInst, raw) as u32;
 }
 
 #[derive(Debug, Clone)]
@@ -357,10 +357,10 @@ impl Default for ModuleInst {
     }
 }
 
-pub type FunctionEntity = FunctionInst;
-pub type TableEntity = TableInst;
-pub type MemoryEntity = MemInst;
-pub type GlobalEntity = GlobalInst;
-pub type ElementEntity = ElementInst;
-pub type DataEntity = DataInst;
-pub type ModuleEntity = ModuleInst;
+pub(crate) type FunctionEntity = FunctionInst;
+pub(crate) type TableEntity = TableInst;
+pub(crate) type MemoryEntity = MemInst;
+pub(crate) type GlobalEntity = GlobalInst;
+pub(crate) type ElementEntity = ElementInst;
+pub(crate) type DataEntity = DataInst;
+pub(crate) type ModuleEntity = ModuleInst;

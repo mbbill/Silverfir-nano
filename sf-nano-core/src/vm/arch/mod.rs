@@ -3,10 +3,10 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use crate::vm::backend::BackendConfig;
 
 #[cfg(target_arch = "aarch64")]
-pub mod arm64;
+pub(crate) mod arm64;
 #[cfg(target_arch = "arm")]
 pub mod armv7a;
-pub mod emulator;
+pub(crate) mod emulator;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
@@ -57,7 +57,7 @@ impl ReferenceBackendMode {
 
 /// Active native backend implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeBackend {
+pub(crate) enum NativeBackend {
     #[cfg(target_arch = "aarch64")]
     Arm64,
     #[cfg(target_arch = "arm")]
@@ -72,7 +72,7 @@ pub enum NativeBackend {
 }
 
 #[inline]
-pub fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
+pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
     match backend {
         // Each backend returns an explicit budget preset. Physical register
         // mapping and ABI constraints stay in the backend-specific ABI/layout
@@ -95,7 +95,7 @@ pub fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
 
 impl NativeBackend {
     #[inline]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             #[cfg(target_arch = "aarch64")]
             Self::Arm64 => "arm64",
@@ -169,7 +169,7 @@ fn host_native_backend() -> Option<NativeBackend> {
     None
 }
 
-pub fn active_native_backend() -> Result<NativeBackend, &'static str> {
+pub(crate) fn active_native_backend() -> Result<NativeBackend, &'static str> {
     #[cfg(any(
         debug_assertions,
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
@@ -197,12 +197,12 @@ pub fn active_native_backend() -> Result<NativeBackend, &'static str> {
 }
 
 #[inline]
-pub fn active_backend_config() -> Result<BackendConfig, &'static str> {
+pub(crate) fn active_backend_config() -> Result<BackendConfig, &'static str> {
     active_native_backend().map(compile_backend_config)
 }
 
 #[inline]
-pub fn backend_display_name(backend: NativeBackend) -> &'static str {
+pub(crate) fn backend_display_name(backend: NativeBackend) -> &'static str {
     match backend {
         #[cfg(any(
             debug_assertions,
@@ -214,11 +214,11 @@ pub fn backend_display_name(backend: NativeBackend) -> &'static str {
 }
 
 #[inline]
-pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
+pub(crate) fn active_native_backend_name() -> Result<&'static str, &'static str> {
     active_native_backend().map(backend_display_name)
 }
 
-pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
+pub(crate) fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
     #[cfg(any(
         debug_assertions,
         not(any(target_arch = "aarch64", target_arch = "x86_64"))
@@ -236,7 +236,7 @@ pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'st
     }
 }
 
-pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
+pub(crate) fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
     set_reference_backend_mode(if enabled {
         ReferenceBackendMode::Emu64
     } else {

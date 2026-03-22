@@ -31,7 +31,7 @@ use crate::{
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum WasmSection {
+pub(crate) enum WasmSection {
     Custom = 0,
     Type = 1,
     Import = 2,
@@ -75,7 +75,7 @@ impl TryFrom<u8> for WasmSection {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
-pub enum ExternalKind {
+pub(crate) enum ExternalKind {
     Function = 0,
     Table = 1,
     Memory = 2,
@@ -124,7 +124,7 @@ const DATA_ACTIVE_MEMIDX: u32 = 0x02;
 // Main parse entry point
 // ============================================================================
 
-pub fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> {
+pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> {
     let mut payload: Payload = bin.into();
 
     let magic = payload.read_bytes(4)?;

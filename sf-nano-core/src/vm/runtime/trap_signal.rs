@@ -48,7 +48,7 @@ fn unlock_trap_table() {
 }
 
 /// Register JIT code ranges in the global trap table.
-pub fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
+pub(crate) fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
     lock_trap_table();
     unsafe {
         let table = &raw mut TRAP_TABLE;
@@ -82,7 +82,7 @@ unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
 }
 
 /// Install the signal handler (idempotent).
-pub fn install_signal_handler() {
+pub(crate) fn install_signal_handler() {
     if HANDLER_INSTALLED.load(Ordering::Relaxed) {
         return;
     }
@@ -103,7 +103,7 @@ pub fn install_signal_handler() {
 /// one wasm invocation should either complete or trap after the first fault.
 /// Resetting here prevents expected trapping test cases from accumulating
 /// counts across many independent invocations.
-pub fn reset_debug_state() {
+pub(crate) fn reset_debug_state() {
     SIGNAL_COUNT.store(0, Ordering::Relaxed);
 }
 
@@ -112,7 +112,7 @@ pub fn reset_debug_state() {
 /// Callers must only use this when no compiled native frames from the old
 /// ranges can still fault, otherwise a later trap would be unable to resolve
 /// back to its owning function.
-pub fn clear_registered_jit_ranges() {
+pub(crate) fn clear_registered_jit_ranges() {
     lock_trap_table();
     unsafe {
         let table = &raw mut TRAP_TABLE;
@@ -477,7 +477,7 @@ static TRAP_KIND_OFFSET: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 
 /// Set the byte offset of `NativeContext::trap_kind` so the signal handler
 /// can write it without knowing the struct layout at compile time.
-pub fn set_trap_kind_offset(offset: usize) {
+pub(crate) fn set_trap_kind_offset(offset: usize) {
     TRAP_KIND_OFFSET.store(offset, Ordering::Relaxed);
 }
 

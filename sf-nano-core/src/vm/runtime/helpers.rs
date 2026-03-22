@@ -28,16 +28,16 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub enum NativeHelperStatus {
+pub(crate) enum NativeHelperStatus {
     Ok = 0,
     Error = 1,
 }
 
-pub type NativeHelperEntry =
+pub(crate) type NativeHelperEntry =
     unsafe extern "C" fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32;
 
 #[inline]
-pub fn resolve_helper_entry(symbol: MachineHelperSymbol) -> NativeHelperEntry {
+pub(crate) fn resolve_helper_entry(symbol: MachineHelperSymbol) -> NativeHelperEntry {
     match symbol {
         MachineHelperSymbol::CallExternal => call_external_entry,
         MachineHelperSymbol::CallIndirectExternal => call_indirect_external_entry,
