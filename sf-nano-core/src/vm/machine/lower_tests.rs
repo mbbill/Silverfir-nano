@@ -5,7 +5,7 @@ use crate::vm::{
     backend::BackendConfig,
     machine::{
         lower_module, LowerFunctionInput, LowerModuleInput,
-        mir::{
+        machine_ir::{
             MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
             MachineHelperSymbol, MachineInstKind, MachineIntBinaryOp, MachineMemWidth,
             MachineModule, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
@@ -14,13 +14,13 @@ use crate::vm::{
     },
     middle::{
         frame::plan_frame_layout,
-        lir::{
+        ssa_ir::{
             ir::{
-                CachedLocalInfo, LirBinding, LirBlock, LirBoundaryOp, LirEdge, LirInst,
-                LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue,
+                CachedLocalInfo, SsaBinding, SsaBlock, SsaBoundaryOp, SsaEdge, SsaInst,
+                SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue,
             },
-            leaf::LirLeafOp,
-            target::LirTarget,
+            leaf::SsaLeafOp,
+            target::SsaTarget,
         },
     },
     wasm::primitive_op::PrimitiveOpKind,
@@ -39,42 +39,42 @@ fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) 
 #[test]
 fn lowers_simple_slot_and_add_block() {
     let frame = plan_frame_layout(1, 4, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![LirValue(0), LirValue(1)],
-                        results: alloc::vec![LirValue(2)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                        args: alloc::vec![SsaValue(0), SsaValue(1)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(2),
+                        src: SsaValue(2),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -84,9 +84,9 @@ fn lowers_simple_slot_and_add_block() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -103,7 +103,7 @@ fn lowers_simple_slot_and_add_block() {
     );
     assert_eq!(
         lowered.runtime.functions[0].call_scratch,
-        Some(crate::vm::machine::mir::MachineFrameRegion {
+        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
             base_slot: frame.call_scratch.unwrap().start.0,
             slots: frame.call_scratch.unwrap().count,
         })
@@ -144,46 +144,46 @@ fn lowers_simple_slot_and_add_block() {
 #[test]
 fn lowers_select_with_wasm_operand_order() {
     let frame = plan_frame_layout(0, 3, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 11 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 11 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 22 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 22 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(2)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::Select).unwrap(),
-                        args: alloc::vec![LirValue(0), LirValue(1), LirValue(2)],
-                        results: alloc::vec![LirValue(3)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::Select).unwrap(),
+                        args: alloc::vec![SsaValue(0), SsaValue(1), SsaValue(2)],
+                        results: alloc::vec![SsaValue(3)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -193,9 +193,9 @@ fn lowers_select_with_wasm_operand_order() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -223,14 +223,14 @@ fn lowers_select_with_wasm_operand_order() {
 #[test]
 fn native_backend_requires_at_least_one_gp_transient_register() {
     let frame = plan_frame_layout(0, 0, 0);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -240,9 +240,9 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -255,14 +255,14 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
 fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let frame = plan_frame_layout(2, 6, 6);
     let result_span = crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(result_span),
             },
         }],
@@ -274,9 +274,9 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -286,14 +286,14 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     assert_eq!(runtime.call_link.caller_result_base_offset, 16);
     assert_eq!(
         runtime.functions[0].helper_scratch,
-        Some(crate::vm::machine::mir::MachineFrameRegion {
+        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
             base_slot: frame.call_scratch.unwrap().start.0 + runtime.call_link.slot_count,
             slots: frame.call_scratch.unwrap().count - runtime.call_link.slot_count,
         })
     );
     assert_eq!(
         runtime.functions[0].return_results,
-        Some(crate::vm::machine::mir::MachineFrameRegion {
+        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
             base_slot: result_span.start.0,
             slots: result_span.count,
         })
@@ -303,26 +303,26 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
 #[test]
 fn rejects_inconsistent_return_result_spans() {
     let frame = plan_frame_layout(0, 4, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
+            SsaBlock {
+                id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return {
+                terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(0),
                         1
                     )),
                 },
             },
-            LirBlock {
-                id: LirTarget(1),
+            SsaBlock {
+                id: SsaTarget(1),
                 params: alloc::vec![],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return {
+                terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(1),
                         1
@@ -338,9 +338,9 @@ fn rejects_inconsistent_return_result_spans() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -352,21 +352,21 @@ fn rejects_inconsistent_return_result_spans() {
 #[test]
 fn rejects_mixed_void_and_value_returns() {
     let frame = plan_frame_layout(0, 4, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
+            SsaBlock {
+                id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             },
-            LirBlock {
-                id: LirTarget(1),
+            SsaBlock {
+                id: SsaTarget(1),
                 params: alloc::vec![],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return {
+                terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(0),
                         1,
@@ -382,9 +382,9 @@ fn rejects_mixed_void_and_value_returns() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -395,33 +395,33 @@ fn rejects_mixed_void_and_value_returns() {
 
 #[test]
 fn lowers_branch_edge_bindings_into_machine_edge_args() {
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
-                params: alloc::vec![LirValue(0), LirValue(1)],
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![SsaValue(0), SsaValue(1)],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Goto(LirEdge {
-                    target: LirTarget(1),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
                     bindings: alloc::vec![
-                        LirBinding {
-                            param: LirValue(3),
-                            value: LirValue(1),
+                        SsaBinding {
+                            param: SsaValue(3),
+                            value: SsaValue(1),
                         },
-                        LirBinding {
-                            param: LirValue(2),
-                            value: LirValue(0),
+                        SsaBinding {
+                            param: SsaValue(2),
+                            value: SsaValue(0),
                         },
                     ],
                 }),
             },
-            LirBlock {
-                id: LirTarget(1),
-                params: alloc::vec![LirValue(2), LirValue(3)],
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![SsaValue(2), SsaValue(3)],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             },
         ],
         value_types: alloc::vec![],
@@ -432,9 +432,9 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -452,27 +452,27 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
 
 #[test]
 fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
-                params: alloc::vec![LirValue(0)],
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![SsaValue(0)],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Goto(LirEdge {
-                    target: LirTarget(1),
-                    bindings: alloc::vec![LirBinding {
-                        param: LirValue(1),
-                        value: LirValue(0),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![SsaBinding {
+                        param: SsaValue(1),
+                        value: SsaValue(0),
                     }],
                 }),
             },
-            LirBlock {
-                id: LirTarget(1),
-                params: alloc::vec![LirValue(1)],
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![SsaValue(1)],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             },
         ],
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
@@ -483,9 +483,9 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -495,14 +495,14 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     assert_eq!(block0.params.len(), 2);
     assert!(matches!(
         block0.params[0],
-        crate::vm::machine::mir::MachineBlockParam {
+        crate::vm::machine::machine_ir::MachineBlockParam {
             reg: MachineReg(4),
             ty: MachineStorageType::GpWord,
         }
     ));
     assert!(matches!(
         block0.params[1],
-        crate::vm::machine::mir::MachineBlockParam {
+        crate::vm::machine::machine_ir::MachineBlockParam {
             reg: MachineReg(5),
             ty: MachineStorageType::GpWord,
         }
@@ -529,54 +529,54 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
 fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
     let backend = BackendConfig::new_with_gp_unit_bytes(0, 6, 0, 2, 4);
     let frame = plan_frame_layout(1, 4, 4);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x0123_4567_89ab_cdef,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(1),
+                        dst: SsaValue(1),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x1111_2222_3333_4444,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(2)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![LirValue(1), LirValue(2)],
-                        results: alloc::vec![LirValue(3)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
+                        args: alloc::vec![SsaValue(1), SsaValue(2)],
+                        results: alloc::vec![SsaValue(3)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![
             ValueType::I64,
@@ -591,9 +591,9 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -616,39 +616,39 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
 fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let backend = BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4);
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![LirValue(0)],
+                        args: alloc::vec![SsaValue(0)],
                         results: alloc::vec![],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
     };
@@ -658,9 +658,9 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -673,63 +673,63 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
 fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
     let backend = BackendConfig::new_with_gp_unit_bytes(0, 5, 0, 2, 4);
     let frame = plan_frame_layout(0, 3, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x8877_6655_4433_2211,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Store {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Store {
                             offset: 0,
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0), LirValue(1)],
+                        args: alloc::vec![SsaValue(0), SsaValue(1)],
                         results: alloc::vec![],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(2)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Load {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Load {
                             offset: 0,
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(2)],
-                        results: alloc::vec![LirValue(3)],
+                        args: alloc::vec![SsaValue(2)],
+                        results: alloc::vec![SsaValue(3)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![
             ValueType::I32,
@@ -744,9 +744,9 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -761,14 +761,14 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
-    let caller = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let caller = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -778,18 +778,18 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
-    let callee = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let callee = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
                     1,
@@ -805,15 +805,15 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(0),
+                id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
-                lir: &caller,
+                ssa: &caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(1),
+                id: crate::vm::machine::machine_ir::MachineFuncId(1),
                 frame: callee_frame,
-                lir: &callee,
+                ssa: &callee,
                 result_count: 0,
             },
         ],
@@ -826,9 +826,9 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
 #[test]
 fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     let frame = plan_frame_layout(1, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -839,32 +839,32 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(1),
+                        src: SsaValue(1),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -874,9 +874,9 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -915,9 +915,9 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
 fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
     let backend = BackendConfig::new_with_gp_unit_bytes(1, 4, 0, 2, 4);
     let frame = plan_frame_layout(1, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -928,26 +928,26 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I32],
     };
@@ -957,9 +957,9 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -982,19 +982,19 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
 #[test]
 fn lowers_runtime_memory_grow_through_frame_metadata() {
     let frame = plan_frame_layout(0, 1, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::MemoryGrow {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow {
                     mem_idx: 0,
                     io: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1004,9 +1004,9 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1028,20 +1028,20 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
 #[test]
 fn lowers_memory_copy_through_frame_metadata() {
     let frame = plan_frame_layout(0, 3, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy {
                     dst_mem_idx: 0,
                     src_mem_idx: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 3),
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1051,9 +1051,9 @@ fn lowers_memory_copy_through_frame_metadata() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1075,19 +1075,19 @@ fn lowers_memory_copy_through_frame_metadata() {
 #[test]
 fn lowers_table_fill_through_frame_metadata() {
     let frame = plan_frame_layout(0, 3, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::TableFill {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::TableFill {
                     table_idx: 2,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 3),
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1097,9 +1097,9 @@ fn lowers_table_fill_through_frame_metadata() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1121,21 +1121,21 @@ fn lowers_table_fill_through_frame_metadata() {
 #[test]
 fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
                     func_idx: 7,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1145,9 +1145,9 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1170,31 +1170,31 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
 #[test]
 fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
     let frame = plan_frame_layout(0, 1, 1);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x0123_4567_89ab_cdef,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![ValueType::I64],
     };
@@ -1204,9 +1204,9 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1227,9 +1227,9 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
 #[test]
 fn flushes_and_reloads_cached_locals_around_call_external() {
     let frame = plan_frame_layout(1, 2, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -1240,26 +1240,26 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
+                SsaInst {
+                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
                         func_idx: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
@@ -1267,7 +1267,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                     }),
                 },
             ],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1277,9 +1277,9 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1311,9 +1311,9 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
 #[test]
 fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     let frame = plan_frame_layout(1, 2, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -1324,32 +1324,32 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 5 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 5 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Boundary(LirBoundaryOp::MemoryGrow {
+                SsaInst {
+                    kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow {
                         mem_idx: 0,
                         io: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                     }),
                 },
             ],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -1359,9 +1359,9 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1395,14 +1395,14 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
-    let caller = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let caller = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1412,18 +1412,18 @@ fn lowers_direct_local_call_with_continuation_block() {
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
-    let callee = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let callee = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
                     1,
@@ -1439,15 +1439,15 @@ fn lowers_direct_local_call_with_continuation_block() {
         use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(0),
+                id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
-                lir: &caller,
+                ssa: &caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(1),
+                id: crate::vm::machine::machine_ir::MachineFuncId(1),
                 frame: callee_frame,
-                lir: &callee,
+                ssa: &callee,
                 result_count: 0,
             },
         ],
@@ -1463,7 +1463,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             callee_frame_base,
             continuation,
         } => {
-            assert_eq!(callee, crate::vm::machine::mir::MachineFuncId(1));
+            assert_eq!(callee, crate::vm::machine::machine_ir::MachineFuncId(1));
             assert_eq!(continuation, MachineBlockId(1));
             callee_frame_base
         }
@@ -1494,14 +1494,14 @@ fn lowers_direct_local_call_with_continuation_block() {
         call_block.ops[3].kind,
         MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::mir::MachineIntWidth::I64,
+                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                    width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
                     kind: MachineCompareKind::Gt,
-                    sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                     lhs: MachineValue::Reg(lhs),
                     ..
                 },
-            kind: crate::vm::machine::mir::MachineTrapKind::StackOverflow,
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::StackOverflow,
         } if lhs == callee_frame_base
     ));
     assert!(matches!(
@@ -1539,7 +1539,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert!(matches!(
         continuation.terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::Unreachable
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
         }
     ));
 }
@@ -1549,9 +1549,9 @@ fn flushes_cached_local_before_second_direct_call() {
     let caller_frame = plan_frame_layout(2, 1, 4);
     let callee_frame = plan_frame_layout(0, 1, 4);
 
-    let caller = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let caller = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![caller_frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -1562,12 +1562,12 @@ fn flushes_cached_local_before_second_direct_call() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                SsaInst {
+                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1580,20 +1580,20 @@ fn flushes_cached_local_before_second_direct_call() {
                         skip_reload: alloc::vec![],
                     }),
                 },
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: caller_frame.operand_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: caller_frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+                SsaInst {
+                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1607,18 +1607,18 @@ fn flushes_cached_local_before_second_direct_call() {
                     }),
                 },
             ],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
-    let callee = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let callee = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
                     1,
@@ -1634,15 +1634,15 @@ fn flushes_cached_local_before_second_direct_call() {
         use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(0),
+                id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
-                lir: &caller,
+                ssa: &caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(1),
+                id: crate::vm::machine::machine_ir::MachineFuncId(1),
                 frame: callee_frame,
-                lir: &callee,
+                ssa: &callee,
                 result_count: 0,
             },
         ],
@@ -1673,7 +1673,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert!(matches!(
         second_call_block.ops[2].kind,
         MachineInstKind::Store {
-            addr: crate::vm::machine::mir::MachineAddr {
+            addr: crate::vm::machine::machine_ir::MachineAddr {
                 base: MachineReg(1),
                 offset: 0,
             },
@@ -1684,7 +1684,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert!(matches!(
         second_call_block.terminator,
         MachineTerminator::CallDirect {
-            callee: crate::vm::machine::mir::MachineFuncId(1),
+            callee: crate::vm::machine::machine_ir::MachineFuncId(1),
             continuation: MachineBlockId(2),
             ..
         }
@@ -1694,9 +1694,9 @@ fn flushes_cached_local_before_second_direct_call() {
 #[test]
 fn preserves_cached_locals_across_block_edges() {
     let frame = plan_frame_layout(1, 1, 4);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -1708,48 +1708,48 @@ fn preserves_cached_locals_across_block_edges() {
             fp_local_info: alloc::vec![],
         },
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
+            SsaBlock {
+                id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![
-                    LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                                 .unwrap(),
                             args: alloc::vec![],
-                            results: alloc::vec![LirValue(0)],
+                            results: alloc::vec![SsaValue(0)],
                         },
                     },
-                    LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: frame.local_slot(0),
-                            src: LirValue(0),
+                            src: SsaValue(0),
                         },
                     },
                 ],
-                terminator: LirTerminator::Goto(LirEdge {
-                    target: LirTarget(1),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
                     bindings: alloc::vec![],
                 }),
             },
-            LirBlock {
-                id: LirTarget(1),
+            SsaBlock {
+                id: SsaTarget(1),
                 params: alloc::vec![],
                 ops: alloc::vec![
-                    LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: frame.local_slot(0),
-                            dst: LirValue(1),
+                            dst: SsaValue(1),
                         },
                     },
-                    LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: frame.local_slot(0),
-                            src: LirValue(1),
+                            src: SsaValue(1),
                         },
                     },
                 ],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             },
         ],
         value_types: alloc::vec![],
@@ -1760,9 +1760,9 @@ fn preserves_cached_locals_across_block_edges() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1814,9 +1814,9 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     use crate::value_type::ValueType;
 
     let frame = plan_frame_layout(1, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![frame.local_slot(0)],
             gp_preferred_types: alloc::vec![ValueType::I32],
             fp_preferred_slots: alloc::vec![],
@@ -1827,26 +1827,26 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
             }],
             fp_local_info: alloc::vec![],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I64],
     };
@@ -1856,9 +1856,9 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -1877,14 +1877,14 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
-    let caller = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let caller = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                     callee: 2,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1894,18 +1894,18 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
-    let callee = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let callee = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
                     1,
@@ -1921,15 +1921,15 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(0),
+                id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
-                lir: &caller,
+                ssa: &caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(2),
+                id: crate::vm::machine::machine_ir::MachineFuncId(2),
                 frame: callee_frame,
-                lir: &callee,
+                ssa: &callee,
                 result_count: 0,
             },
         ],
@@ -1941,13 +1941,13 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     assert!(matches!(
         lowered.module.functions[1].program.blocks[0].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::Unreachable
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
         }
     ));
     assert!(matches!(
         lowered.module.functions[0].program.blocks[0].terminator,
         MachineTerminator::CallDirect {
-            callee: crate::vm::machine::mir::MachineFuncId(2),
+            callee: crate::vm::machine::machine_ir::MachineFuncId(2),
             ..
         }
     ));
@@ -1956,21 +1956,21 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
 #[test]
 fn lowers_memory_size_without_helper_boundary() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Value {
-                    op: LirLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Value {
+                    op: SsaLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
                         .unwrap(),
                     args: alloc::vec![],
-                    results: alloc::vec![LirValue(0)],
+                    results: alloc::vec![SsaValue(0)],
                 },
             }],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -1980,9 +1980,9 @@ fn lowers_memory_size_without_helper_boundary() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2005,21 +2005,21 @@ fn lowers_memory_size_without_helper_boundary() {
 #[test]
 fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Value {
-                    op: LirLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Value {
+                    op: SsaLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
                         .unwrap(),
                     args: alloc::vec![],
-                    results: alloc::vec![LirValue(0)],
+                    results: alloc::vec![SsaValue(0)],
                 },
             }],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2029,9 +2029,9 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2056,7 +2056,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::mir::MachineIntWidth::I32,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
             op: MachineIntBinaryOp::ShrU,
             rhs: MachineValue::Imm64(16),
             ..
@@ -2068,14 +2068,14 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
 fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     let frame = plan_frame_layout(0, 6, 4);
     let call_base = frame.operand_slot(0);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallIndirect {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
                     index_slot: call_base.advance(2),
@@ -2084,7 +2084,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -2094,9 +2094,9 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2117,19 +2117,19 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         program.blocks[2].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::TableOutOfBounds
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::TableOutOfBounds
         }
     ));
     assert!(matches!(
         program.blocks[4].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::InvalidFunctionReference
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::InvalidFunctionReference
         }
     ));
     assert!(matches!(
         program.blocks[6].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::IndirectCallTypeMismatch
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::IndirectCallTypeMismatch
         }
     ));
     assert!(matches!(
@@ -2168,15 +2168,15 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         type_check_ops[5].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::mir::MachineMemWidth::U32,
-            extension: crate::vm::machine::mir::MachineLoadExtension::ZeroExtend,
+            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
+            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
     assert!(matches!(
         program.blocks[3].terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::mir::MachineBranchCond::IntCompare {
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
                 rhs: MachineValue::Reg(_),
                 ..
             },
@@ -2197,28 +2197,28 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         dispatch_ops[5].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::mir::MachineMemWidth::U32,
-            extension: crate::vm::machine::mir::MachineLoadExtension::ZeroExtend,
+            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
+            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
     assert!(matches!(
         dispatch_ops[6].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::mir::MachineMemWidth::U32,
-            extension: crate::vm::machine::mir::MachineLoadExtension::ZeroExtend,
+            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
+            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
     assert!(matches!(
         program.blocks[8].ops.as_slice(),
-        [crate::vm::machine::mir::MachineInst {
+        [crate::vm::machine::machine_ir::MachineInst {
             kind: MachineInstKind::CallHelper(_)
         }]
     ));
     assert!(matches!(
         program.blocks[8].terminator,
-        MachineTerminator::Jump(crate::vm::machine::mir::MachineEdge {
+        MachineTerminator::Jump(crate::vm::machine::machine_ir::MachineEdge {
             target: MachineBlockId(9),
             ..
         })
@@ -2226,7 +2226,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         program.blocks[9].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::Unreachable
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
         }
     ));
 }
@@ -2235,14 +2235,14 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
 fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 6, 4);
     let call_base = frame.operand_slot(0);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallIndirect {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
                     index_slot: call_base.advance(2),
@@ -2251,7 +2251,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
@@ -2261,9 +2261,9 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2273,8 +2273,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::mir::MachineIntWidth::I32,
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                 ..
             },
             ..
@@ -2290,7 +2290,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(program.blocks[1].ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::mir::MachineIntWidth::I32,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
             op: MachineIntBinaryOp::Mul,
             ..
         }
@@ -2298,7 +2298,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         program.blocks[7].ops[0].kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::mir::MachineIntWidth::I32,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -2309,42 +2309,42 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
 fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     let frame = plan_frame_layout(0, 1, 2);
     let slot = frame.local_slot(0);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot,
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot,
-                        dst: LirValue(1),
+                        dst: SsaValue(1),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                        args: alloc::vec![LirValue(1)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                        args: alloc::vec![SsaValue(1)],
                         results: alloc::vec![],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I32, ValueType::I32],
     };
@@ -2354,9 +2354,9 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2384,14 +2384,14 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
-    let caller = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let caller = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
-            ops: alloc::vec![LirInst {
-                kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -2401,18 +2401,18 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
                     skip_reload: alloc::vec![],
                 }),
             }],
-            terminator: LirTerminator::TrapUnreachable,
+            terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
     };
-    let callee = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let callee = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
                     1,
@@ -2428,15 +2428,15 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         use_guard_pages: false,
         functions: &[
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(0),
+                id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
-                lir: &caller,
+                ssa: &caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::mir::MachineFuncId(1),
+                id: crate::vm::machine::machine_ir::MachineFuncId(1),
                 frame: callee_frame,
-                lir: &callee,
+                ssa: &callee,
                 result_count: 0,
             },
         ],
@@ -2466,39 +2466,39 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
 #[test]
 fn lowers_global_get_and_set_without_helpers() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![LirValue(0)],
+                        args: alloc::vec![SsaValue(0)],
                         results: alloc::vec![],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2508,9 +2508,9 @@ fn lowers_global_get_and_set_without_helpers() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2534,31 +2534,31 @@ fn lowers_global_get_and_set_without_helpers() {
 #[test]
 fn lowers_table_get_with_explicit_oob_trap_block() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 0 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 0 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
                             .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2568,9 +2568,9 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2585,7 +2585,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     assert!(matches!(
         program.blocks[1].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::mir::MachineTrapKind::TableOutOfBounds
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::TableOutOfBounds
         }
     ));
     assert!(matches!(
@@ -2601,34 +2601,34 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
 #[test]
 fn lowers_i32_load_with_inline_trap_if() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Load {
                             offset: 4,
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2638,9 +2638,9 @@ fn lowers_i32_load_with_inline_trap_if() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2656,14 +2656,14 @@ fn lowers_i32_load_with_inline_trap_if() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::mir::MachineConvertOp::I64ExtendI32U,
+            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
             ..
         }
     )));
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::mir::MachineIntWidth::I64,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -2671,14 +2671,14 @@ fn lowers_i32_load_with_inline_trap_if() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::TrapIf {
-            kind: crate::vm::machine::mir::MachineTrapKind::MemoryOutOfBounds,
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
             ..
         }
     )));
     assert!(matches!(
         ops.last().unwrap().kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::mir::MachineMemWidth::U32,
+            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
             ..
         }
     ));
@@ -2687,34 +2687,34 @@ fn lowers_i32_load_with_inline_trap_if() {
 #[test]
 fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Load {
                             offset: 4,
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2724,9 +2724,9 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2736,14 +2736,14 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     assert!(!ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::mir::MachineConvertOp::I64ExtendI32U,
+            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
             ..
         }
     )));
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::mir::MachineIntWidth::I32,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -2751,8 +2751,8 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::TrapIf {
-            cond: crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::mir::MachineIntWidth::I32,
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                 ..
             },
             ..
@@ -2763,34 +2763,34 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
 #[test]
 fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Load {
                             offset: 1,
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2800,9 +2800,9 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2814,14 +2814,14 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     for inst in ops {
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::mir::MachineIntWidth::I32,
+                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                     kind: MachineCompareKind::Lt,
-                    sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                     rhs: MachineValue::Imm64(value),
                     ..
                 },
-            kind: crate::vm::machine::mir::MachineTrapKind::MemoryOutOfBounds,
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             if *value == 1 {
@@ -2840,44 +2840,44 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
 #[test]
 fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_pages() {
     let frame = plan_frame_layout(0, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x8877_6655_4433_2211,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Store {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Store {
                             offset: 0,
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0), LirValue(1)],
+                        args: alloc::vec![SsaValue(0), SsaValue(1)],
                         results: alloc::vec![],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2886,9 +2886,9 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
         use_guard_pages: true,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2900,14 +2900,14 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     for inst in ops {
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::mir::MachineIntWidth::I32,
+                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                     kind: MachineCompareKind::Lt,
-                    sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                     rhs: MachineValue::Imm64(value),
                     ..
                 },
-            kind: crate::vm::machine::mir::MachineTrapKind::MemoryOutOfBounds,
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             if *value == 8 {
@@ -2916,13 +2916,13 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         }
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::mir::MachineIntWidth::I32,
+                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                     kind: MachineCompareKind::Gt,
-                    sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                     ..
                 },
-            kind: crate::vm::machine::mir::MachineTrapKind::MemoryOutOfBounds,
+            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             saw_bounds_trap = true;
@@ -2935,29 +2935,29 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
 #[test]
 fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::RefNull).unwrap(),
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::RefNull).unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::RefIsNull).unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::RefIsNull).unwrap(),
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -2967,9 +2967,9 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -2987,7 +2987,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::IntCompare {
-            width: crate::vm::machine::mir::MachineIntWidth::I32,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
             rhs: MachineValue::Imm64(value),
             ..
         } if value == u32::MAX as u64
@@ -2997,34 +2997,34 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
 #[test]
 fn omits_zero_offset_add_in_bounds_check_setup() {
     let frame = plan_frame_layout(0, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Load {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Load {
                             offset: 0,
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(1)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -3034,9 +3034,9 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -3058,52 +3058,52 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
 #[test]
 fn threads_live_transients_through_split_continuation_params() {
     let frame = plan_frame_layout(1, 2, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 3 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 3 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
                             .unwrap(),
-                        args: alloc::vec![LirValue(0)],
-                        results: alloc::vec![LirValue(2)],
+                        args: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![LirValue(1), LirValue(2)],
-                        results: alloc::vec![LirValue(3)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
+                        args: alloc::vec![SsaValue(1), SsaValue(2)],
+                        results: alloc::vec![SsaValue(3)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(3),
+                        src: SsaValue(3),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -3113,9 +3113,9 @@ fn threads_live_transients_through_split_continuation_params() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -3141,7 +3141,7 @@ fn threads_live_transients_through_split_continuation_params() {
     assert!(matches!(
         continuation.ops[0].kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::mir::MachineConvertOp::I64ExtendI32U,
+            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
             ..
         }
     ));
@@ -3150,51 +3150,51 @@ fn threads_live_transients_through_split_continuation_params() {
 #[test]
 fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
     let frame = plan_frame_layout(0, 0, 3);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Const {
                             value: 0x3f800000,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(1)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Abs).unwrap(),
-                        args: alloc::vec![LirValue(1)],
-                        results: alloc::vec![LirValue(2)],
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Abs).unwrap(),
+                        args: alloc::vec![SsaValue(1)],
+                        results: alloc::vec![SsaValue(2)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Store {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Store {
                             offset: 4,
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![LirValue(0), LirValue(2)],
+                        args: alloc::vec![SsaValue(0), SsaValue(2)],
                         results: alloc::vec![],
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
     };
@@ -3204,9 +3204,9 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -3222,7 +3222,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
         matches!(
             inst.kind,
             MachineInstKind::TrapIf {
-                kind: crate::vm::machine::mir::MachineTrapKind::MemoryOutOfBounds,
+                kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
                 ..
             }
         )
@@ -3243,31 +3243,31 @@ fn lowers_f32_const_to_fp_machine_const() {
     use crate::value_type::ValueType;
 
     let frame = plan_frame_layout(0, 1, 1);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::Value {
-                        op: LirLeafOp::from_primitive(PrimitiveOpKind::F32Const {
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Const {
                             value: 0x4120_0000,
                         })
                         .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![LirValue(0)],
+                        results: alloc::vec![SsaValue(0)],
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.operand_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     frame.operand_slot(0),
                     1,
@@ -3282,9 +3282,9 @@ fn lowers_f32_const_to_fp_machine_const() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 1,
         }],
     })
@@ -3295,7 +3295,7 @@ fn lowers_f32_const_to_fp_machine_const() {
         matches!(
             inst.kind,
             MachineInstKind::FloatConst {
-                width: crate::vm::machine::mir::MachineFloatWidth::F32,
+                width: crate::vm::machine::machine_ir::MachineFloatWidth::F32,
                 bits: 0x4120_0000,
                 dst,
             } if dst.0 >= program.first_fp_reg
@@ -3316,27 +3316,27 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
     use crate::value_type::ValueType;
 
     let frame = plan_frame_layout(1, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.operand_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     frame.operand_slot(0),
                     1,
@@ -3351,9 +3351,9 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 1,
         }],
     })
@@ -3379,27 +3379,27 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
 #[test]
 fn untyped_slot_load_stays_in_gp_bank() {
     let frame = plan_frame_layout(1, 2, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.operand_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return {
+            terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     frame.operand_slot(0),
                     1,
@@ -3414,9 +3414,9 @@ fn untyped_slot_load_stays_in_gp_bank() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 1,
         }],
     })
@@ -3443,32 +3443,32 @@ fn f32_block_params_keep_f32_width() {
     use crate::value_type::ValueType;
 
     let frame = plan_frame_layout(1, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs::default(),
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
         blocks: alloc::vec![
-            LirBlock {
-                id: LirTarget(0),
+            SsaBlock {
+                id: SsaTarget(0),
                 params: alloc::vec![],
-                ops: alloc::vec![LirInst {
-                    kind: LirInstKind::LoadSlot {
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 }],
-                terminator: LirTerminator::Goto(LirEdge {
-                    target: LirTarget(1),
-                    bindings: alloc::vec![LirBinding {
-                        param: LirValue(1),
-                        value: LirValue(0),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![SsaBinding {
+                        param: SsaValue(1),
+                        value: SsaValue(0),
                     }],
                 }),
             },
-            LirBlock {
-                id: LirTarget(1),
-                params: alloc::vec![LirValue(1)],
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![SsaValue(1)],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             },
         ],
         value_types: alloc::vec![ValueType::F32, ValueType::F32],
@@ -3479,9 +3479,9 @@ fn f32_block_params_keep_f32_width() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })
@@ -3497,9 +3497,9 @@ fn f32_cached_locals_use_f32_slot_widths() {
     use crate::value_type::ValueType;
 
     let frame = plan_frame_layout(1, 1, 2);
-    let lir = LirProgram {
-        entry: LirTarget(0),
-        local_cache: LirLocalCachePrefs {
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
             gp_preferred_slots: alloc::vec![],
             gp_preferred_types: alloc::vec![],
             fp_preferred_slots: alloc::vec![frame.local_slot(0)],
@@ -3510,24 +3510,24 @@ fn f32_cached_locals_use_f32_slot_widths() {
                 reads_before_write: true
             }],
         },
-        blocks: alloc::vec![LirBlock {
-            id: LirTarget(0),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![
-                LirInst {
-                    kind: LirInstKind::LoadSlot {
+                SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: frame.local_slot(0),
-                        dst: LirValue(0),
+                        dst: SsaValue(0),
                     },
                 },
-                LirInst {
-                    kind: LirInstKind::StoreSlot {
+                SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: frame.local_slot(0),
-                        src: LirValue(0),
+                        src: SsaValue(0),
                     },
                 },
             ],
-            terminator: LirTerminator::Return { results: None },
+            terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::F32],
     };
@@ -3537,9 +3537,9 @@ fn f32_cached_locals_use_f32_slot_widths() {
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
-            lir: &lir,
+            ssa: &ssa,
             result_count: 0,
         }],
     })

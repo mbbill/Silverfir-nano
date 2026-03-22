@@ -15,7 +15,7 @@
 
 pub(crate) mod config;
 pub(crate) mod frame;
-pub(crate) mod lir;
+pub(crate) mod ssa_ir;
 
 mod local_cache;
 mod lower_block;
@@ -35,9 +35,9 @@ use alloc::vec::Vec;
 use crate::{
     error::WasmError,
     vm::{
-        middle::lir::{
-            ir::{LirBlock, LirProgram},
-            target::LirTarget,
+        middle::ssa_ir::{
+            ir::{SsaBlock, SsaProgram},
+            target::SsaTarget,
             validate::validate_program,
         },
         wasm::semantic_ir::SemanticProgram,
@@ -67,7 +67,7 @@ pub(crate) struct PrepareInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedFunction {
     pub frame: FrameLayoutPlan,
-    pub lir: LirProgram,
+    pub ssa: SsaProgram,
 }
 
 pub(crate) fn prepare_function(
@@ -93,8 +93,8 @@ pub(crate) fn prepare_function(
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
             frame,
-            lir: LirProgram {
-                entry: LirTarget(0),
+            ssa: SsaProgram {
+                entry: SsaTarget(0),
                 local_cache,
                 blocks: Vec::new(),
                 value_types: Vec::new(),
@@ -141,8 +141,8 @@ pub(crate) fn prepare_function(
             op_result_types,
             &mut skip_reload_iter,
         )?;
-        blocks.push(LirBlock {
-            id: LirTarget(block_index as u32),
+        blocks.push(SsaBlock {
+            id: SsaTarget(block_index as u32),
             params,
             ops: block.ops,
             terminator: block.terminator,
@@ -151,24 +151,24 @@ pub(crate) fn prepare_function(
     }
     blocks.extend(extra_blocks);
 
-    let lir = LirProgram {
+    let ssa = SsaProgram {
         entry: semantic_to_block[0],
         local_cache,
         blocks,
         value_types: values.take_types(),
     };
-    let mut lir = lir;
-    optimize::optimize_lir(&mut lir, frame);
-    validate_program(&lir)?;
+    let mut ssa = ssa;
+    optimize::optimize_ssa(&mut ssa, frame);
+    validate_program(&ssa)?;
 
-    Ok(PreparedFunction { frame, lir })
+    Ok(PreparedFunction { frame, ssa })
 }
 
 #[inline]
 fn make_block_params(
     entry: &EntryState,
     values: &mut ValueAlloc,
-) -> Vec<lir::ir::LirValue> {
+) -> Vec<ssa_ir::ir::SsaValue> {
     debug_assert_eq!(
         entry.live_types.len(),
         entry.live_value_count() as usize,

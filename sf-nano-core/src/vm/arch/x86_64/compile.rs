@@ -6,7 +6,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::ModuleInst,
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFunction, MachineHelperSymbol, MachineInst, MachineInstKind,
@@ -83,7 +83,7 @@ struct PendingLocalPtrPatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DirectCallPatch {
     literal_offset: usize,
-    callee: crate::vm::machine::mir::MachineFuncId,
+    callee: crate::vm::machine::machine_ir::MachineFuncId,
 }
 
 pub use crate::vm::machine::ir_dump::DebugRegion;
@@ -1153,8 +1153,8 @@ impl<'a> FunctionCompiler<'a> {
 
     fn runtime_for(
         &self,
-        func_id: crate::vm::machine::mir::MachineFuncId,
-    ) -> Result<&crate::vm::machine::mir::MachineFunctionRuntime, WasmError> {
+        func_id: crate::vm::machine::machine_ir::MachineFuncId,
+    ) -> Result<&crate::vm::machine::machine_ir::MachineFunctionRuntime, WasmError> {
         self.compiled
             .runtime()
             .functions
@@ -2722,7 +2722,7 @@ impl<'a> FunctionCompiler<'a> {
             .ok_or_else(|| WasmError::internal("x86_64 helper target is out of range".into()))?;
         let metadata = self
             .compiled
-            .const_ptr(crate::vm::machine::mir::MachineConstId(
+            .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
                 const_idx as u32,
             ))
             .ok_or_else(|| WasmError::internal("x86_64 helper metadata is out of range".into()))?;
@@ -2858,8 +2858,8 @@ impl<'a> FunctionCompiler<'a> {
     fn emit_branch(
         &mut self,
         cond: &MachineBranchCond,
-        then_edge: &crate::vm::machine::mir::MachineEdge,
-        else_edge: &crate::vm::machine::mir::MachineEdge,
+        then_edge: &crate::vm::machine::machine_ir::MachineEdge,
+        else_edge: &crate::vm::machine::machine_ir::MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         let then_fallthrough =
@@ -3092,7 +3092,7 @@ impl<'a> FunctionCompiler<'a> {
 
     fn emit_call_direct(
         &mut self,
-        callee: crate::vm::machine::mir::MachineFuncId,
+        callee: crate::vm::machine::machine_ir::MachineFuncId,
         callee_frame_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
@@ -3266,7 +3266,7 @@ impl<'a> FunctionCompiler<'a> {
     fn emit_jump_table(
         &mut self,
         index: MachineValue,
-        entries: &[crate::vm::machine::mir::MachineEdge],
+        entries: &[crate::vm::machine::machine_ir::MachineEdge],
     ) -> Result<(), WasmError> {
         if entries.is_empty() {
             return Err(WasmError::internal(

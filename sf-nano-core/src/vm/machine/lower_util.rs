@@ -2,41 +2,41 @@ use alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
-    vm::middle::lir::ir::{LirBlock, LirBoundaryOp, LirEdge, LirInstKind, LirTerminator, LirValue},
+    vm::middle::ssa_ir::ir::{SsaBlock, SsaBoundaryOp, SsaEdge, SsaInstKind, SsaTerminator, SsaValue},
 };
 
-pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32> {
+pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32> {
     let mut uses = BTreeMap::new();
     for inst in &block.ops {
         match &inst.kind {
-            LirInstKind::Value { args, .. } => {
+            SsaInstKind::Value { args, .. } => {
                 for value in args {
                     *uses.entry(*value).or_insert(0) += 1;
                 }
             }
-            LirInstKind::StoreSlot { src, .. } => {
+            SsaInstKind::StoreSlot { src, .. } => {
                 *uses.entry(*src).or_insert(0) += 1;
             }
-            LirInstKind::LoadSlot { .. } => {}
-            LirInstKind::Boundary(LirBoundaryOp::MemoryGrow { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::MemoryFill { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::MemoryCopy { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableGrow { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableFill { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableCopy { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::MemoryInit { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::DataDrop { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::TableInit { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::ElemDrop { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallExternal { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallInternal { .. })
-            | LirInstKind::Boundary(LirBoundaryOp::CallIndirect { .. }) => {}
+            SsaInstKind::LoadSlot { .. } => {}
+            SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryFill { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::TableGrow { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::TableFill { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::TableCopy { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryInit { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::DataDrop { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::TableInit { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::ElemDrop { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::CallExternal { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::CallInternal { .. })
+            | SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect { .. }) => {}
         }
     }
 
     match &block.terminator {
-        LirTerminator::Goto(edge) => count_edge_uses(edge, &mut uses),
-        LirTerminator::Branch {
+        SsaTerminator::Goto(edge) => count_edge_uses(edge, &mut uses),
+        SsaTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -45,13 +45,13 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
             count_edge_uses(then_edge, &mut uses);
             count_edge_uses(else_edge, &mut uses);
         }
-        LirTerminator::BrTable { index, entries } => {
+        SsaTerminator::BrTable { index, entries } => {
             *uses.entry(*index).or_insert(0) += 1;
             for edge in entries {
                 count_edge_uses(edge, &mut uses);
             }
         }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
 
     // Linear-SSA invariant: within the op stream, every value is used exactly
@@ -59,15 +59,15 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
     // that are live across block boundaries.
     #[cfg(debug_assertions)]
     {
-        let mut op_uses: BTreeMap<LirValue, u32> = BTreeMap::new();
+        let mut op_uses: BTreeMap<SsaValue, u32> = BTreeMap::new();
         for inst in &block.ops {
             match &inst.kind {
-                LirInstKind::Value { args, .. } => {
+                SsaInstKind::Value { args, .. } => {
                     for value in args {
                         *op_uses.entry(*value).or_insert(0) += 1;
                     }
                 }
-                LirInstKind::StoreSlot { src, .. } => {
+                SsaInstKind::StoreSlot { src, .. } => {
                     *op_uses.entry(*src).or_insert(0) += 1;
                 }
                 _ => {}
@@ -85,13 +85,13 @@ pub(super) fn compute_remaining_uses(block: &LirBlock) -> BTreeMap<LirValue, u32
     uses
 }
 
-fn count_edge_uses(edge: &LirEdge, uses: &mut BTreeMap<LirValue, u32>) {
+fn count_edge_uses(edge: &SsaEdge, uses: &mut BTreeMap<SsaValue, u32>) {
     for binding in &edge.bindings {
         *uses.entry(binding.value).or_insert(0) += 1;
     }
 }
 
-pub(super) fn single_result(results: &[LirValue]) -> Result<LirValue, WasmError> {
+pub(super) fn single_result(results: &[SsaValue]) -> Result<SsaValue, WasmError> {
     match results {
         [value] => Ok(*value),
         _ => Err(WasmError::internal(
@@ -100,7 +100,7 @@ pub(super) fn single_result(results: &[LirValue]) -> Result<LirValue, WasmError>
     }
 }
 
-pub(super) fn single_arg(args: &[LirValue]) -> Result<LirValue, WasmError> {
+pub(super) fn single_arg(args: &[SsaValue]) -> Result<SsaValue, WasmError> {
     match args {
         [value] => Ok(*value),
         _ => Err(WasmError::internal(
@@ -109,7 +109,7 @@ pub(super) fn single_arg(args: &[LirValue]) -> Result<LirValue, WasmError> {
     }
 }
 
-pub(super) fn two_args(args: &[LirValue]) -> Result<(LirValue, LirValue), WasmError> {
+pub(super) fn two_args(args: &[SsaValue]) -> Result<(SsaValue, SsaValue), WasmError> {
     match args {
         [lhs, rhs] => Ok((*lhs, *rhs)),
         _ => Err(WasmError::internal(

@@ -1,7 +1,7 @@
 use crate::{
     error::WasmError,
     vm::{
-        machine::mir::{
+        machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineExternId,
             MachineFuncId, MachineFrameRegion, MachineHelperCall, MachineHelperSymbol,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
@@ -10,7 +10,7 @@ use crate::{
         },
         middle::{
             frame::{FrameSlot, FrameSpan},
-            lir::ir::{LirBoundaryOp, LirValue},
+            ssa_ir::ir::{SsaBoundaryOp, SsaValue},
         },
         runtime::helper_meta::{
             CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
@@ -176,7 +176,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_runtime(
         &mut self,
-        boundary: &LirBoundaryOp,
+        boundary: &SsaBoundaryOp,
         sidecar: &mut SidecarBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
@@ -206,7 +206,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn runtime_call_site(
         &self,
-        boundary: &LirBoundaryOp,
+        boundary: &SsaBoundaryOp,
         sidecar: &mut SidecarBuilder,
     ) -> Result<
         (
@@ -218,21 +218,21 @@ impl<'a> BlockLowerContext<'a> {
         use MachineHelperSymbol as H;
 
         let pair = match boundary {
-            LirBoundaryOp::MemoryGrow { mem_idx, io } => (
+            SsaBoundaryOp::MemoryGrow { mem_idx, io } => (
                 sidecar.extern_target(H::MemoryGrow),
                 sidecar.memory_grow_meta(MemoryGrowMeta {
                     mem_idx: *mem_idx,
                     io: (*io).into(),
                 }),
             ),
-            LirBoundaryOp::MemoryFill { mem_idx, args } => (
+            SsaBoundaryOp::MemoryFill { mem_idx, args } => (
                 sidecar.extern_target(H::MemoryFill),
                 sidecar.memory_fill_meta(MemoryFillMeta {
                     mem_idx: *mem_idx,
                     args: span_region_with_slots(*args, 3, "memory.fill args")?,
                 }),
             ),
-            LirBoundaryOp::MemoryCopy {
+            SsaBoundaryOp::MemoryCopy {
                 dst_mem_idx,
                 src_mem_idx,
                 args,
@@ -244,7 +244,7 @@ impl<'a> BlockLowerContext<'a> {
                     args: span_region_with_slots(*args, 3, "memory.copy args")?,
                 }),
             ),
-            LirBoundaryOp::TableGrow {
+            SsaBoundaryOp::TableGrow {
                 table_idx,
                 args,
                 results,
@@ -256,14 +256,14 @@ impl<'a> BlockLowerContext<'a> {
                     results: span_region_with_slots(*results, 1, "table.grow results")?,
                 }),
             ),
-            LirBoundaryOp::TableFill { table_idx, args } => (
+            SsaBoundaryOp::TableFill { table_idx, args } => (
                 sidecar.extern_target(H::TableFill),
                 sidecar.table_fill_meta(TableFillMeta {
                     table_idx: *table_idx,
                     args: span_region_with_slots(*args, 3, "table.fill args")?,
                 }),
             ),
-            LirBoundaryOp::TableCopy {
+            SsaBoundaryOp::TableCopy {
                 dst_table_idx,
                 src_table_idx,
                 args,
@@ -275,7 +275,7 @@ impl<'a> BlockLowerContext<'a> {
                     args: span_region_with_slots(*args, 3, "table.copy args")?,
                 }),
             ),
-            LirBoundaryOp::MemoryInit {
+            SsaBoundaryOp::MemoryInit {
                 data_idx,
                 mem_idx,
                 args,
@@ -287,13 +287,13 @@ impl<'a> BlockLowerContext<'a> {
                     args: span_region_with_slots(*args, 3, "memory.init args")?,
                 }),
             ),
-            LirBoundaryOp::DataDrop { data_idx } => (
+            SsaBoundaryOp::DataDrop { data_idx } => (
                 sidecar.extern_target(H::DataDrop),
                 sidecar.data_drop_meta(DataDropMeta {
                     data_idx: *data_idx,
                 }),
             ),
-            LirBoundaryOp::TableInit {
+            SsaBoundaryOp::TableInit {
                 elem_idx,
                 table_idx,
                 args,
@@ -305,7 +305,7 @@ impl<'a> BlockLowerContext<'a> {
                     args: span_region_with_slots(*args, 3, "table.init args")?,
                 }),
             ),
-            LirBoundaryOp::ElemDrop { elem_idx } => (
+            SsaBoundaryOp::ElemDrop { elem_idx } => (
                 sidecar.extern_target(H::ElemDrop),
                 sidecar.elem_drop_meta(ElemDropMeta {
                     elem_idx: *elem_idx,

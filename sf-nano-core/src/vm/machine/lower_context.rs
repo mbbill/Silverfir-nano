@@ -6,7 +6,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         machine::{
-            mir::{
+            machine_ir::{
                 machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
                 MachineBlockParam, MachineBranchCond, MachineCallLinkLayout, MachineCompareKind,
                 MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
@@ -18,12 +18,12 @@ use crate::{
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot},
-            lir::{
+            ssa_ir::{
                 ir::{
-                    LirBlock, LirEdge, LirInst, LirInstKind, LirLocalCachePrefs, LirProgram,
-                    LirTerminator, LirValue,
+                    SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaLocalCachePrefs, SsaProgram,
+                    SsaTerminator, SsaValue,
                 },
-                leaf::LirLeafOp,
+                leaf::SsaLeafOp,
             },
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
@@ -36,7 +36,7 @@ use super::{
     lower_util::{compute_remaining_uses, single_arg, single_result, two_args},
 };
 
-use crate::vm::middle::lir::ir::CachedLocalInfo;
+use crate::vm::middle::ssa_ir::ir::CachedLocalInfo;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CachedLocal {
@@ -55,22 +55,22 @@ pub(super) struct ValueRegs {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ValueLocation {
-    value: LirValue,
+    value: SsaValue,
     reg: MachineReg,
     hi_reg: Option<MachineReg>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TransientState {
-    value: Option<LirValue>,
+    value: Option<SsaValue>,
     ty: Option<MachineStorageType>,
 }
 
 pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     frame: FrameLayoutPlan,
-    program: &'a LirProgram,
-    block: &'a LirBlock,
+    program: &'a SsaProgram,
+    block: &'a SsaBlock,
     runtime: MachineFunctionRuntime,
     all_runtime: &'a [MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
@@ -79,7 +79,7 @@ pub(super) struct BlockLowerContext<'a> {
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
     values: Vec<ValueLocation>,
-    remaining_uses: alloc::collections::BTreeMap<LirValue, u32>,
+    remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
     transient_state: Vec<TransientState>,
     #[cfg(has_guard_pages)]
     guard_pages: bool,
@@ -89,9 +89,9 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn new(
         regfile: &'a MachineRegFile,
         frame: FrameLayoutPlan,
-        program: &'a LirProgram,
-        cache_prefs: &LirLocalCachePrefs,
-        block: &'a LirBlock,
+        program: &'a SsaProgram,
+        cache_prefs: &SsaLocalCachePrefs,
+        block: &'a SsaBlock,
         runtime: MachineFunctionRuntime,
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
@@ -259,8 +259,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_terminator(&mut self) -> Result<MachineTerminator, WasmError> {
         match &self.block.terminator {
-            LirTerminator::Goto(edge) => Ok(MachineTerminator::Jump(self.lower_edge(edge)?)),
-            LirTerminator::Branch {
+            SsaTerminator::Goto(edge) => Ok(MachineTerminator::Jump(self.lower_edge(edge)?)),
+            SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
@@ -273,7 +273,7 @@ impl<'a> BlockLowerContext<'a> {
                     else_edge: self.lower_edge(else_edge)?,
                 })
             }
-            LirTerminator::BrTable { index, entries } => {
+            SsaTerminator::BrTable { index, entries } => {
                 let index = self.use_value(*index)?;
                 self.release_dead_values()?;
                 let mut lowered = Vec::with_capacity(entries.len());
@@ -285,7 +285,7 @@ impl<'a> BlockLowerContext<'a> {
                     entries: lowered,
                 })
             }
-            LirTerminator::Return { .. } => {
+            SsaTerminator::Return { .. } => {
                 if !self.values.is_empty() {
                     return Err(WasmError::internal(
                         "LIR return reached native lowering with live transient SSA values; results must be published before return".into(),
@@ -293,7 +293,7 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 Ok(MachineTerminator::Return)
             }
-            LirTerminator::TrapUnreachable => Ok(MachineTerminator::Trap {
+            SsaTerminator::TrapUnreachable => Ok(MachineTerminator::Trap {
                 kind: MachineTrapKind::Unreachable,
             }),
         }
@@ -312,9 +312,9 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_reload_cached_locals_selective(skip_reload)
     }
 
-    pub(super) fn lower_inst(&mut self, inst: &LirInst) -> Result<(), WasmError> {
+    pub(super) fn lower_inst(&mut self, inst: &SsaInst) -> Result<(), WasmError> {
         match &inst.kind {
-            LirInstKind::LoadSlot { slot, dst } => {
+            SsaInstKind::LoadSlot { slot, dst } => {
                 let ty = lir_value_storage_type(self.program, *dst);
                 if self.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
                     let (dst_lo, dst_hi) = self.alloc_i64_value_pair(*dst)?;
@@ -403,7 +403,7 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             }
-            LirInstKind::StoreSlot { slot, src } => {
+            SsaInstKind::StoreSlot { slot, src } => {
                 let ty = lir_value_storage_type(self.program, *src);
                 if self.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
                     let (src_lo, src_hi) = self.use_i64_value_pair(*src)?;
@@ -497,11 +497,11 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 self.release_dead_values()?;
             }
-            LirInstKind::Value { op, args, results } => {
+            SsaInstKind::Value { op, args, results } => {
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }
-            LirInstKind::Boundary(boundary) => {
+            SsaInstKind::Boundary(boundary) => {
                 return Err(WasmError::internal(alloc::format!(
                     "boundary op {:?} must be lowered through its specialized native path",
                     boundary
@@ -511,7 +511,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_const(&mut self, results: &[LirValue], imm: u64) -> Result<(), WasmError> {
+    pub(super) fn lower_const(&mut self, results: &[SsaValue], imm: u64) -> Result<(), WasmError> {
         let dst = single_result(results)?;
         let dst_reg = self.alloc_value(dst)?;
         self.emit_machine_inst(MachineInst {
@@ -526,7 +526,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_float_const(
         &mut self,
-        results: &[LirValue],
+        results: &[SsaValue],
         width: MachineFloatWidth,
         bits: u64,
     ) -> Result<(), WasmError> {
@@ -539,8 +539,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_int_unary(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineIntWidth,
         op: MachineIntUnaryOp,
     ) -> Result<(), WasmError> {
@@ -560,8 +560,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_int_binary(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineIntWidth,
         op: MachineIntBinaryOp,
     ) -> Result<(), WasmError> {
@@ -584,8 +584,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_int_compare(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineIntWidth,
         kind: MachineCompareKind,
         sign: MachineSign,
@@ -610,8 +610,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_float_binary(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineFloatWidth,
         op: MachineFloatBinaryOp,
     ) -> Result<(), WasmError> {
@@ -637,8 +637,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_float_compare(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineFloatWidth,
         kind: MachineCompareKind,
     ) -> Result<(), WasmError> {
@@ -661,8 +661,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_float_unary(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         width: MachineFloatWidth,
         op: MachineFloatUnaryOp,
     ) -> Result<(), WasmError> {
@@ -686,8 +686,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_convert(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         op: MachineConvertOp,
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
@@ -713,8 +713,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_select(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments".into()));
@@ -737,8 +737,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_ref_is_null(
         &mut self,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let src = self.use_value(src_value)?;
@@ -756,7 +756,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_edge(&self, edge: &LirEdge) -> Result<MachineEdge, WasmError> {
+    fn lower_edge(&self, edge: &SsaEdge) -> Result<MachineEdge, WasmError> {
         let target_block = MachineBlockId(edge.target.as_u32());
         let target = self
             .program
@@ -1067,23 +1067,23 @@ impl<'a> BlockLowerContext<'a> {
             })
     }
 
-    pub(super) fn alloc_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    pub(super) fn alloc_value(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
-    pub(super) fn alloc_result_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    pub(super) fn alloc_result_value(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
     /// Allocate a LoadSlot destination in the correct bank based on the type table.
-    fn alloc_slot_load_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    fn alloc_slot_load_value(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank(value, lir_value_storage_type(self.program, value))
     }
 
     pub(super) fn alloc_value_reusing_dead_inputs(
         &mut self,
-        value: LirValue,
-        candidates: &[LirValue],
+        value: SsaValue,
+        candidates: &[SsaValue],
     ) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank_reusing_dead_inputs(
             value,
@@ -1094,8 +1094,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn alloc_result_value_reusing_dead_inputs(
         &mut self,
-        value: LirValue,
-        candidates: &[LirValue],
+        value: SsaValue,
+        candidates: &[SsaValue],
     ) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank_reusing_dead_inputs(
             value,
@@ -1104,7 +1104,7 @@ impl<'a> BlockLowerContext<'a> {
         )
     }
 
-    pub(super) fn canonical_value_mem_width_for_value(&self, value: LirValue) -> MachineMemWidth {
+    pub(super) fn canonical_value_mem_width_for_value(&self, value: SsaValue) -> MachineMemWidth {
         canonical_value_mem_width_for_value(self.program, value)
     }
 
@@ -1112,13 +1112,13 @@ impl<'a> BlockLowerContext<'a> {
         canonical_storage_mem_width(MachineStorageType::GpWord)
     }
 
-    pub(super) fn value_storage_type(&self, value: LirValue) -> MachineStorageType {
+    pub(super) fn value_storage_type(&self, value: SsaValue) -> MachineStorageType {
         lir_value_storage_type(self.program, value)
     }
 
     pub(super) fn alloc_float_value(
         &mut self,
-        value: LirValue,
+        value: SsaValue,
         width: MachineFloatWidth,
     ) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank(value, float_storage_type(width))
@@ -1126,14 +1126,14 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn alloc_float_value_reusing_dead_inputs(
         &mut self,
-        value: LirValue,
-        candidates: &[LirValue],
+        value: SsaValue,
+        candidates: &[SsaValue],
         width: MachineFloatWidth,
     ) -> Result<MachineReg, WasmError> {
         self.alloc_value_in_bank_reusing_dead_inputs(value, candidates, float_storage_type(width))
     }
 
-    pub(super) fn use_value(&mut self, value: LirValue) -> Result<MachineReg, WasmError> {
+    pub(super) fn use_value(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
         let reg = self.value_reg(value)?;
         if let Some(remaining) = self.remaining_uses.get_mut(&value) {
             *remaining = remaining.saturating_sub(1);
@@ -1143,7 +1143,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn use_value_regs(
         &mut self,
-        value: LirValue,
+        value: SsaValue,
     ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         let regs = self.value_regs(value)?;
         if let Some(remaining) = self.remaining_uses.get_mut(&value) {
@@ -1154,7 +1154,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn use_i64_value_pair(
         &mut self,
-        value: LirValue,
+        value: SsaValue,
     ) -> Result<(MachineReg, MachineReg), WasmError> {
         let (lo, hi) = self.use_value_regs(value)?;
         hi.map(|hi| (lo, hi)).ok_or_else(|| {
@@ -1251,28 +1251,28 @@ impl<'a> BlockLowerContext<'a> {
         params
     }
 
-    fn try_value_reg(&self, value: LirValue) -> Option<MachineReg> {
+    fn try_value_reg(&self, value: SsaValue) -> Option<MachineReg> {
         self.values
             .iter()
             .find(|entry| entry.value == value)
             .map(|entry| entry.reg)
     }
 
-    pub(super) fn dead_value_reg(&self, value: LirValue) -> Option<MachineReg> {
+    pub(super) fn dead_value_reg(&self, value: SsaValue) -> Option<MachineReg> {
         if self.remaining_uses.get(&value).copied().unwrap_or(0) != 0 {
             return None;
         }
         self.try_value_reg(value)
     }
 
-    fn try_value_regs(&self, value: LirValue) -> Option<(MachineReg, Option<MachineReg>)> {
+    fn try_value_regs(&self, value: SsaValue) -> Option<(MachineReg, Option<MachineReg>)> {
         self.values
             .iter()
             .find(|entry| entry.value == value)
             .map(|entry| (entry.reg, entry.hi_reg))
     }
 
-    fn value_reg(&self, value: LirValue) -> Result<MachineReg, WasmError> {
+    fn value_reg(&self, value: SsaValue) -> Result<MachineReg, WasmError> {
         self.try_value_reg(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
                 "no machine register assigned for LIR value {:?}",
@@ -1281,7 +1281,7 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    fn value_regs(&self, value: LirValue) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
+    fn value_regs(&self, value: SsaValue) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         self.try_value_regs(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
                 "no machine register pair assigned for LIR value {:?}",
@@ -1292,7 +1292,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn alloc_value_in_bank(
         &mut self,
-        value: LirValue,
+        value: SsaValue,
         ty: MachineStorageType,
     ) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
@@ -1317,7 +1317,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn alloc_i64_value_pair(
         &mut self,
-        value: LirValue,
+        value: SsaValue,
     ) -> Result<(MachineReg, MachineReg), WasmError> {
         if let Some((lo, Some(hi))) = self.try_value_regs(value) {
             return Ok((lo, hi));
@@ -1349,8 +1349,8 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn alloc_i64_value_pair_reusing_dead_inputs(
         &mut self,
-        value: LirValue,
-        candidates: &[LirValue],
+        value: SsaValue,
+        candidates: &[SsaValue],
     ) -> Result<(MachineReg, MachineReg), WasmError> {
         if let Some((lo, Some(hi))) = self.try_value_regs(value) {
             return Ok((lo, hi));
@@ -1409,8 +1409,8 @@ impl<'a> BlockLowerContext<'a> {
 
     fn alloc_value_in_bank_reusing_dead_inputs(
         &mut self,
-        value: LirValue,
-        candidates: &[LirValue],
+        value: SsaValue,
+        candidates: &[SsaValue],
         ty: MachineStorageType,
     ) -> Result<MachineReg, WasmError> {
         if let Some(reg) = self.try_value_reg(value) {
@@ -1482,7 +1482,7 @@ impl<'a> BlockLowerContext<'a> {
     fn set_transient(
         &mut self,
         reg: MachineReg,
-        value: Option<LirValue>,
+        value: Option<SsaValue>,
         ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
         let index = self.transient_index(reg)?;
@@ -1667,7 +1667,7 @@ impl<'a> BlockLowerContext<'a> {
     /// - the last instruction doesn't also read target_reg (would clobber input)
     fn try_coalesce_last_dst(
         &mut self,
-        src_value: LirValue,
+        src_value: SsaValue,
         src_reg: MachineReg,
         target_reg: MachineReg,
     ) -> bool {
@@ -1709,7 +1709,7 @@ impl<'a> BlockLowerContext<'a> {
     /// temporaries alive across long argument setup.
     fn try_coalesce_last_store_immediate(
         &mut self,
-        src_value: LirValue,
+        src_value: SsaValue,
         src_reg: MachineReg,
         ty: MachineStorageType,
         addr: MachineAddr,
@@ -1815,7 +1815,7 @@ fn canonical_cached_local_mem_width(cached: CachedLocal) -> MachineMemWidth {
     canonical_storage_mem_width(cached.ty)
 }
 
-fn lir_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStorageType {
+fn lir_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {
     program
         .value_types
         .get(value.0 as usize)
@@ -1824,7 +1824,7 @@ fn lir_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStora
         .unwrap_or(MachineStorageType::GpWord)
 }
 
-fn canonical_value_mem_width_for_value(program: &LirProgram, value: LirValue) -> MachineMemWidth {
+fn canonical_value_mem_width_for_value(program: &SsaProgram, value: SsaValue) -> MachineMemWidth {
     canonical_storage_mem_width(lir_value_storage_type(program, value))
 }
 
@@ -2189,24 +2189,24 @@ mod tests {
         backend::BackendConfig,
         middle::{
             frame::plan_frame_layout,
-            lir::{
-                ir::{LirBlock, LirLocalCachePrefs, LirProgram, LirTerminator, LirValue},
-                target::LirTarget,
+            ssa_ir::{
+                ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
+                target::SsaTarget,
             },
         },
-        machine::mir::MachineCallLinkLayout,
+        machine::machine_ir::MachineCallLinkLayout,
     };
 
     fn make_test_context(value_types: Vec<ValueType>) -> BlockLowerContext<'static> {
         let frame = plan_frame_layout(0, 4, 0);
-        let program = Box::leak(Box::new(LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs::default(),
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+        let program = Box::leak(Box::new(SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs::default(),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types,
         }));
@@ -2243,10 +2243,10 @@ mod tests {
     #[test]
     fn alloc_i64_value_pair_reserves_two_gp_word_transients() {
         let mut lower = make_test_context(alloc::vec![ValueType::I64]);
-        let (lo, hi) = lower.alloc_i64_value_pair(LirValue(0)).expect("pair alloc");
+        let (lo, hi) = lower.alloc_i64_value_pair(SsaValue(0)).expect("pair alloc");
         assert_ne!(lo, hi);
         assert_eq!(
-            lower.use_i64_value_pair(LirValue(0)).expect("pair use"),
+            lower.use_i64_value_pair(SsaValue(0)).expect("pair use"),
             (lo, hi)
         );
         assert_eq!(lower.storage_type_for_reg(lo), MachineStorageType::GpWord);
@@ -2254,11 +2254,11 @@ mod tests {
 
         let lo_index = lower.transient_index(lo).expect("lo transient");
         let hi_index = lower.transient_index(hi).expect("hi transient");
-        assert_eq!(lower.transient_state[lo_index].value, Some(LirValue(0)));
-        assert_eq!(lower.transient_state[hi_index].value, Some(LirValue(0)));
+        assert_eq!(lower.transient_state[lo_index].value, Some(SsaValue(0)));
+        assert_eq!(lower.transient_state[hi_index].value, Some(SsaValue(0)));
 
         lower.release_dead_values().expect("release pair");
-        assert!(lower.try_value_regs(LirValue(0)).is_none());
+        assert!(lower.try_value_regs(SsaValue(0)).is_none());
         assert!(lower.transient_state[lo_index].value.is_none());
         assert!(lower.transient_state[hi_index].value.is_none());
     }
@@ -2266,18 +2266,18 @@ mod tests {
     #[test]
     fn scalar_reuse_can_claim_low_half_of_dead_pair_and_frees_high_half() {
         let mut lower = make_test_context(alloc::vec![ValueType::I64, ValueType::I32]);
-        let (pair_lo, pair_hi) = lower.alloc_i64_value_pair(LirValue(0)).expect("pair alloc");
+        let (pair_lo, pair_hi) = lower.alloc_i64_value_pair(SsaValue(0)).expect("pair alloc");
         let scalar = lower
             .alloc_value_in_bank_reusing_dead_inputs(
-                LirValue(1),
-                &[LirValue(0)],
+                SsaValue(1),
+                &[SsaValue(0)],
                 MachineStorageType::GpWord,
             )
             .expect("scalar alloc");
 
         assert_eq!(scalar, pair_lo);
-        assert_eq!(lower.try_value_regs(LirValue(0)), None);
-        assert_eq!(lower.try_value_regs(LirValue(1)), Some((pair_lo, None)));
+        assert_eq!(lower.try_value_regs(SsaValue(0)), None);
+        assert_eq!(lower.try_value_regs(SsaValue(1)), Some((pair_lo, None)));
         let hi_index = lower.transient_index(pair_hi).expect("hi transient");
         assert!(lower.transient_state[hi_index].value.is_none());
     }
@@ -2286,17 +2286,17 @@ mod tests {
     fn pair_reuse_can_claim_low_half_of_dead_scalar_and_allocate_only_high_half() {
         let mut lower = make_test_context(alloc::vec![ValueType::I32, ValueType::I64]);
         let scalar = lower
-            .alloc_value_in_bank(LirValue(0), MachineStorageType::GpWord)
+            .alloc_value_in_bank(SsaValue(0), MachineStorageType::GpWord)
             .expect("scalar alloc");
         let (pair_lo, pair_hi) = lower
-            .alloc_i64_value_pair_reusing_dead_inputs(LirValue(1), &[LirValue(0)])
+            .alloc_i64_value_pair_reusing_dead_inputs(SsaValue(1), &[SsaValue(0)])
             .expect("pair alloc reusing dead scalar");
 
         assert_eq!(pair_lo, scalar);
         assert_ne!(pair_lo, pair_hi);
-        assert_eq!(lower.try_value_regs(LirValue(0)), None);
+        assert_eq!(lower.try_value_regs(SsaValue(0)), None);
         assert_eq!(
-            lower.try_value_regs(LirValue(1)),
+            lower.try_value_regs(SsaValue(1)),
             Some((pair_lo, Some(pair_hi)))
         );
         assert_eq!(

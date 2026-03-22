@@ -4,7 +4,7 @@ use crate::{
     error::WasmError,
     vm::{
         backend::BackendConfig,
-        machine::mir::{
+        machine::machine_ir::{
             MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },

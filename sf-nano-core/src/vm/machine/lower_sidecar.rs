@@ -1,7 +1,7 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
 use crate::vm::{
-    machine::mir::{
+    machine::machine_ir::{
         MachineConstData, MachineConstId, MachineExternBinding, MachineExternId,
         MachineHelperSymbol,
     },

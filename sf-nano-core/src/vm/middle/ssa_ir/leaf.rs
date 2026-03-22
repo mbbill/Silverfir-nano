@@ -7,9 +7,9 @@ use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 /// One local, non-runtime leaf op.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LirLeafOp(PrimitiveOpKind);
+pub(crate) struct SsaLeafOp(PrimitiveOpKind);
 
-impl LirLeafOp {
+impl SsaLeafOp {
     #[inline]
     pub(crate) fn from_primitive(kind: PrimitiveOpKind) -> Option<Self> {
         (!is_boundary_primitive(&kind)).then_some(Self(kind))

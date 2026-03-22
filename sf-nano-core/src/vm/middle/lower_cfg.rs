@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::vm::{
-    middle::lir::target::LirTarget,
+    middle::ssa_ir::target::SsaTarget,
     wasm::{
         common::SemanticTarget,
         semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
@@ -96,11 +96,11 @@ pub(super) fn retain_reachable_blocks(
 pub(super) fn build_semantic_to_block_map(
     semantic_len: usize,
     block_ranges: &[core::ops::Range<usize>],
-) -> Vec<LirTarget> {
-    let mut map = alloc::vec![LirTarget::default(); semantic_len];
+) -> Vec<SsaTarget> {
+    let mut map = alloc::vec![SsaTarget::default(); semantic_len];
     for (block_index, range) in block_ranges.iter().enumerate() {
         for semantic_index in range.clone() {
-            map[semantic_index] = LirTarget(block_index as u32);
+            map[semantic_index] = SsaTarget(block_index as u32);
         }
     }
     map

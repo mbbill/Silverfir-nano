@@ -9,10 +9,10 @@ use crate::{
     vm::{
         middle::{
             frame::FrameLayoutPlan,
-            lir::{
-                ir::{LirBinding, LirBlock, LirEdge, LirInst, LirInstKind, LirTerminator, LirValue},
+            ssa_ir::{
+                ir::{SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaTerminator, SsaValue},
                 leaf::is_boundary_primitive,
-                target::LirTarget,
+                target::SsaTarget,
             },
         },
         wasm::{
@@ -40,8 +40,8 @@ pub(super) fn lower_block_terminator(
     semantic_len: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<SsaValue>],
     entry_states: &[EntryState],
     values: &mut ValueAlloc,
     original_block_count: usize,
@@ -60,7 +60,7 @@ pub(super) fn lower_block_terminator(
                 PrimitiveOpKind::Unreachable
             ) =>
         {
-            Ok(LoweredTerminator::new(LirTerminator::TrapUnreachable))
+            Ok(LoweredTerminator::new(SsaTerminator::TrapUnreachable))
         }
         SemanticOpKind::Primitive(kind) => {
             if is_boundary_primitive(kind) {
@@ -177,7 +177,7 @@ pub(super) fn lower_block_terminator(
                 block_params,
                 entry_states,
             )?;
-            Ok(LoweredTerminator::new(LirTerminator::Branch {
+            Ok(LoweredTerminator::new(SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
@@ -185,7 +185,7 @@ pub(super) fn lower_block_terminator(
         }
         SemanticOpKind::Else { end_target } => {
             maybe_publish_live_window_for_targets(&[*end_target], state, frame, entry_states);
-            Ok(LoweredTerminator::new(LirTerminator::Goto(edge_to_target(
+            Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
                 *end_target,
                 state,
                 EdgeMapping::Identity,
@@ -218,7 +218,7 @@ pub(super) fn lower_block_terminator(
             if target_expects_canonical_payload(*target, *stack_drop, state, entry_states)? {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
-            Ok(LoweredTerminator::new(LirTerminator::Goto(edge_to_target(
+            Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
                 *target,
                 state,
                 EdgeMapping::TakenBranch {
@@ -249,7 +249,7 @@ pub(super) fn lower_block_terminator(
                         err
                     ))
                 })?;
-                let then_block_id = LirTarget(
+                let then_block_id = SsaTarget(
                     (original_block_count + extra_blocks_len) as u32,
                 );
                 let payload_types: alloc::vec::Vec<_> =
@@ -276,20 +276,20 @@ pub(super) fn lower_block_terminator(
                 }
                 let mut then_ops = Vec::with_capacity(*arity as usize);
                 for (offset, param) in then_params.iter().copied().enumerate() {
-                    then_ops.push(LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    then_ops.push(SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: payload_span.start.advance(offset as u16),
                             src: param,
                         },
                     });
                 }
-                let then_edge = LirEdge {
+                let then_edge = SsaEdge {
                     target: then_block_id,
                     bindings: then_params
                         .iter()
                         .copied()
                         .zip(payload.into_iter())
-                        .map(|(param, value)| LirBinding { param, value })
+                        .map(|(param, value)| SsaBinding { param, value })
                         .collect(),
                 };
                 let bridge_target = edge_to_target(
@@ -311,14 +311,14 @@ pub(super) fn lower_block_terminator(
                     block_params,
                     entry_states,
                 )?;
-                let bridge_block = LirBlock {
+                let bridge_block = SsaBlock {
                     id: then_block_id,
                     params: then_params,
                     ops: then_ops,
-                    terminator: LirTerminator::Goto(bridge_target),
+                    terminator: SsaTerminator::Goto(bridge_target),
                 };
                 Ok(LoweredTerminator {
-                    terminator: LirTerminator::Branch {
+                    terminator: SsaTerminator::Branch {
                         cond,
                         then_edge,
                         else_edge,
@@ -349,7 +349,7 @@ pub(super) fn lower_block_terminator(
                     block_params,
                     entry_states,
                 )?;
-                Ok(LoweredTerminator::new(LirTerminator::Branch {
+                Ok(LoweredTerminator::new(SsaTerminator::Branch {
                     cond,
                     then_edge,
                     else_edge,
@@ -372,7 +372,7 @@ pub(super) fn lower_block_terminator(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(LoweredTerminator::new(LirTerminator::BrTable {
+            Ok(LoweredTerminator::new(SsaTerminator::BrTable {
                 index,
                 entries,
             }))
@@ -444,16 +444,16 @@ pub(super) fn lower_block_terminator(
                 entry_states,
             )?))
         }
-        SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(LirTerminator::Return {
+        SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(SsaTerminator::Return {
             results: None,
         })),
-        SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(LirTerminator::Return {
+        SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(SsaTerminator::Return {
             results: {
                 canonicalize_return_results(state, frame, values, 1, result_types);
                 return_results(frame, 1)
             },
         })),
-        SemanticOpKind::Return { arity } => Ok(LoweredTerminator::new(LirTerminator::Return {
+        SemanticOpKind::Return { arity } => Ok(LoweredTerminator::new(SsaTerminator::Return {
             results: {
                 canonicalize_return_results(state, frame, values, *arity, result_types);
                 return_results(frame, *arity)
@@ -463,12 +463,12 @@ pub(super) fn lower_block_terminator(
 }
 
 pub(super) struct LoweredTerminator {
-    pub(super) terminator: LirTerminator,
-    pub(super) extra_blocks: Vec<LirBlock>,
+    pub(super) terminator: SsaTerminator,
+    pub(super) extra_blocks: Vec<SsaBlock>,
 }
 
 impl LoweredTerminator {
-    fn new(terminator: LirTerminator) -> Self {
+    fn new(terminator: SsaTerminator) -> Self {
         Self {
             terminator,
             extra_blocks: Vec::new(),
@@ -512,8 +512,8 @@ pub(super) fn maybe_publish_live_window_for_targets(
     let base_slot = frame.operand_slot(state.spill_depth());
     let prefix_values = state.live()[..publish_count].to_vec();
     for (offset, value) in prefix_values.into_iter().enumerate() {
-        state.ops.push(LirInst {
-            kind: LirInstKind::StoreSlot {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::StoreSlot {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -540,8 +540,8 @@ pub(super) fn canonicalize_live_window_for_target(
     let base_slot = frame.operand_slot(state.spill_depth());
     let spilled = state.spill_prefix(publish_count)?;
     for (offset, value) in spilled.into_iter().enumerate() {
-        state.ops.push(LirInst {
-            kind: LirInstKind::StoreSlot {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::StoreSlot {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -588,8 +588,8 @@ fn publish_taken_branch_payload_at(
             .saturating_sub(arity),
     );
     for (offset, value) in payload.into_iter().enumerate() {
-        state.ops.push(LirInst {
-            kind: LirInstKind::StoreSlot {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::StoreSlot {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -640,14 +640,14 @@ fn canonicalize_return_results(
 
     for offset in 0..arity as usize {
         let value = values.fresh_typed(result_types.get(offset).copied().unwrap_or(ValueType::I64));
-        state.ops.push(LirInst {
-            kind: LirInstKind::LoadSlot {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::LoadSlot {
                 slot: src.advance(offset as u16),
                 dst: value,
             },
         });
-        state.ops.push(LirInst {
-            kind: LirInstKind::StoreSlot {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::StoreSlot {
                 slot: dst.advance(offset as u16),
                 src: value,
             },

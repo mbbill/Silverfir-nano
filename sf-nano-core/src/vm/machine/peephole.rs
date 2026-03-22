@@ -25,7 +25,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::mir::{
+use super::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth,
     MachineInst, MachineInstKind, MachineProgram, MachineReg, MachineStorageType,
     MachineTerminator, MachineValue,
@@ -41,8 +41,8 @@ struct TrackedStore {
 struct TrackedLoad {
     addr: MachineAddr,
     ty: MachineStorageType,
-    width: super::mir::MachineMemWidth,
-    extension: super::mir::MachineLoadExtension,
+    width: super::machine_ir::MachineMemWidth,
+    extension: super::machine_ir::MachineLoadExtension,
     reg: MachineReg,
 }
 
@@ -239,8 +239,8 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 ty,
                 dst,
                 addr,
-                width: super::mir::MachineMemWidth::U64,
-                extension: super::mir::MachineLoadExtension::None,
+                width: super::machine_ir::MachineMemWidth::U64,
+                extension: super::machine_ir::MachineLoadExtension::None,
             } => {
                 if let Some(src) = tracked
                     .iter()
@@ -265,9 +265,9 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
                 addr, width, src, ..
             } => {
                 tracked.retain(|entry| {
-                    !addrs_overlap(entry.addr, super::mir::MachineMemWidth::U64, *addr, *width)
+                    !addrs_overlap(entry.addr, super::machine_ir::MachineMemWidth::U64, *addr, *width)
                 });
-                if *width == super::mir::MachineMemWidth::U64 {
+                if *width == super::machine_ir::MachineMemWidth::U64 {
                     tracked.push(TrackedStore {
                         addr: *addr,
                         src: *src,
@@ -625,10 +625,10 @@ fn find_single_replaceable_use_before_redef(
 }
 
 /// Check if a terminator reads from `reg`.
-fn terminator_uses_reg(term: &super::mir::MachineTerminator, reg: MachineReg) -> bool {
+fn terminator_uses_reg(term: &super::machine_ir::MachineTerminator, reg: MachineReg) -> bool {
     match term {
-        super::mir::MachineTerminator::Jump(edge) => edge_uses_reg(edge, reg),
-        super::mir::MachineTerminator::Branch {
+        super::machine_ir::MachineTerminator::Jump(edge) => edge_uses_reg(edge, reg),
+        super::machine_ir::MachineTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -637,32 +637,32 @@ fn terminator_uses_reg(term: &super::mir::MachineTerminator, reg: MachineReg) ->
                 || edge_uses_reg(then_edge, reg)
                 || edge_uses_reg(else_edge, reg)
         }
-        super::mir::MachineTerminator::JumpTable { index, entries } => {
+        super::machine_ir::MachineTerminator::JumpTable { index, entries } => {
             value_is_reg(index, reg) || entries.iter().any(|e| edge_uses_reg(e, reg))
         }
-        super::mir::MachineTerminator::CallDirect {
+        super::machine_ir::MachineTerminator::CallDirect {
             callee_frame_base, ..
         } => *callee_frame_base == reg,
-        super::mir::MachineTerminator::CallIndirect {
+        super::machine_ir::MachineTerminator::CallIndirect {
             callee_target,
             callee_frame_base,
             ..
         } => value_is_reg(callee_target, reg) || *callee_frame_base == reg,
-        super::mir::MachineTerminator::Return | super::mir::MachineTerminator::Trap { .. } => false,
+        super::machine_ir::MachineTerminator::Return | super::machine_ir::MachineTerminator::Trap { .. } => false,
     }
 }
 
-fn edge_uses_reg(edge: &super::mir::MachineEdge, reg: MachineReg) -> bool {
+fn edge_uses_reg(edge: &super::machine_ir::MachineEdge, reg: MachineReg) -> bool {
     edge.args.iter().any(|v| value_is_reg(v, reg))
 }
 
-fn branch_cond_uses_reg(cond: &super::mir::MachineBranchCond, reg: MachineReg) -> bool {
+fn branch_cond_uses_reg(cond: &super::machine_ir::MachineBranchCond, reg: MachineReg) -> bool {
     match cond {
-        super::mir::MachineBranchCond::Value(v) => value_is_reg(v, reg),
-        super::mir::MachineBranchCond::IntCompare { lhs, rhs, .. } => {
+        super::machine_ir::MachineBranchCond::Value(v) => value_is_reg(v, reg),
+        super::machine_ir::MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
         }
-        super::mir::MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        super::machine_ir::MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
             value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
         }
     }
@@ -1309,7 +1309,7 @@ fn rewrite_float_alias_sources(kind: &mut MachineInstKind, aliases: &[Option<Mac
         MachineInstKind::Store { width, src, .. }
             if matches!(
                 width,
-                super::mir::MachineMemWidth::U32 | super::mir::MachineMemWidth::U64
+                super::machine_ir::MachineMemWidth::U32 | super::machine_ir::MachineMemWidth::U64
             ) =>
         {
             rewrite_float_alias_value(src, aliases);
@@ -1367,29 +1367,29 @@ fn resolve_alias(reg: MachineReg, aliases: &[Option<MachineReg>]) -> MachineReg 
     resolved
 }
 
-fn convert_src_accepts_fp(op: super::mir::MachineConvertOp) -> bool {
+fn convert_src_accepts_fp(op: super::machine_ir::MachineConvertOp) -> bool {
     matches!(
         op,
-        super::mir::MachineConvertOp::I32TruncF32S
-            | super::mir::MachineConvertOp::I32TruncF32U
-            | super::mir::MachineConvertOp::I32TruncF64S
-            | super::mir::MachineConvertOp::I32TruncF64U
-            | super::mir::MachineConvertOp::I64TruncF32S
-            | super::mir::MachineConvertOp::I64TruncF32U
-            | super::mir::MachineConvertOp::I64TruncF64S
-            | super::mir::MachineConvertOp::I64TruncF64U
-            | super::mir::MachineConvertOp::I32TruncSatF32S
-            | super::mir::MachineConvertOp::I32TruncSatF32U
-            | super::mir::MachineConvertOp::I32TruncSatF64S
-            | super::mir::MachineConvertOp::I32TruncSatF64U
-            | super::mir::MachineConvertOp::I64TruncSatF32S
-            | super::mir::MachineConvertOp::I64TruncSatF32U
-            | super::mir::MachineConvertOp::I64TruncSatF64S
-            | super::mir::MachineConvertOp::I64TruncSatF64U
-            | super::mir::MachineConvertOp::F32DemoteF64
-            | super::mir::MachineConvertOp::F64PromoteF32
-            | super::mir::MachineConvertOp::I32ReinterpretF32
-            | super::mir::MachineConvertOp::I64ReinterpretF64
+        super::machine_ir::MachineConvertOp::I32TruncF32S
+            | super::machine_ir::MachineConvertOp::I32TruncF32U
+            | super::machine_ir::MachineConvertOp::I32TruncF64S
+            | super::machine_ir::MachineConvertOp::I32TruncF64U
+            | super::machine_ir::MachineConvertOp::I64TruncF32S
+            | super::machine_ir::MachineConvertOp::I64TruncF32U
+            | super::machine_ir::MachineConvertOp::I64TruncF64S
+            | super::machine_ir::MachineConvertOp::I64TruncF64U
+            | super::machine_ir::MachineConvertOp::I32TruncSatF32S
+            | super::machine_ir::MachineConvertOp::I32TruncSatF32U
+            | super::machine_ir::MachineConvertOp::I32TruncSatF64S
+            | super::machine_ir::MachineConvertOp::I32TruncSatF64U
+            | super::machine_ir::MachineConvertOp::I64TruncSatF32S
+            | super::machine_ir::MachineConvertOp::I64TruncSatF32U
+            | super::machine_ir::MachineConvertOp::I64TruncSatF64S
+            | super::machine_ir::MachineConvertOp::I64TruncSatF64U
+            | super::machine_ir::MachineConvertOp::F32DemoteF64
+            | super::machine_ir::MachineConvertOp::F64PromoteF32
+            | super::machine_ir::MachineConvertOp::I32ReinterpretF32
+            | super::machine_ir::MachineConvertOp::I64ReinterpretF64
     )
 }
 
@@ -1485,9 +1485,9 @@ fn kill_tracked_loads_by_reg(tracked: &mut Vec<TrackedLoad>, reg: MachineReg) {
 
 fn addrs_overlap(
     lhs_addr: MachineAddr,
-    lhs_width: super::mir::MachineMemWidth,
+    lhs_width: super::machine_ir::MachineMemWidth,
     rhs_addr: MachineAddr,
-    rhs_width: super::mir::MachineMemWidth,
+    rhs_width: super::machine_ir::MachineMemWidth,
 ) -> bool {
     if lhs_addr.base != rhs_addr.base {
         return false;
@@ -1501,12 +1501,12 @@ fn addrs_overlap(
     lhs_start < rhs_end && rhs_start < lhs_end
 }
 
-fn mem_width_bytes(width: super::mir::MachineMemWidth) -> i64 {
+fn mem_width_bytes(width: super::machine_ir::MachineMemWidth) -> i64 {
     match width {
-        super::mir::MachineMemWidth::U8 => 1,
-        super::mir::MachineMemWidth::U16 => 2,
-        super::mir::MachineMemWidth::U32 => 4,
-        super::mir::MachineMemWidth::U64 => 8,
+        super::machine_ir::MachineMemWidth::U8 => 1,
+        super::machine_ir::MachineMemWidth::U16 => 2,
+        super::machine_ir::MachineMemWidth::U32 => 4,
+        super::machine_ir::MachineMemWidth::U64 => 8,
     }
 }
 
@@ -1554,7 +1554,7 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8) {
                 dst,
                 lhs,
                 rhs,
-            } if *width == super::mir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
+            } if *width == super::machine_ir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
             MachineInstKind::IntCompare {
                 width,
                 kind,

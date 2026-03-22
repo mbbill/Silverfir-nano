@@ -144,7 +144,7 @@ fn ensure_stack_capacity(
 
 fn seed_root_call_link(
     compiled: &CompiledNativeModule,
-    runtime: &crate::vm::machine::mir::MachineFunctionRuntime,
+    runtime: &crate::vm::machine::machine_ir::MachineFunctionRuntime,
     fp: *mut u64,
     root_return: *const u8,
 ) -> Result<(), WasmError> {

@@ -5,12 +5,12 @@ use alloc::collections::BTreeMap;
 use crate::{error::WasmError, value_type::ValueType};
 
 use super::ir::{
-    LirBinding, LirBlock, LirEdge, LirInstKind, LirProgram, LirTerminator, LirValue,
+    SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
 };
 use crate::vm::middle::frame::FrameSlot;
 
 #[cfg(any(debug_assertions, test))]
-pub(crate) fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
+pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     if program.blocks.is_empty() {
         if program.entry.as_usize() != 0 {
             return Err(WasmError::internal(
@@ -33,8 +33,8 @@ pub(crate) fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
         validate_params(&block.params, alloc::format!("block b{index} params"))?;
 
         match &block.terminator {
-            LirTerminator::Goto(edge) => validate_edge(program, edge, index)?,
-            LirTerminator::Branch {
+            SsaTerminator::Goto(edge) => validate_edge(program, edge, index)?,
+            SsaTerminator::Branch {
                 then_edge,
                 else_edge,
                 ..
@@ -42,12 +42,12 @@ pub(crate) fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
                 validate_edge(program, then_edge, index)?;
                 validate_edge(program, else_edge, index)?;
             }
-            LirTerminator::BrTable { entries, .. } => {
+            SsaTerminator::BrTable { entries, .. } => {
                 for edge in entries {
                     validate_edge(program, edge, index)?;
                 }
             }
-            LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
         }
     }
 
@@ -116,12 +116,12 @@ pub(crate) fn validate_program(program: &LirProgram) -> Result<(), WasmError> {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
+fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
     let type_count = program.value_types.len();
-    let check = |value: LirValue, ctx: &str| -> Result<(), WasmError> {
+    let check = |value: SsaValue, ctx: &str| -> Result<(), WasmError> {
         if value.0 as usize >= type_count {
             return Err(WasmError::internal(alloc::format!(
-                "{ctx}: LirValue({}) is out of range for value_types table (len={type_count})",
+                "{ctx}: SsaValue({}) is out of range for value_types table (len={type_count})",
                 value.0,
             )));
         }
@@ -135,7 +135,7 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
         }
         for inst in &block.ops {
             match &inst.kind {
-                LirInstKind::Value { args, results, .. } => {
+                SsaInstKind::Value { args, results, .. } => {
                     for a in args {
                         check(*a, &alloc::format!("{bctx} Value arg"))?;
                     }
@@ -143,17 +143,17 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
                         check(*r, &alloc::format!("{bctx} Value result"))?;
                     }
                 }
-                LirInstKind::LoadSlot { dst, .. } => {
+                SsaInstKind::LoadSlot { dst, .. } => {
                     check(*dst, &alloc::format!("{bctx} LoadSlot dst"))?;
                 }
-                LirInstKind::StoreSlot { src, .. } => {
+                SsaInstKind::StoreSlot { src, .. } => {
                     check(*src, &alloc::format!("{bctx} StoreSlot src"))?;
                 }
-                LirInstKind::Boundary(_) => {}
+                SsaInstKind::Boundary(_) => {}
             }
         }
         match &block.terminator {
-            LirTerminator::Branch {
+            SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
@@ -162,16 +162,16 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
                 validate_edge_values(then_edge, &bctx, &check)?;
                 validate_edge_values(else_edge, &bctx, &check)?;
             }
-            LirTerminator::Goto(edge) => {
+            SsaTerminator::Goto(edge) => {
                 validate_edge_values(edge, &bctx, &check)?;
             }
-            LirTerminator::BrTable { index, entries } => {
+            SsaTerminator::BrTable { index, entries } => {
                 check(*index, &alloc::format!("{bctx} BrTable index"))?;
                 for edge in entries {
                     validate_edge_values(edge, &bctx, &check)?;
                 }
             }
-            LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
         }
     }
     Ok(())
@@ -179,9 +179,9 @@ fn validate_value_type_coverage(program: &LirProgram) -> Result<(), WasmError> {
 
 #[cfg(any(debug_assertions, test))]
 fn validate_edge_values(
-    edge: &LirEdge,
+    edge: &SsaEdge,
     bctx: &str,
-    check: &dyn Fn(LirValue, &str) -> Result<(), WasmError>,
+    check: &dyn Fn(SsaValue, &str) -> Result<(), WasmError>,
 ) -> Result<(), WasmError> {
     for binding in &edge.bindings {
         check(binding.param, &alloc::format!("{bctx} edge binding param"))?;
@@ -191,7 +191,7 @@ fn validate_edge_values(
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_cached_local_slot_types(program: &LirProgram) -> Result<(), WasmError> {
+fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmError> {
     let mut cached_slot_types = BTreeMap::<FrameSlot, ValueType>::new();
     for (slot, ty) in program
         .local_cache
@@ -218,7 +218,7 @@ fn validate_cached_local_slot_types(program: &LirProgram) -> Result<(), WasmErro
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
             match inst.kind {
-                LirInstKind::LoadSlot { slot, dst } => {
+                SsaInstKind::LoadSlot { slot, dst } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -229,7 +229,7 @@ fn validate_cached_local_slot_types(program: &LirProgram) -> Result<(), WasmErro
                         "LoadSlot dst",
                     )?;
                 }
-                LirInstKind::StoreSlot { slot, src } => {
+                SsaInstKind::StoreSlot { slot, src } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -240,7 +240,7 @@ fn validate_cached_local_slot_types(program: &LirProgram) -> Result<(), WasmErro
                         "StoreSlot src",
                     )?;
                 }
-                LirInstKind::Value { .. } | LirInstKind::Boundary(_) => {}
+                SsaInstKind::Value { .. } | SsaInstKind::Boundary(_) => {}
             }
         }
     }
@@ -250,10 +250,10 @@ fn validate_cached_local_slot_types(program: &LirProgram) -> Result<(), WasmErro
 
 #[cfg(any(debug_assertions, test))]
 fn validate_cached_slot_value_type(
-    program: &LirProgram,
+    program: &SsaProgram,
     cached_slot_types: &BTreeMap<FrameSlot, ValueType>,
     slot: FrameSlot,
-    value: LirValue,
+    value: SsaValue,
     block_idx: usize,
     op_idx: usize,
     role: &str,
@@ -263,7 +263,7 @@ fn validate_cached_slot_value_type(
     };
     let Some(value_ty) = program.value_types.get(value.0 as usize).copied() else {
         return Err(WasmError::internal(alloc::format!(
-            "b{block_idx} op {op_idx} {role}: LirValue({}) is out of range for value_types table",
+            "b{block_idx} op {op_idx} {role}: SsaValue({}) is out of range for value_types table",
             value.0,
         )));
     };
@@ -290,11 +290,11 @@ fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: Va
 
 #[cfg(not(any(debug_assertions, test)))]
 #[inline]
-pub(crate) fn validate_program(_program: &LirProgram) -> Result<(), WasmError> {
+pub(crate) fn validate_program(_program: &SsaProgram) -> Result<(), WasmError> {
     Ok(())
 }
 
-fn validate_block_id(block: &LirBlock, index: usize) -> Result<(), WasmError> {
+fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
     if block.id.as_usize() != index {
         return Err(WasmError::internal(alloc::format!(
             "LIR block {} has mismatched id {}",
@@ -305,7 +305,7 @@ fn validate_block_id(block: &LirBlock, index: usize) -> Result<(), WasmError> {
     Ok(())
 }
 
-fn validate_params(params: &[LirValue], label: alloc::string::String) -> Result<(), WasmError> {
+fn validate_params(params: &[SsaValue], label: alloc::string::String) -> Result<(), WasmError> {
     for (index, value) in params.iter().enumerate() {
         if params[..index].contains(value) {
             return Err(WasmError::internal(alloc::format!(
@@ -318,8 +318,8 @@ fn validate_params(params: &[LirValue], label: alloc::string::String) -> Result<
 }
 
 fn validate_edge(
-    program: &LirProgram,
-    edge: &LirEdge,
+    program: &SsaProgram,
+    edge: &SsaEdge,
     source_block: usize,
 ) -> Result<(), WasmError> {
     let Some(target) = program.blocks.get(edge.target.as_usize()) else {
@@ -375,9 +375,9 @@ fn validate_edge(
 }
 
 fn validate_binding(
-    program: &LirProgram,
-    binding: &LirBinding,
-    target: &LirBlock,
+    program: &SsaProgram,
+    binding: &SsaBinding,
+    target: &SsaBlock,
     source_block: usize,
     target_block: usize,
 ) -> Result<(), WasmError> {
@@ -412,34 +412,34 @@ fn validate_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::middle::lir::{
-        ir::{LirInst, LirLocalCachePrefs},
-        target::LirTarget,
+    use crate::vm::middle::ssa_ir::{
+        ir::{SsaInst, SsaLocalCachePrefs},
+        target::SsaTarget,
     };
     use alloc::vec::Vec;
 
     #[test]
     fn rejects_missing_target_binding() {
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs::default(),
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![
-                LirBlock {
-                    id: LirTarget(0),
+                SsaBlock {
+                    id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: LirTerminator::Goto(
-                        LirEdge {
-                            target: LirTarget(1),
+                    terminator: SsaTerminator::Goto(
+                        SsaEdge {
+                            target: SsaTarget(1),
                             bindings: Vec::new(),
                         }
                     ),
                 },
-                LirBlock {
-                    id: LirTarget(1),
-                    params: alloc::vec![LirValue(0)],
+                SsaBlock {
+                    id: SsaTarget(1),
+                    params: alloc::vec![SsaValue(0)],
                     ops: Vec::new(),
-                    terminator: LirTerminator::Return { results: None },
+                    terminator: SsaTerminator::Return { results: None },
                 },
             ],
             value_types: alloc::vec![],
@@ -453,36 +453,36 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_param_binding() {
-        let param0 = LirValue(0);
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs::default(),
+        let param0 = SsaValue(0);
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![
-                LirBlock {
-                    id: LirTarget(0),
+                SsaBlock {
+                    id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: LirTerminator::Goto(
-                        LirEdge {
-                            target: LirTarget(1),
+                    terminator: SsaTerminator::Goto(
+                        SsaEdge {
+                            target: SsaTarget(1),
                             bindings: alloc::vec![
-                                LirBinding {
+                                SsaBinding {
                                     param: param0,
-                                    value: LirValue(1),
+                                    value: SsaValue(1),
                                 },
-                                LirBinding {
+                                SsaBinding {
                                     param: param0,
-                                    value: LirValue(2),
+                                    value: SsaValue(2),
                                 },
                             ],
                         }
                     ),
                 },
-                LirBlock {
-                    id: LirTarget(1),
+                SsaBlock {
+                    id: SsaTarget(1),
                     params: alloc::vec![param0],
                     ops: Vec::new(),
-                    terminator: LirTerminator::Return { results: None },
+                    terminator: SsaTerminator::Return { results: None },
                 },
             ],
             value_types: alloc::vec![],
@@ -494,31 +494,31 @@ mod tests {
 
     #[test]
     fn rejects_edge_binding_type_mismatch() {
-        let param0 = LirValue(0);
-        let value1 = LirValue(1);
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs::default(),
+        let param0 = SsaValue(0);
+        let value1 = SsaValue(1);
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![
-                LirBlock {
-                    id: LirTarget(0),
+                SsaBlock {
+                    id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: LirTerminator::Goto(
-                        LirEdge {
-                            target: LirTarget(1),
-                            bindings: alloc::vec![LirBinding {
+                    terminator: SsaTerminator::Goto(
+                        SsaEdge {
+                            target: SsaTarget(1),
+                            bindings: alloc::vec![SsaBinding {
                                 param: param0,
                                 value: value1,
                             }],
                         }
                     ),
                 },
-                LirBlock {
-                    id: LirTarget(1),
+                SsaBlock {
+                    id: SsaTarget(1),
                     params: alloc::vec![param0],
                     ops: Vec::new(),
-                    terminator: LirTerminator::Return { results: None },
+                    terminator: SsaTerminator::Return { results: None },
                 },
             ],
             value_types: alloc::vec![
@@ -530,15 +530,15 @@ mod tests {
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error
             .message()
-            .contains("binds param LirValue(0) (I64) from value LirValue(1) (I32)"));
+            .contains("binds param SsaValue(0) (I64) from value SsaValue(1) (I32)"));
     }
 
     #[test]
     fn rejects_cached_local_slot_type_mismatch() {
-        let value0 = LirValue(0);
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs {
+        let value0 = SsaValue(0);
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs {
                 gp_preferred_slots: alloc::vec![FrameSlot(0)],
                 gp_preferred_types: alloc::vec![ValueType::I32],
                 fp_preferred_slots: Vec::new(),
@@ -546,16 +546,16 @@ mod tests {
                 gp_local_info: Vec::new(),
                 fp_local_info: Vec::new(),
             },
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
-                ops: alloc::vec![LirInst {
-                    kind: LirInstKind::LoadSlot {
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::LoadSlot {
                         slot: FrameSlot(0),
                         dst: value0,
                     },
                 }],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::I64],
         };
@@ -563,15 +563,15 @@ mod tests {
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error
             .message()
-            .contains("LoadSlot dst for cached local slot FrameSlot(0) uses value LirValue(0) (I64), but cache metadata says I32"));
+            .contains("LoadSlot dst for cached local slot FrameSlot(0) uses value SsaValue(0) (I64), but cache metadata says I32"));
     }
 
     #[test]
     fn accepts_cached_local_ref_subtype_storage_match() {
-        let value0 = LirValue(0);
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs {
+        let value0 = SsaValue(0);
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs {
                 gp_preferred_slots: alloc::vec![FrameSlot(0)],
                 gp_preferred_types: alloc::vec![ValueType::funcref()],
                 fp_preferred_slots: Vec::new(),
@@ -579,16 +579,16 @@ mod tests {
                 gp_local_info: Vec::new(),
                 fp_local_info: Vec::new(),
             },
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
-                ops: alloc::vec![LirInst {
-                    kind: LirInstKind::StoreSlot {
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: FrameSlot(0),
                         src: value0,
                     },
                 }],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::Ref(
                 crate::value_type::RefType::non_nullable_concrete(1),
@@ -600,10 +600,10 @@ mod tests {
 
     #[test]
     fn rejects_cached_local_gp_word_type_mismatch_between_ref_and_i32() {
-        let value0 = LirValue(0);
-        let program = LirProgram {
-            entry: LirTarget(0),
-            local_cache: LirLocalCachePrefs {
+        let value0 = SsaValue(0);
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs {
                 gp_preferred_slots: alloc::vec![FrameSlot(0)],
                 gp_preferred_types: alloc::vec![ValueType::funcref()],
                 fp_preferred_slots: Vec::new(),
@@ -611,23 +611,23 @@ mod tests {
                 gp_local_info: Vec::new(),
                 fp_local_info: Vec::new(),
             },
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
-                ops: alloc::vec![LirInst {
-                    kind: LirInstKind::StoreSlot {
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::StoreSlot {
                         slot: FrameSlot(0),
                         src: value0,
                     },
                 }],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::I32],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error.message().contains(
-            "StoreSlot src for cached local slot FrameSlot(0) uses value LirValue(0) (I32), but cache metadata says Ref"
+            "StoreSlot src for cached local slot FrameSlot(0) uses value SsaValue(0) (I32), but cache metadata says Ref"
         ));
     }
 }

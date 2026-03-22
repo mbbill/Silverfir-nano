@@ -4,42 +4,42 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::middle::lir::ir::{LirInst, LirValue};
+use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaValue};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
     next: u32,
-    /// Per-value type table indexed by `LirValue.0`.
+    /// Per-value type table indexed by `SsaValue.0`.
     types: Vec<ValueType>,
 }
 
 impl ValueAlloc {
     #[inline]
-    pub(super) fn fresh(&mut self) -> LirValue {
+    pub(super) fn fresh(&mut self) -> SsaValue {
         self.fresh_typed(ValueType::I64)
     }
 
     #[inline]
-    pub(super) fn fresh_typed(&mut self, ty: ValueType) -> LirValue {
-        let value = LirValue(self.next);
+    pub(super) fn fresh_typed(&mut self, ty: ValueType) -> SsaValue {
+        let value = SsaValue(self.next);
         self.next += 1;
         self.types.push(ty);
         value
     }
 
-    pub(super) fn many(&mut self, count: usize) -> Vec<LirValue> {
+    pub(super) fn many(&mut self, count: usize) -> Vec<SsaValue> {
         (0..count).map(|_| self.fresh()).collect()
     }
 
-    pub(super) fn many_typed(&mut self, types: &[ValueType]) -> Vec<LirValue> {
+    pub(super) fn many_typed(&mut self, types: &[ValueType]) -> Vec<SsaValue> {
         types.iter().map(|ty| self.fresh_typed(*ty)).collect()
     }
 
-    pub(super) fn value_type(&self, value: LirValue) -> ValueType {
+    pub(super) fn value_type(&self, value: SsaValue) -> ValueType {
         let ty = self.types.get(value.0 as usize).copied();
         debug_assert!(
             ty.is_some(),
-            "LirValue({}) has no entry in the value-type table",
+            "SsaValue({}) has no entry in the value-type table",
             value.0,
         );
         ty.unwrap_or(ValueType::I64)
@@ -73,15 +73,15 @@ pub(super) struct BlockState {
     fp_transient_budget: u8,
     stack_height: u16,
     spill_depth: u16,
-    live: Vec<LirValue>,
+    live: Vec<SsaValue>,
     live_types: Vec<ValueType>,
-    pub(super) ops: Vec<LirInst>,
+    pub(super) ops: Vec<SsaInst>,
 }
 
 impl BlockState {
     pub(super) fn from_entry(
         entry: &EntryState,
-        params: &[LirValue],
+        params: &[SsaValue],
         gp_unit_bytes: u8,
         gp_transient_budget: u8,
         fp_transient_budget: u8,
@@ -116,7 +116,7 @@ impl BlockState {
     }
 
     #[inline]
-    pub(super) fn live(&self) -> &[LirValue] {
+    pub(super) fn live(&self) -> &[SsaValue] {
         &self.live
     }
 
@@ -125,7 +125,7 @@ impl BlockState {
         &self.live_types
     }
 
-    pub(super) fn top_values(&self, count: usize) -> Result<Vec<LirValue>, WasmError> {
+    pub(super) fn top_values(&self, count: usize) -> Result<Vec<SsaValue>, WasmError> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -141,7 +141,7 @@ impl BlockState {
         Ok(self.live[self.live.len() - count..].to_vec())
     }
 
-    pub(super) fn pop_one(&mut self) -> Result<LirValue, WasmError> {
+    pub(super) fn pop_one(&mut self) -> Result<SsaValue, WasmError> {
         let value = self
             .live
             .pop()
@@ -172,7 +172,7 @@ impl BlockState {
 
     pub(super) fn push_results(
         &mut self,
-        results: Vec<LirValue>,
+        results: Vec<SsaValue>,
         result_types: Vec<ValueType>,
     ) -> Result<(), WasmError> {
         if results.len() != result_types.len() {
@@ -188,7 +188,7 @@ impl BlockState {
         self.ensure_live_fit("value push")
     }
 
-    pub(super) fn spill_prefix(&mut self, count: u16) -> Result<Vec<LirValue>, WasmError> {
+    pub(super) fn spill_prefix(&mut self, count: u16) -> Result<Vec<SsaValue>, WasmError> {
         let count = count as usize;
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
@@ -205,7 +205,7 @@ impl BlockState {
 
     pub(super) fn fill_prefix(
         &mut self,
-        values: Vec<LirValue>,
+        values: Vec<SsaValue>,
         value_types: Vec<ValueType>,
     ) -> Result<(), WasmError> {
         if values.len() != value_types.len() {

@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use crate::value_type::ValueType;
 use crate::vm::{
-    middle::lir::ir::{CachedLocalInfo, LirLocalCachePrefs},
+    middle::ssa_ir::ir::{CachedLocalInfo, SsaLocalCachePrefs},
     wasm::{
         primitive_op::PrimitiveOpKind,
         semantic_ir::{SemanticOpKind, SemanticProgram},
@@ -22,7 +22,7 @@ use super::state::gp_value_budget_units;
 /// `continuation_skip_reload` is a temporary consumed during prepare: one
 /// `Vec<bool>` per call site in SemanticProgram op order, parallel to the
 /// cached-local ordering (GP then FP).  Each entry is moved onto the
-/// corresponding `LirBoundaryOp::skip_reload` field and never stored
+/// corresponding `SsaBoundaryOp::skip_reload` field and never stored
 /// persistently.
 pub(super) fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,
@@ -30,9 +30,9 @@ pub(super) fn analyze_local_cache_prefs(
     gp_budget_units: u8,
     fp_budget_units: u8,
     frame: FrameLayoutPlan,
-) -> (LirLocalCachePrefs, Vec<Vec<bool>>) {
+) -> (SsaLocalCachePrefs, Vec<Vec<bool>>) {
     if semantic.local_count == 0 {
-        return (LirLocalCachePrefs::default(), Vec::new());
+        return (SsaLocalCachePrefs::default(), Vec::new());
     }
 
     let weights = local_weights(semantic);
@@ -75,7 +75,7 @@ pub(super) fn analyze_local_cache_prefs(
     let cached_local_indices: Vec<u32> = gp.iter().chain(fp.iter()).copied().collect();
     let skip_reload = continuation_skip_reload(semantic, &cached_local_indices);
 
-    let prefs = LirLocalCachePrefs {
+    let prefs = SsaLocalCachePrefs {
         gp_local_info: gp.iter().map(|idx| local_info(*idx)).collect(),
         gp_preferred_slots: gp.iter().map(|idx| frame.local_slot(*idx as u16)).collect(),
         gp_preferred_types: gp

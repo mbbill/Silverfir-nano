@@ -53,7 +53,7 @@ use crate::{
         machine::{
             ir_dump,
             {lower_module, LowerFunctionInput, LowerModuleInput},
-            mir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
+            machine_ir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
         },
         middle::{config::PlanConfig, PrepareInput, prepare_function, PreparedFunction},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
@@ -181,7 +181,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         lowered_inputs.push(LowerFunctionInput {
             id: *id,
             frame: prepared.frame,
-            lir: &prepared.lir,
+            ssa: &prepared.ssa,
             result_count,
         });
     }
@@ -217,7 +217,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .iter()
         .map(|(id, prepared)| ir_dump::DumpFunctionLir {
             func_idx: id.0,
-            lir: &prepared.lir,
+            ssa: &prepared.ssa,
         })
         .collect();
 
@@ -254,7 +254,7 @@ pub fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let groups = prepared_functions.len();
         let ops: usize = prepared_functions
             .iter()
-            .map(|(_, p)| p.lir.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
+            .map(|(_, p)| p.ssa.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
             .sum();
         let mut bytes = 0usize;
         #[cfg(target_arch = "aarch64")]

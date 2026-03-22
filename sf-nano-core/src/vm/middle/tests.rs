@@ -1,7 +1,7 @@
 use crate::vm::{
     middle::{
     config::PlanConfig,
-    lir::ir::{LirBoundaryOp, LirInstKind, LirTerminator},
+    ssa_ir::ir::{SsaBoundaryOp, SsaInstKind, SsaTerminator},
     PrepareInput, PreparedFunction,
     },
     wasm::{
@@ -56,12 +56,12 @@ fn prepares_memory_copy_as_boundary_op() {
     .expect("memory.copy preparation should succeed");
 
     assert!(prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::MemoryCopy {
+            SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy {
                 dst_mem_idx: 0,
                 src_mem_idx: 1,
                 ..
@@ -115,12 +115,12 @@ fn prepares_table_fill_as_boundary_op() {
     .expect("table.fill preparation should succeed");
 
     assert!(prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::TableFill { table_idx: 2, .. })
+            SsaInstKind::Boundary(SsaBoundaryOp::TableFill { table_idx: 2, .. })
         ))));
     }
 
@@ -168,12 +168,12 @@ fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
     .expect("memory.init preparation should succeed");
 
     assert!(prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::MemoryInit {
+            SsaInstKind::Boundary(SsaBoundaryOp::MemoryInit {
                 data_idx: 7,
                 mem_idx: 4,
                 ..
@@ -222,12 +222,12 @@ fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
     .expect("table.init preparation should succeed");
 
     assert!(prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            LirInstKind::Boundary(LirBoundaryOp::TableInit {
+            SsaInstKind::Boundary(SsaBoundaryOp::TableInit {
                 elem_idx: 8,
                 table_idx: 5,
                 ..
@@ -289,7 +289,7 @@ fn merges_end_into_enclosing_block_for_empty_if() {
     // End is no longer split into its own block — it merges with the
     // following code. Two empty-if sequences + return = 3 blocks
     // (entry, End+LocalGet+If, End+ReturnVoid).
-    assert_eq!(prepared.lir.blocks.len(), 3);
+    assert_eq!(prepared.ssa.blocks.len(), 3);
     }
 
 #[test]
@@ -344,9 +344,9 @@ fn prepares_result_if_without_transient_underflow() {
     )
     .expect("result-if preparation should succeed");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Return { .. }
+        SsaTerminator::Return { .. }
     )));
     }
 
@@ -427,16 +427,16 @@ fn prepares_br_if_with_block_result_payload() {
     )
     .expect("br_if block-result preparation should succeed");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Branch { .. }
+        SsaTerminator::Branch { .. }
     )));
     let final_return = prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .find_map(|block| match block.terminator {
-            LirTerminator::Return {
+            SsaTerminator::Return {
                 results: Some(span),
             } => Some(span),
             _ => None,
@@ -505,9 +505,9 @@ fn prepares_if_with_block_param_and_result() {
     )
     .expect("if param/result preparation should succeed");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Return { .. }
+        SsaTerminator::Return { .. }
     )));
     }
 
@@ -569,20 +569,20 @@ fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
     .expect("if param passthrough break preparation should succeed");
 
     let if_block = prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .find(|block| {
             matches!(
                 block.terminator,
-                LirTerminator::Branch { .. }
+                SsaTerminator::Branch { .. }
             )
         })
         .expect("if block");
     let store_count = if_block
         .ops
         .iter()
-        .filter(|inst| matches!(inst.kind, LirInstKind::StoreSlot { .. }))
+        .filter(|inst| matches!(inst.kind, SsaInstKind::StoreSlot { .. }))
         .count();
 
     assert!(
@@ -664,9 +664,9 @@ fn prepares_unreachable_if_condition_without_phantom_result_growth() {
     )
     .expect("unreachable folded-if preparation should succeed");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Return { .. }
+        SsaTerminator::Return { .. }
     )));
     }
 
@@ -720,11 +720,11 @@ fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
     .expect("block-result fallthrough preparation should succeed");
 
     assert!(
-        prepared.lir.blocks.iter().any(|block| {
+        prepared.ssa.blocks.iter().any(|block| {
             block.ops.iter().any(|inst| {
                 matches!(
                     inst.kind,
-                    LirInstKind::StoreSlot { slot, .. }
+                    SsaInstKind::StoreSlot { slot, .. }
                         if slot == prepared.frame.operand_slot(0)
                 )
             })
@@ -782,9 +782,9 @@ fn prepares_block_result_used_as_select_operand_after_end() {
     )
     .expect("block result select preparation should succeed");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Return { .. }
+        SsaTerminator::Return { .. }
     )));
     }
 
@@ -887,7 +887,7 @@ fn debug_prepares_nested_br_table_value_index_shape() {
     )
     .expect("nested br_table index preparation should succeed");
 
-    assert!(!prepared.lir.blocks.is_empty());
+    assert!(!prepared.ssa.blocks.is_empty());
     }
 
 #[test]
@@ -963,7 +963,7 @@ fn debug_prepares_break_br_table_nested_num_shape() {
     )
     .expect("nested br_table num preparation should succeed");
 
-    assert!(!prepared.lir.blocks.is_empty());
+    assert!(!prepared.ssa.blocks.is_empty());
     }
 
 #[test]
@@ -1041,7 +1041,7 @@ fn debug_prepares_large_sig_shape() {
     )
     .expect("large signature preparation should succeed");
 
-    assert!(!prepared.lir.blocks.is_empty());
+    assert!(!prepared.ssa.blocks.is_empty());
     }
 
 #[test]
@@ -1081,19 +1081,19 @@ fn typed_pipeline_assigns_float_types_to_float_values() {
     .expect("typed float pipeline should succeed");
 
     assert!(
-        !prepared.lir.value_types.is_empty(),
+        !prepared.ssa.value_types.is_empty(),
         "value_types side table must be populated"
     );
 
     // Find LoadSlot results (from local.get) — they should be F64.
-    for block in &prepared.lir.blocks {
+    for block in &prepared.ssa.blocks {
         for inst in &block.ops {
-            if let LirInstKind::LoadSlot { dst, .. } = &inst.kind {
-                let ty = prepared.lir.value_types.get(dst.0 as usize);
+            if let SsaInstKind::LoadSlot { dst, .. } = &inst.kind {
+                let ty = prepared.ssa.value_types.get(dst.0 as usize);
                 assert_eq!(
                     ty.copied(),
                     Some(ValueType::F64),
-                    "local.get of an f64 local must produce an F64-typed LirValue"
+                    "local.get of an f64 local must produce an F64-typed SsaValue"
                 );
             }
         }
@@ -1137,7 +1137,7 @@ fn typed_pipeline_assigns_i32_types_to_int_ops() {
     .expect("typed i32 pipeline should succeed");
 
     // All values should be I32 (consts produce I32, add produces I32).
-    for ty in &prepared.lir.value_types {
+    for ty in &prepared.ssa.value_types {
         assert!(
             matches!(ty, ValueType::I32),
             "i32 ops should produce I32-typed values, got {:?}",
@@ -1201,11 +1201,11 @@ fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
 
     let count_loads = |prepared: &PreparedFunction| {
         prepared
-            .lir
+            .ssa
             .blocks
             .iter()
             .flat_map(|block| block.ops.iter())
-            .filter(|inst| matches!(inst.kind, LirInstKind::LoadSlot { .. }))
+            .filter(|inst| matches!(inst.kind, SsaInstKind::LoadSlot { .. }))
             .count()
     };
 
@@ -1280,7 +1280,7 @@ fn typed_pipeline_fills_preserve_float_types() {
     .expect("typed fill pipeline should succeed");
 
     // Every value in this program should be F64.
-    for (idx, ty) in prepared.lir.value_types.iter().enumerate() {
+    for (idx, ty) in prepared.ssa.value_types.iter().enumerate() {
         assert!(
             matches!(ty, ValueType::F64),
             "value {} should be F64 (fills must preserve float type), got {:?}",
@@ -1332,12 +1332,12 @@ fn typed_select_preserves_operand_type() {
 
     // Find the Select result value and verify it's F64.
     let select_result = prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .flat_map(|b| b.ops.iter())
         .find_map(|inst| {
-            if let LirInstKind::Value { op, results, .. } = &inst.kind {
+            if let SsaInstKind::Value { op, results, .. } = &inst.kind {
                 if matches!(op.primitive(), PrimitiveOpKind::Select) {
                     results.first().copied()
                 } else {
@@ -1348,7 +1348,7 @@ fn typed_select_preserves_operand_type() {
             }
         })
         .expect("select instruction must exist");
-    let ty = prepared.lir.value_types[select_result.0 as usize];
+    let ty = prepared.ssa.value_types[select_result.0 as usize];
     assert_eq!(
         ty,
         ValueType::F64,
@@ -1432,15 +1432,15 @@ fn typed_if_else_preserves_param_types_across_arms() {
     // that corresponds to the else entry. Check that no block param
     // is typed as I32 (which would indicate type corruption from the
     // then arm's drop+push).
-    for block in &prepared.lir.blocks {
+    for block in &prepared.ssa.blocks {
         for param in &block.params {
-            let ty = prepared.lir.value_types[param.0 as usize];
+            let ty = prepared.ssa.value_types[param.0 as usize];
             // Block params for the if block carry the f64 param.
             // They must not be I32.
             assert_ne!(
                 ty,
                 ValueType::I32,
-                "block param LirValue({}) should not be I32 — if/else must preserve f64 param type",
+                "block param SsaValue({}) should not be I32 — if/else must preserve f64 param type",
                 param.0,
             );
         }
@@ -1508,12 +1508,12 @@ fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
     .expect("typed ref.is_null pipeline should succeed");
 
     let ref_is_null_arg = prepared
-        .lir
+        .ssa
         .blocks
         .iter()
         .flat_map(|block| block.ops.iter())
         .find_map(|inst| {
-            let LirInstKind::Value { op, args, .. } = &inst.kind else {
+            let SsaInstKind::Value { op, args, .. } = &inst.kind else {
                 return None;
             };
             matches!(op.primitive(), PrimitiveOpKind::RefIsNull)
@@ -1521,7 +1521,7 @@ fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
                 .flatten()
         })
         .expect("ref.is_null instruction must exist");
-    let arg_ty = prepared.lir.value_types[ref_is_null_arg.0 as usize];
+    let arg_ty = prepared.ssa.value_types[ref_is_null_arg.0 as usize];
     assert_eq!(
         arg_ty,
         ValueType::funcref(),
@@ -1587,8 +1587,8 @@ fn prepares_result_if_with_returning_arms_without_typed_stack_mismatch() {
     )
     .expect("result if with returning arms should prepare cleanly");
 
-    assert!(prepared.lir.blocks.iter().any(|block| matches!(
+    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
         block.terminator,
-        LirTerminator::Return { .. }
+        SsaTerminator::Return { .. }
     )));
     }

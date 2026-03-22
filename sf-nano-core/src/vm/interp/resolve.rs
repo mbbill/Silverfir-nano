@@ -6,7 +6,7 @@ use crate::vm::{
         handlers::{full_set::*, OpHandler},
         TOS_REGISTER_COUNT,
     },
-    lir::leaf::LirLeafOp,
+    lir::leaf::SsaLeafOp,
     wasm::primitive_op::for_each_primitive_op,
 };
 
@@ -49,17 +49,17 @@ macro_rules! define_resolve_kind {
             Fused { imm0: u64, imm1: u64, imm2: u64, target_imm: u8 },
         }
 
-        impl From<&LirLeafOp> for IrOpKind {
-            fn from(kind: &LirLeafOp) -> Self {
+        impl From<&SsaLeafOp> for IrOpKind {
+            fn from(kind: &SsaLeafOp) -> Self {
                 match kind {
-                    $( LirLeafOp::$name $( { $($field),* } )? => Self::$name $( { $($field : *$field),* } )?, )*
+                    $( SsaLeafOp::$name $( { $($field),* } )? => Self::$name $( { $($field : *$field),* } )?, )*
                 }
             }
         }
 
-        pub(crate) fn leaf_stack_effect(kind: &LirLeafOp) -> (u8, u8) {
+        pub(crate) fn leaf_stack_effect(kind: &SsaLeafOp) -> (u8, u8) {
             match kind {
-                $( LirLeafOp::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
+                $( SsaLeafOp::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
             }
         }
     };
@@ -81,7 +81,7 @@ pub(crate) fn variant_for_depth(depth: usize) -> u8 {
 }
 
 #[inline]
-pub(crate) fn variant_for_leaf(op: &LirLeafOp, depth_before: usize) -> u8 {
+pub(crate) fn variant_for_leaf(op: &SsaLeafOp, depth_before: usize) -> u8 {
     let (pop, push) = leaf_stack_effect(op);
     if pop == 0 && push > 0 {
         variant_for_depth(depth_before + push as usize)

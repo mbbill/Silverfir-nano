@@ -11,7 +11,7 @@ use core::fmt::Write as _;
 use crate::{
     error::WasmError,
     vm::{
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp,
             MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFunction,
             MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
@@ -21,7 +21,7 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            lir::ir::{LirBlock, LirBoundaryOp, LirInstKind, LirProgram, LirTerminator, LirValue},
+            ssa_ir::ir::{SsaBlock, SsaBoundaryOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
         },
     },
 };
@@ -48,7 +48,7 @@ pub(crate) struct DebugRegion {
 /// Per-function LIR data for the dump.
 pub(crate) struct DumpFunctionLir<'a> {
     pub func_idx: u32,
-    pub lir: &'a LirProgram,
+    pub ssa: &'a SsaProgram,
 }
 
 /// Per-function debug regions from compilation.
@@ -193,9 +193,9 @@ fn write_dump_impl(
     let _ = writeln!(index);
 
     // Per-function sections
-    let lir_by_func: alloc::collections::BTreeMap<u32, &LirProgram> = lir_inputs
+    let lir_by_func: alloc::collections::BTreeMap<u32, &SsaProgram> = lir_inputs
         .iter()
-        .map(|entry| (entry.func_idx, entry.lir))
+        .map(|entry| (entry.func_idx, entry.ssa))
         .collect();
 
     for func in &machine_module.functions {
@@ -250,7 +250,7 @@ fn write_dump_impl(
 
 // ---- LIR rendering ----
 
-fn render_lir_program(out: &mut String, program: &LirProgram) {
+fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
     let _ = writeln!(
         out,
@@ -275,7 +275,7 @@ fn render_lir_program(out: &mut String, program: &LirProgram) {
     }
 }
 
-fn render_lir_block(out: &mut String, block: &LirBlock) {
+fn render_lir_block(out: &mut String, block: &SsaBlock) {
     let _ = writeln!(
         out,
         "  block b{} params=[{}]",
@@ -297,27 +297,27 @@ fn render_lir_block(out: &mut String, block: &LirBlock) {
     );
 }
 
-fn render_lir_inst(kind: &LirInstKind) -> String {
+fn render_lir_inst(kind: &SsaInstKind) -> String {
     match kind {
-        LirInstKind::Value { op, args, results } => format!(
+        SsaInstKind::Value { op, args, results } => format!(
             "leaf {:?} args=[{}] results=[{}]",
             op,
             vals(args),
             vals(results),
         ),
-        LirInstKind::LoadSlot { slot, dst } => {
+        SsaInstKind::LoadSlot { slot, dst } => {
             format!("load_slot v{} <- fp[{}]", dst.0, slot.0)
         }
-        LirInstKind::StoreSlot { slot, src } => {
+        SsaInstKind::StoreSlot { slot, src } => {
             format!("store_slot fp[{}] <- v{}", slot.0, src.0)
         }
-        LirInstKind::Boundary(bop) => render_boundary(bop),
+        SsaInstKind::Boundary(bop) => render_boundary(bop),
     }
 }
 
-fn render_boundary(bop: &LirBoundaryOp) -> String {
+fn render_boundary(bop: &SsaBoundaryOp) -> String {
     match bop {
-        LirBoundaryOp::CallInternal {
+        SsaBoundaryOp::CallInternal {
             callee,
             args,
             results,
@@ -329,7 +329,7 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        LirBoundaryOp::CallExternal {
+        SsaBoundaryOp::CallExternal {
             func_idx,
             args,
             results,
@@ -341,7 +341,7 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        LirBoundaryOp::CallIndirect {
+        SsaBoundaryOp::CallIndirect {
             type_idx,
             table_idx,
             index_slot,
@@ -356,45 +356,45 @@ fn render_boundary(bop: &LirBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        LirBoundaryOp::MemoryGrow { mem_idx, io } => {
+        SsaBoundaryOp::MemoryGrow { mem_idx, io } => {
             format!("memory.grow mem={mem_idx} io=fp[{}..{})", io.start.0, io.start.0 + io.count)
         }
-        LirBoundaryOp::MemoryFill { mem_idx, args } => {
+        SsaBoundaryOp::MemoryFill { mem_idx, args } => {
             format!("memory.fill mem={mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::MemoryCopy { dst_mem_idx, src_mem_idx, args } => {
+        SsaBoundaryOp::MemoryCopy { dst_mem_idx, src_mem_idx, args } => {
             format!("memory.copy dst={dst_mem_idx} src={src_mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::MemoryInit { data_idx, mem_idx, args } => {
+        SsaBoundaryOp::MemoryInit { data_idx, mem_idx, args } => {
             format!("memory.init data={data_idx} mem={mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::DataDrop { data_idx } => format!("data.drop {data_idx}"),
-        LirBoundaryOp::TableGrow { table_idx, args, results } => {
+        SsaBoundaryOp::DataDrop { data_idx } => format!("data.drop {data_idx}"),
+        SsaBoundaryOp::TableGrow { table_idx, args, results } => {
             format!("table.grow table={table_idx} args=fp[{}..{}) results=fp[{}..{})", args.start.0, args.start.0 + args.count, results.start.0, results.start.0 + results.count)
         }
-        LirBoundaryOp::TableFill { table_idx, args } => {
+        SsaBoundaryOp::TableFill { table_idx, args } => {
             format!("table.fill table={table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::TableCopy { dst_table_idx, src_table_idx, args } => {
+        SsaBoundaryOp::TableCopy { dst_table_idx, src_table_idx, args } => {
             format!("table.copy dst={dst_table_idx} src={src_table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::TableInit { elem_idx, table_idx, args } => {
+        SsaBoundaryOp::TableInit { elem_idx, table_idx, args } => {
             format!("table.init elem={elem_idx} table={table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
         }
-        LirBoundaryOp::ElemDrop { elem_idx } => format!("elem.drop {elem_idx}"),
+        SsaBoundaryOp::ElemDrop { elem_idx } => format!("elem.drop {elem_idx}"),
     }
 }
 
-fn render_lir_terminator(term: &LirTerminator) -> String {
+fn render_lir_terminator(term: &SsaTerminator) -> String {
     match term {
-        LirTerminator::Goto(edge) => {
+        SsaTerminator::Goto(edge) => {
             format!(
                 "goto b{} [{}]",
                 edge.target.0,
                 render_lir_bindings(&edge.bindings)
             )
         }
-        LirTerminator::Branch {
+        SsaTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -406,19 +406,19 @@ fn render_lir_terminator(term: &LirTerminator) -> String {
             else_edge.target.0,
             render_lir_bindings(&else_edge.bindings),
         ),
-        LirTerminator::BrTable { index, entries } => {
+        SsaTerminator::BrTable { index, entries } => {
             let targets: Vec<String> = entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("br_table v{} [{}]", index.0, targets.join(", "))
         }
-        LirTerminator::Return { results } => match results {
+        SsaTerminator::Return { results } => match results {
             Some(span) => format!("return fp[{}..{})", span.start.0, span.start.0 + span.count),
             None => "return void".into(),
         },
-        LirTerminator::TrapUnreachable => "trap_unreachable".into(),
+        SsaTerminator::TrapUnreachable => "trap_unreachable".into(),
     }
 }
 
-fn render_lir_bindings(bindings: &[crate::vm::middle::lir::ir::LirBinding]) -> String {
+fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -> String {
     bindings
         .iter()
         .map(|b| format!("v{}=v{}", b.param.0, b.value.0))
@@ -426,7 +426,7 @@ fn render_lir_bindings(bindings: &[crate::vm::middle::lir::ir::LirBinding]) -> S
         .join(", ")
 }
 
-fn vals(vs: &[LirValue]) -> String {
+fn vals(vs: &[SsaValue]) -> String {
     vs.iter()
         .map(|v| format!("v{}", v.0))
         .collect::<Vec<_>>()

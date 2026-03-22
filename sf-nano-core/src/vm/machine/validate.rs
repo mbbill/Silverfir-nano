@@ -1,6 +1,6 @@
 use crate::error::WasmError;
 
-use super::mir::{
+use super::machine_ir::{
     MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConstId,
     MachineConvertOp, MachineEdge, MachineExternId, MachineFloatWidth, MachineFuncId,
     MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,

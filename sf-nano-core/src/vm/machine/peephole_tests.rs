@@ -1,6 +1,6 @@
 use alloc::{vec, vec::Vec};
 
-use crate::vm::machine::mir::{
+use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
     MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
     MachineStorageType, MachineTerminator, MachineValue,
@@ -28,8 +28,8 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::mir::MachineIntWidth::I32,
-                            op: crate::vm::machine::mir::MachineIntUnaryOp::Eqz,
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
                         },
@@ -232,8 +232,8 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::mir::MachineIntWidth::I64,
-                        op: crate::vm::machine::mir::MachineIntBinaryOp::Add,
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
                         dst: MachineReg(8),
                         lhs: MachineValue::Reg(MachineReg(2)),
                         rhs: MachineValue::Imm64(80),
@@ -504,8 +504,8 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::mir::MachineIntWidth::I64,
-                        op: crate::vm::machine::mir::MachineIntBinaryOp::Add,
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
                         dst: MachineReg(8),
                         lhs: MachineValue::Reg(MachineReg(2)),
                         rhs: MachineValue::Imm64(16),
@@ -749,8 +749,8 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::FloatBinary {
-                        width: crate::vm::machine::mir::MachineFloatWidth::F64,
-                        op: crate::vm::machine::mir::MachineFloatBinaryOp::Add,
+                        width: crate::vm::machine::machine_ir::MachineFloatWidth::F64,
+                        op: crate::vm::machine::machine_ir::MachineFloatBinaryOp::Add,
                         dst: MachineReg(11),
                         lhs: MachineValue::Reg(MachineReg(10)),
                         rhs: MachineValue::Reg(MachineReg(7)),
@@ -830,8 +830,8 @@ fn preserves_moves_into_fp_cached_locals() {
         fp_reg_init_widths: vec![
             None,
             None,
-            Some(crate::vm::machine::mir::MachineFloatWidth::F32),
-            Some(crate::vm::machine::mir::MachineFloatWidth::F32),
+            Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
+            Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
         ],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -895,16 +895,16 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
                 params: Vec::new(),
                 ops: alloc::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::mir::MachineIntWidth::I64,
-                        kind: crate::vm::machine::mir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                         dst: MachineReg(7),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0),
                     },
                 }],
                 terminator: MachineTerminator::Branch {
-                    cond: crate::vm::machine::mir::MachineBranchCond::Value(
+                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
                         MachineValue::Reg(MachineReg(7)),
                     ),
                     then_edge: MachineEdge {
@@ -939,7 +939,7 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
     assert!(matches!(
         block.ops[0].kind,
         MachineInstKind::IntCompare {
-            width: crate::vm::machine::mir::MachineIntWidth::I64,
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
             dst: MachineReg(7),
             ..
         }
@@ -947,7 +947,7 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
     assert!(matches!(
         block.terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::mir::MachineBranchCond::Value(MachineValue::Reg(
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(MachineValue::Reg(
                 MachineReg(7)
             )),
             ..
@@ -969,16 +969,16 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
                 params: Vec::new(),
                 ops: alloc::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::mir::MachineIntWidth::I32,
-                        kind: crate::vm::machine::mir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::mir::MachineSign::Unsigned,
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
                         dst: MachineReg(7),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0),
                     },
                 }],
                 terminator: MachineTerminator::Branch {
-                    cond: crate::vm::machine::mir::MachineBranchCond::Value(
+                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
                         MachineValue::Reg(MachineReg(7)),
                     ),
                     then_edge: MachineEdge {
@@ -1013,9 +1013,9 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
     assert!(matches!(
         block.terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::mir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::mir::MachineIntWidth::I32,
-                kind: crate::vm::machine::mir::MachineCompareKind::Eq,
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
                 ..
             },
             ..
@@ -1044,7 +1044,7 @@ fn folds_single_use_constant_into_later_store_in_same_block() {
                 },
                 MachineInst {
                     kind: MachineInstKind::FloatConst {
-                        width: crate::vm::machine::mir::MachineFloatWidth::F32,
+                        width: crate::vm::machine::machine_ir::MachineFloatWidth::F32,
                         dst: MachineReg(9),
                         bits: 0,
                     },

@@ -9,9 +9,9 @@ use crate::{
     vm::{
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
-            lir::{
-                ir::{LirBoundaryOp, LirInst, LirInstKind},
-                leaf::LirLeafOp,
+            ssa_ir::{
+                ir::{SsaBoundaryOp, SsaInst, SsaInstKind},
+                leaf::SsaLeafOp,
             },
         },
         wasm::{primitive_op, primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind},
@@ -33,8 +33,8 @@ pub(super) fn lower_prefix_actions(
             PrepAction::Spill(frame) => {
                 let spilled = state.spill_prefix(frame.count)?;
                 for (offset, src) in spilled.into_iter().enumerate() {
-                    state.ops.push(LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    state.ops.push(SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: frame.start.advance(offset as u16),
                             src,
                         },
@@ -53,8 +53,8 @@ pub(super) fn lower_prefix_actions(
                     );
                     let ty = ty.unwrap_or(ValueType::I64);
                     let dst = values.fresh_typed(ty);
-                    state.ops.push(LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    state.ops.push(SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: frame.start.advance(offset as u16),
                             dst,
                         },
@@ -85,7 +85,7 @@ pub(super) fn lower_primitive(
         ))
     })?;
     let result_ty = if push == 0 {
-        ValueType::I64 // unused — no LirValue created
+        ValueType::I64 // unused — no SsaValue created
     } else if matches!(kind, PrimitiveOpKind::Select) {
         let ty = args.first().map(|v| values.value_type(*v));
         debug_assert!(
@@ -109,9 +109,9 @@ pub(super) fn lower_primitive(
     };
     state.consume_top(pop as usize)?;
     let results: alloc::vec::Vec<_> = (0..push).map(|_| values.fresh_typed(result_ty)).collect();
-    state.ops.push(LirInst {
-        kind: LirInstKind::Value {
-            op: LirLeafOp::from_primitive(kind.clone())
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::Value {
+            op: SsaLeafOp::from_primitive(kind.clone())
                 .expect("non-boundary primitive must lower as a leaf op"),
             args,
             results: results.clone(),
@@ -133,47 +133,47 @@ pub(super) fn lower_boundary_primitive(
     let (pop, push) = primitive_op::stack_effect(kind);
     let boundary_base = call_base_slot(frame, state.height(), pop as u16);
     let boundary = match kind {
-        PrimitiveOpKind::MemoryGrow { mem_idx } => LirBoundaryOp::MemoryGrow {
+        PrimitiveOpKind::MemoryGrow { mem_idx } => SsaBoundaryOp::MemoryGrow {
             mem_idx: *mem_idx,
             io: FrameSpan::new(boundary_base, 1),
         },
-        PrimitiveOpKind::MemoryFill { imm0, .. } => LirBoundaryOp::MemoryFill {
+        PrimitiveOpKind::MemoryFill { imm0, .. } => SsaBoundaryOp::MemoryFill {
             mem_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::MemoryCopy { imm0, imm1 } => LirBoundaryOp::MemoryCopy {
+        PrimitiveOpKind::MemoryCopy { imm0, imm1 } => SsaBoundaryOp::MemoryCopy {
             dst_mem_idx: *imm0,
             src_mem_idx: *imm1,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::TableGrow { table_idx } => LirBoundaryOp::TableGrow {
+        PrimitiveOpKind::TableGrow { table_idx } => SsaBoundaryOp::TableGrow {
             table_idx: *table_idx,
             args: FrameSpan::new(boundary_base, 2),
             results: FrameSpan::new(boundary_base, 1),
         },
-        PrimitiveOpKind::TableFill { imm0, .. } => LirBoundaryOp::TableFill {
+        PrimitiveOpKind::TableFill { imm0, .. } => SsaBoundaryOp::TableFill {
             table_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::TableCopy { imm0, imm1 } => LirBoundaryOp::TableCopy {
+        PrimitiveOpKind::TableCopy { imm0, imm1 } => SsaBoundaryOp::TableCopy {
             dst_table_idx: *imm0,
             src_table_idx: *imm1,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::MemoryInit { imm0, imm1 } => LirBoundaryOp::MemoryInit {
+        PrimitiveOpKind::MemoryInit { imm0, imm1 } => SsaBoundaryOp::MemoryInit {
             data_idx: *imm1,
             mem_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::DataDrop { data_idx } => LirBoundaryOp::DataDrop {
+        PrimitiveOpKind::DataDrop { data_idx } => SsaBoundaryOp::DataDrop {
             data_idx: *data_idx,
         },
-        PrimitiveOpKind::TableInit { imm0, imm1 } => LirBoundaryOp::TableInit {
+        PrimitiveOpKind::TableInit { imm0, imm1 } => SsaBoundaryOp::TableInit {
             elem_idx: *imm1,
             table_idx: *imm0,
             args: FrameSpan::new(boundary_base, 3),
         },
-        PrimitiveOpKind::ElemDrop { elem_idx } => LirBoundaryOp::ElemDrop {
+        PrimitiveOpKind::ElemDrop { elem_idx } => SsaBoundaryOp::ElemDrop {
             elem_idx: *elem_idx,
         },
         _ => {
@@ -182,8 +182,8 @@ pub(super) fn lower_boundary_primitive(
             ))
         }
     };
-    state.ops.push(LirInst {
-        kind: LirInstKind::Boundary(boundary),
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::Boundary(boundary),
     });
     state.finish_boundary(pop as u16, push as u16);
     Ok(())
@@ -205,8 +205,8 @@ pub(super) fn lower_local_get(
     );
     let ty = ty.unwrap_or(ValueType::I64);
     let dst = values.fresh_typed(ty);
-    state.ops.push(LirInst {
-        kind: LirInstKind::LoadSlot {
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::LoadSlot {
             slot: frame.local_slot(local_idx),
             dst,
         },
@@ -220,8 +220,8 @@ pub(super) fn lower_local_set(
     frame: FrameLayoutPlan,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
-    state.ops.push(LirInst {
-        kind: LirInstKind::StoreSlot {
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::StoreSlot {
             slot: frame.local_slot(local_idx),
             src,
         },
@@ -241,16 +241,16 @@ pub(super) fn lower_local_tee(
     // value is used exactly once.
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
-    state.ops.push(LirInst {
-        kind: LirInstKind::StoreSlot { slot, src },
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::StoreSlot { slot, src },
     });
     let ty = local_types
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
     let dst = values.fresh_typed(ty);
-    state.ops.push(LirInst {
-        kind: LirInstKind::LoadSlot { slot, dst },
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::LoadSlot { slot, dst },
     });
     state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
@@ -264,8 +264,8 @@ pub(super) fn lower_call_external(
     skip_reload: Vec<bool>,
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
-    state.ops.push(LirInst {
-        kind: LirInstKind::Boundary(LirBoundaryOp::CallExternal {
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
             func_idx,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
@@ -284,8 +284,8 @@ pub(super) fn lower_call_internal(
     skip_reload: Vec<bool>,
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
-    state.ops.push(LirInst {
-        kind: LirInstKind::Boundary(LirBoundaryOp::CallInternal {
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
@@ -306,8 +306,8 @@ pub(super) fn lower_call_indirect(
 ) {
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
-    state.ops.push(LirInst {
-        kind: LirInstKind::Boundary(LirBoundaryOp::CallIndirect {
+    state.ops.push(SsaInst {
+        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
             type_idx,
             table_idx,
             index_slot: call_base.advance(params),
@@ -382,7 +382,7 @@ pub(super) fn lower_block_body_op(
             ))
         }
         SemanticOpKind::Primitive(kind) => {
-            if crate::vm::middle::lir::leaf::is_boundary_primitive(kind) {
+            if crate::vm::middle::ssa_ir::leaf::is_boundary_primitive(kind) {
                 lower_boundary_primitive(kind, state, frame)
             } else {
                 lower_primitive(kind, semantic_index, state, values, op_result_types)

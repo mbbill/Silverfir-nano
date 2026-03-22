@@ -1,11 +1,11 @@
 use alloc::{vec, vec::Vec};
 
-use crate::vm::machine::mir::{
+use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId, MachineEdge,
     MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
     MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
-use crate::vm::machine::mir::{MachineExternBinding, MachineHelperSymbol};
+use crate::vm::machine::machine_ir::{MachineExternBinding, MachineHelperSymbol};
 
 #[test]
 fn rejects_edge_arity_mismatch() {
@@ -68,7 +68,7 @@ fn rejects_out_of_range_register() {
 fn rejects_out_of_range_helper_metadata() {
     let module = MachineModule {
         functions: alloc::vec![MachineFunction {
-            id: crate::vm::machine::mir::MachineFuncId(0),
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
             program: MachineProgram {
                 entry: MachineBlockId(0),
                 first_fp_reg: 2,
@@ -80,7 +80,7 @@ fn rejects_out_of_range_helper_metadata() {
                     params: Vec::new(),
                     ops: alloc::vec![MachineInst {
                         kind: MachineInstKind::CallHelper(
-                            crate::vm::machine::mir::MachineHelperCall {
+                            crate::vm::machine::machine_ir::MachineHelperCall {
                                 target: MachineExternId(0),
                                 metadata: MachineConstId(1),
                             },

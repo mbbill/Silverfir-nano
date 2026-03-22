@@ -12,7 +12,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::{Caller, FunctionInst, MemInst, TableInst},
-        machine::mir::MachineHelperSymbol,
+        machine::machine_ir::MachineHelperSymbol,
         raw_value::{raw_to_value, value_to_raw},
         runtime::{
             context::NativeContext,

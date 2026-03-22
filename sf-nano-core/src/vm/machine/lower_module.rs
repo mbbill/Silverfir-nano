@@ -10,7 +10,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCallLinkLayout, MachineCompareKind, MachineConstData, MachineEdge,
             MachineExternBinding, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
@@ -21,10 +21,10 @@ use crate::{
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
-            lir::{
+            ssa_ir::{
                 ir::{
-                    LirBoundaryOp, LirInstKind, LirLocalCachePrefs, LirProgram, LirTerminator,
-                    LirValue,
+                    SsaBoundaryOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator,
+                    SsaValue,
                 },
                 validate::validate_program,
             },
@@ -48,7 +48,7 @@ use super::{
 pub(crate) struct LowerFunctionInput<'a> {
     pub id: MachineFuncId,
     pub frame: FrameLayoutPlan,
-    pub lir: &'a LirProgram,
+    pub ssa: &'a SsaProgram,
     /// Declared result count from the function type signature.
     /// Used as fallback when all return paths are unreachable.
     pub result_count: u16,
@@ -95,7 +95,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
         .collect::<Vec<_>>();
     let mut sidecar = SidecarBuilder::new();
     for function in input.functions {
-        validate_program(function.lir)?;
+        validate_program(function.ssa)?;
         function_runtime[function.id.0 as usize] = lower_function_runtime(*function, call_link)?;
     }
     #[cfg(has_guard_pages)]
@@ -154,7 +154,7 @@ fn lower_function_runtime(
             slots: span.count - link_slots,
         })
     });
-    let mut return_results = derive_return_results(input.lir)?;
+    let mut return_results = derive_return_results(input.ssa)?;
     // Fallback: if no Return terminators exist (all paths trap/unreachable),
     // use the declared result count from the type signature so that callers
     // see the correct contract.
@@ -185,24 +185,24 @@ fn lower_function(
     let caller_runtime = runtime.get(input.id.0 as usize).copied().ok_or_else(|| {
         WasmError::internal("machine runtime metadata missing for function".into())
     })?;
-    let original_block_count = input.lir.blocks.len();
+    let original_block_count = input.ssa.blocks.len();
     let mut original_blocks = alloc::vec![None; original_block_count];
     let mut extra_blocks = Vec::new();
     let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
 
-    for block in &input.lir.blocks {
+    for block in &input.ssa.blocks {
         let target = block.id;
         let mut lower = BlockLowerContext::new(
             regfile,
             input.frame,
-            input.lir,
-            &input.lir.local_cache,
+            input.ssa,
+            &input.ssa.local_cache,
             block,
             caller_runtime,
             runtime,
             call_link,
             gp_reg_width,
-            target == input.lir.entry,
+            target == input.ssa.entry,
             #[cfg(has_guard_pages)]
             guard_pages,
         )?;
@@ -216,13 +216,13 @@ fn lower_function(
         {
             current_params.extend(machine_block_params_for_value(
                 regs,
-                program_value_storage_type(input.lir, value),
+                program_value_storage_type(input.ssa, value),
             ));
         }
 
         for inst in &block.ops {
             match &inst.kind {
-                LirInstKind::Value { op, args, results } => {
+                SsaInstKind::Value { op, args, results } => {
                     if let Some(lowered) = lower.lower_special_leaf(
                         op,
                         args,
@@ -273,20 +273,20 @@ fn lower_function(
                     }
                     lower.lower_inst(inst)?;
                 }
-                LirInstKind::Boundary(boundary) => match boundary {
-                    LirBoundaryOp::MemoryGrow { .. }
-                    | LirBoundaryOp::MemoryFill { .. }
-                    | LirBoundaryOp::MemoryCopy { .. }
-                    | LirBoundaryOp::TableGrow { .. }
-                    | LirBoundaryOp::TableFill { .. }
-                    | LirBoundaryOp::TableCopy { .. }
-                    | LirBoundaryOp::MemoryInit { .. }
-                    | LirBoundaryOp::DataDrop { .. }
-                    | LirBoundaryOp::TableInit { .. }
-                    | LirBoundaryOp::ElemDrop { .. } => {
+                SsaInstKind::Boundary(boundary) => match boundary {
+                    SsaBoundaryOp::MemoryGrow { .. }
+                    | SsaBoundaryOp::MemoryFill { .. }
+                    | SsaBoundaryOp::MemoryCopy { .. }
+                    | SsaBoundaryOp::TableGrow { .. }
+                    | SsaBoundaryOp::TableFill { .. }
+                    | SsaBoundaryOp::TableCopy { .. }
+                    | SsaBoundaryOp::MemoryInit { .. }
+                    | SsaBoundaryOp::DataDrop { .. }
+                    | SsaBoundaryOp::TableInit { .. }
+                    | SsaBoundaryOp::ElemDrop { .. } => {
                         lower.lower_runtime(boundary, sidecar)?;
                     }
-                    LirBoundaryOp::CallExternal {
+                    SsaBoundaryOp::CallExternal {
                         func_idx,
                         args,
                         results,
@@ -294,7 +294,7 @@ fn lower_function(
                     } => {
                         lower.lower_call_external(*func_idx, *args, *results, sidecar)?;
                     }
-                    LirBoundaryOp::CallInternal {
+                    SsaBoundaryOp::CallInternal {
                         callee,
                         args,
                         results,
@@ -316,8 +316,8 @@ fn lower_function(
                         current_params = Vec::new();
                         lower.begin_continuation_block_selective(Some(skip_reload))?;
                     }
-                    LirBoundaryOp::CallIndirect { .. } => {
-                        let LirBoundaryOp::CallIndirect {
+                    SsaBoundaryOp::CallIndirect { .. } => {
+                        let SsaBoundaryOp::CallIndirect {
                             type_idx,
                             table_idx,
                             index_slot,
@@ -551,11 +551,11 @@ fn lower_function(
     blocks.extend(extra_blocks);
 
     let program = MachineProgram {
-        entry: MachineBlockId(input.lir.entry.as_u32()),
+        entry: MachineBlockId(input.ssa.entry.as_u32()),
         first_fp_reg: regfile.first_fp_reg(),
         reg_count: regfile.reg_count(),
         fp_transient_count: regfile.fp_transient_count() as u16,
-        fp_reg_init_widths: fp_reg_init_widths(&regfile, &input.lir.local_cache)?,
+        fp_reg_init_widths: fp_reg_init_widths(&regfile, &input.ssa.local_cache)?,
         blocks,
     };
     program.validate()?;
@@ -595,10 +595,10 @@ pub(super) fn slot_offset_bytes(slot: crate::vm::middle::frame::FrameSlot) -> Re
     Ok(bytes)
 }
 
-fn derive_return_results(program: &LirProgram) -> Result<Option<MachineFrameRegion>, WasmError> {
+fn derive_return_results(program: &SsaProgram) -> Result<Option<MachineFrameRegion>, WasmError> {
     let mut derived: Option<Option<MachineFrameRegion>> = None;
     for block in &program.blocks {
-        let LirTerminator::Return { results } = &block.terminator else {
+        let SsaTerminator::Return { results } = &block.terminator else {
             continue;
         };
         let region = results.map(frame_span_region);
@@ -713,8 +713,8 @@ fn attach_edge_args(
 
 #[inline]
 pub(super) fn target_param_regs(
-    params: &[LirValue],
-    program: &LirProgram,
+    params: &[SsaValue],
+    program: &SsaProgram,
     regfile: &MachineRegFile,
     gp_reg_width: u8,
 ) -> Result<Vec<ValueRegs>, WasmError> {
@@ -762,7 +762,7 @@ fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockP
     }
 }
 
-fn program_value_storage_type(program: &LirProgram, value: LirValue) -> MachineStorageType {
+fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {
     match program.value_types.get(value.0 as usize).copied() {
         Some(ValueType::F32) => MachineStorageType::Fp32,
         Some(ValueType::F64) => MachineStorageType::Fp64,
@@ -773,7 +773,7 @@ fn program_value_storage_type(program: &LirProgram, value: LirValue) -> MachineS
 
 fn fp_reg_init_widths(
     regfile: &MachineRegFile,
-    cache_prefs: &LirLocalCachePrefs,
+    cache_prefs: &SsaLocalCachePrefs,
 ) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
     let mut widths = vec![None; regfile.fp_transient_count() + regfile.fp_local_cache_count()];
     if cache_prefs.fp_preferred_slots.len() != cache_prefs.fp_preferred_types.len() {

@@ -11,7 +11,7 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendConfig, BackendKind},
     entities::ModuleInst,
-    lir::ir::LirProgram,
+    ssa_ir::ir::SsaProgram,
     plan::{
         config::PlanConfig,
         frame::FrameLayoutPlan,
@@ -30,7 +30,7 @@ pub struct InterpreterBuildBundle {
     pub semantic: SemanticProgram,
     pub frame: FrameLayoutPlan,
     pub groups: GroupPlan,
-    pub lir: LirProgram,
+    pub ssa: SsaProgram,
 }
 
 #[inline]

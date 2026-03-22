@@ -13,7 +13,7 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
             MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
@@ -2110,7 +2110,7 @@ mod tests {
             },
             build::ensure_module_compiled,
             entities::{Caller, FunctionInst, MemInst, ModuleInst, TableInst},
-            machine::mir::{
+            machine::machine_ir::{
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
                 MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction, MachineInst,
                 MachineInstKind, MachineIntWidth, MachineMemWidth, MachineModule, MachineProgram,

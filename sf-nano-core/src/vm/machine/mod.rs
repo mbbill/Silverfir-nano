@@ -14,7 +14,7 @@ mod lower_ops;
 mod lower_regfile;
 mod lower_sidecar;
 mod lower_util;
-pub(crate) mod mir;
+pub(crate) mod machine_ir;
 pub(crate) mod peephole;
 pub(crate) mod validate;
 

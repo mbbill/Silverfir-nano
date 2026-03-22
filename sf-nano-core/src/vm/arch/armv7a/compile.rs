@@ -6,7 +6,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::ModuleInst,
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFuncId, MachineFunction, MachineFunctionRuntime,

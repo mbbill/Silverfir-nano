@@ -11,12 +11,12 @@ use alloc::vec::Vec;
 
 use crate::value_type::ValueType;
 
-use super::{leaf::LirLeafOp, target::LirTarget};
+use super::{leaf::SsaLeafOp, target::SsaTarget};
 use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
 /// One SSA value in prepared LIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LirValue(pub u32);
+pub(crate) struct SsaValue(pub u32);
 
 /// Analysis facts about a cached local, carried from planning to the backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub(crate) struct CachedLocalInfo {
 
 /// Preferred canonical local-slot ranking selected by planning, per bank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LirLocalCachePrefs {
+pub(crate) struct SsaLocalCachePrefs {
     /// GP-bank cached local slots (i32, i64, ref).
     pub gp_preferred_slots: Vec<FrameSlot>,
     /// Semantic types for `gp_preferred_slots`, kept in the same order.
@@ -47,13 +47,13 @@ pub(crate) struct LirLocalCachePrefs {
 
 /// Full prepared LIR program for one function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LirProgram {
-    pub entry: LirTarget,
-    pub local_cache: LirLocalCachePrefs,
-    pub blocks: Vec<LirBlock>,
-    /// Per-value type information indexed by `LirValue.0`.
+pub(crate) struct SsaProgram {
+    pub entry: SsaTarget,
+    pub local_cache: SsaLocalCachePrefs,
+    pub blocks: Vec<SsaBlock>,
+    /// Per-value type information indexed by `SsaValue.0`.
     ///
-    /// When non-empty, every allocated LirValue has a corresponding entry.
+    /// When non-empty, every allocated SsaValue has a corresponding entry.
     /// Float values (F32, F64) should be placed in FP transients; all others
     /// in GP transients.
     pub value_types: Vec<ValueType>,
@@ -61,54 +61,54 @@ pub(crate) struct LirProgram {
 
 /// One LIR basic block.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LirBlock {
-    pub id: LirTarget,
+pub(crate) struct SsaBlock {
+    pub id: SsaTarget,
     /// Live SSA parameters required on block entry.
-    pub params: Vec<LirValue>,
-    pub ops: Vec<LirInst>,
-    pub terminator: LirTerminator,
+    pub params: Vec<SsaValue>,
+    pub ops: Vec<SsaInst>,
+    pub terminator: SsaTerminator,
 }
 
 /// One explicit mapping from a predecessor live-out value to a successor block
 /// parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LirBinding {
-    pub param: LirValue,
-    pub value: LirValue,
+pub(crate) struct SsaBinding {
+    pub param: SsaValue,
+    pub value: SsaValue,
 }
 
 /// One control-flow edge with explicit live-in bindings for the successor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LirEdge {
-    pub target: LirTarget,
-    pub bindings: Vec<LirBinding>,
+pub(crate) struct SsaEdge {
+    pub target: SsaTarget,
+    pub bindings: Vec<SsaBinding>,
 }
 
 /// One SSA operation inside a block body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LirInst {
-    pub kind: LirInstKind,
+pub(crate) struct SsaInst {
+    pub kind: SsaInstKind,
 }
 
 /// Prepared frontend operation vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LirInstKind {
+pub(crate) enum SsaInstKind {
     Value {
-        op: LirLeafOp,
-        args: Vec<LirValue>,
-        results: Vec<LirValue>,
+        op: SsaLeafOp,
+        args: Vec<SsaValue>,
+        results: Vec<SsaValue>,
     },
     /// Read a canonical frame slot, usually a local slot.
-    LoadSlot { slot: FrameSlot, dst: LirValue },
+    LoadSlot { slot: FrameSlot, dst: SsaValue },
     /// Write a canonical frame slot, usually a local slot.
-    StoreSlot { slot: FrameSlot, src: LirValue },
+    StoreSlot { slot: FrameSlot, src: SsaValue },
     /// Slot-based call or runtime boundary.
-    Boundary(LirBoundaryOp),
+    Boundary(SsaBoundaryOp),
 }
 
 /// Prepared slot-based boundary operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LirBoundaryOp {
+pub(crate) enum SsaBoundaryOp {
     MemoryGrow {
         mem_idx: u32,
         io: FrameSpan,
@@ -181,16 +181,16 @@ pub(crate) enum LirBoundaryOp {
 
 /// Explicit CFG terminator.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LirTerminator {
-    Goto(LirEdge),
+pub(crate) enum SsaTerminator {
+    Goto(SsaEdge),
     Branch {
-        cond: LirValue,
-        then_edge: LirEdge,
-        else_edge: LirEdge,
+        cond: SsaValue,
+        then_edge: SsaEdge,
+        else_edge: SsaEdge,
     },
     BrTable {
-        index: LirValue,
-        entries: Vec<LirEdge>,
+        index: SsaValue,
+        entries: Vec<SsaEdge>,
     },
     /// Return using canonical frame result slots prepared before the terminator.
     Return {

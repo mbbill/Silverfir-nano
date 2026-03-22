@@ -2,7 +2,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::{global_offset, GlobalInst},
-        machine::mir::MachineMemWidth,
+        machine::machine_ir::MachineMemWidth,
         runtime::{
             code::CompiledNativeModule,
             context::NativeContext,

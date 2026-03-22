@@ -5,9 +5,9 @@
 
 /// Lowered target id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LirTarget(pub u32);
+pub(crate) struct SsaTarget(pub u32);
 
-impl LirTarget {
+impl SsaTarget {
     #[inline]
     pub(crate) const fn as_u32(self) -> u32 {
         self.0

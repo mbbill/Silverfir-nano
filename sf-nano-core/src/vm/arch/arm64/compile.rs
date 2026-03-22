@@ -4,7 +4,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::ModuleInst,
-        machine::mir::{
+        machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
             MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId,
@@ -4556,7 +4556,7 @@ mod tests {
             arch::arm64::{enc, reg::Arm64Reg},
             backend::BackendConfig,
             entities::ModuleInst,
-            machine::mir::{
+            machine::machine_ir::{
                 MachineAddr, MachineBlock, MachineBlockId, MachineCallLinkLayout,
                 MachineConstData, MachineConstId, MachineConvertOp, MachineEdge,
                 MachineExternBinding, MachineExternId, MachineFloatUnaryOp, MachineFloatWidth,

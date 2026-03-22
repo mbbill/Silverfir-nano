@@ -18,10 +18,10 @@ use crate::vm::{
         resolve::{self, IrOpKind},
     },
     lir::{
-        ir::{LirEdge, LirInstKind, LirProgram, LirTerminator, LirValue},
-        leaf::LirLeafOp,
+        ir::{SsaEdge, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
+        leaf::SsaLeafOp,
         slot::FrameSlot,
-        target::LirTarget,
+        target::SsaTarget,
     },
     plan::{frame::FrameLayoutPlan, hot_local::HotLocalPlan},
 };
@@ -61,7 +61,7 @@ struct FinalLayout {
 }
 
 impl FinalLayout {
-    fn new(program: &LirProgram, frame: FrameLayoutPlan) -> Result<Self, WasmError> {
+    fn new(program: &SsaProgram, frame: FrameLayoutPlan) -> Result<Self, WasmError> {
         let value_count = max_value_index(program).map(|max| max + 1).unwrap_or(0);
         let value_home_base = physical_slot(frame, frame.operands.end())?;
         let value_count_u16 = u16::try_from(value_count)
@@ -96,7 +96,7 @@ impl FinalLayout {
     }
 
     #[inline]
-    fn value_home(&self, value: LirValue) -> Result<u16, WasmError> {
+    fn value_home(&self, value: SsaValue) -> Result<u16, WasmError> {
         let offset = u16::try_from(value.0)
             .map_err(|_| WasmError::internal("LIR value id exceeds u16".into()))?;
         if offset >= self.value_count {
@@ -121,7 +121,7 @@ impl FinalLayout {
 
 #[derive(Clone, Copy, Debug)]
 enum DirectTarget {
-    Block(LirTarget),
+    Block(SsaTarget),
     Index(usize),
 }
 
@@ -216,7 +216,7 @@ impl<'a> Finalizer<'a> {
         Ok(code)
     }
 
-    fn emit_block(&mut self, block: &crate::vm::middle::lir::ir::LirBlock) -> Result<(), WasmError> {
+    fn emit_block(&mut self, block: &crate::vm::middle::ssa_ir::ir::SsaBlock) -> Result<(), WasmError> {
         self.block_starts[block.id.as_usize()] = Some(self.instructions.len());
 
         for op in &block.ops {
@@ -226,44 +226,44 @@ impl<'a> Finalizer<'a> {
         self.emit_terminator(&block.terminator)
     }
 
-    fn emit_inst_kind(&mut self, kind: &LirInstKind) -> Result<(), WasmError> {
+    fn emit_inst_kind(&mut self, kind: &SsaInstKind) -> Result<(), WasmError> {
         match kind {
-            LirInstKind::Leaf { op, args, results } => self.emit_leaf(op, args, results),
-            LirInstKind::WriteOperandSlot { slot, src } => self.emit_copy(
+            SsaInstKind::Leaf { op, args, results } => self.emit_leaf(op, args, results),
+            SsaInstKind::WriteOperandSlot { slot, src } => self.emit_copy(
                 self.layout.value_home(*src)?,
                 self.layout.frame_slot(*slot)?,
             ),
-            LirInstKind::ReadOperandSlot { slot, dst } => self.emit_copy(
+            SsaInstKind::ReadOperandSlot { slot, dst } => self.emit_copy(
                 self.layout.frame_slot(*slot)?,
                 self.layout.value_home(*dst)?,
             ),
-            LirInstKind::ReadHotLocal { reg, dst } => self.emit_copy(
+            SsaInstKind::ReadHotLocal { reg, dst } => self.emit_copy(
                 self.layout.hot_local_slot(*reg)?,
                 self.layout.value_home(*dst)?,
             ),
-            LirInstKind::WriteHotLocal { reg, src } => self.emit_copy(
+            SsaInstKind::WriteHotLocal { reg, src } => self.emit_copy(
                 self.layout.value_home(*src)?,
                 self.layout.hot_local_slot(*reg)?,
             ),
-            LirInstKind::ReadFrameLocal { frame_slot, dst } => self.emit_copy(
+            SsaInstKind::ReadFrameLocal { frame_slot, dst } => self.emit_copy(
                 self.layout.frame_slot(*frame_slot)?,
                 self.layout.value_home(*dst)?,
             ),
-            LirInstKind::WriteFrameLocal { frame_slot, src } => self.emit_copy(
+            SsaInstKind::WriteFrameLocal { frame_slot, src } => self.emit_copy(
                 self.layout.value_home(*src)?,
                 self.layout.frame_slot(*frame_slot)?,
             ),
-            LirInstKind::CallExternal {
+            SsaInstKind::CallExternal {
                 func_idx,
                 args,
                 results,
             } => self.emit_call_external(*func_idx, args, results),
-            LirInstKind::CallInternal {
+            SsaInstKind::CallInternal {
                 callee,
                 args,
                 results,
             } => self.emit_call_internal(*callee, args, results),
-            LirInstKind::CallIndirect {
+            SsaInstKind::CallIndirect {
                 type_idx,
                 table_idx,
                 index,
@@ -275,9 +275,9 @@ impl<'a> Finalizer<'a> {
 
     fn emit_leaf(
         &mut self,
-        op: &LirLeafOp,
-        args: &[LirValue],
-        results: &[LirValue],
+        op: &SsaLeafOp,
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         for arg in args {
             self.emit_local_get(self.layout.value_home(*arg)?)?;
@@ -305,8 +305,8 @@ impl<'a> Finalizer<'a> {
     fn emit_call_external(
         &mut self,
         func_idx: u32,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         self.materialize_call_args(args)?;
         let delta = self.layout.call_base;
@@ -324,8 +324,8 @@ impl<'a> Finalizer<'a> {
     fn emit_call_internal(
         &mut self,
         callee: u32,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         self.materialize_call_args(args)?;
         let delta = self.layout.call_base;
@@ -348,9 +348,9 @@ impl<'a> Finalizer<'a> {
         &mut self,
         type_idx: u32,
         table_idx: u32,
-        index: LirValue,
-        args: &[LirValue],
-        results: &[LirValue],
+        index: SsaValue,
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         self.materialize_call_args(args)?;
         let index_slot =
@@ -380,7 +380,7 @@ impl<'a> Finalizer<'a> {
         self.capture_call_results(results)
     }
 
-    fn materialize_call_args(&mut self, args: &[LirValue]) -> Result<(), WasmError> {
+    fn materialize_call_args(&mut self, args: &[SsaValue]) -> Result<(), WasmError> {
         for (index, value) in args.iter().enumerate() {
             let dst = self
                 .layout
@@ -395,7 +395,7 @@ impl<'a> Finalizer<'a> {
         Ok(())
     }
 
-    fn capture_call_results(&mut self, results: &[LirValue]) -> Result<(), WasmError> {
+    fn capture_call_results(&mut self, results: &[SsaValue]) -> Result<(), WasmError> {
         for (index, value) in results.iter().enumerate() {
             let src = self
                 .layout
@@ -410,14 +410,14 @@ impl<'a> Finalizer<'a> {
         Ok(())
     }
 
-    fn emit_terminator(&mut self, term: &LirTerminator) -> Result<(), WasmError> {
+    fn emit_terminator(&mut self, term: &SsaTerminator) -> Result<(), WasmError> {
         match term {
-            LirTerminator::Goto(edge) => {
+            SsaTerminator::Goto(edge) => {
                 self.emit_edge_moves(edge)?;
                 self.emit_br_to_block(edge.target);
                 Ok(())
             }
-            LirTerminator::Branch {
+            SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
@@ -443,7 +443,7 @@ impl<'a> Finalizer<'a> {
                 self.emit_br_to_block(else_edge.target);
                 Ok(())
             }
-            LirTerminator::BrTable { index, entries } => {
+            SsaTerminator::BrTable { index, entries } => {
                 self.emit_local_get(self.layout.value_home(*index)?)?;
                 let (imm0, imm1, imm2) =
                     encoding::br_table::encode(entries.len() as u64, entries.len() as u64);
@@ -478,7 +478,7 @@ impl<'a> Finalizer<'a> {
                 }
                 Ok(())
             }
-            LirTerminator::Return { values } => {
+            SsaTerminator::Return { values } => {
                 for (index, value) in values.iter().enumerate() {
                     let dst =
                         self.layout
@@ -536,14 +536,14 @@ impl<'a> Finalizer<'a> {
                 }
                 Ok(())
             }
-            LirTerminator::TrapUnreachable => {
+            SsaTerminator::TrapUnreachable => {
                 self.push_instruction(IrOpKind::Unreachable, 0, 0, 0, 0);
                 Ok(())
             }
         }
     }
 
-    fn emit_edge_moves(&mut self, edge: &LirEdge) -> Result<(), WasmError> {
+    fn emit_edge_moves(&mut self, edge: &SsaEdge) -> Result<(), WasmError> {
         let target = self
             .bundle
             .lir
@@ -613,7 +613,7 @@ impl<'a> Finalizer<'a> {
         Ok(())
     }
 
-    fn emit_br_to_block(&mut self, target: LirTarget) {
+    fn emit_br_to_block(&mut self, target: SsaTarget) {
         let (imm0, imm1, imm2) = encoding::br::encode(0, 0, 0, 0);
         let inst_index =
             self.push_instruction(IrOpKind::Br { has_fixup: false }, 0, imm0, imm1, imm2);
@@ -697,7 +697,7 @@ impl<'a> Finalizer<'a> {
     }
 }
 
-fn max_value_index(program: &LirProgram) -> Option<u32> {
+fn max_value_index(program: &SsaProgram) -> Option<u32> {
     let mut max = None;
     for block in &program.blocks {
         for value in &block.params.tos {
@@ -705,24 +705,24 @@ fn max_value_index(program: &LirProgram) -> Option<u32> {
         }
         for op in &block.ops {
             match &op.kind {
-                LirInstKind::Leaf { args, results, .. } => {
+                SsaInstKind::Leaf { args, results, .. } => {
                     for value in args.iter().chain(results.iter()) {
                         update_max(&mut max, *value);
                     }
                 }
-                LirInstKind::WriteOperandSlot { src, .. }
-                | LirInstKind::WriteHotLocal { src, .. }
-                | LirInstKind::WriteFrameLocal { src, .. } => update_max(&mut max, *src),
-                LirInstKind::ReadOperandSlot { dst, .. }
-                | LirInstKind::ReadHotLocal { dst, .. }
-                | LirInstKind::ReadFrameLocal { dst, .. } => update_max(&mut max, *dst),
-                LirInstKind::CallExternal { args, results, .. }
-                | LirInstKind::CallInternal { args, results, .. } => {
+                SsaInstKind::WriteOperandSlot { src, .. }
+                | SsaInstKind::WriteHotLocal { src, .. }
+                | SsaInstKind::WriteFrameLocal { src, .. } => update_max(&mut max, *src),
+                SsaInstKind::ReadOperandSlot { dst, .. }
+                | SsaInstKind::ReadHotLocal { dst, .. }
+                | SsaInstKind::ReadFrameLocal { dst, .. } => update_max(&mut max, *dst),
+                SsaInstKind::CallExternal { args, results, .. }
+                | SsaInstKind::CallInternal { args, results, .. } => {
                     for value in args.iter().chain(results.iter()) {
                         update_max(&mut max, *value);
                     }
                 }
-                LirInstKind::CallIndirect {
+                SsaInstKind::CallIndirect {
                     index,
                     args,
                     results,
@@ -736,12 +736,12 @@ fn max_value_index(program: &LirProgram) -> Option<u32> {
             }
         }
         match &block.terminator {
-            LirTerminator::Goto(edge) => {
+            SsaTerminator::Goto(edge) => {
                 for value in &edge.tos {
                     update_max(&mut max, *value);
                 }
             }
-            LirTerminator::Branch {
+            SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
@@ -751,7 +751,7 @@ fn max_value_index(program: &LirProgram) -> Option<u32> {
                     update_max(&mut max, *value);
                 }
             }
-            LirTerminator::BrTable { index, entries } => {
+            SsaTerminator::BrTable { index, entries } => {
                 update_max(&mut max, *index);
                 for edge in entries {
                     for value in &edge.tos {
@@ -759,48 +759,48 @@ fn max_value_index(program: &LirProgram) -> Option<u32> {
                     }
                 }
             }
-            LirTerminator::Return { values } => {
+            SsaTerminator::Return { values } => {
                 for value in values {
                     update_max(&mut max, *value);
                 }
             }
-            LirTerminator::TrapUnreachable => {}
+            SsaTerminator::TrapUnreachable => {}
         }
     }
     max
 }
 
-fn block_successors(term: &LirTerminator) -> Vec<LirTarget> {
+fn block_successors(term: &SsaTerminator) -> Vec<SsaTarget> {
     match term {
-        LirTerminator::Goto(edge) => alloc::vec![edge.target],
-        LirTerminator::Branch {
+        SsaTerminator::Goto(edge) => alloc::vec![edge.target],
+        SsaTerminator::Branch {
             then_edge,
             else_edge,
             ..
         } => alloc::vec![then_edge.target, else_edge.target],
-        LirTerminator::BrTable { entries, .. } => {
+        SsaTerminator::BrTable { entries, .. } => {
             entries.iter().map(|entry| entry.target).collect()
         }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => Vec::new(),
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => Vec::new(),
     }
 }
 
-fn max_scratch_width(program: &LirProgram) -> usize {
+fn max_scratch_width(program: &SsaProgram) -> usize {
     let mut width = 0usize;
     for block in &program.blocks {
         for op in &block.ops {
             match &op.kind {
-                LirInstKind::CallExternal { args, results, .. }
-                | LirInstKind::CallInternal { args, results, .. } => {
+                SsaInstKind::CallExternal { args, results, .. }
+                | SsaInstKind::CallInternal { args, results, .. } => {
                     width = width.max(args.len().max(results.len()));
                 }
-                LirInstKind::CallIndirect { args, results, .. } => {
+                SsaInstKind::CallIndirect { args, results, .. } => {
                     width = width.max((args.len() + 1).max(results.len()));
                 }
                 _ => {}
             }
         }
-        if let LirTerminator::Return { values } = &block.terminator {
+        if let SsaTerminator::Return { values } = &block.terminator {
             width = width.max(values.len());
         }
     }
@@ -808,7 +808,7 @@ fn max_scratch_width(program: &LirProgram) -> usize {
 }
 
 #[inline]
-fn update_max(max: &mut Option<u32>, value: LirValue) {
+fn update_max(max: &mut Option<u32>, value: SsaValue) {
     *max = Some(max.map_or(value.0, |current| current.max(value.0)));
 }
 
@@ -868,58 +868,58 @@ fn schedule_parallel_copies(pending: &[(u16, u16)], temp: u16) -> Vec<(u16, u16)
     out
 }
 
-fn encode_leaf(kind: &LirLeafOp) -> (u64, u64, u64) {
+fn encode_leaf(kind: &SsaLeafOp) -> (u64, u64, u64) {
     match kind {
-        LirLeafOp::I32Const { value } => encoding::r#const::encode(*value as u64),
-        LirLeafOp::I64Const { value } => encoding::r#const::encode(*value),
-        LirLeafOp::F32Const { value } => encoding::r#const::encode(*value as u64),
-        LirLeafOp::F64Const { value } => encoding::r#const::encode(*value),
+        SsaLeafOp::I32Const { value } => encoding::r#const::encode(*value as u64),
+        SsaLeafOp::I64Const { value } => encoding::r#const::encode(*value),
+        SsaLeafOp::F32Const { value } => encoding::r#const::encode(*value as u64),
+        SsaLeafOp::F64Const { value } => encoding::r#const::encode(*value),
 
-        LirLeafOp::I32Load { offset, memidx }
-        | LirLeafOp::I64Load { offset, memidx }
-        | LirLeafOp::F32Load { offset, memidx }
-        | LirLeafOp::F64Load { offset, memidx }
-        | LirLeafOp::I32Load8S { offset, memidx }
-        | LirLeafOp::I32Load8U { offset, memidx }
-        | LirLeafOp::I32Load16S { offset, memidx }
-        | LirLeafOp::I32Load16U { offset, memidx }
-        | LirLeafOp::I64Load8S { offset, memidx }
-        | LirLeafOp::I64Load8U { offset, memidx }
-        | LirLeafOp::I64Load16S { offset, memidx }
-        | LirLeafOp::I64Load16U { offset, memidx }
-        | LirLeafOp::I64Load32S { offset, memidx }
-        | LirLeafOp::I64Load32U { offset, memidx } => encoding::load::encode(*offset, *memidx),
+        SsaLeafOp::I32Load { offset, memidx }
+        | SsaLeafOp::I64Load { offset, memidx }
+        | SsaLeafOp::F32Load { offset, memidx }
+        | SsaLeafOp::F64Load { offset, memidx }
+        | SsaLeafOp::I32Load8S { offset, memidx }
+        | SsaLeafOp::I32Load8U { offset, memidx }
+        | SsaLeafOp::I32Load16S { offset, memidx }
+        | SsaLeafOp::I32Load16U { offset, memidx }
+        | SsaLeafOp::I64Load8S { offset, memidx }
+        | SsaLeafOp::I64Load8U { offset, memidx }
+        | SsaLeafOp::I64Load16S { offset, memidx }
+        | SsaLeafOp::I64Load16U { offset, memidx }
+        | SsaLeafOp::I64Load32S { offset, memidx }
+        | SsaLeafOp::I64Load32U { offset, memidx } => encoding::load::encode(*offset, *memidx),
 
-        LirLeafOp::I32Store { offset, memidx }
-        | LirLeafOp::I64Store { offset, memidx }
-        | LirLeafOp::F32Store { offset, memidx }
-        | LirLeafOp::F64Store { offset, memidx }
-        | LirLeafOp::I32Store8 { offset, memidx }
-        | LirLeafOp::I32Store16 { offset, memidx }
-        | LirLeafOp::I64Store8 { offset, memidx }
-        | LirLeafOp::I64Store16 { offset, memidx }
-        | LirLeafOp::I64Store32 { offset, memidx } => encoding::store::encode(*offset, *memidx),
+        SsaLeafOp::I32Store { offset, memidx }
+        | SsaLeafOp::I64Store { offset, memidx }
+        | SsaLeafOp::F32Store { offset, memidx }
+        | SsaLeafOp::F64Store { offset, memidx }
+        | SsaLeafOp::I32Store8 { offset, memidx }
+        | SsaLeafOp::I32Store16 { offset, memidx }
+        | SsaLeafOp::I64Store8 { offset, memidx }
+        | SsaLeafOp::I64Store16 { offset, memidx }
+        | SsaLeafOp::I64Store32 { offset, memidx } => encoding::store::encode(*offset, *memidx),
 
-        LirLeafOp::GlobalGet { idx } | LirLeafOp::GlobalSet { idx } => {
+        SsaLeafOp::GlobalGet { idx } | SsaLeafOp::GlobalSet { idx } => {
             encoding::global::encode(*idx as u64)
         }
-        LirLeafOp::MemorySize { mem_idx } => encoding::memory_size::encode(*mem_idx as u64),
-        LirLeafOp::MemoryGrow { mem_idx } => encoding::memory_grow::encode(*mem_idx as u64),
-        LirLeafOp::MemoryFill { imm0, imm1 }
-        | LirLeafOp::MemoryCopy { imm0, imm1 }
-        | LirLeafOp::MemoryInit { imm0, imm1 }
-        | LirLeafOp::TableFill { imm0, imm1 }
-        | LirLeafOp::TableCopy { imm0, imm1 }
-        | LirLeafOp::TableInit { imm0, imm1 } => {
+        SsaLeafOp::MemorySize { mem_idx } => encoding::memory_size::encode(*mem_idx as u64),
+        SsaLeafOp::MemoryGrow { mem_idx } => encoding::memory_grow::encode(*mem_idx as u64),
+        SsaLeafOp::MemoryFill { imm0, imm1 }
+        | SsaLeafOp::MemoryCopy { imm0, imm1 }
+        | SsaLeafOp::MemoryInit { imm0, imm1 }
+        | SsaLeafOp::TableFill { imm0, imm1 }
+        | SsaLeafOp::TableCopy { imm0, imm1 }
+        | SsaLeafOp::TableInit { imm0, imm1 } => {
             encoding::ternary::encode(*imm0 as u64, *imm1 as u64)
         }
-        LirLeafOp::DataDrop { data_idx } => encoding::drop_op::encode(*data_idx as u64),
-        LirLeafOp::TableGet { table_idx } => encoding::table_get::encode(*table_idx as u64),
-        LirLeafOp::TableSet { table_idx } => encoding::table_set::encode(*table_idx as u64),
-        LirLeafOp::TableSize { table_idx } => encoding::table_size::encode(*table_idx as u64),
-        LirLeafOp::TableGrow { table_idx } => encoding::table_grow::encode(*table_idx as u64),
-        LirLeafOp::ElemDrop { elem_idx } => encoding::drop_op::encode(*elem_idx as u64),
-        LirLeafOp::RefFunc { func_idx } => encoding::ref_func::encode(*func_idx as u64),
+        SsaLeafOp::DataDrop { data_idx } => encoding::drop_op::encode(*data_idx as u64),
+        SsaLeafOp::TableGet { table_idx } => encoding::table_get::encode(*table_idx as u64),
+        SsaLeafOp::TableSet { table_idx } => encoding::table_set::encode(*table_idx as u64),
+        SsaLeafOp::TableSize { table_idx } => encoding::table_size::encode(*table_idx as u64),
+        SsaLeafOp::TableGrow { table_idx } => encoding::table_grow::encode(*table_idx as u64),
+        SsaLeafOp::ElemDrop { elem_idx } => encoding::drop_op::encode(*elem_idx as u64),
+        SsaLeafOp::RefFunc { func_idx } => encoding::ref_func::encode(*func_idx as u64),
 
         _ => (0, 0, 0),
     }

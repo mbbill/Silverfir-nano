@@ -4,7 +4,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::global_offset,
-        machine::mir::{
+        machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
             MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge,
             MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineInst,
@@ -12,7 +12,7 @@ use crate::{
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
             MachineTerminator, MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG,
         },
-        middle::lir::{ir::LirValue, leaf::LirLeafOp},
+        middle::ssa_ir::{ir::SsaValue, leaf::SsaLeafOp},
         runtime::layout::native_runtime_abi_layout,
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -37,9 +37,9 @@ pub(super) enum LeafLowering {
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_special_leaf(
         &mut self,
-        op: &LirLeafOp,
-        args: &[LirValue],
-        results: &[LirValue],
+        op: &SsaLeafOp,
+        args: &[SsaValue],
+        results: &[SsaValue],
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<Option<LeafLowering>, WasmError> {
@@ -94,9 +94,9 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_leaf(
         &mut self,
-        op: &LirLeafOp,
-        args: &[LirValue],
-        results: &[LirValue],
+        op: &SsaLeafOp,
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<(), WasmError> {
         use PrimitiveOpKind as P;
         let primitive = op.primitive();
@@ -158,8 +158,8 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_i64_pair_leaf(
         &mut self,
         primitive: &PrimitiveOpKind,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<bool, WasmError> {
         use MachineCompareKind as Cmp;
         use MachineFloatWidth as Fw;
@@ -506,7 +506,7 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
-    fn lower_memory_size(&mut self, mem_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+    fn lower_memory_size(&mut self, mem_idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
@@ -555,7 +555,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_global_get(&mut self, idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+    fn lower_global_get(&mut self, idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let ty = self.value_storage_type(result);
         let runtime_layout = self.runtime_abi_layout();
@@ -627,7 +627,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_global_set(&mut self, idx: u32, args: &[LirValue]) -> Result<(), WasmError> {
+    fn lower_global_set(&mut self, idx: u32, args: &[SsaValue]) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let ty = self.value_storage_type(src_value);
         let runtime_layout = self.runtime_abi_layout();
@@ -697,7 +697,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_table_size(&mut self, table_idx: u32, results: &[LirValue]) -> Result<(), WasmError> {
+    fn lower_table_size(&mut self, table_idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         let table_views = self.borrow_free_transients(1)?[0];
         let runtime_layout = self.runtime_abi_layout();
@@ -730,8 +730,8 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_table_get(
         &mut self,
         table_idx: u32,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -767,7 +767,7 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_table_set(
         &mut self,
         table_idx: u32,
-        args: &[LirValue],
+        args: &[SsaValue],
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -808,8 +808,8 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_memory_load(
         &mut self,
         spec: MemoryLoadSpec,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -875,7 +875,7 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
-        args: &[LirValue],
+        args: &[SsaValue],
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -924,8 +924,8 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_i64_memory_load(
         &mut self,
         spec: MemoryLoadSpec,
-        args: &[LirValue],
-        results: &[LirValue],
+        args: &[SsaValue],
+        results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
@@ -972,7 +972,7 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_i64_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
-        args: &[LirValue],
+        args: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         let (addr_value, src_value) = two_args(args)?;
         let addr = self.use_value(addr_value)?;

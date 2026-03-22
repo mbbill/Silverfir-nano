@@ -5,7 +5,7 @@ use crate::{
     vm::{
         arch::NativeBackend,
         backend::BackendConfig,
-        machine::mir::{
+        machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
             MachineRuntimeContract, MACHINE_FIXED_REG_COUNT,
         },

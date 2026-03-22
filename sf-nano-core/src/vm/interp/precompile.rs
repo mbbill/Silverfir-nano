@@ -4,7 +4,7 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{active_backend_mode, BackendKind, BackendMode},
     entities::ModuleInst,
-    lir::ir::LirProgram,
+    ssa_ir::ir::SsaProgram,
     store::Store,
 };
 
@@ -17,7 +17,7 @@ use super::{
 
 #[derive(Clone, Debug, Default)]
 pub struct InterpreterPrecompileBundle {
-    pub lir: LirProgram,
+    pub ssa: SsaProgram,
     pub finalized: Option<InterpreterFinalized>,
 }
 

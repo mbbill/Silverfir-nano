@@ -7,9 +7,9 @@ use crate::{
     vm::{
         middle::{
             frame::FrameSpan,
-            lir::{
-                ir::{LirBinding, LirEdge, LirTerminator, LirValue},
-                target::LirTarget,
+            ssa_ir::{
+                ir::{SsaBinding, SsaEdge, SsaTerminator, SsaValue},
+                target::SsaTarget,
             },
         },
         wasm::common::{BrTableEntry, SemanticTarget},
@@ -22,11 +22,11 @@ pub(super) fn goto_next(
     semantic_index: usize,
     semantic_len: usize,
     state: &BlockState,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<SsaValue>],
     entry_states: &[EntryState],
-) -> Result<LirTerminator, WasmError> {
-    Ok(LirTerminator::Goto(next_edge(
+) -> Result<SsaTerminator, WasmError> {
+    Ok(SsaTerminator::Goto(next_edge(
         semantic_index,
         semantic_len,
         state,
@@ -40,10 +40,10 @@ pub(super) fn next_edge(
     semantic_index: usize,
     semantic_len: usize,
     state: &BlockState,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<SsaValue>],
     entry_states: &[EntryState],
-) -> Result<LirEdge, WasmError> {
+) -> Result<SsaEdge, WasmError> {
     let next = semantic_index
         .checked_add(1)
         .filter(|next| *next < semantic_len)
@@ -62,10 +62,10 @@ pub(super) fn edge_to_target(
     target: SemanticTarget,
     state: &BlockState,
     mapping: EdgeMapping,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<SsaValue>],
     entry_states: &[EntryState],
-) -> Result<LirEdge, WasmError> {
+) -> Result<SsaEdge, WasmError> {
     let target_entry = entry_states
         .get(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
@@ -138,7 +138,7 @@ pub(super) fn edge_to_target(
         }
     };
 
-    Ok(LirEdge {
+    Ok(SsaEdge {
         target: target_block,
         bindings,
     })
@@ -148,10 +148,10 @@ pub(super) fn br_table_edge(
     entry: &BrTableEntry,
     payload: Option<FrameSpan>,
     state: &BlockState,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<SsaValue>],
     entry_states: &[EntryState],
-) -> Result<LirEdge, WasmError> {
+) -> Result<SsaEdge, WasmError> {
     edge_to_target(
         entry.target,
         state,
@@ -166,9 +166,9 @@ pub(super) fn br_table_edge(
 }
 
 fn bind_values(
-    target_params: &[LirValue],
-    values: &[LirValue],
-) -> Result<Vec<LirBinding>, WasmError> {
+    target_params: &[SsaValue],
+    values: &[SsaValue],
+) -> Result<Vec<SsaBinding>, WasmError> {
     if target_params.len() != values.len() {
         return Err(WasmError::internal(alloc::format!(
             "prepared LIR edge binding mismatch: target expects {} params but source provides {} values",
@@ -180,7 +180,7 @@ fn bind_values(
     Ok(target_params
         .iter()
         .zip(values.iter())
-        .map(|(param, value)| LirBinding {
+        .map(|(param, value)| SsaBinding {
             param: *param,
             value: *value,
         })

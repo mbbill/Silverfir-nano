@@ -2,18 +2,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::vm::middle::{
-    lir::ir::{LirBlock, LirEdge, LirInst, LirInstKind, LirProgram, LirTerminator, LirValue},
+    ssa_ir::ir::{SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
     frame::FrameLayoutPlan,
 };
 
-pub(super) fn optimize_lir(program: &mut LirProgram, frame: FrameLayoutPlan) {
+pub(super) fn optimize_ssa(program: &mut SsaProgram, frame: FrameLayoutPlan) {
     for block in &mut program.blocks {
         forward_slot_values(block, frame, &program.value_types);
     }
 }
 
 fn forward_slot_values(
-    block: &mut LirBlock,
+    block: &mut SsaBlock,
     frame: FrameLayoutPlan,
     value_types: &[crate::value_type::ValueType],
 ) {
@@ -34,7 +34,7 @@ fn forward_slot_values(
         rewrite_inst_uses(&mut inst.kind, &aliases);
 
         match &inst.kind {
-            LirInstKind::LoadSlot { slot, dst } => {
+            SsaInstKind::LoadSlot { slot, dst } => {
                 if let Some(src) = slot_values.get(slot.0 as usize).copied().flatten() {
                     let resolved_src = resolve_alias(src, &aliases);
                     if can_forward_load(resolved_src, *dst, &last_uses)
@@ -45,13 +45,13 @@ fn forward_slot_values(
                     }
                 }
             }
-            LirInstKind::StoreSlot { slot, src } => {
+            SsaInstKind::StoreSlot { slot, src } => {
                 slot_values[slot.0 as usize] = Some(*src);
             }
-            LirInstKind::Boundary(_) => {
+            SsaInstKind::Boundary(_) => {
                 slot_values.fill(None);
             }
-            LirInstKind::Value { .. } => {}
+            SsaInstKind::Value { .. } => {}
         }
 
         rewritten.push(inst);
@@ -61,30 +61,30 @@ fn forward_slot_values(
     block.ops = rewritten;
 }
 
-fn max_value_index(block: &LirBlock) -> Option<LirValue> {
+fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
     let mut max_value = block.params.iter().copied().max();
 
     for inst in &block.ops {
         match &inst.kind {
-            LirInstKind::Value { args, results, .. } => {
+            SsaInstKind::Value { args, results, .. } => {
                 max_value = max_value.max(args.iter().copied().max());
                 max_value = max_value.max(results.iter().copied().max());
             }
-            LirInstKind::LoadSlot { dst, .. } => {
+            SsaInstKind::LoadSlot { dst, .. } => {
                 max_value = max_value.max(Some(*dst));
             }
-            LirInstKind::StoreSlot { src, .. } => {
+            SsaInstKind::StoreSlot { src, .. } => {
                 max_value = max_value.max(Some(*src));
             }
-            LirInstKind::Boundary(_) => {}
+            SsaInstKind::Boundary(_) => {}
         }
     }
 
     match &block.terminator {
-        LirTerminator::Goto(edge) => {
+        SsaTerminator::Goto(edge) => {
             max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
         }
-        LirTerminator::Branch {
+        SsaTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -93,40 +93,40 @@ fn max_value_index(block: &LirBlock) -> Option<LirValue> {
             max_value = max_value.max(then_edge.bindings.iter().map(|binding| binding.value).max());
             max_value = max_value.max(else_edge.bindings.iter().map(|binding| binding.value).max());
         }
-        LirTerminator::BrTable { index, entries } => {
+        SsaTerminator::BrTable { index, entries } => {
             max_value = max_value.max(Some(*index));
             for edge in entries {
                 max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
             }
         }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
 
     max_value
 }
 
-fn compute_last_uses(block: &LirBlock, len: usize) -> Vec<Option<u32>> {
+fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
     let mut last_uses = vec![None; len];
 
     for (index, inst) in block.ops.iter().enumerate() {
         let pos = index as u32;
         match &inst.kind {
-            LirInstKind::Value { args, .. } => {
+            SsaInstKind::Value { args, .. } => {
                 for value in args {
                     last_uses[value.0 as usize] = Some(pos);
                 }
             }
-            LirInstKind::StoreSlot { src, .. } => {
+            SsaInstKind::StoreSlot { src, .. } => {
                 last_uses[src.0 as usize] = Some(pos);
             }
-            LirInstKind::LoadSlot { .. } | LirInstKind::Boundary(_) => {}
+            SsaInstKind::LoadSlot { .. } | SsaInstKind::Boundary(_) => {}
         }
     }
 
     let term_pos = block.ops.len() as u32;
     match &block.terminator {
-        LirTerminator::Goto(edge) => mark_edge_uses(edge, term_pos, &mut last_uses),
-        LirTerminator::Branch {
+        SsaTerminator::Goto(edge) => mark_edge_uses(edge, term_pos, &mut last_uses),
+        SsaTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -135,25 +135,25 @@ fn compute_last_uses(block: &LirBlock, len: usize) -> Vec<Option<u32>> {
             mark_edge_uses(then_edge, term_pos, &mut last_uses);
             mark_edge_uses(else_edge, term_pos, &mut last_uses);
         }
-        LirTerminator::BrTable { index, entries } => {
+        SsaTerminator::BrTable { index, entries } => {
             last_uses[index.0 as usize] = Some(term_pos);
             for edge in entries {
                 mark_edge_uses(edge, term_pos, &mut last_uses);
             }
         }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
 
     last_uses
 }
 
-fn mark_edge_uses(edge: &LirEdge, pos: u32, last_uses: &mut [Option<u32>]) {
+fn mark_edge_uses(edge: &SsaEdge, pos: u32, last_uses: &mut [Option<u32>]) {
     for binding in &edge.bindings {
         last_uses[binding.value.0 as usize] = Some(pos);
     }
 }
 
-fn can_forward_load(src: LirValue, dst: LirValue, last_uses: &[Option<u32>]) -> bool {
+fn can_forward_load(src: SsaValue, dst: SsaValue, last_uses: &[Option<u32>]) -> bool {
     let Some(dst_last_use) = last_uses.get(dst.0 as usize).copied().flatten() else {
         return false;
     };
@@ -164,8 +164,8 @@ fn can_forward_load(src: LirValue, dst: LirValue, last_uses: &[Option<u32>]) -> 
 }
 
 fn can_forward_load_type(
-    src: LirValue,
-    dst: LirValue,
+    src: SsaValue,
+    dst: SsaValue,
     value_types: &[crate::value_type::ValueType],
 ) -> bool {
     match (
@@ -177,24 +177,24 @@ fn can_forward_load_type(
     }
 }
 
-fn rewrite_inst_uses(kind: &mut LirInstKind, aliases: &[Option<LirValue>]) {
+fn rewrite_inst_uses(kind: &mut SsaInstKind, aliases: &[Option<SsaValue>]) {
     match kind {
-        LirInstKind::Value { args, .. } => {
+        SsaInstKind::Value { args, .. } => {
             for value in args {
                 *value = resolve_alias(*value, aliases);
             }
         }
-        LirInstKind::StoreSlot { src, .. } => {
+        SsaInstKind::StoreSlot { src, .. } => {
             *src = resolve_alias(*src, aliases);
         }
-        LirInstKind::LoadSlot { .. } | LirInstKind::Boundary(_) => {}
+        SsaInstKind::LoadSlot { .. } | SsaInstKind::Boundary(_) => {}
     }
 }
 
-fn rewrite_terminator_uses(term: &mut LirTerminator, aliases: &[Option<LirValue>]) {
+fn rewrite_terminator_uses(term: &mut SsaTerminator, aliases: &[Option<SsaValue>]) {
     match term {
-        LirTerminator::Goto(edge) => rewrite_edge_uses(edge, aliases),
-        LirTerminator::Branch {
+        SsaTerminator::Goto(edge) => rewrite_edge_uses(edge, aliases),
+        SsaTerminator::Branch {
             cond,
             then_edge,
             else_edge,
@@ -203,23 +203,23 @@ fn rewrite_terminator_uses(term: &mut LirTerminator, aliases: &[Option<LirValue>
             rewrite_edge_uses(then_edge, aliases);
             rewrite_edge_uses(else_edge, aliases);
         }
-        LirTerminator::BrTable { index, entries } => {
+        SsaTerminator::BrTable { index, entries } => {
             *index = resolve_alias(*index, aliases);
             for edge in entries {
                 rewrite_edge_uses(edge, aliases);
             }
         }
-        LirTerminator::Return { .. } | LirTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
 }
 
-fn rewrite_edge_uses(edge: &mut LirEdge, aliases: &[Option<LirValue>]) {
+fn rewrite_edge_uses(edge: &mut SsaEdge, aliases: &[Option<SsaValue>]) {
     for binding in &mut edge.bindings {
         binding.value = resolve_alias(binding.value, aliases);
     }
 }
 
-fn resolve_alias(value: LirValue, aliases: &[Option<LirValue>]) -> LirValue {
+fn resolve_alias(value: SsaValue, aliases: &[Option<SsaValue>]) -> SsaValue {
     let mut resolved = value;
     while let Some(Some(next)) = aliases.get(resolved.0 as usize) {
         if *next == resolved {
@@ -238,224 +238,224 @@ mod tests {
     use crate::vm::{
         middle::{
             frame::{plan_frame_layout, FrameSlot},
-            lir::{
-                ir::{LirBlock, LirInstKind, LirProgram, LirTerminator, LirValue},
-                leaf::LirLeafOp,
-                target::LirTarget,
+            ssa_ir::{
+                ir::{SsaBlock, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
+                leaf::SsaLeafOp,
+                target::SsaTarget,
             },
         },
         wasm::primitive_op::PrimitiveOpKind,
     };
-    use super::optimize_lir;
+    use super::optimize_ssa;
 
     #[test]
     fn forwards_store_reload_when_source_already_lives_long_enough() {
-        let mut program = LirProgram {
-            entry: LirTarget(0),
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
             local_cache: Default::default(),
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                                 .unwrap(),
                             args: Vec::new(),
-                            results: alloc::vec![LirValue(0)],
+                            results: alloc::vec![SsaValue(0)],
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: FrameSlot(0),
-                            src: LirValue(0),
+                            src: SsaValue(0),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(1),
+                            dst: SsaValue(1),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                            args: alloc::vec![LirValue(0), LirValue(1)],
-                            results: alloc::vec![LirValue(2)],
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                            args: alloc::vec![SsaValue(0), SsaValue(1)],
+                            results: alloc::vec![SsaValue(2)],
                         },
                     },
                 ],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![],
         };
 
-        optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
+        optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
         assert_eq!(block.ops.len(), 3);
         assert!(matches!(
             &block.ops[2].kind,
-            LirInstKind::Value {
+            SsaInstKind::Value {
                 args,
                 ..
-            } if args == &alloc::vec![LirValue(0), LirValue(0)]
+            } if args == &alloc::vec![SsaValue(0), SsaValue(0)]
         ));
     }
 
     #[test]
     fn does_not_forward_duplicate_slot_loads_without_same_block_store() {
-        let mut program = LirProgram {
-            entry: LirTarget(0),
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
             local_cache: Default::default(),
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(0),
+                            dst: SsaValue(0),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(1),
+                            dst: SsaValue(1),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                            args: alloc::vec![LirValue(0), LirValue(1)],
-                            results: alloc::vec![LirValue(2)],
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                            args: alloc::vec![SsaValue(0), SsaValue(1)],
+                            results: alloc::vec![SsaValue(2)],
                         },
                     },
                 ],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![],
         };
 
-        optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
+        optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[1].kind, LirInstKind::LoadSlot { .. }));
+        assert!(matches!(block.ops[1].kind, SsaInstKind::LoadSlot { .. }));
         assert!(matches!(
             &block.ops[2].kind,
-            LirInstKind::Value {
+            SsaInstKind::Value {
                 args,
                 ..
-            } if args == &alloc::vec![LirValue(0), LirValue(1)]
+            } if args == &alloc::vec![SsaValue(0), SsaValue(1)]
         ));
     }
 
     #[test]
     fn keeps_reload_when_forwarding_would_extend_the_source_lifetime() {
-        let mut program = LirProgram {
-            entry: LirTarget(0),
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
             local_cache: Default::default(),
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(0),
+                            dst: SsaValue(0),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                            args: alloc::vec![LirValue(0)],
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                            args: alloc::vec![SsaValue(0)],
                             results: Vec::new(),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(1),
+                            dst: SsaValue(1),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                            args: alloc::vec![LirValue(1)],
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                            args: alloc::vec![SsaValue(1)],
                             results: Vec::new(),
                         },
                     },
                 ],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![],
         };
 
-        optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
+        optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, LirInstKind::LoadSlot { .. }));
+        assert!(matches!(block.ops[2].kind, SsaInstKind::LoadSlot { .. }));
         assert!(matches!(
             &block.ops[3].kind,
-            LirInstKind::Value {
+            SsaInstKind::Value {
                 args,
                 ..
-            } if args == &alloc::vec![LirValue(1)]
+            } if args == &alloc::vec![SsaValue(1)]
         ));
     }
 
     #[test]
     fn does_not_forward_slot_reload_across_mismatched_value_types() {
-        let mut program = LirProgram {
-            entry: LirTarget(0),
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
             local_cache: Default::default(),
-            blocks: alloc::vec![LirBlock {
-                id: LirTarget(0),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                                 .unwrap(),
                             args: Vec::new(),
-                            results: alloc::vec![LirValue(0)],
+                            results: alloc::vec![SsaValue(0)],
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::StoreSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::StoreSlot {
                             slot: FrameSlot(0),
-                            src: LirValue(0),
+                            src: SsaValue(0),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::LoadSlot {
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::LoadSlot {
                             slot: FrameSlot(0),
-                            dst: LirValue(1),
+                            dst: SsaValue(1),
                         },
                     },
-                    crate::vm::middle::lir::ir::LirInst {
-                        kind: LirInstKind::Value {
-                            op: LirLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                            args: alloc::vec![LirValue(1)],
+                    crate::vm::middle::ssa_ir::ir::SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                            args: alloc::vec![SsaValue(1)],
                             results: Vec::new(),
                         },
                     },
                 ],
-                terminator: LirTerminator::Return { results: None },
+                terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::I32, ValueType::I64],
         };
 
-        optimize_lir(&mut program, plan_frame_layout(1, 2, 0));
+        optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, LirInstKind::LoadSlot { .. }));
+        assert!(matches!(block.ops[2].kind, SsaInstKind::LoadSlot { .. }));
         assert!(matches!(
             &block.ops[3].kind,
-            LirInstKind::Value {
+            SsaInstKind::Value {
                 args,
                 ..
-            } if args == &alloc::vec![LirValue(1)]
+            } if args == &alloc::vec![SsaValue(1)]
         ));
     }
 }

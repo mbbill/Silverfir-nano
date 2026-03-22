@@ -12,7 +12,7 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
-        machine::mir::MachineFunctionRuntime,
+        machine::machine_ir::MachineFunctionRuntime,
         raw_value::{as_f32, as_f64, from_f32, from_f64, from_i32, from_i64},
         runtime::{
             code::{CompiledNativeModule, NativeCode},

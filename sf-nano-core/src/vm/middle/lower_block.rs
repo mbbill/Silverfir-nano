@@ -9,9 +9,9 @@ use crate::{
     vm::{
         middle::{
             frame::FrameLayoutPlan,
-            lir::{
-                ir::{LirBlock, LirInst, LirTerminator},
-                target::LirTarget,
+            ssa_ir::{
+                ir::{SsaBlock, SsaInst, SsaTerminator},
+                target::SsaTarget,
             },
         },
         wasm::semantic_ir::SemanticOpKind,
@@ -30,9 +30,9 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub(super) struct LoweredBlock {
-    pub(super) ops: Vec<LirInst>,
-    pub(super) terminator: LirTerminator,
-    pub(super) extra_blocks: Vec<LirBlock>,
+    pub(super) ops: Vec<SsaInst>,
+    pub(super) terminator: SsaTerminator,
+    pub(super) extra_blocks: Vec<SsaBlock>,
 }
 
 pub(super) fn lower_block_range(
@@ -40,8 +40,8 @@ pub(super) fn lower_block_range(
     mut state: BlockState,
     prepared: &[PreparedOp<'_>],
     frame: FrameLayoutPlan,
-    semantic_to_block: &[LirTarget],
-    block_params: &[Vec<crate::vm::middle::lir::ir::LirValue>],
+    semantic_to_block: &[SsaTarget],
+    block_params: &[Vec<crate::vm::middle::ssa_ir::ir::SsaValue>],
     entry_states: &[EntryState],
     values: &mut ValueAlloc,
     original_block_count: usize,
