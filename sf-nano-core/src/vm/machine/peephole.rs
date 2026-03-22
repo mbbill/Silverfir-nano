@@ -186,7 +186,7 @@ fn fold_constants(
     fp_transient_end: u16,
 ) {
     let mut i = 0;
-    while i < block.ops.len() {
+    while i + 1 < block.ops.len() {
         let (dst, imm) = match &block.ops[i].kind {
             // GP transient constant: move rX <- imm
             MachineInstKind::Move {
@@ -206,21 +206,20 @@ fn fold_constants(
             }
         };
 
-        let Some(use_site) = find_single_replaceable_use_before_redef(block, i, dst) else {
-            i += 1;
-            continue;
-        };
+        let next = &block.ops[i + 1].kind;
+        let use_count = count_value_uses(next, dst);
+        let is_dst_of_next = inst_defines(next, dst);
 
-        let imm_val = MachineValue::Imm64(imm);
-        match use_site {
-            ReplaceableUseSite::Op(op_index) => {
-                replace_value_use(&mut block.ops[op_index].kind, dst, imm_val);
-            }
-            ReplaceableUseSite::Terminator => {
-                replace_terminator_value_use(&mut block.terminator, dst, imm_val);
+        if use_count == 1 && !is_dst_of_next {
+            let safe = is_last_use_before_redef(block, i + 1, dst);
+            if safe {
+                let imm_val = MachineValue::Imm64(imm);
+                replace_value_use(&mut block.ops[i + 1].kind, dst, imm_val);
+                block.ops.remove(i);
+                continue;
             }
         }
-        block.ops.remove(i);
+        i += 1;
     }
 }
 
