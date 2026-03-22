@@ -50,8 +50,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         arch,
+        debug::ir_dump,
         machine::{
-            ir_dump,
             {lower_module, LowerFunctionInput, LowerModuleInput},
             machine_ir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
         },

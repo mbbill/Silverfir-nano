@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use super::{
+use super::super::{
     lower_leaf_arith::{machine_convert, machine_int_binary, machine_int_compare, machine_int_unary},
     lower_context::BlockLowerContext,
     lower_util::{single_arg, single_result, two_args},

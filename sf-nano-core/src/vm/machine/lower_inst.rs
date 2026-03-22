@@ -8,7 +8,7 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBranchCond, MachineBlockId, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineReg,
+            MachineInstKind, MachineLoadExtension, MachineReg,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::ssa_ir::{
@@ -111,58 +111,9 @@ impl<'a> BlockLowerContext<'a> {
         match &inst.kind {
             SsaInstKind::LoadSlot { slot, dst } => {
                 let ty = lir_value_storage_type(self.program(), *dst);
-                if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
-                    let (dst_lo, dst_hi) = self.alloc_i64_value_pair(*dst)?;
-                    if let Some(cached_index) = self.cached_local_index(*slot) {
-                        let cached = self.cached_locals()[cached_index];
-                        if cached.ty != ty {
-                            return Err(WasmError::internal(alloc::format!(
-                                "typed LIR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
-                                slot,
-                                ty,
-                                dst,
-                                cached.ty,
-                            )));
-                        }
-                        let cached_hi = cached.hi_reg.ok_or_else(|| {
-                            WasmError::internal(
-                                "cached i64 local is missing a high-half register".into(),
-                            )
-                        })?;
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Move {
-                                ty: MachineStorageType::GpWord,
-                                dst: dst_lo,
-                                src: MachineValue::Reg(cached.reg),
-                            },
-                        });
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Move {
-                                ty: MachineStorageType::GpWord,
-                                dst: dst_hi,
-                                src: MachineValue::Reg(cached_hi),
-                            },
-                        });
-                    } else {
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Load {
-                                ty: MachineStorageType::GpWord,
-                                dst: dst_lo,
-                                addr: self.frame_addr_offset(*slot, 0)?,
-                                width: MachineMemWidth::U32,
-                                extension: MachineLoadExtension::None,
-                            },
-                        });
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Load {
-                                ty: MachineStorageType::GpWord,
-                                dst: dst_hi,
-                                addr: self.frame_addr_offset(*slot, 4)?,
-                                width: MachineMemWidth::U32,
-                                extension: MachineLoadExtension::None,
-                            },
-                        });
-                    }
+                if matches!(ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_load_slot_i64(self, *slot, *dst)?;
                     return Ok(());
                 }
 
@@ -200,57 +151,9 @@ impl<'a> BlockLowerContext<'a> {
             }
             SsaInstKind::StoreSlot { slot, src } => {
                 let ty = lir_value_storage_type(self.program(), *src);
-                if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
-                    let (src_lo, src_hi) = self.use_i64_value_pair(*src)?;
-                    if let Some(cached_index) = self.cached_local_index(*slot) {
-                        let cached = self.cached_locals()[cached_index];
-                        if cached.ty != ty {
-                            return Err(WasmError::internal(alloc::format!(
-                                "typed LIR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                                slot,
-                                ty,
-                                src,
-                                cached.ty,
-                            )));
-                        }
-                        let cache_hi = cached.hi_reg.ok_or_else(|| {
-                            WasmError::internal(
-                                "cached i64 local is missing a high-half register".into(),
-                            )
-                        })?;
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Move {
-                                ty: MachineStorageType::GpWord,
-                                dst: cached.reg,
-                                src: MachineValue::Reg(src_lo),
-                            },
-                        });
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Move {
-                                ty: MachineStorageType::GpWord,
-                                dst: cache_hi,
-                                src: MachineValue::Reg(src_hi),
-                            },
-                        });
-                    } else {
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Store {
-                                ty: MachineStorageType::GpWord,
-                                addr: self.frame_addr_offset(*slot, 0)?,
-                                width: MachineMemWidth::U32,
-                                src: MachineValue::Reg(src_lo),
-                            },
-                        });
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Store {
-                                ty: MachineStorageType::GpWord,
-                                addr: self.frame_addr_offset(*slot, 4)?,
-                                width: MachineMemWidth::U32,
-                                src: MachineValue::Reg(src_hi),
-                            },
-                        });
-                    }
-                    self.release_dead_values()?;
+                if matches!(ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_store_slot_i64(self, *slot, *src)?;
                     return Ok(());
                 }
 
@@ -372,8 +275,11 @@ impl<'a> BlockLowerContext<'a> {
         use PrimitiveOpKind as P;
         let primitive = op.primitive();
 
-        if self.gp_reg_width() == 4 && self.lower_i64_pair_leaf(primitive, args, results)? {
-            return Ok(());
+        {
+            let ops = self.i64_ops();
+            if ops.lower_i64_leaf(self, primitive, args, results)? {
+                return Ok(());
+            }
         }
 
         match primitive {

@@ -1155,6 +1155,7 @@ mod tests {
             all_runtime,
             call_link,
             4,
+            &super::super::gp32::Gp32Lowering,
             true,
             #[cfg(has_guard_pages)]
             false,

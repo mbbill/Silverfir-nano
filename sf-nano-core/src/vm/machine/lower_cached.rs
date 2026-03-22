@@ -1,9 +1,9 @@
-//! Cached local management — reload / save / entry initialization.
+//! Cached local management -- reload / save / entry initialization.
 
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineStorageType,
+        MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType,
         MachineValue,
     },
 };
@@ -37,28 +37,9 @@ impl<'a> BlockLowerContext<'a> {
                 }
             }
             let cached = self.cached_locals()[index];
-            if self.gp_reg_width() == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
-                let cached_hi = cached.hi_reg.ok_or_else(|| {
-                    WasmError::internal("cached i64 local is missing a high-half register".into())
-                })?;
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Load {
-                        ty: MachineStorageType::GpWord,
-                        dst: cached.reg,
-                        addr: self.frame_addr_offset(cached.slot, 0)?,
-                        width: MachineMemWidth::U32,
-                        extension: MachineLoadExtension::None,
-                    },
-                });
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Load {
-                        ty: MachineStorageType::GpWord,
-                        dst: cached_hi,
-                        addr: self.frame_addr_offset(cached.slot, 4)?,
-                        width: MachineMemWidth::U32,
-                        extension: MachineLoadExtension::None,
-                    },
-                });
+            if matches!(cached.ty, MachineStorageType::GpI64) {
+                let ops = self.i64_ops();
+                ops.emit_reload_cached_i64(self, &cached)?;
             } else {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
@@ -86,31 +67,10 @@ impl<'a> BlockLowerContext<'a> {
         for index in 0..self.cached_locals().len() {
             let cached = self.cached_locals()[index];
             if cached.info.is_param {
-                // Argument — caller wrote a real value, must load from frame.
-                if self.gp_reg_width() == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
-                    let cached_hi = cached.hi_reg.ok_or_else(|| {
-                        WasmError::internal(
-                            "cached i64 local is missing a high-half register".into(),
-                        )
-                    })?;
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Load {
-                            ty: MachineStorageType::GpWord,
-                            dst: cached.reg,
-                            addr: self.frame_addr_offset(cached.slot, 0)?,
-                            width: MachineMemWidth::U32,
-                            extension: MachineLoadExtension::None,
-                        },
-                    });
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Load {
-                            ty: MachineStorageType::GpWord,
-                            dst: cached_hi,
-                            addr: self.frame_addr_offset(cached.slot, 4)?,
-                            width: MachineMemWidth::U32,
-                            extension: MachineLoadExtension::None,
-                        },
-                    });
+                // Argument -- caller wrote a real value, must load from frame.
+                if matches!(cached.ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_entry_cached_i64(self, &cached, true)?;
                 } else {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Load {
@@ -123,29 +83,11 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             } else if cached.info.reads_before_write {
-                // Non-param local that may be read before written (or 32-bit
-                // target requiring type-defined registers) — zero the
+                // Non-param local that may be read before written -- zero the
                 // register (Wasm locals are initialised to zero).
-                if self.gp_reg_width() == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
-                    let cached_hi = cached.hi_reg.ok_or_else(|| {
-                        WasmError::internal(
-                            "cached i64 local is missing a high-half register".into(),
-                        )
-                    })?;
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Move {
-                            ty: MachineStorageType::GpWord,
-                            dst: cached.reg,
-                            src: MachineValue::Imm64(0),
-                        },
-                    });
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Move {
-                            ty: MachineStorageType::GpWord,
-                            dst: cached_hi,
-                            src: MachineValue::Imm64(0),
-                        },
-                    });
+                if matches!(cached.ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_entry_cached_i64(self, &cached, false)?;
                 } else if let Some(width) = cached.ty.float_width() {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::FloatConst {
@@ -164,7 +106,7 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             }
-            // else: non-param, written before read — skip entirely.
+            // else: non-param, written before read -- skip entirely.
         }
         Ok(())
     }
@@ -172,26 +114,9 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn emit_save_all_cached_locals(&mut self) -> Result<(), WasmError> {
         for index in 0..self.cached_locals().len() {
             let cached = self.cached_locals()[index];
-            if self.gp_reg_width() == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
-                let cached_hi = cached.hi_reg.ok_or_else(|| {
-                    WasmError::internal("cached i64 local is missing a high-half register".into())
-                })?;
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord,
-                        addr: self.frame_addr_offset(cached.slot, 0)?,
-                        width: MachineMemWidth::U32,
-                        src: MachineValue::Reg(cached.reg),
-                    },
-                });
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord,
-                        addr: self.frame_addr_offset(cached.slot, 4)?,
-                        width: MachineMemWidth::U32,
-                        src: MachineValue::Reg(cached_hi),
-                    },
-                });
+            if matches!(cached.ty, MachineStorageType::GpI64) {
+                let ops = self.i64_ops();
+                ops.emit_save_cached_i64(self, &cached)?;
             } else {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Store {

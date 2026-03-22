@@ -37,7 +37,10 @@ use crate::{
 };
 
 use super::{
+    gp32::Gp32Lowering,
     lower_context::{BlockLowerContext, ValueRegs},
+    lower_i64::I64Lowering,
+    lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
     lower_regalloc::{machine_block_params_for_value, MachineRegFile},
     lower_sidecar::SidecarBuilder,
@@ -189,6 +192,11 @@ fn lower_function(
     let mut original_blocks = alloc::vec![None; original_block_count];
     let mut extra_blocks = Vec::new();
     let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
+    let i64_ops: &'static dyn I64Lowering = if gp_reg_width == 4 {
+        &Gp32Lowering
+    } else {
+        &Gp64Lowering
+    };
 
     for block in &input.ssa.blocks {
         let target = block.id;
@@ -202,6 +210,7 @@ fn lower_function(
             runtime,
             call_link,
             gp_reg_width,
+            i64_ops,
             target == input.ssa.entry,
             #[cfg(has_guard_pages)]
             guard_pages,

@@ -86,7 +86,7 @@ struct DirectCallPatch {
     callee: crate::vm::machine::machine_ir::MachineFuncId,
 }
 
-pub use crate::vm::machine::ir_dump::DebugRegion;
+pub use crate::vm::debug::ir_dump::DebugRegion;
 
 #[derive(Debug)]
 struct FunctionArtifact {

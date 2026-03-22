@@ -31,6 +31,7 @@ use crate::{
 };
 
 use super::{
+    lower_i64::I64Lowering,
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
         canonical_cached_local_mem_width, canonical_value_mem_width_for_value, gp_reg_int_width,
@@ -79,6 +80,7 @@ pub(super) struct BlockLowerContext<'a> {
     call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
     gp_reg_width: u8,
+    i64_ops: &'static dyn I64Lowering,
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
     values: Vec<ValueLocation>,
@@ -99,6 +101,7 @@ impl<'a> BlockLowerContext<'a> {
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
+        i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
@@ -202,6 +205,7 @@ impl<'a> BlockLowerContext<'a> {
             call_link,
             machine_params,
             gp_reg_width,
+            i64_ops,
             ops: Vec::new(),
             cached_locals,
             values: Vec::new(),
@@ -411,6 +415,10 @@ impl<'a> BlockLowerContext<'a> {
             8 => u64::MAX,
             other => panic!("unsupported GP register width {other}"),
         }
+    }
+
+    pub(super) fn i64_ops(&self) -> &'static dyn I64Lowering {
+        self.i64_ops
     }
 
     pub(super) fn emit_machine_inst(&mut self, inst: MachineInst) {

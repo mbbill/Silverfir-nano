@@ -41,7 +41,7 @@ use super::{
     reg::Arm32Reg,
 };
 
-pub(crate) use crate::vm::machine::ir_dump::DebugRegion;
+pub(crate) use crate::vm::debug::ir_dump::DebugRegion;
 
 /// Patch a MOVW/MOVT pair at `movw_offset` with a 32-bit address.
 /// The MOVW is at `movw_offset`, MOVT is at `movw_offset + 4`.

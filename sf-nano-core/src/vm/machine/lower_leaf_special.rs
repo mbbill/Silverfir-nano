@@ -78,46 +78,18 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_global_get(&mut self, idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let ty = self.value_storage_type(result);
-        let runtime_layout = self.runtime_abi_layout();
-        if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
-            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                    width: self.gp_word_mem_width(),
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            let lo_addr = self.indexed_addr(
-                dst_hi,
-                idx,
-                core::mem::size_of::<crate::vm::entities::GlobalInst>(),
-                global_offset::RAW,
-            )?;
-            let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_lo,
-                    addr: lo_addr,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    addr: hi_addr,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            return Ok(());
+        if matches!(ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            return ops.emit_global_get_i64(self, idx, result);
         }
+        self.lower_global_get_scalar(idx, result)
+    }
 
+    /// Scalar (non-i64-pair) global.get -- used by both Gp64Lowering and the
+    /// non-i64 path above.
+    pub(super) fn lower_global_get_scalar(&mut self, idx: u32, result: SsaValue) -> Result<(), WasmError> {
+        let ty = self.value_storage_type(result);
+        let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
         let width = self.canonical_value_mem_width_for_value(result);
         let base = self.borrow_free_transients(1)?[0];
@@ -147,48 +119,62 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    /// 32-bit i64 pair global.get -- called from Gp32Lowering.
+    pub(super) fn lower_global_get_i64_pair(&mut self, idx: u32, result: SsaValue) -> Result<(), WasmError> {
+        let runtime_layout = self.runtime_abi_layout();
+        let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
+                dst: dst_hi,
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        let lo_addr = self.indexed_addr(
+            dst_hi,
+            idx,
+            core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+            global_offset::RAW,
+        )?;
+        let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
+                dst: dst_lo,
+                addr: lo_addr,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
+                dst: dst_hi,
+                addr: hi_addr,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
+    }
+
     pub(super) fn lower_global_set(&mut self, idx: u32, args: &[SsaValue]) -> Result<(), WasmError> {
         let src_value = single_arg(args)?;
         let ty = self.value_storage_type(src_value);
-        let runtime_layout = self.runtime_abi_layout();
-        if self.gp_reg_width() == 4 && matches!(ty, MachineStorageType::GpI64) {
-            let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
-            let base = self.borrow_free_transients(1)?[0];
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: base,
-                    addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                    width: self.gp_word_mem_width(),
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            let lo_addr = self.indexed_addr(
-                base,
-                idx,
-                core::mem::size_of::<crate::vm::entities::GlobalInst>(),
-                global_offset::RAW,
-            )?;
-            let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: lo_addr,
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Reg(src_lo),
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: hi_addr,
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Reg(src_hi),
-                },
-            });
-            return Ok(());
+        if matches!(ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            return ops.emit_global_set_i64(self, idx, src_value);
         }
+        self.lower_global_set_scalar(idx, src_value)
+    }
 
+    /// Scalar (non-i64-pair) global.set -- used by both Gp64Lowering and the
+    /// non-i64 path above.
+    pub(super) fn lower_global_set_scalar(&mut self, idx: u32, src_value: SsaValue) -> Result<(), WasmError> {
+        let ty = self.value_storage_type(src_value);
+        let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
         let width = self.canonical_value_mem_width_for_value(src_value);
         let base = self.borrow_free_transients(1)?[0];
@@ -212,6 +198,46 @@ impl<'a> BlockLowerContext<'a> {
                 )?,
                 width,
                 src: MachineValue::Reg(src),
+            },
+        });
+        Ok(())
+    }
+
+    /// 32-bit i64 pair global.set -- called from Gp32Lowering.
+    pub(super) fn lower_global_set_i64_pair(&mut self, idx: u32, src_value: SsaValue) -> Result<(), WasmError> {
+        let runtime_layout = self.runtime_abi_layout();
+        let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+        let base = self.borrow_free_transients(1)?[0];
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        let lo_addr = self.indexed_addr(
+            base,
+            idx,
+            core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+            global_offset::RAW,
+        )?;
+        let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: lo_addr,
+                width: MachineMemWidth::U32,
+                src: MachineValue::Reg(src_lo),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: hi_addr,
+                width: MachineMemWidth::U32,
+                src: MachineValue::Reg(src_hi),
             },
         });
         Ok(())
@@ -333,9 +359,21 @@ impl<'a> BlockLowerContext<'a> {
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        if self.gp_reg_width() == 4 && matches!(spec.ty, MachineStorageType::GpI64) {
-            return self.lower_i64_memory_load(spec, args, results);
+        if matches!(spec.ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            return ops.emit_memory_load_i64(self, spec, args, results);
         }
+        self.lower_memory_load_scalar(spec, args, results)
+    }
+
+    /// Scalar (non-i64-pair) memory load -- used by both Gp64Lowering and
+    /// the non-i64 path above.
+    pub(super) fn lower_memory_load_scalar(
+        &mut self,
+        spec: MemoryLoadSpec,
+        args: &[SsaValue],
+        results: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?;
         let addr = self.use_value(addr_value)?;
         let fp_load_usable = spec.ty.float_width().is_some()
@@ -399,9 +437,20 @@ impl<'a> BlockLowerContext<'a> {
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        if self.gp_reg_width() == 4 && matches!(spec.ty, MachineStorageType::GpI64) {
-            return self.lower_i64_memory_store(spec, args);
+        if matches!(spec.ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            return ops.emit_memory_store_i64(self, spec, args);
         }
+        self.lower_memory_store_scalar(spec, args)
+    }
+
+    /// Scalar (non-i64-pair) memory store -- used by both Gp64Lowering and
+    /// the non-i64 path above.
+    pub(super) fn lower_memory_store_scalar(
+        &mut self,
+        spec: MemoryStoreSpec,
+        args: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
         let (addr_value, src_value) = two_args(args)?;
         let addr = self.use_value(addr_value)?;
         let src = self.use_value(src_value)?;
@@ -441,7 +490,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(LeafLowering::InPlace)
     }
 
-    fn lower_i64_memory_load(
+    pub(super) fn lower_i64_memory_load(
         &mut self,
         spec: MemoryLoadSpec,
         args: &[SsaValue],
@@ -489,7 +538,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(LeafLowering::InPlace)
     }
 
-    fn lower_i64_memory_store(
+    pub(super) fn lower_i64_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
         args: &[SsaValue],

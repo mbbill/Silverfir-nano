@@ -6,13 +6,14 @@
 //! - `lower_*` modules — the lowering passes that transform LIR into MachineIR
 //! - MachineIR transforms (peephole optimization, validation)
 
-pub(crate) mod ir_dump;
+mod gp32;
 mod lower_boundary;
 mod lower_cached;
 mod lower_context;
+mod lower_i64;
+mod lower_i64_gp64;
 mod lower_inst;
 mod lower_leaf_arith;
-mod lower_leaf_i64;
 mod lower_leaf_special;
 mod lower_module;
 mod lower_regalloc;
