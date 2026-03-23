@@ -1187,24 +1187,25 @@ impl<'a> FunctionCompiler<'a> {
     }
 }
 
-/// Adjust `offset` so that a function of `func_size` bytes avoids crossing a
-/// page boundary when the required padding is small.
+/// Align a function start to reduce instruction-cache and iTLB pressure.
 #[inline]
 fn page_align_function(offset: usize, func_size: usize) -> usize {
+    let aligned = (offset + 63) & !63;
+    if func_size == 0 {
+        return aligned;
+    }
     const PAGE_SIZE: usize = 16384;
     const MAX_PADDING: usize = 1024;
-
-    if func_size == 0 || func_size > PAGE_SIZE {
-        return offset;
-    }
-    let start_page = offset / PAGE_SIZE;
-    let end_page = (offset + func_size - 1) / PAGE_SIZE;
-    if start_page != end_page {
-        let next_page = (start_page + 1) * PAGE_SIZE;
-        let padding = next_page - offset;
-        if padding <= MAX_PADDING {
-            return next_page;
+    if func_size <= PAGE_SIZE {
+        let start_page = aligned / PAGE_SIZE;
+        let end_page = (aligned + func_size - 1) / PAGE_SIZE;
+        if start_page != end_page {
+            let next_page = (start_page + 1) * PAGE_SIZE;
+            let padding = next_page - aligned;
+            if padding <= MAX_PADDING {
+                return next_page;
+            }
         }
     }
-    offset
+    aligned
 }

@@ -557,6 +557,7 @@ pub(super) fn indexed_mem_fusion(
                     extension,
                     scaled: false,
                     uxtw: false,
+                    offset: 0,
                 })
             } else {
                 None
@@ -576,6 +577,7 @@ pub(super) fn indexed_mem_fusion(
                 src,
                 scaled: false,
                 uxtw: false,
+                offset: 0,
             })
         }
         _ => None,
@@ -597,24 +599,35 @@ pub(super) fn uxtw_mem_fusion(
         return None;
     };
 
-    // Check for optional offset add: ext_dst = ext_dst + imm
-    let (add_offset_count, base_add_index) = {
+    // Check for optional offset add: ext_dst = ext_dst + imm.
+    // When the offset fits in a positive i32, absorb it into the fused
+    // load/store so the codegen emits `add Xtmp, Xn, Wm, UXTW; ldr Rt, [Xtmp, #off]`
+    // (2 instructions) instead of the unfused 4-instruction sequence.
+    let (absorbed_offset, add_offset_count, base_add_index) = {
         let next = block.ops.get(index + 1)?;
         if let MachineInstKind::IntBinary {
             width: MachineIntWidth::I64,
             op: MachineIntBinaryOp::Add,
             dst: add_dst,
             lhs: MachineValue::Reg(add_lhs),
-            rhs: MachineValue::Imm64(_),
+            rhs: MachineValue::Imm64(offset_imm),
         } = next.kind
         {
             if add_dst == ext_dst && add_lhs == ext_dst {
-                // There's an offset add -- can't use UXTW (address is modified)
-                return None;
+                // Only absorb offsets that fit as a non-negative i32 so the
+                // ARM64 immediate-offset load encoding works correctly.
+                // Wasm offsets > 0x7FFFFFFF are rare and not worth special-casing.
+                if offset_imm <= i32::MAX as u64 {
+                    (offset_imm as i32, 1, index + 2)
+                } else {
+                    return None;
+                }
+            } else {
+                (0i32, 0, index + 1)
             }
+        } else {
+            (0i32, 0, index + 1)
         }
-        // No offset add -- the base+index add should be right after the convert
-        (0, index + 1)
     };
 
     // Now check for the base+index add + load pattern (same as indexed_mem_fusion)
@@ -637,8 +650,9 @@ pub(super) fn uxtw_mem_fusion(
                     extension,
                     scaled: false,
                     uxtw: true,
+                    offset: absorbed_offset,
                 },
-                2 + add_offset_count, // skip convert + add + load (3 instructions)
+                2 + add_offset_count, // skip convert + (optional offset add) + add + load
             ))
         }
         IndexedMemFusion::Store {
@@ -655,6 +669,7 @@ pub(super) fn uxtw_mem_fusion(
                 src,
                 scaled: false,
                 uxtw: true,
+                offset: absorbed_offset,
             },
             2 + add_offset_count,
         )),

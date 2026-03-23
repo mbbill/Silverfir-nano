@@ -164,6 +164,11 @@ pub(super) enum IndexedMemFusion {
         /// is treated as a 32-bit value that is zero-extended inline by the
         /// load instruction, eliminating an explicit I64ExtendI32U.
         uxtw: bool,
+        /// Wasm load offset absorbed from a preceding `i64.Add ext_dst, ext_dst, IMM`.
+        /// When non-zero the codegen emits `add Xtmp, Xn, Wm, UXTW; ldr Rt, [Xtmp, #offset]`
+        /// instead of a single register-indexed load (still saves 2 instructions
+        /// vs the unmatched 4-instruction sequence).
+        offset: i32,
     },
     Store {
         base: MachineReg,
@@ -172,6 +177,8 @@ pub(super) enum IndexedMemFusion {
         src: MachineValue,
         scaled: bool,
         uxtw: bool,
+        /// Same as Load::offset — absorbed Wasm store offset.
+        offset: i32,
     },
 }
 
@@ -1345,34 +1352,39 @@ impl From<u64> for ParallelSource {
     }
 }
 
-/// Adjust `offset` so that a function of `func_size` bytes avoids crossing a
-/// page boundary when the required padding is small. This eliminates iTLB
-/// pressure for hot blocks near the function entry without inflating the total
-/// code size significantly.
+/// Align a function start to reduce instruction-cache and iTLB pressure.
 ///
-/// Only pads when: (1) the function fits within one page, and (2) the padding
-/// needed is ≤ `MAX_PADDING`. When the function starts far from the page
-/// boundary most of its hot code (early blocks) is already on the current page,
-/// so the crossing at the tail is less harmful — not worth the wasted bytes.
+/// 1. **Cache-line alignment**: round up to 64 bytes so that the function
+///    prologue starts at a fresh fetch group. This stabilizes performance
+///    across code-size changes (adding or removing instructions in earlier
+///    functions no longer shifts hot blocks onto different cache lines).
+///
+/// 2. **Page-boundary avoidance**: if the function fits within one page
+///    (16 KB on Apple Silicon) but would straddle a boundary, bump to the
+///    next page — provided the padding is ≤ 1 KB.
 #[inline]
 fn page_align_function(offset: usize, func_size: usize) -> usize {
+    // 64-byte cache-line alignment.
+    let aligned = (offset + 63) & !63;
+
+    if func_size == 0 {
+        return aligned;
+    }
+
     // 16 KB — Apple Silicon page size. Conservative on 4 KB-page systems.
     const PAGE_SIZE: usize = 16384;
-    // Max NOP bytes we're willing to insert. 1 KB keeps overhead < 1% for
-    // large modules (~800 functions) while fixing ~35% of page crossings.
     const MAX_PADDING: usize = 1024;
 
-    if func_size == 0 || func_size > PAGE_SIZE {
-        return offset;
-    }
-    let start_page = offset / PAGE_SIZE;
-    let end_page = (offset + func_size - 1) / PAGE_SIZE;
-    if start_page != end_page {
-        let next_page = (start_page + 1) * PAGE_SIZE;
-        let padding = next_page - offset;
-        if padding <= MAX_PADDING {
-            return next_page;
+    if func_size <= PAGE_SIZE {
+        let start_page = aligned / PAGE_SIZE;
+        let end_page = (aligned + func_size - 1) / PAGE_SIZE;
+        if start_page != end_page {
+            let next_page = (start_page + 1) * PAGE_SIZE;
+            let padding = next_page - aligned;
+            if padding <= MAX_PADDING {
+                return next_page;
+            }
         }
     }
-    offset
+    aligned
 }

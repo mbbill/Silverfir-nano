@@ -561,8 +561,42 @@ impl<'a> FunctionCompiler<'a> {
                 index,
                 width,
                 extension,
+                offset,
+                ..
+            } if offset != 0 => {
+                // Offset variant: emit `add SCRATCH0, base, index, UXTW` then
+                // a regular load from `[SCRATCH0 + offset]`.
+                use super::abi::SCRATCH0;
+                let base = self.map_gp_reg(base)?;
+                let index = self.map_gp_reg(index)?;
+                self.text
+                    .emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base, index));
+                self.emit_load_from_base(dst, SCRATCH0, offset, width, extension)
+            }
+            IndexedMemFusion::Store {
+                base,
+                index,
+                width,
+                src,
+                offset,
+                ..
+            } if offset != 0 => {
+                use super::abi::SCRATCH0;
+                let base = self.map_gp_reg(base)?;
+                let index = self.map_gp_reg(index)?;
+                self.text
+                    .emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base, index));
+                self.emit_store_to_base(SCRATCH0, offset, width, src)
+            }
+            IndexedMemFusion::Load {
+                dst,
+                base,
+                index,
+                width,
+                extension,
                 scaled,
                 uxtw,
+                ..
             } => self.emit_indexed_load(dst, base, index, width, extension, scaled, uxtw),
             IndexedMemFusion::Store {
                 base,
@@ -571,6 +605,7 @@ impl<'a> FunctionCompiler<'a> {
                 src,
                 scaled,
                 uxtw,
+                ..
             } => self.emit_indexed_store(base, index, width, src, scaled, uxtw),
         }
     }
