@@ -69,7 +69,13 @@ pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_re
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
-        fuse_indexed_memory(block);
+        // fuse_indexed_memory is disabled until intra-function block alignment
+        // is implemented. The pass produces correct, smaller code (fewer MIR
+        // ops) but the code-size reduction shifts layout unpredictably, causing
+        // regressions on cache/alignment-sensitive benchmarks (sha256 -17%,
+        // coremark -3%). The IndexedLoad/IndexedStore MachineIR infrastructure
+        // is ready — re-enable once layout is stabilized.
+        // fuse_indexed_memory(block);
         copy_propagate(
             block,
             first_transient,

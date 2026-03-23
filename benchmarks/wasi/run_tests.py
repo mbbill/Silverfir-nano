@@ -167,11 +167,12 @@ def run_test(cli, test, cli_extra=()):
     if exit_code != 0 and not pattern:
         return name, "FAIL", f"exit code {exit_code}", elapsed
 
-    # Extract [native] stats if present.
+    # Extract compile stats if present: [arch] (func:N, ssa:N, mir:N, code:N)
     native_info = ""
     for line in stderr.splitlines():
-        if line.startswith("[native]"):
-            native_info = "  " + line.strip()
+        stripped = line.strip()
+        if "(func:" in stripped and "ssa:" in stripped:
+            native_info = "  " + stripped
             break
 
     # Extract metric

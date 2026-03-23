@@ -5,19 +5,22 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeStatsSnapshot {
     pub groups: usize,
-    pub ops: usize,
+    pub ssa_ops: usize,
+    pub mir_ops: usize,
     pub bytes_emitted: usize,
     pub groups_skipped: usize,
     pub ops_skipped: usize,
 }
 
 static STATS_GROUPS: AtomicUsize = AtomicUsize::new(0);
-static STATS_OPS: AtomicUsize = AtomicUsize::new(0);
+static STATS_SSA_OPS: AtomicUsize = AtomicUsize::new(0);
+static STATS_MIR_OPS: AtomicUsize = AtomicUsize::new(0);
 static STATS_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn set_native_stats(groups: usize, ops: usize, bytes_emitted: usize) {
+pub(crate) fn set_native_stats(groups: usize, ssa_ops: usize, mir_ops: usize, bytes_emitted: usize) {
     STATS_GROUPS.store(groups, Ordering::Relaxed);
-    STATS_OPS.store(ops, Ordering::Relaxed);
+    STATS_SSA_OPS.store(ssa_ops, Ordering::Relaxed);
+    STATS_MIR_OPS.store(mir_ops, Ordering::Relaxed);
     STATS_BYTES.store(bytes_emitted, Ordering::Relaxed);
 }
 
@@ -25,7 +28,8 @@ pub(crate) fn set_native_stats(groups: usize, ops: usize, bytes_emitted: usize) 
 pub fn native_stats_snapshot() -> NativeStatsSnapshot {
     NativeStatsSnapshot {
         groups: STATS_GROUPS.load(Ordering::Relaxed),
-        ops: STATS_OPS.load(Ordering::Relaxed),
+        ssa_ops: STATS_SSA_OPS.load(Ordering::Relaxed),
+        mir_ops: STATS_MIR_OPS.load(Ordering::Relaxed),
         bytes_emitted: STATS_BYTES.load(Ordering::Relaxed),
         groups_skipped: 0,
         ops_skipped: 0,
@@ -36,7 +40,7 @@ pub fn native_stats_snapshot() -> NativeStatsSnapshot {
 pub fn native_stats() -> (usize, usize) {
     (
         STATS_GROUPS.load(Ordering::Relaxed),
-        STATS_OPS.load(Ordering::Relaxed),
+        STATS_SSA_OPS.load(Ordering::Relaxed),
     )
 }
 
@@ -255,9 +259,15 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     // Record compile stats.
     {
         let groups = prepared_functions.len();
-        let ops: usize = prepared_functions
+        let ssa_ops: usize = prepared_functions
             .iter()
             .map(|(_, p)| p.ssa.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
+            .sum();
+        let mir_ops: usize = compiled
+            .module()
+            .functions
+            .iter()
+            .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
             .sum();
         let mut bytes = 0usize;
         #[cfg(target_arch = "aarch64")]
@@ -281,7 +291,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 .filter_map(|e| e.as_ref().map(|e| e.text_len))
                 .sum();
         }
-        set_native_stats(groups, ops, bytes);
+        set_native_stats(groups, ssa_ops, mir_ops, bytes);
     }
 
     // Write dump if SF_NATIVE_DUMP_DIR is set

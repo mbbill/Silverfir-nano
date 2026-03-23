@@ -149,14 +149,18 @@ fn main() {
         _ => result,
     };
 
-    // Print native backend status on exit
+    // Print native backend compile stats on exit
     #[cfg(feature = "micro-jit")]
     {
         let s = native_stats_snapshot();
         if s.groups > 0 {
+            let arch = if cfg!(target_arch = "aarch64") { "arm64" }
+                else if cfg!(target_arch = "x86_64") { "x86_64" }
+                else if cfg!(target_arch = "arm") { "armv7a" }
+                else { "unknown" };
             eprintln!(
-                "[native] {} functions ({} ops), {}B code",
-                s.groups, s.ops, s.bytes_emitted
+                "[{arch}] (func:{}, ssa:{}, mir:{}, code:{})",
+                s.groups, s.ssa_ops, s.mir_ops, s.bytes_emitted
             );
         }
     }
