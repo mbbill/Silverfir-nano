@@ -88,6 +88,17 @@ const TESTS = [
     source: 'stdout',
     multi: true,
   },
+  // --- Database ---
+  {
+    name: 'sqlite/speedtest1.wasm',
+    cwd: path.join(SCRIPT_DIR, 'sqlite'),
+    args: ['speedtest1.wasm', '--memdb', '--nosync', '--journal', 'off',
+           '--size', '1000', '--testset', 'main'],
+    pattern: /^\s*(\d+ - .+?\.{2,}\s+\S+s|TOTAL\.+\s+\S+s)/gm,
+    source: 'stdout',
+    multi: true,
+    separator: '\n    ',
+  },
 ];
 
 async function runTest(test) {
@@ -142,9 +153,13 @@ async function runTest(test) {
     if (test.multi) {
       const matches = [...text.matchAll(test.pattern)];
       if (matches.length > 0) {
-        const metric = matches[0][0].includes('throughput')
-          ? matches.map(m => m[1]).join('; ')
-          : matches.map(m => `${m[1]}: ${m[2]} MB/s`).join(', ');
+        const sep = test.separator || '; ';
+        let metric;
+        if (matches[0][2] !== undefined) {
+          metric = matches.map(m => `${m[1]}: ${m[2]} MB/s`).join(', ');
+        } else {
+          metric = matches.map(m => m[1].trim()).join(sep);
+        }
         return { status: 'PASS', metric, elapsed };
       }
     } else {

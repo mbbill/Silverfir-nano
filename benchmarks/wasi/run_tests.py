@@ -97,13 +97,25 @@ TESTS = [
         "source": "stdout",
         "multi": True,
     },
+    # --- Database ---
+    {
+        "name": "sqlite/speedtest1.wasm",
+        "cwd": os.path.join(SCRIPT_DIR, "sqlite"),
+        "cli_args": ["--dir", "."],
+        "args": ["speedtest1.wasm", "--memdb", "--nosync", "--journal", "off",
+                 "--size", "1000", "--testset", "main"],
+        "pattern": r"^\s*(\d+ - .+?\.{2,}\s+\S+s|TOTAL\.+\s+\S+s)",
+        "source": "stdout",
+        "multi": True,
+        "separator": "\n    ",
+    },
 ]
 
 
 def run_test(cli, test, cli_extra=()):
     name = test["name"]
     cwd = test["cwd"]
-    cmd = [cli] + cli_extra + test["args"]
+    cmd = [cli] + cli_extra + test.get("cli_args", []) + test["args"]
     stdin_file = test.get("stdin")
     pattern = test.get("pattern")
     source = test.get("source")
@@ -170,10 +182,11 @@ def run_test(cli, test, cli_extra=()):
     if multi:
         matches = re.findall(pattern, text, re.MULTILINE)
         if matches:
+            sep = test.get("separator", "; ")
             if isinstance(matches[0], tuple):
                 metric = ", ".join(f"{m[0]}: {m[1]} MB/s" for m in matches)
             else:
-                metric = "; ".join(m.strip() for m in matches)
+                metric = sep.join(m.strip() for m in matches)
             return name, "PASS", f"{metric}{native_info}", elapsed
     else:
         m = re.search(pattern, text, re.MULTILINE)
