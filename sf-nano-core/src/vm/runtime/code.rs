@@ -6,7 +6,7 @@ use crate::{
         arch::NativeBackend,
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineConstData, MachineConstId, MachineFuncId, MachineFunction, MachineModule,
+            MachineConstData, MachineConstId, MachineFuncId, MachineModule,
             MachineRuntimeContract, MACHINE_FIXED_REG_COUNT,
         },
         runtime::context::NativeContext,
@@ -116,8 +116,12 @@ impl CompiledNativeModule {
         &self.runtime
     }
 
+    #[cfg(any(
+        debug_assertions,
+        not(any(target_arch = "aarch64", target_arch = "x86_64"))
+    ))]
     #[inline]
-    pub(crate) fn function(&self, id: MachineFuncId) -> Option<&MachineFunction> {
+    pub(crate) fn function(&self, id: MachineFuncId) -> Option<&super::super::machine::machine_ir::MachineFunction> {
         self.module.functions.get(id.0 as usize)
     }
 

@@ -1,11 +1,16 @@
 use crate::error::WasmError;
 
 use super::machine_ir::{
-    MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConstId,
-    MachineConvertOp, MachineEdge, MachineExternId, MachineFloatWidth, MachineFuncId,
-    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-    MachineModule, MachineProgram, MachineReg, MachineStorageType, MachineTerminator,
-    MachineValue,
+    MachineBlockId, MachineBlockParam, MachineBranchCond,
+    MachineConvertOp, MachineInstKind, MachineIntWidth,
+    MachineModule, MachineProgram, MachineStorageType, MachineTerminator,
+};
+#[cfg(any(debug_assertions, test))]
+use super::machine_ir::{MachineIntBinaryOp, MachineIntUnaryOp};
+#[cfg(any(debug_assertions, test))]
+use super::machine_ir::{
+    MachineAddr, MachineConstId, MachineEdge, MachineExternId, MachineFloatWidth,
+    MachineFuncId, MachineInst, MachineReg, MachineValue,
 };
 
 type ValidateResult = Result<(), WasmError>;

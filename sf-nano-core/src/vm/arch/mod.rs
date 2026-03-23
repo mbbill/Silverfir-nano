@@ -1,3 +1,7 @@
+#[cfg(any(
+    debug_assertions,
+    not(any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::vm::backend::BackendConfig;
@@ -6,6 +10,10 @@ use crate::vm::backend::BackendConfig;
 pub(crate) mod arm64;
 #[cfg(target_arch = "arm")]
 pub mod armv7a;
+#[cfg(any(
+    debug_assertions,
+    not(any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 pub(crate) mod emulator;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
@@ -131,6 +139,10 @@ fn selected_reference_backend_mode() -> ReferenceBackendMode {
     }
 }
 
+#[cfg(any(
+    debug_assertions,
+    not(any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 #[inline]
 fn effective_reference_backend_mode() -> ReferenceBackendMode {
     #[cfg(any(

@@ -55,11 +55,19 @@ pub(crate) const fn as_ref(val: RawValue) -> RefHandle {
     RefHandle::new(val as usize)
 }
 
+#[cfg(any(
+    debug_assertions,
+    not(any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 #[inline(always)]
 pub(crate) const fn as_u32(val: RawValue) -> u32 {
     val as u32
 }
 
+#[cfg(any(
+    debug_assertions,
+    not(any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 #[inline(always)]
 pub(crate) const fn as_u64(val: RawValue) -> u64 {
     val

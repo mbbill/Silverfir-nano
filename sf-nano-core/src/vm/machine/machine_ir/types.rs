@@ -259,5 +259,6 @@ pub(crate) enum MachineTrapKind {
     IntegerDivideByZero,
     IntegerOverflow,
     StackOverflow,
+    #[allow(dead_code)] // constructed by emulator backend (debug-only)
     HelperFailure,
 }

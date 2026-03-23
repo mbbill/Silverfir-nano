@@ -141,6 +141,7 @@ impl PrepareState {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn validate_type_stack(&self, context: &str) -> Result<(), WasmError> {
         if self.type_stack.len() == self.height as usize {
             return Ok(());

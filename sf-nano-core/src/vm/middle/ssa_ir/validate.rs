@@ -1,12 +1,18 @@
 //! Structural validation for prepared LIR.
 
+#[cfg(any(debug_assertions, test))]
 use alloc::collections::BTreeMap;
 
-use crate::{error::WasmError, value_type::ValueType};
+use crate::error::WasmError;
+#[cfg(any(debug_assertions, test))]
+use crate::value_type::ValueType;
 
-use super::ir::{
-    SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
-};
+use super::ir::SsaProgram;
+#[cfg(any(debug_assertions, test))]
+use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaValue};
+#[cfg(any(debug_assertions, test))]
+use super::ir::{SsaInstKind, SsaTerminator};
+#[cfg(any(debug_assertions, test))]
 use crate::vm::middle::frame::FrameSlot;
 
 #[cfg(any(debug_assertions, test))]
@@ -294,6 +300,7 @@ pub(crate) fn validate_program(_program: &SsaProgram) -> Result<(), WasmError> {
     Ok(())
 }
 
+#[cfg(any(debug_assertions, test))]
 fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
     if block.id.as_usize() != index {
         return Err(WasmError::internal(alloc::format!(
@@ -305,6 +312,7 @@ fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
     Ok(())
 }
 
+#[cfg(any(debug_assertions, test))]
 fn validate_params(params: &[SsaValue], label: alloc::string::String) -> Result<(), WasmError> {
     for (index, value) in params.iter().enumerate() {
         if params[..index].contains(value) {
@@ -317,6 +325,7 @@ fn validate_params(params: &[SsaValue], label: alloc::string::String) -> Result<
     Ok(())
 }
 
+#[cfg(any(debug_assertions, test))]
 fn validate_edge(
     program: &SsaProgram,
     edge: &SsaEdge,
@@ -374,6 +383,7 @@ fn validate_edge(
     Ok(())
 }
 
+#[cfg(any(debug_assertions, test))]
 fn validate_binding(
     program: &SsaProgram,
     binding: &SsaBinding,

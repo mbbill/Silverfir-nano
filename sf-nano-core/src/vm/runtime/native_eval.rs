@@ -50,6 +50,7 @@ pub(super) fn eval(
                 WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
             })?;
             let backend_name = arch::backend_display_name(active_backend);
+            let _ = backend_name;
             let needs_compile = spec
                 .get_native_code()
                 .map(|code| {

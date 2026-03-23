@@ -120,6 +120,7 @@ pub(crate) struct SemanticProgram {
     pub op_result_types: BTreeMap<usize, Vec<ValueType>>,
 }
 
+#[cfg(any(debug_assertions, test))]
 pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
     match kind {
         SemanticOpKind::CallExternal { results, .. }
