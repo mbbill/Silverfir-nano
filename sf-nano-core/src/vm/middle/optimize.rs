@@ -308,10 +308,20 @@ fn try_eval(
         P::I64Clz => args[0].leading_zeros() as u64,
         P::I64Ctz => args[0].trailing_zeros() as u64,
         P::I64Popcnt => args[0].count_ones() as u64,
-        P::F32Abs => (f32::from_bits(args[0] as u32).abs().to_bits()) as u64,
-        P::F32Neg => ((-f32::from_bits(args[0] as u32)).to_bits()) as u64,
-        P::F64Abs => f64::from_bits(args[0]).abs().to_bits(),
-        P::F64Neg => (-f64::from_bits(args[0])).to_bits(),
+        P::F32Abs     => f32::from_bits(args[0] as u32).abs().to_bits() as u64,
+        P::F32Neg     => (-f32::from_bits(args[0] as u32)).to_bits() as u64,
+        P::F32Ceil    => soft_f32_ceil(args[0] as u32) as u64,
+        P::F32Floor   => soft_f32_floor(args[0] as u32) as u64,
+        P::F32Trunc   => soft_f32_trunc(args[0] as u32) as u64,
+        P::F32Nearest => soft_f32_nearest(args[0] as u32) as u64,
+        P::F32Sqrt    => canon_f32(f32::from_bits(args[0] as u32).sqrt()) as u64,
+        P::F64Abs     => f64::from_bits(args[0]).abs().to_bits(),
+        P::F64Neg     => (-f64::from_bits(args[0])).to_bits(),
+        P::F64Ceil    => soft_f64_ceil(args[0]),
+        P::F64Floor   => soft_f64_floor(args[0]),
+        P::F64Trunc   => soft_f64_trunc(args[0]),
+        P::F64Nearest => soft_f64_nearest(args[0]),
+        P::F64Sqrt    => canon_f64(f64::from_bits(args[0]).sqrt()),
         // --- extensions ---
         P::I32Extend8S  => ((args[0] as u32 as i8)  as i32 as u32) as u64,
         P::I32Extend16S => ((args[0] as u32 as i16) as i32 as u32) as u64,
@@ -336,14 +346,25 @@ fn try_eval(
         P::F64ConvertI64U => (args[0] as f64).to_bits(),
         P::F32DemoteF64   => (canon_f32((f64::from_bits(args[0]) as f32))) as u64,
         P::F64PromoteF32  => canon_f64(f32::from_bits(args[0] as u32) as f64),
-        // Trapping truncations: only fold when in range.
-        P::I32TruncF32S | P::I32TruncF32U | P::I32TruncF64S | P::I32TruncF64U
-        | P::I64TruncF32S | P::I64TruncF32U | P::I64TruncF64S | P::I64TruncF64U => return None,
-        // Saturating truncations and float rounding: skip for simplicity.
-        P::I32TruncSatF32S | P::I32TruncSatF32U | P::I32TruncSatF64S | P::I32TruncSatF64U
-        | P::I64TruncSatF32S | P::I64TruncSatF32U | P::I64TruncSatF64S | P::I64TruncSatF64U
-        | P::F32Ceil | P::F32Floor | P::F32Trunc | P::F32Nearest | P::F32Sqrt
-        | P::F64Ceil | P::F64Floor | P::F64Trunc | P::F64Nearest | P::F64Sqrt => return None,
+        // Trapping truncations: fold only when in range, return None to
+        // preserve the runtime trap otherwise.
+        P::I32TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i32::MIN as f32 || f > i32::MAX as f32 { return None; } (f as i32 as u32) as u64 }
+        P::I32TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f32 { return None; } (f as u32) as u64 }
+        P::I32TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i32::MIN as f64 || f > i32::MAX as f64 { return None; } (f as i32 as u32) as u64 }
+        P::I32TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f64 { return None; } (f as u32) as u64 }
+        P::I64TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i64::MIN as f32 || f > i64::MAX as f32 { return None; } (f as i64 as u64) }
+        P::I64TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f32 { return None; } f as u64 }
+        P::I64TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i64::MIN as f64 || f > i64::MAX as f64 { return None; } (f as i64 as u64) }
+        P::I64TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f64 { return None; } f as u64 }
+        // Saturating truncations: always produce a defined result.
+        P::I32TruncSatF32S => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() { 0 } else { (f as i32).max(i32::MIN).min(i32::MAX) } as u32) as u64 }
+        P::I32TruncSatF32U => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() || f < 0.0 { 0u32 } else if f >= u32::MAX as f32 { u32::MAX } else { f as u32 }) as u64 }
+        P::I32TruncSatF64S => { let f = f64::from_bits(args[0]); (if f.is_nan() { 0 } else if f <= i32::MIN as f64 - 1.0 { i32::MIN } else if f >= i32::MAX as f64 + 1.0 { i32::MAX } else { f as i32 } as u32) as u64 }
+        P::I32TruncSatF64U => { let f = f64::from_bits(args[0]); (if f.is_nan() || f < 0.0 { 0u32 } else if f >= u32::MAX as f64 + 1.0 { u32::MAX } else { f as u32 }) as u64 }
+        P::I64TruncSatF32S => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64 }
+        P::I64TruncSatF32U => { let f = f32::from_bits(args[0] as u32); if f.is_nan() || f < 0.0 { 0u64 } else if f >= u64::MAX as f32 { u64::MAX } else { f as u64 } }
+        P::I64TruncSatF64S => { let f = f64::from_bits(args[0]); (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64 }
+        P::I64TruncSatF64U => { let f = f64::from_bits(args[0]); if f.is_nan() || f < 0.0 { 0u64 } else if f >= u64::MAX as f64 { u64::MAX } else { f as u64 } }
         _ => return None,
     };
 
@@ -405,6 +426,78 @@ fn wasm_f64_max(a: u64, b: u64) -> u64 {
         return if (a & b) & 0x8000_0000_0000_0000 != 0 { 0x8000_0000_0000_0000 } else { 0 };
     }
     canon_f64(fa.max(fb))
+}
+
+// --- Software float rounding (no libm) ---
+
+fn soft_f32_trunc(bits: u32) -> u32 {
+    let f = f32::from_bits(bits);
+    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    let exp = ((bits >> 23) & 0xFF) as i32 - 127;
+    if exp < 0 { return bits & 0x8000_0000; } // |f| < 1 → ±0
+    if exp >= 23 { return bits; }
+    f32::from_bits(bits & !(0x007F_FFFFu32 >> exp)).to_bits()
+}
+
+fn soft_f64_trunc(bits: u64) -> u64 {
+    let f = f64::from_bits(bits);
+    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    let exp = ((bits >> 52) & 0x7FF) as i32 - 1023;
+    if exp < 0 { return bits & 0x8000_0000_0000_0000; }
+    if exp >= 52 { return bits; }
+    f64::from_bits(bits & !(0x000F_FFFF_FFFF_FFFFu64 >> exp)).to_bits()
+}
+
+fn soft_f32_floor(bits: u32) -> u32 {
+    let t = soft_f32_trunc(bits);
+    let f = f32::from_bits(bits);
+    let ft = f32::from_bits(t);
+    // floor = trunc unless negative and fractional part exists
+    if f < ft { (ft - 1.0).to_bits() } else { t }
+}
+
+fn soft_f64_floor(bits: u64) -> u64 {
+    let t = soft_f64_trunc(bits);
+    let f = f64::from_bits(bits);
+    let ft = f64::from_bits(t);
+    if f < ft { (ft - 1.0).to_bits() } else { t }
+}
+
+fn soft_f32_ceil(bits: u32) -> u32 {
+    let t = soft_f32_trunc(bits);
+    let f = f32::from_bits(bits);
+    let ft = f32::from_bits(t);
+    if f > ft { (ft + 1.0).to_bits() } else { t }
+}
+
+fn soft_f64_ceil(bits: u64) -> u64 {
+    let t = soft_f64_trunc(bits);
+    let f = f64::from_bits(bits);
+    let ft = f64::from_bits(t);
+    if f > ft { (ft + 1.0).to_bits() } else { t }
+}
+
+fn soft_f32_nearest(bits: u32) -> u32 {
+    let f = f32::from_bits(bits);
+    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    let t = f32::from_bits(soft_f32_trunc(bits));
+    let d = (f - t).abs();
+    if d < 0.5 { return t.to_bits(); }
+    if d > 0.5 { return (t + f.signum()).to_bits(); }
+    // ties to even
+    let r = t + f.signum();
+    if (r as i64) % 2 == 0 { r.to_bits() } else { t.to_bits() }
+}
+
+fn soft_f64_nearest(bits: u64) -> u64 {
+    let f = f64::from_bits(bits);
+    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    let t = f64::from_bits(soft_f64_trunc(bits));
+    let d = (f - t).abs();
+    if d < 0.5 { return t.to_bits(); }
+    if d > 0.5 { return (t + f.signum()).to_bits(); }
+    let r = t + f.signum();
+    if (r as i64) % 2 == 0 { r.to_bits() } else { t.to_bits() }
 }
 
 /// Mark values that appear in terminator edge bindings or as branch/table
