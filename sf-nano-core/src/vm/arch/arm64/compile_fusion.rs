@@ -575,6 +575,7 @@ pub(super) fn indexed_mem_fusion(
                 width,
                 src,
                 scaled: false,
+                uxtw: false,
             })
         }
         _ => None,
@@ -653,6 +654,7 @@ pub(super) fn uxtw_mem_fusion(
                 width,
                 src,
                 scaled: false,
+                uxtw: true,
             },
             2 + add_offset_count,
         )),

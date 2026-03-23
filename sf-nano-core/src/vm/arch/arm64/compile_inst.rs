@@ -21,7 +21,7 @@ use super::compile_fusion::{
     cmp_imm_inst, int_binary_imm_inst,
 };
 use super::compile_helpers::{
-    arm64_trapping_trunc, arm64_saturating_trunc,
+    arm64_trapping_trunc,
     convert_op_code, convert_result_float_width, map_float_cond, map_int_cond, mem_width_bytes,
 };
 
@@ -483,6 +483,7 @@ impl<'a> FunctionCompiler<'a> {
         width: MachineMemWidth,
         src: MachineValue,
         scaled: bool,
+        uxtw: bool,
     ) -> Result<(), WasmError> {
         let base = self.map_gp_reg(base)?;
         let index = self.map_gp_reg(index)?;
@@ -490,8 +491,14 @@ impl<'a> FunctionCompiler<'a> {
             if self.is_fp_reg(src_reg) {
                 let src_fp = self.map_fp_reg(src_reg)?;
                 self.text.emit_u32(match width {
-                    MachineMemWidth::U32 => enc::str_s_reg(src_fp, base, index, scaled),
-                    MachineMemWidth::U64 => enc::str_d_reg(src_fp, base, index, scaled),
+                    MachineMemWidth::U32 => {
+                        if uxtw { enc::str_s_reg_uxtw(src_fp, base, index) }
+                        else { enc::str_s_reg(src_fp, base, index, scaled) }
+                    }
+                    MachineMemWidth::U64 => {
+                        if uxtw { enc::str_d_reg_uxtw(src_fp, base, index) }
+                        else { enc::str_d_reg(src_fp, base, index, scaled) }
+                    }
                     _ => {
                         return Err(WasmError::invalid(
                             "arm64 MachineIR backend does not support narrow indexed FP stores"
@@ -504,27 +511,24 @@ impl<'a> FunctionCompiler<'a> {
         }
         let src_reg = self.materialize_value(SCRATCH1, src)?;
         let inst = match width {
-            MachineMemWidth::U8 => enc::strb_reg(src_reg, base, index),
+            MachineMemWidth::U8 => {
+                if uxtw { enc::strb_reg_uxtw(src_reg, base, index) }
+                else { enc::strb_reg(src_reg, base, index) }
+            }
             MachineMemWidth::U16 => {
-                if scaled {
-                    enc::strh_reg_scaled(src_reg, base, index)
-                } else {
-                    enc::strh_reg(src_reg, base, index)
-                }
+                if uxtw { enc::strh_reg_uxtw(src_reg, base, index) }
+                else if scaled { enc::strh_reg_scaled(src_reg, base, index) }
+                else { enc::strh_reg(src_reg, base, index) }
             }
             MachineMemWidth::U32 => {
-                if scaled {
-                    enc::str_reg_32_scaled(src_reg, base, index)
-                } else {
-                    enc::str_reg_32(src_reg, base, index)
-                }
+                if uxtw { enc::str_reg_32_uxtw(src_reg, base, index) }
+                else if scaled { enc::str_reg_32_scaled(src_reg, base, index) }
+                else { enc::str_reg_32(src_reg, base, index) }
             }
             MachineMemWidth::U64 => {
-                if scaled {
-                    enc::str_reg_64_scaled(src_reg, base, index)
-                } else {
-                    enc::str_reg_64(src_reg, base, index)
-                }
+                if uxtw { enc::str_reg_64_uxtw(src_reg, base, index) }
+                else if scaled { enc::str_reg_64_scaled(src_reg, base, index) }
+                else { enc::str_reg_64(src_reg, base, index) }
             }
         };
         self.text.emit_u32(inst);
@@ -788,6 +792,8 @@ impl<'a> FunctionCompiler<'a> {
             }
             let true_reg = self.materialize_value(SCRATCH0, on_true)?;
             let false_reg = self.materialize_value(SCRATCH1, on_false)?;
+            // Always use csel_64: GpWord covers both i32 and reference types,
+            // and refs need full 64-bit values preserved (e.g. null sentinel).
             self.text
                 .emit_u32(enc::csel_64(dst, true_reg, false_reg, Cond::Ne));
             Ok(())
@@ -1238,11 +1244,9 @@ impl<'a> FunctionCompiler<'a> {
                 }
             }
             MachineConvertOp::F32ConvertI32U => {
-                // Zero-extend to 64-bit first to ensure unsigned interpretation
                 let src_gp = self.materialize_value(SCRATCH0, src)?;
-                self.text.emit_u32(enc::mov_reg_32(SCRATCH0, src_gp));
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F32)?;
-                self.text.emit_u32(enc::ucvtf_s_64(dst_fp, SCRATCH0));
+                self.text.emit_u32(enc::ucvtf_s_32(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
                     let dst_gp = self.map_gp_reg(dst)?;
                     self.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -1277,9 +1281,8 @@ impl<'a> FunctionCompiler<'a> {
             }
             MachineConvertOp::F64ConvertI32U => {
                 let src_gp = self.materialize_value(SCRATCH0, src)?;
-                self.text.emit_u32(enc::mov_reg_32(SCRATCH0, src_gp));
                 let dst_fp = dst_float_reg(self, MachineFloatWidth::F64)?;
-                self.text.emit_u32(enc::ucvtf_d_64(dst_fp, SCRATCH0));
+                self.text.emit_u32(enc::ucvtf_d_32(dst_fp, src_gp));
                 if !self.is_fp_reg(dst) {
                     let dst_gp = self.map_gp_reg(dst)?;
                     self.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -1316,18 +1319,56 @@ impl<'a> FunctionCompiler<'a> {
                 let src_gp = self.materialize_value(SCRATCH0, src)?;
                 self.emit_trapping_trunc(op, dst_gp, src_gp)?;
             }
-            // Saturating truncations
-            MachineConvertOp::I32TruncSatF32S
-            | MachineConvertOp::I32TruncSatF32U
-            | MachineConvertOp::I32TruncSatF64S
-            | MachineConvertOp::I32TruncSatF64U
-            | MachineConvertOp::I64TruncSatF32S
-            | MachineConvertOp::I64TruncSatF32U
-            | MachineConvertOp::I64TruncSatF64S
-            | MachineConvertOp::I64TruncSatF64U => {
-                let dst_gp = self.map_gp_reg(dst)?;
+            // Saturating truncations — inline via native fcvtzs/fcvtzu
+            // ARM64 fcvtzs/fcvtzu already matches Wasm saturating semantics:
+            // NaN→0, overflow→clamp to min/max.
+            MachineConvertOp::I32TruncSatF32S => {
                 let src_gp = self.materialize_value(SCRATCH0, src)?;
-                self.emit_saturating_trunc(op, dst_gp, src_gp)?;
+                self.text.emit_u32(enc::fmov_s_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzs_32_s(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I32TruncSatF32U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_s_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzu_32_s(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I32TruncSatF64S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_d_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzs_32_d(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I32TruncSatF64U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_d_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzu_32_d(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I64TruncSatF32S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_s_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzs_64_s(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I64TruncSatF32U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_s_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzu_64_s(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I64TruncSatF64S => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_d_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzs_64_d(dst_gp, FP_SCRATCH0));
+            }
+            MachineConvertOp::I64TruncSatF64U => {
+                let src_gp = self.materialize_value(SCRATCH0, src)?;
+                self.text.emit_u32(enc::fmov_d_from_gp(FP_SCRATCH0, src_gp));
+                let dst_gp = self.map_gp_reg(dst)?;
+                self.text.emit_u32(enc::fcvtzu_64_d(dst_gp, FP_SCRATCH0));
             }
         }
         Ok(())
@@ -1354,18 +1395,4 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
-    fn emit_saturating_trunc(
-        &mut self,
-        op: MachineConvertOp,
-        dst: Arm64Reg,
-        src: Arm64Reg,
-    ) -> Result<(), WasmError> {
-        self.text.emit_u32(enc::mov_reg_64(Arm64Reg::X0, src));
-        self.materialize_u64(Arm64Reg::X1, convert_op_code(op));
-        self.materialize_u64(SCRATCH0, arm64_saturating_trunc as usize as u64);
-        self.text.emit_u32(enc::blr(SCRATCH0));
-        // X0 = result value (no error possible for sat)
-        self.text.emit_u32(enc::mov_reg_64(dst, Arm64Reg::X0));
-        Ok(())
-    }
 }

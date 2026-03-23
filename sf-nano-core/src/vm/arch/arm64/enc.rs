@@ -22,7 +22,22 @@ pub(super) enum Cond {
 impl Cond {
     #[inline]
     pub(super) const fn invert(self) -> Cond {
-        unsafe { core::mem::transmute(self as u8 ^ 1) }
+        match self {
+            Cond::Eq => Cond::Ne,
+            Cond::Ne => Cond::Eq,
+            Cond::Hs => Cond::Lo,
+            Cond::Lo => Cond::Hs,
+            Cond::Mi => Cond::Pl,
+            Cond::Pl => Cond::Mi,
+            Cond::Vs => Cond::Vc,
+            Cond::Vc => Cond::Vs,
+            Cond::Hi => Cond::Ls,
+            Cond::Ls => Cond::Hi,
+            Cond::Ge => Cond::Lt,
+            Cond::Lt => Cond::Ge,
+            Cond::Gt => Cond::Le,
+            Cond::Le => Cond::Gt,
+        }
     }
 }
 
@@ -666,20 +681,12 @@ pub(super) fn neg_reg_64(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
     sub_reg_64(rd, Arm64Reg::Xzr, rm)
 }
 
-pub(super) fn csel_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u32 {
-    cond_select(0, 0b00, rd, rn, rm, cond)
-}
-
 pub(super) fn mov_reg_32(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
     orr_reg_32(rd, Arm64Reg::Xzr, rm)
 }
 
 pub(super) fn movz_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
     move_wide(0, 0b10, rd, imm16, shift)
-}
-
-pub(super) fn movk_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
-    move_wide(0, 0b11, rd, imm16, shift)
 }
 
 fn low_mask(bits: u32) -> u64 {
@@ -841,33 +848,6 @@ fn fp_int_conv(sf: u32, ftype: u32, rmode: u32, opcode: u32, rd: u32, rn: u32) -
         | rd
 }
 
-/// FP load (unsigned offset): LDR St/Dt, [Xn, #imm]
-pub(super) fn fp_ldr_unsigned(size: u32, rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
-    debug_assert!(imm12 < 0x1000);
-    (size << 30) | (0b111_1_01 << 24) | (0b01 << 22) | (imm12 << 10) | (rn.idx() << 5) | rt
-}
-
-/// FP store (unsigned offset): STR St/Dt, [Xn, #imm]
-pub(super) fn fp_str_unsigned(size: u32, rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
-    debug_assert!(imm12 < 0x1000);
-    (size << 30) | (0b111_1_01 << 24) | (0b00 << 22) | (imm12 << 10) | (rn.idx() << 5) | rt
-}
-
-/// FP load register offset: LDR St/Dt, [Xn, Xm]
-pub(super) fn fp_ldr_reg(base: u32, rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    base | (rm.idx() << 16) | (rn.idx() << 5) | rt
-}
-
-/// FP store register offset: STR St/Dt, [Xn, Xm]
-pub(super) fn fp_str_reg(base: u32, rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    base | (rm.idx() << 16) | (rn.idx() << 5) | rt
-}
-
-// F32 load/store register offset bases
-pub(super) const FP_LDR_S_REG_BASE: u32 = 0xbc60_6800;
-pub(super) const FP_STR_S_REG_BASE: u32 = 0xbc20_6800;
-pub(super) const FP_LDR_D_REG_BASE: u32 = 0xfc60_6800;
-pub(super) const FP_STR_D_REG_BASE: u32 = 0xfc20_6800;
 
 // FMOV between GP and FP registers
 /// FMOV Wd, Sn (FP to GP, 32-bit)

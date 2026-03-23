@@ -570,7 +570,8 @@ impl<'a> FunctionCompiler<'a> {
                 width,
                 src,
                 scaled,
-            } => self.emit_indexed_store(base, index, width, src, scaled),
+                uxtw,
+            } => self.emit_indexed_store(base, index, width, src, scaled, uxtw),
         }
     }
 

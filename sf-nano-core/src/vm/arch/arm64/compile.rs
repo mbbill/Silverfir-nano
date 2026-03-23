@@ -171,6 +171,7 @@ pub(super) enum IndexedMemFusion {
         width: MachineMemWidth,
         src: MachineValue,
         scaled: bool,
+        uxtw: bool,
     },
 }
 
