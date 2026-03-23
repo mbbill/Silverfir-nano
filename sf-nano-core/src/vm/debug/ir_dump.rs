@@ -300,7 +300,7 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
         SsaInstKind::Value { op, args, results } => format!(
             "leaf {:?} args=[{}] results=[{}]",
             op,
-            vals(args),
+            operands(args),
             vals(results),
         ),
         SsaInstKind::LoadSlot { slot, dst } => {
@@ -427,6 +427,16 @@ fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -
 fn vals(vs: &[SsaValue]) -> String {
     vs.iter()
         .map(|v| format!("v{}", v.0))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
+    ops.iter()
+        .map(|op| match op {
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => format!("v{}", v.0),
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => format!("#{bits}"),
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }

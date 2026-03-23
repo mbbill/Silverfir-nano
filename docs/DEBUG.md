@@ -206,7 +206,7 @@ What they contain:
   - runtime address ranges
   - file offsets into `native_code.bin`
   - per-function planned groups
-  - per-function full LIR
+  - per-function full SSA-IR
   - per-function full NativeIR
 - `native_code.bin`
   - concatenated machine code bytes for the compiled module
@@ -215,7 +215,7 @@ Recommended workflow:
 
 1. record or inspect a hotspot symbol in `samply-for-ai`
 2. search that symbol in `native_index.txt`
-3. read the function’s LIR and NativeIR sections
+3. read the function’s SSA-IR and NativeIR sections
 4. if needed, query the assembly for the same symbol from the profile
 
 Example symbols now look like:

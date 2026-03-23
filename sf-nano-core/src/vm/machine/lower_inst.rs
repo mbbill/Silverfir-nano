@@ -12,7 +12,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::ssa_ir::{
-            ir::{SsaEdge, SsaInst, SsaInstKind, SsaTerminator, SsaValue},
+            ir::{SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
             leaf::SsaLeafOp,
         },
         wasm::primitive_op::PrimitiveOpKind,
@@ -194,7 +194,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_leaf_special(
         &mut self,
         op: &SsaLeafOp,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
         continuation: MachineBlockId,
         trap: MachineBlockId,
@@ -251,7 +251,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_leaf(
         &mut self,
         op: &SsaLeafOp,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
         use PrimitiveOpKind as P;
@@ -267,7 +267,9 @@ impl<'a> BlockLowerContext<'a> {
         match primitive {
             P::Drop | P::Nop => {
                 for arg in args {
-                    let _ = self.use_value(*arg)?;
+                    if let SsaOperand::Value(v) = arg {
+                        let _ = self.use_value(*v)?;
+                    }
                 }
                 Ok(())
             }

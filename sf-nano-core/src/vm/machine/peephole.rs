@@ -53,16 +53,11 @@ struct TrackedLoad {
 /// transient registers are candidates for copy/constant rewriting; fixed and
 /// cached-local registers must not be disturbed.
 pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width: u8) {
-    let fp_transient_end = program.first_fp_reg + program.fp_transient_count;
     let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
     for block in &mut program.blocks {
         deduplicate_constants(block, program.first_fp_reg);
-        fold_constants(
-            block,
-            first_transient,
-            program.first_fp_reg,
-            fp_transient_end,
-        );
+        // Constant folding into operands is now handled at the SSA level
+        // (see middle/optimize.rs fold_constants_into_operands).
         copy_propagate(
             block,
             first_transient,
@@ -73,12 +68,6 @@ pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_re
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
-        fold_constants(
-            block,
-            first_transient,
-            program.first_fp_reg,
-            fp_transient_end,
-        );
         copy_propagate(
             block,
             first_transient,
@@ -172,55 +161,6 @@ fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
         if let Some(e) = new_fp {
             fp_consts.push(e);
         }
-    }
-}
-
-/// Fold `move rX <- imm; op ... rX ...` into `op ... imm ...` when rX is
-/// a transient register (single-use SSA value). Also folds
-/// `FloatConst rX <- bits; FloatCompare/op ... rX ...` into `op ... Imm64(bits) ...`.
-/// Cached-local and fixed registers are never folded — they persist across the block.
-fn fold_constants(
-    block: &mut MachineBlock,
-    first_transient: u16,
-    first_fp_reg: u16,
-    fp_transient_end: u16,
-) {
-    let mut i = 0;
-    while i + 1 < block.ops.len() {
-        let (dst, imm) = match &block.ops[i].kind {
-            // GP transient constant: move rX <- imm
-            MachineInstKind::Move {
-                dst,
-                src: MachineValue::Imm64(imm),
-                ..
-            } if dst.0 >= first_transient && dst.0 < first_fp_reg => (*dst, *imm),
-            // FP transient constant: FloatConst rX <- bits
-            MachineInstKind::FloatConst { dst, bits, .. }
-                if dst.0 >= first_fp_reg && dst.0 < fp_transient_end =>
-            {
-                (*dst, *bits)
-            }
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
-
-        let next = &block.ops[i + 1].kind;
-        let use_count = count_value_uses(next, dst);
-        let replaceable_use_count = count_replaceable_value_uses(next, dst);
-        let is_dst_of_next = inst_defines(next, dst);
-
-        if use_count == 1 && replaceable_use_count == 1 && !is_dst_of_next {
-            let safe = is_last_use_before_redef(block, i + 1, dst);
-            if safe {
-                let imm_val = MachineValue::Imm64(imm);
-                replace_value_use(&mut block.ops[i + 1].kind, dst, imm_val);
-                block.ops.remove(i);
-                continue;
-            }
-        }
-        i += 1;
     }
 }
 
@@ -488,16 +428,6 @@ fn count_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize {
     count
 }
 
-fn count_replaceable_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize {
-    let mut count = 0;
-    visit_replaceable_source_values(kind, |v| {
-        if matches!(v, MachineValue::Reg(r) if *r == reg) {
-            count += 1;
-        }
-    });
-    count
-}
-
 /// Check if `kind` defines (writes to) `reg`.
 fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
@@ -557,24 +487,6 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
     }
-}
-
-/// Check that `reg` is not used by any instruction after `start_idx` in the
-/// block (including the terminator), or if it is used again, it is redefined first.
-fn is_last_use_before_redef(block: &MachineBlock, start_idx: usize, reg: MachineReg) -> bool {
-    for inst in &block.ops[start_idx + 1..] {
-        if count_value_uses(&inst.kind, reg) > 0 {
-            return false; // used again, even if the instruction also redefines it
-        }
-        if inst_defines(&inst.kind, reg) {
-            return true; // redefined before any other use
-        }
-    }
-    // Also check the terminator
-    if terminator_uses_reg(&block.terminator, reg) {
-        return false;
-    }
-    true // not used again in the block
 }
 
 /// Check if a terminator reads from `reg`.
@@ -725,221 +637,6 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
         }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
         MachineInstKind::CallHelper(_) => {}
-    }
-}
-
-fn visit_replaceable_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
-    match kind {
-        MachineInstKind::Move { src, .. }
-        | MachineInstKind::IntUnary { src, .. }
-        | MachineInstKind::FloatUnary { src, .. }
-        | MachineInstKind::Convert { src, .. }
-        | MachineInstKind::ConvertFloatToI64Pair { src, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => f(src),
-        MachineInstKind::FloatConst { .. }
-        | MachineInstKind::Load { .. } => {}
-        MachineInstKind::Store { src, .. } => f(src),
-        MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntCompare { lhs, rhs, .. }
-        | MachineInstKind::FloatBinary { lhs, rhs, .. }
-        | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
-            f(lhs);
-            f(rhs);
-        }
-        MachineInstKind::Int64PairBinary {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        }
-        | MachineInstKind::Int64PairDivRem {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        }
-        | MachineInstKind::Int64PairCompare {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => {
-            f(lhs_lo);
-            f(lhs_hi);
-            f(rhs_lo);
-            f(rhs_hi);
-        }
-        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. }
-        | MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. }
-        | MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
-            f(src_lo);
-            f(src_hi);
-        }
-        MachineInstKind::Int64PairShift {
-            lhs_lo,
-            lhs_hi,
-            rhs,
-            ..
-        } => {
-            f(lhs_lo);
-            f(lhs_hi);
-            f(rhs);
-        }
-        MachineInstKind::Select {
-            on_true,
-            on_false,
-            cond,
-            ..
-        } => {
-            f(on_true);
-            f(on_false);
-            f(cond);
-        }
-        MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
-        MachineInstKind::CallHelper(_) => {}
-    }
-}
-
-/// Replace one occurrence of `Reg(old)` with `new_val` in an instruction's sources.
-fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: MachineValue) {
-    match kind {
-        MachineInstKind::Move { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::IntUnary { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::IntBinary { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
-        }
-        MachineInstKind::Int64PairBinary {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => {
-            if !try_replace(lhs_lo, old, new_val) {
-                if !try_replace(lhs_hi, old, new_val) {
-                    if !try_replace(rhs_lo, old, new_val) {
-                        try_replace(rhs_hi, old, new_val);
-                    }
-                }
-            }
-        }
-        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
-            if !try_replace(src_lo, old, new_val) {
-                try_replace(src_hi, old, new_val);
-            }
-        }
-        MachineInstKind::Int64PairDivRem {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => {
-            if !try_replace(lhs_lo, old, new_val) {
-                if !try_replace(lhs_hi, old, new_val) {
-                    if !try_replace(rhs_lo, old, new_val) {
-                        try_replace(rhs_hi, old, new_val);
-                    }
-                }
-            }
-        }
-        MachineInstKind::Int64PairShift {
-            lhs_lo,
-            lhs_hi,
-            rhs,
-            ..
-        } => {
-            if !try_replace(lhs_lo, old, new_val) {
-                if !try_replace(lhs_hi, old, new_val) {
-                    try_replace(rhs, old, new_val);
-                }
-            }
-        }
-        MachineInstKind::Int64PairCompare {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => {
-            if !try_replace(lhs_lo, old, new_val) {
-                if !try_replace(lhs_hi, old, new_val) {
-                    if !try_replace(rhs_lo, old, new_val) {
-                        try_replace(rhs_hi, old, new_val);
-                    }
-                }
-            }
-        }
-        MachineInstKind::IntCompare { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
-        }
-        MachineInstKind::FloatUnary { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::FloatBinary { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
-        }
-        MachineInstKind::FloatCompare { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
-        }
-        MachineInstKind::Convert { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => {
-            if !try_replace(src_lo, old, new_val) {
-                try_replace(src_hi, old, new_val);
-            }
-        }
-        MachineInstKind::ConvertFloatToI64Pair { src, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => {
-            if !try_replace(src_lo, old, new_val) {
-                try_replace(src_hi, old, new_val);
-            }
-        }
-        MachineInstKind::Store { src, .. } => {
-            try_replace(src, old, new_val);
-        }
-        MachineInstKind::Select {
-            on_true,
-            on_false,
-            cond,
-            ..
-        } => {
-            if !try_replace(on_true, old, new_val) {
-                if !try_replace(on_false, old, new_val) {
-                    try_replace(cond, old, new_val);
-                }
-            }
-        }
-        MachineInstKind::TrapIf { cond, .. } => replace_branch_cond_value(cond, old, new_val),
-        _ => {}
-    }
-}
-
-fn try_replace(val: &mut MachineValue, old: MachineReg, new_val: MachineValue) -> bool {
-    if matches!(val, MachineValue::Reg(r) if *r == old) {
-        *val = new_val;
-        true
-    } else {
-        false
     }
 }
 
@@ -1144,19 +841,6 @@ fn visit_branch_cond_values(cond: &MachineBranchCond, mut f: impl FnMut(&Machine
         MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
-        }
-    }
-}
-
-fn replace_branch_cond_value(cond: &mut MachineBranchCond, old: MachineReg, new_val: MachineValue) {
-    match cond {
-        MachineBranchCond::Value(value) => {
-            try_replace(value, old, new_val);
-        }
-        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
         }
     }
 }

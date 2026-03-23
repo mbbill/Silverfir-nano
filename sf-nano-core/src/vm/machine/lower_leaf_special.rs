@@ -13,7 +13,7 @@ use crate::{
             MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
             MachineValue, MACHINE_MEM0_BASE_REG,
         },
-        middle::ssa_ir::ir::SsaValue,
+        middle::ssa_ir::ir::{SsaOperand, SsaValue},
         runtime::layout::native_runtime_abi_layout,
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -160,8 +160,8 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_global_set(&mut self, idx: u32, args: &[SsaValue]) -> Result<(), WasmError> {
-        let src_value = single_arg(args)?;
+    pub(super) fn lower_global_set(&mut self, idx: u32, args: &[SsaOperand]) -> Result<(), WasmError> {
+        let src_value = single_arg(args)?.unwrap_value();
         let ty = self.value_storage_type(src_value);
         if matches!(ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
@@ -276,12 +276,12 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_table_get(
         &mut self,
         table_idx: u32,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        let index = self.use_value(single_arg(args)?)?;
+        let index = self.use_value(single_arg(args)?.unwrap_value())?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         let index64 = dst;
         let table_len = self.borrow_free_transients(1)?[0];
@@ -313,11 +313,14 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_table_set(
         &mut self,
         table_idx: u32,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        let (index_value, src_value) = two_args(args)?;
+        let (index_value, src_value) = {
+            let (a, b) = two_args(args)?;
+            (a.unwrap_value(), b.unwrap_value())
+        };
         let index = self.use_value(index_value)?;
         let src = self.use_value(src_value)?;
         let (index64, table_len) = if let Some(index64) = self.dead_value_reg(index_value) {
@@ -354,7 +357,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_memory_load(
         &mut self,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
@@ -371,10 +374,10 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_memory_load_scalar(
         &mut self,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
-        let addr_value = single_arg(args)?;
+        let addr_value = single_arg(args)?.unwrap_value();
         let addr = self.use_value(addr_value)?;
         let fp_load_usable = spec.ty.float_width().is_some()
             && (spec.memidx != 0
@@ -433,7 +436,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         _continuation: MachineBlockId,
         _trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -449,9 +452,12 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_memory_store_scalar(
         &mut self,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
     ) -> Result<LeafLowering, WasmError> {
-        let (addr_value, src_value) = two_args(args)?;
+        let (addr_value, src_value) = {
+            let (a, b) = two_args(args)?;
+            (a.unwrap_value(), b.unwrap_value())
+        };
         let addr = self.use_value(addr_value)?;
         let src = self.use_value(src_value)?;
         let access_bytes = spec.access_bytes();
@@ -493,10 +499,10 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_i64_memory_load(
         &mut self,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
-        let addr_value = single_arg(args)?;
+        let addr_value = single_arg(args)?.unwrap_value();
         let addr = self.use_value(addr_value)?;
         let (dst_lo, dst_hi) =
             self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
@@ -541,9 +547,12 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_i64_memory_store(
         &mut self,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
     ) -> Result<LeafLowering, WasmError> {
-        let (addr_value, src_value) = two_args(args)?;
+        let (addr_value, src_value) = {
+            let (a, b) = two_args(args)?;
+            (a.unwrap_value(), b.unwrap_value())
+        };
         let addr = self.use_value(addr_value)?;
         let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
         let access_bytes = spec.access_bytes();

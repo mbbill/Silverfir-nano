@@ -7,7 +7,7 @@
 
 use crate::error::WasmError;
 use crate::vm::middle::frame::FrameSlot;
-use crate::vm::middle::ssa_ir::ir::SsaValue;
+use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
@@ -111,7 +111,7 @@ impl I64Lowering for Gp64Lowering {
         &self,
         _ctx: &mut BlockLowerContext,
         _primitive: &PrimitiveOpKind,
-        _args: &[SsaValue],
+        _args: &[SsaOperand],
         _results: &[SsaValue],
     ) -> Result<bool, WasmError> {
         // On 64-bit targets, i64 operations are handled by the normal scalar
@@ -205,7 +205,7 @@ impl I64Lowering for Gp64Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         // On 64-bit targets the normal scalar memory-load path handles this.
@@ -216,7 +216,7 @@ impl I64Lowering for Gp64Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
     ) -> Result<LeafLowering, WasmError> {
         ctx.lower_memory_store_scalar(spec, args)
     }

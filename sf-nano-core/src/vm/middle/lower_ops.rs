@@ -10,11 +10,11 @@ use crate::{
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
             ssa_ir::{
-                ir::{SsaBoundaryOp, SsaInst, SsaInstKind},
+                ir::{SsaBoundaryOp, SsaInst, SsaInstKind, SsaOperand},
                 leaf::SsaLeafOp,
             },
         },
-        wasm::{primitive_op, primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind},
+        wasm::{primitive_op::{self, PrimitiveOpKind}, semantic_ir::SemanticOpKind},
     },
 };
 
@@ -113,7 +113,7 @@ pub(super) fn lower_primitive(
         kind: SsaInstKind::Value {
             op: SsaLeafOp::from_primitive(kind.clone())
                 .expect("non-boundary primitive must lower as a leaf op"),
-            args,
+            args: args.into_iter().map(SsaOperand::Value).collect(),
             results: results.clone(),
         },
     });

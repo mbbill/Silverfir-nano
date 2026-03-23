@@ -7,7 +7,7 @@ mod lower_leaf;
 
 use crate::error::WasmError;
 use crate::vm::middle::frame::FrameSlot;
-use crate::vm::middle::ssa_ir::ir::SsaValue;
+use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
@@ -145,7 +145,7 @@ impl I64Lowering for Gp32Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         primitive: &PrimitiveOpKind,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<bool, WasmError> {
         ctx.lower_i64_pair_leaf(primitive, args, results)
@@ -279,7 +279,7 @@ impl I64Lowering for Gp32Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         ctx.lower_i64_memory_load(spec, args, results)
@@ -289,7 +289,7 @@ impl I64Lowering for Gp32Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
     ) -> Result<LeafLowering, WasmError> {
         ctx.lower_i64_memory_store(spec, args)
     }

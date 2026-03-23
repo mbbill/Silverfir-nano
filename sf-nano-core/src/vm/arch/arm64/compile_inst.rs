@@ -682,13 +682,16 @@ impl<'a> FunctionCompiler<'a> {
                 self.text.emit_u32(enc::rorv_64(dst, lhs, rhs));
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
-                // rotl(x, n) = rotr(x, 32 - n)
-                self.text.emit_u32(enc::neg_reg_32(SCRATCH0, rhs));
-                self.text.emit_u32(enc::rorv_32(dst, lhs, SCRATCH0));
+                // rotl(x, n) = rotr(x, -n). Use a neg scratch that doesn't
+                // clobber lhs (which may be SCRATCH0 when materialized from Imm64).
+                let neg_dst = if lhs == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+                self.text.emit_u32(enc::neg_reg_32(neg_dst, rhs));
+                self.text.emit_u32(enc::rorv_32(dst, lhs, neg_dst));
             }
             (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
-                self.text.emit_u32(enc::neg_reg_64(SCRATCH0, rhs));
-                self.text.emit_u32(enc::rorv_64(dst, lhs, SCRATCH0));
+                let neg_dst = if lhs == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+                self.text.emit_u32(enc::neg_reg_64(neg_dst, rhs));
+                self.text.emit_u32(enc::rorv_64(dst, lhs, neg_dst));
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::DivS) => {
                 self.emit_div_s_32(dst, lhs, rhs);

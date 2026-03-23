@@ -6,6 +6,8 @@ use alloc::collections::BTreeMap;
 use crate::error::WasmError;
 #[cfg(any(debug_assertions, test))]
 use crate::value_type::ValueType;
+#[cfg(any(debug_assertions, test))]
+use crate::vm::middle::ssa_ir::ir::SsaOperand;
 
 use super::ir::SsaProgram;
 #[cfg(any(debug_assertions, test))]
@@ -143,7 +145,9 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
             match &inst.kind {
                 SsaInstKind::Value { args, results, .. } => {
                     for a in args {
-                        check(*a, &alloc::format!("{bctx} Value arg"))?;
+                        if let SsaOperand::Value(v) = a {
+                            check(*v, &alloc::format!("{bctx} Value arg"))?;
+                        }
                     }
                     for r in results {
                         check(*r, &alloc::format!("{bctx} Value result"))?;

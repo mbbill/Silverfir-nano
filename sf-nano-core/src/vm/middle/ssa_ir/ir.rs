@@ -18,6 +18,35 @@ use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SsaValue(pub u32);
 
+/// An operand to a leaf SSA operation: either a transient value reference or
+/// an inline constant absorbed from a preceding const definition.
+///
+/// The constant-folding pass in `optimize.rs` rewrites `Value(v)` operands
+/// to `Const(bits)` when `v` was produced by a const instruction and has no
+/// other uses.  The architecture backend lowers `Const` operands via
+/// `MachineValue::Imm64`; it may encode the constant as a native immediate
+/// or materialize it into a scratch register as a fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SsaOperand {
+    Value(SsaValue),
+    Const(u64),
+}
+
+impl SsaOperand {
+    /// Extract the SsaValue, panicking if this is an inline constant.
+    ///
+    /// Use this only in lowering paths that do not yet support inline
+    /// constants (e.g. i64 pair ops, memory loads/stores).  Paths that
+    /// handle `Const` should match on the operand directly.
+    #[inline]
+    pub(crate) fn unwrap_value(self) -> SsaValue {
+        match self {
+            Self::Value(v) => v,
+            Self::Const(_) => panic!("expected SsaOperand::Value, got Const"),
+        }
+    }
+}
+
 /// Analysis facts about a cached local, carried from planning to the backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CachedLocalInfo {
@@ -95,7 +124,7 @@ pub(crate) struct SsaInst {
 pub(crate) enum SsaInstKind {
     Value {
         op: SsaLeafOp,
-        args: Vec<SsaValue>,
+        args: Vec<SsaOperand>,
         results: Vec<SsaValue>,
     },
     /// Read a canonical frame slot, usually a local slot.

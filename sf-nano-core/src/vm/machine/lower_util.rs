@@ -2,16 +2,25 @@ use alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
-    vm::middle::ssa_ir::ir::{SsaBlock, SsaBoundaryOp, SsaEdge, SsaInstKind, SsaTerminator, SsaValue},
+    vm::middle::ssa_ir::ir::{
+        SsaBlock, SsaBoundaryOp, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue,
+    },
 };
+
+fn count_operand_use(operand: &SsaOperand, uses: &mut BTreeMap<SsaValue, u32>) {
+    if let SsaOperand::Value(v) = operand {
+        *uses.entry(*v).or_insert(0) += 1;
+    }
+    // Const operands have no SsaValue reference to track.
+}
 
 pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32> {
     let mut uses = BTreeMap::new();
     for inst in &block.ops {
         match &inst.kind {
             SsaInstKind::Value { args, .. } => {
-                for value in args {
-                    *uses.entry(*value).or_insert(0) += 1;
+                for operand in args {
+                    count_operand_use(operand, &mut uses);
                 }
             }
             SsaInstKind::StoreSlot { src, .. } => {
@@ -54,17 +63,20 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
         SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
 
-    // Linear-SSA invariant: within the op stream, every value is used exactly
-    // once. Edge bindings (terminators) may add additional uses for values
-    // that are live across block boundaries.
+    // Linear-SSA invariant: within the op stream, every SsaValue operand is
+    // used exactly once.  Const operands are not counted.  Edge bindings
+    // (terminators) may add additional uses for values that are live across
+    // block boundaries.
     #[cfg(debug_assertions)]
     {
         let mut op_uses: BTreeMap<SsaValue, u32> = BTreeMap::new();
         for inst in &block.ops {
             match &inst.kind {
                 SsaInstKind::Value { args, .. } => {
-                    for value in args {
-                        *op_uses.entry(*value).or_insert(0) += 1;
+                    for operand in args {
+                        if let SsaOperand::Value(v) = operand {
+                            *op_uses.entry(*v).or_insert(0) += 1;
+                        }
                     }
                 }
                 SsaInstKind::StoreSlot { src, .. } => {
@@ -100,7 +112,7 @@ pub(super) fn single_result(results: &[SsaValue]) -> Result<SsaValue, WasmError>
     }
 }
 
-pub(super) fn single_arg(args: &[SsaValue]) -> Result<SsaValue, WasmError> {
+pub(super) fn single_arg(args: &[SsaOperand]) -> Result<SsaOperand, WasmError> {
     match args {
         [value] => Ok(*value),
         _ => Err(WasmError::internal(
@@ -109,7 +121,7 @@ pub(super) fn single_arg(args: &[SsaValue]) -> Result<SsaValue, WasmError> {
     }
 }
 
-pub(super) fn two_args(args: &[SsaValue]) -> Result<(SsaValue, SsaValue), WasmError> {
+pub(super) fn two_args(args: &[SsaOperand]) -> Result<(SsaOperand, SsaOperand), WasmError> {
     match args {
         [lhs, rhs] => Ok((*lhs, *rhs)),
         _ => Err(WasmError::internal(

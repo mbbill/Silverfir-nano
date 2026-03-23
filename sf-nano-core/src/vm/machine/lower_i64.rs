@@ -11,7 +11,7 @@ use super::{
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
 };
 
-use crate::vm::middle::ssa_ir::ir::SsaValue;
+use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::lower_inst::LeafLowering;
@@ -40,7 +40,7 @@ pub(super) trait I64Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         primitive: &PrimitiveOpKind,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<bool, WasmError>;
 
@@ -89,7 +89,7 @@ pub(super) trait I64Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryLoadSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError>;
 
@@ -98,6 +98,6 @@ pub(super) trait I64Lowering {
         &self,
         ctx: &mut BlockLowerContext,
         spec: MemoryStoreSpec,
-        args: &[SsaValue],
+        args: &[SsaOperand],
     ) -> Result<LeafLowering, WasmError>;
 }
