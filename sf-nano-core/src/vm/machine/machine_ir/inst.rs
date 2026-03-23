@@ -2,9 +2,9 @@ use super::cfg::MachineBranchCond;
 use super::types::{
     MachineTrapKind,
     MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
-    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIntBinaryOp,
-    MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineSign, MachineStorageType, MachineValue,
+    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend,
+    MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+    MachineReg, MachineSign, MachineStorageType, MachineValue,
 };
 
 /// Helper call that falls through in the same function.
@@ -64,6 +64,30 @@ pub(crate) enum MachineInstKind {
     Store {
         ty: MachineStorageType,
         addr: MachineAddr,
+        width: MachineMemWidth,
+        src: MachineValue,
+    },
+    /// Indexed load: `dst <- [base + extend(index) + offset]`.
+    ///
+    /// Produced by the shared peephole from `i64.Add(base, index) + Load` or
+    /// `cvt.I64ExtendI32U + i64.Add(base, ext) + Load` sequences. Each backend
+    /// maps this to its best addressing mode (ARM64 UXTW register-indexed,
+    /// x86_64 `[base + index + disp]`, etc.).
+    IndexedLoad {
+        dst: MachineReg,
+        base: MachineReg,
+        index: MachineReg,
+        index_extend: MachineIndexExtend,
+        offset: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    },
+    /// Indexed store: `[base + extend(index) + offset] <- src`.
+    IndexedStore {
+        base: MachineReg,
+        index: MachineReg,
+        index_extend: MachineIndexExtend,
+        offset: i32,
         width: MachineMemWidth,
         src: MachineValue,
     },

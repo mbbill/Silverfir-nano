@@ -15,7 +15,7 @@ use super::abi::{
 use super::enc::{self, Cond};
 use super::reg::Arm64Reg;
 use super::compile::{
-    DirectCallPatch, FunctionCompiler, IndexedMemFusion, LabelKind, PendingLocalPtrPatch,
+    DirectCallPatch, FunctionCompiler, LabelKind, PendingLocalPtrPatch,
 };
 use super::compile_fusion::is_fallthrough_edge;
 use super::compile_helpers::{map_int_cond, trap_code};
@@ -548,66 +548,6 @@ impl<'a> FunctionCompiler<'a> {
         self.materialize_u64(SCRATCH0, arm64_raise_trap as usize as u64);
         self.text.emit_u32(enc::blr(SCRATCH0));
         self.emit_b(self.return_error_label);
-    }
-
-    pub(super) fn emit_indexed_mem_fusion(
-        &mut self,
-        fusion: IndexedMemFusion,
-    ) -> Result<(), WasmError> {
-        match fusion {
-            IndexedMemFusion::Load {
-                dst,
-                base,
-                index,
-                width,
-                extension,
-                offset,
-                ..
-            } if offset != 0 => {
-                // Offset variant: emit `add SCRATCH0, base, index, UXTW` then
-                // a regular load from `[SCRATCH0 + offset]`.
-                use super::abi::SCRATCH0;
-                let base = self.map_gp_reg(base)?;
-                let index = self.map_gp_reg(index)?;
-                self.text
-                    .emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base, index));
-                self.emit_load_from_base(dst, SCRATCH0, offset, width, extension)
-            }
-            IndexedMemFusion::Store {
-                base,
-                index,
-                width,
-                src,
-                offset,
-                ..
-            } if offset != 0 => {
-                use super::abi::SCRATCH0;
-                let base = self.map_gp_reg(base)?;
-                let index = self.map_gp_reg(index)?;
-                self.text
-                    .emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base, index));
-                self.emit_store_to_base(SCRATCH0, offset, width, src)
-            }
-            IndexedMemFusion::Load {
-                dst,
-                base,
-                index,
-                width,
-                extension,
-                scaled,
-                uxtw,
-                ..
-            } => self.emit_indexed_load(dst, base, index, width, extension, scaled, uxtw),
-            IndexedMemFusion::Store {
-                base,
-                index,
-                width,
-                src,
-                scaled,
-                uxtw,
-                ..
-            } => self.emit_indexed_store(base, index, width, src, scaled, uxtw),
-        }
     }
 
 }

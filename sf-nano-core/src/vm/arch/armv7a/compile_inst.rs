@@ -355,6 +355,9 @@ pub(super) fn compile_inst(
         MachineInstKind::CallHelper(call) => {
             compile_call_helper(fc, call)?;
         }
+        MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
+            todo!("armv7a: emit IndexedLoad / IndexedStore")
+        }
     }
     Ok(())
 }

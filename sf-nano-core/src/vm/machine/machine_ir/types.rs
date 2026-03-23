@@ -45,6 +45,16 @@ pub(crate) struct MachineAddr {
     pub offset: i32,
 }
 
+/// Extension applied to the index register in an indexed load/store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MachineIndexExtend {
+    /// No extension — index is a full-width register.
+    None,
+    /// Zero-extend the index from 32-bit to 64-bit.
+    /// ARM64: UXTW addressing. x86_64: use the 32-bit sub-register.
+    ZeroExtend32,
+}
+
 /// Scalar integer width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineIntWidth {

@@ -732,7 +732,8 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => Some(*dst),
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => Some(*dst),
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -743,6 +744,7 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
         MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
     }
@@ -755,6 +757,15 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         MachineInstKind::Load { addr, .. } => visit(addr.base),
         MachineInstKind::Store { addr, src, .. } => {
             visit(addr.base);
+            visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::IndexedLoad { base, index, .. } => {
+            visit(*base);
+            visit(*index);
+        }
+        MachineInstKind::IndexedStore { base, index, src, .. } => {
+            visit(*base);
+            visit(*index);
             visit_value_reg(src, &mut visit);
         }
         MachineInstKind::IntUnary { src, .. }
@@ -934,7 +945,8 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => *dst == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -949,6 +961,7 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
     }
@@ -962,6 +975,10 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::FloatConst { .. } => false,
         MachineInstKind::Load { addr, .. } => addr.base == reg,
         MachineInstKind::Store { addr, src, .. } => addr.base == reg || is(src),
+        MachineInstKind::IndexedLoad { base, index, .. } => *base == reg || *index == reg,
+        MachineInstKind::IndexedStore { base, index, src, .. } => {
+            *base == reg || *index == reg || is(src)
+        }
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => is(src),
@@ -1024,7 +1041,8 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst = new_dst,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => *dst = new_dst,
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst = new_dst,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
@@ -1047,6 +1065,7 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         }
         MachineInstKind::Int64PairCompare { dst, .. } => *dst = new_dst,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => {}
     }

@@ -603,6 +603,11 @@ impl<'a> Emulator<'a> {
                     return Err(trap_from_kind(*kind));
                 }
             }
+            MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
+                return Err(WasmError::internal(
+                    "emulator does not support IndexedLoad/IndexedStore yet".into(),
+                ));
+            }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
         }
         Ok(())

@@ -503,6 +503,44 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(src)
             )
         }
+        MachineInstKind::IndexedLoad {
+            dst,
+            base,
+            index,
+            index_extend,
+            offset,
+            width,
+            extension,
+        } => {
+            format!(
+                "indexed_load.{}{} r{} <- [r{} + r{}({:?}) + {}]",
+                mwidth(width),
+                mext(extension),
+                dst.0,
+                base.0,
+                index.0,
+                index_extend,
+                offset
+            )
+        }
+        MachineInstKind::IndexedStore {
+            base,
+            index,
+            index_extend,
+            offset,
+            width,
+            src,
+        } => {
+            format!(
+                "indexed_store.{} [r{} + r{}({:?}) + {}] <- {}",
+                mwidth(width),
+                base.0,
+                index.0,
+                index_extend,
+                offset,
+                mval(src)
+            )
+        }
         MachineInstKind::IntUnary {
             width,
             op,

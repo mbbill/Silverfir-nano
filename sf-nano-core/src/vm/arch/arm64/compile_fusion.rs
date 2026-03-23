@@ -1,9 +1,9 @@
-//! Codegen fusion pattern functions: immediate selection, indexed memory
-//! fusion, float compare-branch fusion, and liveness analysis helpers.
+//! Codegen fusion pattern functions: immediate selection,
+//! float compare-branch fusion, and liveness analysis helpers.
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp,
+    MachineBlock, MachineBlockId, MachineBranchCond,
     MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
     MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
@@ -11,7 +11,6 @@ use crate::vm::machine::machine_ir::{
 use super::abi::map_reg;
 use super::enc::{self, Cond};
 use super::reg::Arm64Reg;
-use super::compile::IndexedMemFusion;
 use super::compile_helpers::map_float_cond;
 
 pub(super) fn int_binary_imm_inst(
@@ -522,161 +521,6 @@ pub(super) fn zero_store_pair_fusion(
     Some((addr_a.base, imm7))
 }
 
-pub(super) fn indexed_mem_fusion(
-    block: &MachineBlock,
-    index: usize,
-) -> Option<IndexedMemFusion> {
-    let add_inst = block.ops.get(index)?;
-    let next_inst = block.ops.get(index + 1)?;
-    let MachineInstKind::IntBinary {
-        width: MachineIntWidth::I64,
-        op: MachineIntBinaryOp::Add,
-        dst: add_dst,
-        lhs: MachineValue::Reg(base),
-        rhs: MachineValue::Reg(index_reg),
-    } = add_inst.kind
-    else {
-        return None;
-    };
-    let later_ops = &block.ops[index + 2..];
-
-    match next_inst.kind {
-        MachineInstKind::Load {
-            dst,
-            addr,
-            width,
-            extension,
-            ..
-        } if addr.base == add_dst && addr.offset == 0 => {
-            if dst == add_dst || !reg_value_live_after(later_ops, &block.terminator, add_dst) {
-                Some(IndexedMemFusion::Load {
-                    dst,
-                    base,
-                    index: index_reg,
-                    width,
-                    extension,
-                    scaled: false,
-                    uxtw: false,
-                    offset: 0,
-                })
-            } else {
-                None
-            }
-        }
-        MachineInstKind::Store {
-            addr, width, src, ..
-        } if addr.base == add_dst
-            && addr.offset == 0
-            && !value_is_reg(src, add_dst)
-            && !reg_value_live_after(later_ops, &block.terminator, add_dst) =>
-        {
-            Some(IndexedMemFusion::Store {
-                base,
-                index: index_reg,
-                width,
-                src,
-                scaled: false,
-                uxtw: false,
-                offset: 0,
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Detect a 3-instruction pattern: Convert I64ExtendI32U + Add base+index + Load.
-pub(super) fn uxtw_mem_fusion(
-    block: &MachineBlock,
-    index: usize,
-) -> Option<(IndexedMemFusion, usize)> {
-    let cvt_inst = block.ops.get(index)?;
-    let MachineInstKind::Convert {
-        op: MachineConvertOp::I64ExtendI32U,
-        dst: ext_dst,
-        src: MachineValue::Reg(wasm_addr),
-    } = cvt_inst.kind
-    else {
-        return None;
-    };
-
-    // Check for optional offset add: ext_dst = ext_dst + imm.
-    // When the offset fits in a positive i32, absorb it into the fused
-    // load/store so the codegen emits `add Xtmp, Xn, Wm, UXTW; ldr Rt, [Xtmp, #off]`
-    // (2 instructions) instead of the unfused 4-instruction sequence.
-    let (absorbed_offset, add_offset_count, base_add_index) = {
-        let next = block.ops.get(index + 1)?;
-        if let MachineInstKind::IntBinary {
-            width: MachineIntWidth::I64,
-            op: MachineIntBinaryOp::Add,
-            dst: add_dst,
-            lhs: MachineValue::Reg(add_lhs),
-            rhs: MachineValue::Imm64(offset_imm),
-        } = next.kind
-        {
-            if add_dst == ext_dst && add_lhs == ext_dst {
-                // Only absorb offsets that fit as a non-negative i32 so the
-                // ARM64 immediate-offset load encoding works correctly.
-                // Wasm offsets > 0x7FFFFFFF are rare and not worth special-casing.
-                if offset_imm <= i32::MAX as u64 {
-                    (offset_imm as i32, 1, index + 2)
-                } else {
-                    return None;
-                }
-            } else {
-                (0i32, 0, index + 1)
-            }
-        } else {
-            (0i32, 0, index + 1)
-        }
-    };
-
-    // Now check for the base+index add + load pattern (same as indexed_mem_fusion)
-    let fused = indexed_mem_fusion(block, base_add_index)?;
-    match fused {
-        IndexedMemFusion::Load {
-            dst,
-            base,
-            index: idx_reg,
-            width,
-            extension,
-            ..
-        } if idx_reg == ext_dst => {
-            Some((
-                IndexedMemFusion::Load {
-                    dst,
-                    base,
-                    index: wasm_addr, // use the ORIGINAL 32-bit register
-                    width,
-                    extension,
-                    scaled: false,
-                    uxtw: true,
-                    offset: absorbed_offset,
-                },
-                2 + add_offset_count, // skip convert + (optional offset add) + add + load
-            ))
-        }
-        IndexedMemFusion::Store {
-            base,
-            index: idx_reg,
-            width,
-            src,
-            ..
-        } if idx_reg == ext_dst => Some((
-            IndexedMemFusion::Store {
-                base,
-                index: wasm_addr,
-                width,
-                src,
-                scaled: false,
-                uxtw: true,
-                offset: absorbed_offset,
-            },
-            2 + add_offset_count,
-        )),
-        _ => None,
-    }
-}
-
 pub(super) fn reg_value_live_after(
     ops: &[MachineInst],
     term: &MachineTerminator,
@@ -705,7 +549,8 @@ pub(super) fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool 
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => *dst == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => {
@@ -724,6 +569,7 @@ pub(super) fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool 
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
     }
@@ -735,6 +581,10 @@ pub(super) fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::FloatConst { .. } => false,
         MachineInstKind::Load { addr, .. } => addr.base == reg,
         MachineInstKind::Store { addr, src, .. } => addr.base == reg || value_is_reg(*src, reg),
+        MachineInstKind::IndexedLoad { base, index, .. } => *base == reg || *index == reg,
+        MachineInstKind::IndexedStore { base, index, src, .. } => {
+            *base == reg || *index == reg || value_is_reg(*src, reg)
+        }
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => value_is_reg(*src, reg),

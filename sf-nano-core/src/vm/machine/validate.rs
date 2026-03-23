@@ -419,6 +419,26 @@ impl MachineProgram {
                 self.validate_value(*cond)?;
                 self.validate_reg_storage_type(*dst, *ty)?;
             }
+            MachineInstKind::IndexedLoad {
+                dst,
+                base,
+                index,
+                ..
+            } => {
+                self.validate_reg(*dst)?;
+                self.validate_reg(*base)?;
+                self.validate_reg(*index)?;
+            }
+            MachineInstKind::IndexedStore {
+                base,
+                index,
+                src,
+                ..
+            } => {
+                self.validate_reg(*base)?;
+                self.validate_reg(*index)?;
+                self.validate_value(*src)?;
+            }
             MachineInstKind::TrapIf { cond, .. } => {
                 self.validate_branch_cond(*cond)?;
             }

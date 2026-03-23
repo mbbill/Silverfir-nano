@@ -26,9 +26,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::machine_ir::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth,
-    MachineInst, MachineInstKind, MachineProgram, MachineReg, MachineStorageType,
-    MachineTerminator, MachineValue,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp, MachineEdge,
+    MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
+    MachineIntWidth, MachineProgram, MachineReg, MachineStorageType, MachineTerminator,
+    MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -68,6 +69,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_re
         );
         forward_stored_values(block, program.first_fp_reg);
         reuse_loaded_values(block, program.first_fp_reg);
+        fuse_indexed_memory(block);
         copy_propagate(
             block,
             first_transient,
@@ -415,6 +417,251 @@ fn copy_propagate(
     block.ops = core::mem::take(rewritten);
 }
 
+/// Fuse address computation + load/store into `IndexedLoad`/`IndexedStore`.
+///
+/// Recognizes two patterns and replaces them with first-class fused
+/// instructions that each backend maps to its best addressing mode:
+///
+/// **Pattern A** (with zero-extend, 3→1):
+/// ```text
+/// cvt.I64ExtendI32U  r <- addr        // zero-extend Wasm address
+/// [i64.Add           r <- r IMM]      // optional: Wasm load/store offset
+/// i64.Add            r <- base r      // add linear-memory base
+/// load/store         .. [r + 0]       // memory access (offset may be non-zero
+///                                     //   if already folded by an earlier run)
+/// ```
+/// → `IndexedLoad/Store { base, index=addr, extend=ZeroExtend32, offset }`
+///
+/// **Pattern B** (no extend, 2→1):
+/// ```text
+/// i64.Add            r <- base index  // base + index
+/// load/store         .. [r + 0]       // memory access
+/// ```
+/// → `IndexedLoad/Store { base, index, extend=None, offset=0 }`
+fn fuse_indexed_memory(block: &mut MachineBlock) {
+    let ops = &block.ops;
+    let term = &block.terminator;
+    let mut out: Vec<MachineInst> = Vec::with_capacity(ops.len());
+    let mut i = 0;
+
+    while i < ops.len() {
+        // --- Pattern A: cvt + [offset_add] + base_add + load/store ---
+        if let Some(consumed) = try_fuse_uxtw_indexed(&ops[i..], term) {
+            out.push(consumed.fused);
+            i += consumed.skip;
+            continue;
+        }
+
+        // --- Pattern B: base_add + load/store ---
+        if let Some(consumed) = try_fuse_indexed(&ops[i..], term) {
+            out.push(consumed.fused);
+            i += consumed.skip;
+            continue;
+        }
+
+        out.push(ops[i].clone());
+        i += 1;
+    }
+
+    block.ops = out;
+}
+
+struct FusedResult {
+    fused: MachineInst,
+    skip: usize,
+}
+
+/// Try to fuse `cvt.I64ExtendI32U + [offset_add] + base_add + load/store`.
+fn try_fuse_uxtw_indexed(ops: &[MachineInst], term: &MachineTerminator) -> Option<FusedResult> {
+    // [0] cvt.I64ExtendI32U ext_dst <- wasm_addr
+    let (ext_dst, wasm_addr) = match ops.get(0)?.kind {
+        MachineInstKind::Convert {
+            op: MachineConvertOp::I64ExtendI32U,
+            dst,
+            src: MachineValue::Reg(src),
+        } => (dst, src),
+        _ => return None,
+    };
+
+    // [1] optional: i64.Add ext_dst <- ext_dst IMM  (Wasm offset)
+    let (offset, offset_count) = match ops.get(1)?.kind {
+        MachineInstKind::IntBinary {
+            width: MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Add,
+            dst,
+            lhs: MachineValue::Reg(lhs),
+            rhs: MachineValue::Imm64(imm),
+        } if dst == ext_dst && lhs == ext_dst && imm <= i32::MAX as u64 => (imm as i32, 1),
+        _ => (0i32, 0),
+    };
+
+    let base_idx = 1 + offset_count;
+
+    // [base_idx] i64.Add ext_dst <- base ext_dst
+    let base_reg = match ops.get(base_idx)?.kind {
+        MachineInstKind::IntBinary {
+            width: MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Add,
+            dst,
+            lhs: MachineValue::Reg(base),
+            rhs: MachineValue::Reg(rhs),
+        } if dst == ext_dst && rhs == ext_dst => base,
+        _ => return None,
+    };
+
+    let mem_idx = base_idx + 1;
+    let later = if ops.len() > mem_idx + 1 { &ops[mem_idx + 1..] } else { &[] };
+
+    // [mem_idx] load or store using ext_dst with addr.offset == 0
+    match ops.get(mem_idx)?.kind {
+        MachineInstKind::Load {
+            dst,
+            addr,
+            width,
+            extension,
+            ..
+        } if addr.base == ext_dst && addr.offset == 0 => {
+            // ext_dst must be dead after the load (overwritten by dst, or unused).
+            if dst != ext_dst && reg_live_after(later, term, ext_dst) {
+                return None;
+            }
+            Some(FusedResult {
+                fused: MachineInst {
+                    kind: MachineInstKind::IndexedLoad {
+                        dst,
+                        base: base_reg,
+                        index: wasm_addr,
+                        index_extend: MachineIndexExtend::ZeroExtend32,
+                        offset,
+                        width,
+                        extension,
+                    },
+                },
+                skip: mem_idx + 1,
+            })
+        }
+        MachineInstKind::Store {
+            addr, width, src, ..
+        } if addr.base == ext_dst
+            && addr.offset == 0
+            && !matches!(src, MachineValue::Reg(r) if r == ext_dst) =>
+        {
+            if reg_live_after(later, term, ext_dst) {
+                return None;
+            }
+            Some(FusedResult {
+                fused: MachineInst {
+                    kind: MachineInstKind::IndexedStore {
+                        base: base_reg,
+                        index: wasm_addr,
+                        index_extend: MachineIndexExtend::ZeroExtend32,
+                        offset,
+                        width,
+                        src,
+                    },
+                },
+                skip: mem_idx + 1,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Try to fuse `i64.Add(base, index) + load/store`.
+fn try_fuse_indexed(ops: &[MachineInst], term: &MachineTerminator) -> Option<FusedResult> {
+    // [0] i64.Add add_dst <- base index
+    let (add_dst, base_reg, index_reg) = match ops.get(0)?.kind {
+        MachineInstKind::IntBinary {
+            width: MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Add,
+            dst,
+            lhs: MachineValue::Reg(base),
+            rhs: MachineValue::Reg(index),
+        } => (dst, base, index),
+        _ => return None,
+    };
+
+    let later = if ops.len() > 2 { &ops[2..] } else { &[] };
+
+    // [1] load or store using add_dst with addr.offset == 0
+    match ops.get(1)?.kind {
+        MachineInstKind::Load {
+            dst,
+            addr,
+            width,
+            extension,
+            ..
+        } if addr.base == add_dst && addr.offset == 0 => {
+            if dst != add_dst && reg_live_after(later, term, add_dst) {
+                return None;
+            }
+            Some(FusedResult {
+                fused: MachineInst {
+                    kind: MachineInstKind::IndexedLoad {
+                        dst,
+                        base: base_reg,
+                        index: index_reg,
+                        index_extend: MachineIndexExtend::None,
+                        offset: 0,
+                        width,
+                        extension,
+                    },
+                },
+                skip: 2,
+            })
+        }
+        MachineInstKind::Store {
+            addr, width, src, ..
+        } if addr.base == add_dst
+            && addr.offset == 0
+            && !matches!(src, MachineValue::Reg(r) if r == add_dst) =>
+        {
+            if reg_live_after(later, term, add_dst) {
+                return None;
+            }
+            Some(FusedResult {
+                fused: MachineInst {
+                    kind: MachineInstKind::IndexedStore {
+                        base: base_reg,
+                        index: index_reg,
+                        index_extend: MachineIndexExtend::None,
+                        offset: 0,
+                        width,
+                        src,
+                    },
+                },
+                skip: 2,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Check if `reg` is used by any instruction in `ops` or the terminator before
+/// being redefined.
+fn reg_live_after(ops: &[MachineInst], term: &MachineTerminator, reg: MachineReg) -> bool {
+    for inst in ops {
+        if inst_uses_value(&inst.kind, reg) {
+            return true;
+        }
+        if inst_defines(&inst.kind, reg) {
+            return false;
+        }
+    }
+    terminator_uses_reg(term, reg)
+}
+
+/// Check if an instruction uses `reg` as a source operand.
+fn inst_uses_value(kind: &MachineInstKind, reg: MachineReg) -> bool {
+    let mut found = false;
+    visit_source_values(kind, |v| {
+        if matches!(v, MachineValue::Reg(r) if *r == reg) {
+            found = true;
+        }
+    });
+    found
+}
+
 // --- helpers ---
 
 /// Count how many times `reg` appears as a source operand in `kind`.
@@ -441,7 +688,8 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => *dst == reg,
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => *dst == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -456,6 +704,7 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => false,
     }
@@ -473,7 +722,8 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. } => Some(*dst),
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. } => Some(*dst),
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -484,6 +734,7 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
         MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
+        | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
     }
@@ -544,6 +795,15 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
         }
         MachineInstKind::Store { addr, src, .. } => {
             f(&MachineValue::Reg(addr.base));
+            f(src);
+        }
+        MachineInstKind::IndexedLoad { base, index, .. } => {
+            f(&MachineValue::Reg(*base));
+            f(&MachineValue::Reg(*index));
+        }
+        MachineInstKind::IndexedStore { base, index, src, .. } => {
+            f(&MachineValue::Reg(*base));
+            f(&MachineValue::Reg(*index));
             f(src);
         }
         MachineInstKind::IntUnary { src, .. } => f(src),
@@ -657,6 +917,15 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         MachineInstKind::Load { addr, .. } => rewrite_addr(addr, aliases),
         MachineInstKind::Store { addr, src, .. } => {
             rewrite_addr(addr, aliases);
+            rewrite_value(src, aliases);
+        }
+        MachineInstKind::IndexedLoad { base, index, .. } => {
+            *base = resolve_alias(*base, aliases);
+            *index = resolve_alias(*index, aliases);
+        }
+        MachineInstKind::IndexedStore { base, index, src, .. } => {
+            *base = resolve_alias(*base, aliases);
+            *index = resolve_alias(*index, aliases);
             rewrite_value(src, aliases);
         }
         MachineInstKind::IntBinary { lhs, rhs, .. }

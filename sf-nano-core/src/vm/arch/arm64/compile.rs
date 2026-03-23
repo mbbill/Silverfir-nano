@@ -8,8 +8,8 @@ use crate::{
             MachineBlock, MachineBlockId, MachineBlockParam,
             MachineFloatWidth, MachineFuncId,
             MachineFunction, MachineFunctionRuntime, MachineInst,
-            MachineInstKind,
-            MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
+            MachineIndexExtend, MachineInstKind,
+            MachineProgram, MachineReg,
             MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
@@ -34,7 +34,6 @@ use super::{
 
 use super::compile_fusion::{
     float_compare_branch_fusion,
-    indexed_mem_fusion, uxtw_mem_fusion,
     zero_store_pair_fusion,
 };
 use super::compile_helpers::{
@@ -149,37 +148,6 @@ pub(super) struct FunctionCompiler<'a> {
     pub(super) return_ok_label: usize,
     pub(super) return_error_label: usize,
     pub(super) shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum IndexedMemFusion {
-    Load {
-        dst: MachineReg,
-        base: MachineReg,
-        index: MachineReg,
-        width: MachineMemWidth,
-        extension: MachineLoadExtension,
-        scaled: bool,
-        /// Use UXTW addressing: `ldr Rt, [Xn, Wm, UXTW]`. The index register
-        /// is treated as a 32-bit value that is zero-extended inline by the
-        /// load instruction, eliminating an explicit I64ExtendI32U.
-        uxtw: bool,
-        /// Wasm load offset absorbed from a preceding `i64.Add ext_dst, ext_dst, IMM`.
-        /// When non-zero the codegen emits `add Xtmp, Xn, Wm, UXTW; ldr Rt, [Xtmp, #offset]`
-        /// instead of a single register-indexed load (still saves 2 instructions
-        /// vs the unmatched 4-instruction sequence).
-        offset: i32,
-    },
-    Store {
-        base: MachineReg,
-        index: MachineReg,
-        width: MachineMemWidth,
-        src: MachineValue,
-        scaled: bool,
-        uxtw: bool,
-        /// Same as Load::offset — absorbed Wasm store offset.
-        offset: i32,
-    },
 }
 
 pub(crate) fn compile_module(
@@ -641,16 +609,9 @@ impl<'a> FunctionCompiler<'a> {
                 index += 2;
                 continue;
             }
-            if let Some((fused, skip)) = uxtw_mem_fusion(block, index) {
-                self.emit_indexed_mem_fusion(fused)?;
-                index += 1 + skip; // skip convert + (add+load fused pair)
-                continue;
-            }
-            if let Some(fused) = indexed_mem_fusion(block, index) {
-                self.emit_indexed_mem_fusion(fused)?;
-                index += 2;
-                continue;
-            }
+            // Note: indexed memory fusion (uxtw_mem_fusion / indexed_mem_fusion)
+            // is now handled by the shared peephole pass (fuse_indexed_memory)
+            // which produces IndexedLoad/IndexedStore instructions.
             self.emit_inst(&block.ops[index])?;
             index += 1;
         }
@@ -772,6 +733,53 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::ReinterpretI64PairToF64 { .. } => Err(WasmError::internal(
                 "arm64 backend received ReinterpretI64PairToF64; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
             )),
+            MachineInstKind::IndexedLoad {
+                dst,
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                extension,
+            } => {
+                let uxtw = *index_extend == MachineIndexExtend::ZeroExtend32;
+                if *offset == 0 {
+                    self.emit_indexed_load(*dst, *base, *index, *width, *extension, false, uxtw)
+                } else {
+                    // offset != 0: emit `add SCRATCH0, base, index [,UXTW]`
+                    // then load from `[SCRATCH0 + offset]`.
+                    let base_arm = self.map_gp_reg(*base)?;
+                    let index_arm = self.map_gp_reg(*index)?;
+                    if uxtw {
+                        self.text.emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base_arm, index_arm));
+                    } else {
+                        self.text.emit_u32(enc::add_reg_64(SCRATCH0, base_arm, index_arm));
+                    }
+                    self.emit_load_from_base(*dst, SCRATCH0, *offset, *width, *extension)
+                }
+            }
+            MachineInstKind::IndexedStore {
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                src,
+            } => {
+                let uxtw = *index_extend == MachineIndexExtend::ZeroExtend32;
+                if *offset == 0 {
+                    self.emit_indexed_store(*base, *index, *width, *src, false, uxtw)
+                } else {
+                    let base_arm = self.map_gp_reg(*base)?;
+                    let index_arm = self.map_gp_reg(*index)?;
+                    if uxtw {
+                        self.text.emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base_arm, index_arm));
+                    } else {
+                        self.text.emit_u32(enc::add_reg_64(SCRATCH0, base_arm, index_arm));
+                    }
+                    self.emit_store_to_base(SCRATCH0, *offset, *width, *src)
+                }
+            }
         }
     }
 

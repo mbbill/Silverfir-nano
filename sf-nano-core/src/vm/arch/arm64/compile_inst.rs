@@ -548,7 +548,6 @@ impl<'a> FunctionCompiler<'a> {
         use super::compile_helpers::mem_width_bytes;
         // FP loads: compute full address, then use regular FP load.
         if self.is_fp_reg(dst) {
-            let addr = MachineAddr { base: crate::vm::machine::machine_ir::MACHINE_MEM0_BASE_REG, offset };
             // SCRATCH0 already holds the UXTW base; add offset to it.
             if offset != 0 {
                 let off = offset as i64;

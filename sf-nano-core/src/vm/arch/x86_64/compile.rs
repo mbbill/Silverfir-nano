@@ -734,6 +734,9 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::ReinterpretI64PairToF64 { .. } => Err(WasmError::internal(
                 "x86_64 backend received ReinterpretI64PairToF64; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
+            MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
+                todo!("x86_64: emit IndexedLoad / IndexedStore")
+            }
         }
     }
 
