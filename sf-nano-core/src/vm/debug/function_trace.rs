@@ -5,10 +5,13 @@
 //! - semantic Wasm function boundaries only
 //! - stable/canonicalized values to avoid false diffs between correct runs
 
+#[cfg(feature = "function-trace")]
 use alloc::{string::String, vec::Vec};
 
+#[cfg(feature = "function-trace")]
 use crate::vm::value::Value;
 
+#[cfg(feature = "function-trace")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TraceEventKind {
     Entry,
@@ -16,6 +19,7 @@ pub(crate) enum TraceEventKind {
     Trap,
 }
 
+#[cfg(feature = "function-trace")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FunctionTraceId {
     pub ordinal: u64,
@@ -24,6 +28,7 @@ pub(crate) struct FunctionTraceId {
     pub kind: TraceEventKind,
 }
 
+#[cfg(feature = "function-trace")]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FunctionTraceEvent {
     pub id: FunctionTraceId,
@@ -33,6 +38,7 @@ pub(crate) struct FunctionTraceEvent {
     pub error_class: Option<String>,
 }
 
+#[cfg(feature = "function-trace")]
 pub(crate) trait FunctionTraceSink {
     fn record(&mut self, event: FunctionTraceEvent);
 }
@@ -584,13 +590,3 @@ mod imp {
 
 #[cfg(feature = "function-trace")]
 pub use imp::*;
-
-#[cfg(not(feature = "function-trace"))]
-#[inline]
-pub(crate) fn init_from_env() {}
-
-#[cfg(not(feature = "function-trace"))]
-#[inline]
-pub(crate) const fn enabled() -> bool {
-    false
-}

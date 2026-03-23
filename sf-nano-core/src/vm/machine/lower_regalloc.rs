@@ -9,9 +9,9 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineBlockParam, MachineBranchCond,
-            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineMemWidth, MachineReg,
-            MachineSign, MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
+            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst,
+            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg,
+            MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
             MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{SsaProgram, SsaValue},
@@ -538,15 +538,6 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    pub(super) fn transient_in_use(&self, index: usize) -> Result<bool, WasmError> {
-        if index >= self.transient_count() {
-            return Err(WasmError::internal(
-                "transient register index is out of range".into(),
-            ));
-        }
-        Ok(self.transient_occupied(index))
-    }
-
     pub(super) fn borrow_free_transients(
         &self,
         count: usize,
@@ -733,7 +724,6 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -743,7 +733,6 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
-        MachineInstKind::IntMulWide { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -763,7 +752,7 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
     match kind {
         MachineInstKind::Move { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::FloatConst { .. } => {}
-        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => visit(addr.base),
+        MachineInstKind::Load { addr, .. } => visit(addr.base),
         MachineInstKind::Store { addr, src, .. } => {
             visit(addr.base);
             visit_value_reg(src, &mut visit);
@@ -772,7 +761,6 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
@@ -861,8 +849,7 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
 fn visit_branch_cond_regs(cond: &MachineBranchCond, visit: &mut impl FnMut(MachineReg)) {
     match cond {
         MachineBranchCond::Value(value) => visit_value_reg(value, visit),
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             visit_value_reg(lhs, visit);
             visit_value_reg(rhs, visit);
         }
@@ -939,7 +926,6 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -949,7 +935,6 @@ fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
-        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -975,13 +960,12 @@ fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { src, .. } => is(src),
         MachineInstKind::FloatConst { .. } => false,
-        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => addr.base == reg,
+        MachineInstKind::Load { addr, .. } => addr.base == reg,
         MachineInstKind::Store { addr, src, .. } => addr.base == reg || is(src),
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => is(src),
         MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
@@ -1032,7 +1016,6 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -1042,16 +1025,27 @@ fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst = new_dst,
-        MachineInstKind::IntMulWide { .. }
-        | MachineInstKind::Int64PairBinary { .. }
-        | MachineInstKind::Int64PairUnary { .. }
-        | MachineInstKind::Int64PairDivRem { .. }
-        | MachineInstKind::Int64PairShift { .. }
-        | MachineInstKind::Int64PairCompare { .. }
-        | MachineInstKind::ConvertFloatToI64Pair { .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { .. } => {}
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
         | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst = new_dst,
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => {
+            if *dst_lo == new_dst || *dst_hi == new_dst {
+                *dst_lo = new_dst;
+            }
+        }
+        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            if *dst_lo == new_dst || *dst_hi == new_dst {
+                *dst_lo = new_dst;
+            }
+        }
+        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => {
+            if *dst_lo == new_dst || *dst_hi == new_dst {
+                *dst_lo = new_dst;
+            }
+        }
+        MachineInstKind::Int64PairCompare { dst, .. } => *dst = new_dst,
         MachineInstKind::Store { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => {}
@@ -1107,7 +1101,6 @@ mod tests {
                 MachineFunctionRuntime, MachineCallLinkLayout, MachineStorageType,
             },
             middle::{
-                frame::plan_frame_layout,
                 ssa_ir::{
                     ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
                     target::SsaTarget,
@@ -1120,7 +1113,6 @@ mod tests {
     use crate::vm::machine::lower_context::BlockLowerContext;
 
     fn make_test_context(value_types: Vec<ValueType>) -> BlockLowerContext<'static> {
-        let frame = plan_frame_layout(0, 4, 0);
         let program = Box::leak(Box::new(SsaProgram {
             entry: SsaTarget(0),
             local_cache: SsaLocalCachePrefs::default(),
@@ -1147,11 +1139,9 @@ mod tests {
 
         BlockLowerContext::new(
             regfile,
-            frame,
             program,
             &program.local_cache,
             &program.blocks[0],
-            runtime,
             all_runtime,
             call_link,
             4,

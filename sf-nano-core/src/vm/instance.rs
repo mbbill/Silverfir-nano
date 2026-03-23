@@ -440,12 +440,13 @@ impl Instance {
             }
         }
 
-        let runtime_engine = runtime::active_runtime_engine()
-            .map_err(|err| WasmError::invalid(format!("runtime backend unavailable: {}", err)))?;
-
         #[cfg(feature = "interp")]
-        if !runtime_engine.is_micro_jit() {
-            precompile::precompile_module_two_pass(&store)?;
+        {
+            let runtime_engine = runtime::active_runtime_engine()
+                .map_err(|err| WasmError::invalid(format!("runtime backend unavailable: {}", err)))?;
+            if !runtime_engine.is_micro_jit() {
+                precompile::precompile_module_two_pass(&store)?;
+            }
         }
 
         if let Some(start_idx) = start_func_index {
@@ -458,7 +459,7 @@ impl Instance {
     }
 
     pub fn invoke(&mut self, name: &str, args: &[Value]) -> Result<Vec<Value>, WasmError> {
-        let (_, kind, idx) = self
+        let (_, _, idx) = self
             .exports
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)

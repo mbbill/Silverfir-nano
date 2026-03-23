@@ -12,8 +12,8 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallLinkLayout, MachineCompareKind, MachineConstData, MachineEdge,
-            MachineExternBinding, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
+            MachineCallLinkLayout, MachineCompareKind, MachineEdge,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId,
             MachineFunction, MachineFunctionRuntime, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineModule,
             MachineProgram, MachineReg, MachineRuntimeContract, MachineSign, MachineStorageType,
@@ -185,9 +185,6 @@ fn lower_function(
     sidecar: &mut SidecarBuilder,
     guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
-    let caller_runtime = runtime.get(input.id.0 as usize).copied().ok_or_else(|| {
-        WasmError::internal("machine runtime metadata missing for function".into())
-    })?;
     let original_block_count = input.ssa.blocks.len();
     let mut original_blocks = alloc::vec![None; original_block_count];
     let mut extra_blocks = Vec::new();
@@ -202,11 +199,9 @@ fn lower_function(
         let target = block.id;
         let mut lower = BlockLowerContext::new(
             regfile,
-            input.frame,
             input.ssa,
             &input.ssa.local_cache,
             block,
-            caller_runtime,
             runtime,
             call_link,
             gp_reg_width,
@@ -760,15 +755,6 @@ pub(super) fn target_param_regs(
         }
     }
     Ok(regs)
-}
-
-fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockParam {
-    match ty {
-        MachineStorageType::GpWord => MachineBlockParam::gp_word(reg),
-        MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg),
-        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32),
-        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64),
-    }
 }
 
 fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {

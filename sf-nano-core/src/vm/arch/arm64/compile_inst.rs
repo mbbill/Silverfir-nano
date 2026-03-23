@@ -7,19 +7,18 @@ use crate::vm::machine::machine_ir::{
     MachineAddr, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
     MachineFloatWidth, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
     MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
-    MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+    MachineTrapKind, MachineValue, MACHINE_CTX_REG,
 };
 
 use super::abi::{
-    fp_machine_reg, inv_map_reg, map_fixed_reg, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0,
+    inv_map_reg, map_fixed_reg, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0,
     SCRATCH1,
 };
 use super::enc::{self, Cond};
 use super::reg::Arm64Reg;
 use super::compile::{FunctionCompiler, LabelKind};
 use super::compile_fusion::{
-    add_sub_imm_inst_32, add_sub_imm_inst_64, cmp_imm_inst, int_binary_imm_inst,
-    logical_imm_inst_32, logical_imm_inst_64, mul_imm_inst_32, mul_imm_inst_64,
+    cmp_imm_inst, int_binary_imm_inst,
 };
 use super::compile_helpers::{
     arm64_trapping_trunc, arm64_saturating_trunc,
@@ -819,11 +818,6 @@ impl<'a> FunctionCompiler<'a> {
     }
 
     // --- Division / remainder helpers with trap checks ---
-
-    fn emit_div_by_zero_trap_label(&mut self) -> usize {
-        let label = self.new_label(LabelKind::Edge);
-        label
-    }
 
     fn emit_div_u_check(&mut self, _lhs: Arm64Reg, rhs: Arm64Reg, width: MachineIntWidth) {
         // rhs == 0 => trap IntegerDivideByZero

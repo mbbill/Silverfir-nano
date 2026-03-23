@@ -190,7 +190,7 @@ impl NativeCode {
         &self.compiled
     }
 
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn compiled_rc(&self) -> &Rc<CompiledNativeModule> {
         &self.compiled
     }
@@ -255,10 +255,6 @@ impl NativeCode {
         self.x86_64_root_return
     }
 
-    #[inline]
-    pub(crate) fn program(&self) -> Option<&MachineFunction> {
-        self.compiled.function(self.func_id)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

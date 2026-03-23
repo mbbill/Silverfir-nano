@@ -3,27 +3,23 @@ use core::mem;
 
 use crate::{
     error::WasmError,
-    value_type::ValueType,
     vm::{
         machine::{
             machine_ir::{
-                machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
-                MachineBlockParam, MachineBranchCond, MachineCallLinkLayout, MachineCompareKind,
-                MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
-                MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
-                MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-                MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-                MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+                MachineAddr, MachineCallLinkLayout,
+                MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
+                MachineInst,
+                MachineIntWidth, MachineMemWidth, MachineReg,
+                MachineStorageType,
             },
         },
         middle::{
-            frame::{FrameLayoutPlan, FrameSlot},
+            frame::FrameSlot,
             ssa_ir::{
                 ir::{
-                    SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaLocalCachePrefs, SsaProgram,
-                    SsaTerminator, SsaValue,
+                    SsaBlock, SsaLocalCachePrefs, SsaProgram,
+                    SsaValue,
                 },
-                leaf::SsaLeafOp,
             },
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
@@ -34,7 +30,7 @@ use super::{
     lower_i64::I64Lowering,
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
-        canonical_cached_local_mem_width, canonical_value_mem_width_for_value, gp_reg_int_width,
+        canonical_value_mem_width_for_value, gp_reg_int_width,
         gp_reg_mem_width, lir_value_storage_type, value_type_storage_type, MachineRegFile,
     },
     lower_util::compute_remaining_uses,
@@ -72,10 +68,8 @@ struct TransientState {
 
 pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
-    frame: FrameLayoutPlan,
     program: &'a SsaProgram,
     block: &'a SsaBlock,
-    runtime: MachineFunctionRuntime,
     all_runtime: &'a [MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
@@ -93,11 +87,9 @@ pub(super) struct BlockLowerContext<'a> {
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn new(
         regfile: &'a MachineRegFile,
-        frame: FrameLayoutPlan,
         program: &'a SsaProgram,
         cache_prefs: &SsaLocalCachePrefs,
         block: &'a SsaBlock,
-        runtime: MachineFunctionRuntime,
         all_runtime: &'a [MachineFunctionRuntime],
         call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
@@ -197,10 +189,8 @@ impl<'a> BlockLowerContext<'a> {
 
         let mut lower = Self {
             regfile,
-            frame,
             program,
             block,
-            runtime,
             all_runtime,
             call_link,
             machine_params,
@@ -360,10 +350,6 @@ impl<'a> BlockLowerContext<'a> {
         self.guard_pages
     }
 
-    pub(super) fn current_runtime(&self) -> MachineFunctionRuntime {
-        self.runtime
-    }
-
     pub(super) fn call_link_layout(&self) -> MachineCallLinkLayout {
         self.call_link
     }
@@ -374,15 +360,6 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn runtime_base_reg(&self) -> MachineReg {
         self.regfile.runtime_base()
-    }
-
-    pub(super) fn temp_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
-        self.borrow_free_transients(index + 1)?
-            .get(index)
-            .copied()
-            .ok_or_else(|| {
-                WasmError::internal("native lowering requires one free transient register".into())
-            })
     }
 
     pub(super) fn mem0_base_reg(&self) -> MachineReg {
@@ -468,10 +445,6 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
     ) -> &mut alloc::collections::BTreeMap<SsaValue, u32> {
         &mut self.remaining_uses
-    }
-
-    pub(super) fn transient_count(&self) -> usize {
-        self.transient_state.len()
     }
 
     pub(super) fn transient_occupied(&self, index: usize) -> bool {

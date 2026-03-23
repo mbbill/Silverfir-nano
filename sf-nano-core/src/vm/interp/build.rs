@@ -88,6 +88,14 @@ pub fn build_interpreter_function_for_spec(
     build_interpreter_function(
         code,
         backend,
-        CompileContext::new(&module.types, store, module, params, local_count, results),
+        CompileContext {
+            types: &module.types,
+            store,
+            params,
+            local_count,
+            results,
+            local_types: &[],
+            result_types: &[],
+        },
     )
 }

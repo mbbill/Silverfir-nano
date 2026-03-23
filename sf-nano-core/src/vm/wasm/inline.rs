@@ -12,7 +12,6 @@ use alloc::vec::Vec;
 use crate::value_type::ValueType;
 
 use super::common::{BrTableEntry, SemanticTarget};
-use super::primitive_op::PrimitiveOpKind;
 use super::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram};
 
 /// Maximum number of semantic ops in a callee for it to be inlined.
@@ -627,6 +626,7 @@ fn shift_target(target: SemanticTarget, after: usize, shift: i64) -> SemanticTar
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
     #[test]
     fn inline_preserves_wrapper_block_result_types() {

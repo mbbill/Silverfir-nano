@@ -32,7 +32,7 @@ use crate::{
             context::NativeContext,
             helpers::{resolve_helper_entry, NativeHelperStatus},
         },
-        stack::InterpreterStack,
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -126,7 +126,8 @@ pub(crate) fn eval(
     store: &mut Store,
     args: &[Value],
     backend: &'static str,
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
+    let _ = backend; // consumed by function-trace feature
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid(alloc::format!(
@@ -179,7 +180,6 @@ pub(crate) fn eval(
         return Err(error.clone());
     }
 
-    let results_len = func_type.results().len();
     let out = unsafe {
         crate::vm::runtime::collect_native_results_from_stack(
             stack_base,
@@ -189,6 +189,7 @@ pub(crate) fn eval(
     };
     #[cfg(feature = "function-trace")]
     {
+        let results_len = func_type.results().len();
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
         function_trace::native_root_exit(&mut ctx, spec, results);
     }
@@ -312,13 +313,6 @@ impl<'a> Emulator<'a> {
                 };
                 self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
             }
-            MachineInstKind::Lea { dst, addr } => {
-                self.write_reg_with_kind(
-                    *dst,
-                    self.addr_value(*addr),
-                    self.reg_addr_kind(addr.base),
-                )?;
-            }
             MachineInstKind::Load {
                 ty: _,
                 dst,
@@ -366,18 +360,6 @@ impl<'a> Emulator<'a> {
                         self.value_addr_kind(*rhs),
                     ),
                 )?;
-            }
-            MachineInstKind::IntMulWide {
-                sign,
-                dst_lo,
-                dst_hi,
-                lhs,
-                rhs,
-            } => {
-                let (lo, hi) =
-                    eval_int_mul_wide(*sign, self.read_value(*lhs)?, self.read_value(*rhs)?);
-                self.write_reg_with_kind(*dst_lo, lo, fixed_reg_addr_kind(*dst_lo))?;
-                self.write_reg_with_kind(*dst_hi, hi, fixed_reg_addr_kind(*dst_hi))?;
             }
             MachineInstKind::Int64PairBinary {
                 op,
@@ -844,14 +826,6 @@ impl<'a> Emulator<'a> {
                 self.read_value(lhs)?,
                 self.read_value(rhs)?,
             ) != 0),
-            MachineBranchCond::FloatCompare {
-                width,
-                kind,
-                lhs,
-                rhs,
-            } => Ok(
-                eval_float_compare(width, kind, self.read_value(lhs)?, self.read_value(rhs)?) != 0,
-            ),
         }
     }
 
@@ -1436,18 +1410,6 @@ fn eval_int_binary(
             }
         }
     })
-}
-
-fn eval_int_mul_wide(sign: MachineSign, lhs: u64, rhs: u64) -> (u64, u64) {
-    let product = match sign {
-        MachineSign::Signed => {
-            let lhs = i64::from(lhs as u32 as i32);
-            let rhs = i64::from(rhs as u32 as i32);
-            lhs.wrapping_mul(rhs) as u64
-        }
-        MachineSign::Unsigned => u64::from(lhs as u32).wrapping_mul(u64::from(rhs as u32)),
-    };
-    (u64::from(product as u32), u64::from((product >> 32) as u32))
 }
 
 fn eval_i64_pair_div_rem(

@@ -733,14 +733,12 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
 
 pub struct OpcodePrinter {
     indent: usize,
-    code_offset: usize,
 }
 
 impl OpcodePrinter {
-    pub fn new(code_offset: usize) -> Self {
+    pub fn new() -> Self {
         OpcodePrinter {
             indent: 1,
-            code_offset,
         }
     }
 }

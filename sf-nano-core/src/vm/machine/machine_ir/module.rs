@@ -35,6 +35,7 @@ impl MachineProgram {
         reg.0 >= self.first_fp_reg && reg.0 < self.reg_count
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_gp_reg(&self, reg: super::MachineReg) -> bool {
         reg.0 < self.first_fp_reg

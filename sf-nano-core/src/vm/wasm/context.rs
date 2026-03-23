@@ -8,10 +8,7 @@ use crate::{
     module::type_context::TypeContext,
     op_decoder::{BlockType, Immediate},
     value_type::ValueType,
-    vm::{
-        entities::{FunctionInst, ModuleInst},
-        store::Store,
-    },
+    vm::store::Store,
 };
 
 /// Immutable decode context for one function body.
@@ -19,7 +16,6 @@ use crate::{
 pub(crate) struct CompileContext<'a> {
     pub types: &'a TypeContext,
     pub store: &'a Store,
-    pub module: &'a ModuleInst,
     pub params: u16,
     pub local_count: u16,
     pub results: u16,
@@ -32,31 +28,9 @@ pub(crate) struct CompileContext<'a> {
 
 impl<'a> CompileContext<'a> {
     #[inline]
-    pub(crate) const fn new(
-        types: &'a TypeContext,
-        store: &'a Store,
-        module: &'a ModuleInst,
-        params: u16,
-        local_count: u16,
-        results: u16,
-    ) -> Self {
-        Self {
-            types,
-            store,
-            module,
-            params,
-            local_count,
-            results,
-            local_types: &[],
-            result_types: &[],
-        }
-    }
-
-    #[inline]
     pub(crate) const fn with_value_types(
         types: &'a TypeContext,
         store: &'a Store,
-        module: &'a ModuleInst,
         params: u16,
         local_count: u16,
         results: u16,
@@ -66,7 +40,6 @@ impl<'a> CompileContext<'a> {
         Self {
             types,
             store,
-            module,
             params,
             local_count,
             results,
@@ -135,10 +108,5 @@ impl<'a> CompileContext<'a> {
     #[inline]
     pub(crate) fn is_func_internal(&self, func_idx: u32) -> bool {
         !self.store.function(func_idx as usize).is_external()
-    }
-
-    #[inline]
-    pub(crate) fn get_func_inst(&self, func_idx: u32) -> Option<&FunctionInst> {
-        Some(self.store.function(func_idx as usize))
     }
 }

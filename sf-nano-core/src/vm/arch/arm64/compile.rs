@@ -5,60 +5,46 @@ use crate::{
     vm::{
         entities::ModuleInst,
         machine::machine_ir::{
-            MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId,
-            MachineFunction, MachineFunctionRuntime, MachineHelperSymbol, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-            MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineBlock, MachineBlockId, MachineBlockParam,
+            MachineFloatWidth, MachineFuncId,
+            MachineFunction, MachineFunctionRuntime, MachineInst,
+            MachineInstKind,
+            MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
+            MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{Arm64CodePtr, Arm64RootEntry, CompiledNativeModule},
             context::ctx_offset,
-            helpers::resolve_helper_entry,
         },
     },
 };
 
 use super::{
     abi::{
-        emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, inv_map_reg, map_fixed_reg,
-        map_reg, max_fp_machine_regs, max_gp_mapped_regs, max_total_machine_regs,
-        FP_MACHINE_REG_COUNT, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1,
+        emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg,
+        map_reg, max_fp_machine_regs, max_total_machine_regs,
+        FP_MACHINE_REG_COUNT, FP_SCRATCH2, SCRATCH0, SCRATCH1,
     },
-    arm64_raise_trap, arm64_raise_unsupported,
     emit::Arm64TextEmitter,
     enc::{self, Cond},
     reg::Arm64Reg,
 };
 
-// Re-export items from submodules that are needed by sibling submodules or externally.
 use super::compile_fusion::{
-    add_sub_imm_inst_32, add_sub_imm_inst_64, cmp_imm_inst, float_compare_branch_fusion,
-    indexed_mem_fusion, int_binary_imm_inst, is_fallthrough_edge, logical_imm_inst_32,
-    logical_imm_inst_64, mul_imm_inst_32, mul_imm_inst_64, uxtw_mem_fusion, value_is_reg,
+    float_compare_branch_fusion,
+    indexed_mem_fusion, uxtw_mem_fusion,
     zero_store_pair_fusion,
 };
 use super::compile_helpers::{
-    convert_op_code, convert_result_float_width,
-    map_float_cond, map_int_cond, materialize_u64_into, mem_width_bytes, trap_code,
+    materialize_u64_into,
     trap_kind_index, MACHINE_TRAP_KIND_COUNT,
 };
 
-// Re-export pub(crate) items from compile_helpers so they remain
-// accessible at the same visibility level as before the split.
-pub(crate) use super::compile_helpers::{arm64_trapping_trunc, arm64_saturating_trunc, TruncResult};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LabelKind {
-    Block,
     Edge,
-    StackOverflow,
-    ReturnOk,
-    ReturnError,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,7 +327,6 @@ fn compile_function(
     compiled: &CompiledNativeModule,
     function: &MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
-    let max_reg = max_gp_mapped_regs();
     let max_total_reg = max_total_machine_regs();
     if function.program.reg_count as usize > max_total_reg {
         return Err(WasmError::invalid(alloc::format!(
@@ -500,39 +485,6 @@ fn compile_function(
         internal_entry_offset,
         debug_regions,
     })
-}
-
-fn compile_unsupported_stub(
-    func_id: MachineFuncId,
-) -> FunctionArtifact {
-    let mut text = Arm64TextEmitter::new();
-    emit_shared_prologue(&mut text);
-    text.emit_u32(enc::mov_reg_64(
-        Arm64Reg::X0,
-        map_fixed_reg(MACHINE_CTX_REG),
-    ));
-    text.emit_u32(enc::movz_64(Arm64Reg::X1, func_id.0 as u16, 0));
-    if (func_id.0 >> 16) != 0 {
-        text.emit_u32(enc::movk_64(
-            Arm64Reg::X1,
-            ((func_id.0 >> 16) & 0xffff) as u16,
-            16,
-        ));
-    }
-    materialize_u64_into(&mut text, SCRATCH0, arm64_raise_unsupported as usize as u64);
-    text.emit_u32(enc::blr(SCRATCH0));
-    emit_shared_epilogue(&mut text);
-    FunctionArtifact {
-        text,
-        local_ptr_patches: Vec::new(),
-        direct_call_patches: Vec::new(),
-        function_table_patches: Vec::new(),
-        root_return_offset: 0,
-        #[cfg(has_guard_pages)]
-        return_error_offset: 0,
-        internal_entry_offset: 0, // stub uses root entry
-        debug_regions: Vec::new(),
-    }
 }
 
 impl<'a> FunctionCompiler<'a> {
@@ -705,9 +657,6 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.emit_float_const(*width, *dst, *bits)
             }
-            MachineInstKind::Lea { dst, addr } => {
-                self.emit_addr_into(self.map_gp_reg(*dst)?, *addr)
-            }
             MachineInstKind::Load {
                 ty: _,
                 dst,
@@ -734,9 +683,6 @@ impl<'a> FunctionCompiler<'a> {
                 lhs,
                 rhs,
             } => self.emit_int_binary(*width, *op, *dst, *lhs, *rhs),
-            MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
-                "arm64 backend received IntMulWide; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
-            )),
             MachineInstKind::Int64PairBinary { .. } => Err(WasmError::internal(
                 "arm64 backend received Int64PairBinary; 32-bit legalized MachineIR should not reach arm64 codegen".into(),
             )),

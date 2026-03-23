@@ -55,7 +55,7 @@ use crate::{
             {lower_module, LowerFunctionInput, LowerModuleInput},
             machine_ir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
         },
-        middle::{config::PlanConfig, PrepareInput, prepare_function, PreparedFunction},
+        middle::{config::PlanConfig, PrepareInput, prepare_function},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
         store::Store,
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
@@ -107,7 +107,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             CompileContext::with_value_types(
                 &module.types,
                 store,
-                module,
                 params,
                 local_count,
                 results,
@@ -171,7 +170,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
     }
 
-    for (func_idx, (id, prepared)) in prepared_functions.iter().enumerate() {
+    for (id, prepared) in prepared_functions.iter() {
         let result_count = module
             .functions
             .get(id.0 as usize)

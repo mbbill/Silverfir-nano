@@ -15,7 +15,7 @@ use super::{
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
-    lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
+    lower_regalloc::lir_value_storage_type,
 };
 
 use crate::vm::machine::machine_ir::{

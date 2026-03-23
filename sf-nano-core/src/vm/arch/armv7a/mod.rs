@@ -21,7 +21,7 @@ use crate::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
         },
-        stack::InterpreterStack,
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -47,7 +47,7 @@ pub fn eval(
     store: &mut Store,
     args: &[Value],
     backend: &'static str,
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid(alloc::format!(
@@ -128,7 +128,7 @@ pub fn eval(
     }
 
     let results_len = func_type.results().len();
-    let mut out = InterpreterStack::with_exact_capacity(results_len);
+    let mut out = ResultBuffer::with_exact_capacity(results_len);
     unsafe {
         for index in 0..results_len {
             out.push(*stack_base.add(index));

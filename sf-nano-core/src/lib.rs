@@ -1,28 +1,10 @@
 #![no_std]
-#![allow(unused)]
 #![warn(unreachable_pub)]
 
 extern crate alloc;
 
 #[cfg(any(feature = "wasi", feature = "std", test))]
 extern crate std;
-
-// No-op log macros (compile to nothing)
-macro_rules! log_trace {
-    ($($t:tt)*) => {};
-}
-macro_rules! log_debug {
-    ($($t:tt)*) => {};
-}
-macro_rules! log_info {
-    ($($t:tt)*) => {};
-}
-macro_rules! log_warn {
-    ($($t:tt)*) => {};
-}
-macro_rules! log_error {
-    ($($t:tt)*) => {};
-}
 
 pub mod constants;
 pub mod error;

@@ -60,12 +60,6 @@ pub(crate) enum MachineBranchCond {
         lhs: MachineValue,
         rhs: MachineValue,
     },
-    FloatCompare {
-        width: MachineFloatWidth,
-        kind: MachineCompareKind,
-        lhs: MachineValue,
-        rhs: MachineValue,
-    },
 }
 
 /// One machine terminator.

@@ -8,7 +8,6 @@ use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::vec;
 use std::vec::Vec;
 
 use crate::error::WasmError;
@@ -66,7 +65,6 @@ const RIGHT_PATH_SYMLINK: u64 = 1 << 24;
 const RIGHT_PATH_REMOVE_DIRECTORY: u64 = 1 << 25;
 const RIGHT_PATH_UNLINK_FILE: u64 = 1 << 26;
 const RIGHT_POLL_FD_READWRITE: u64 = 1 << 27;
-const RIGHT_SOCK_SHUTDOWN: u64 = 1 << 28;
 
 /// All rights applicable to a regular file.
 const RIGHTS_FILE_BASE: u64 = RIGHT_FD_DATASYNC

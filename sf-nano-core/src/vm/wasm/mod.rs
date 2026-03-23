@@ -14,6 +14,5 @@ pub(crate) use sir::primitive_op;
 pub(crate) use sir::semantic_ir;
 
 pub(crate) mod context;
-pub(crate) mod control;
 pub(crate) mod decode;
 pub(crate) mod inline;

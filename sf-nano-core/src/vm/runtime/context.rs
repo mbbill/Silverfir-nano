@@ -331,24 +331,29 @@ pub(crate) mod ctx_offset {
     pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
     pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
-    pub(crate) const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
-    pub(crate) const MEMORY_VIEWS_BASE: u32 =
-        core::mem::offset_of!(NativeContext, memory_views_base) as u32;
-    pub(crate) const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
-    pub(crate) const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
-    pub(crate) const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
-    pub(crate) const FUNCTION_VIEWS_BASE: u32 =
-        core::mem::offset_of!(NativeContext, function_views_base) as u32;
-    pub(crate) const FUNCTION_VIEWS_LEN: u32 =
-        core::mem::offset_of!(NativeContext, function_views_len) as u32;
-    pub(crate) const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
-    pub(crate) const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
-    pub(crate) const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
-    pub(crate) const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
     #[cfg(has_guard_pages)]
     pub(crate) const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
+
+    #[cfg(test)]
+    mod test_only {
+        use super::super::NativeContext;
+        pub const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
+        pub const MEMORY_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, memory_views_base) as u32;
+        pub const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
+        pub const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
+        pub const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
+        pub const FUNCTION_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, function_views_base) as u32;
+        pub const FUNCTION_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, function_views_len) as u32;
+        pub const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
+        pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
+        pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
+        pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
+    }
+    #[cfg(test)]
+    pub(crate) use test_only::*;
 }
 
+#[cfg(test)]
 pub(crate) mod memory_view_offset {
     use super::NativeMemoryView;
 
@@ -356,6 +361,7 @@ pub(crate) mod memory_view_offset {
     pub(crate) const LEN: u32 = core::mem::offset_of!(NativeMemoryView, len) as u32;
 }
 
+#[cfg(test)]
 pub(crate) mod table_view_offset {
     use super::NativeTableView;
 
@@ -363,6 +369,7 @@ pub(crate) mod table_view_offset {
     pub(crate) const ELEMENTS_LEN: u32 = core::mem::offset_of!(NativeTableView, elements_len) as u32;
 }
 
+#[cfg(test)]
 pub(crate) mod globals_view_offset {
     use super::NativeGlobalsView;
 
@@ -370,6 +377,7 @@ pub(crate) mod globals_view_offset {
     pub(crate) const LEN: u32 = core::mem::offset_of!(NativeGlobalsView, len) as u32;
 }
 
+#[cfg(test)]
 pub(crate) mod function_view_offset {
     use super::NativeFunctionView;
 

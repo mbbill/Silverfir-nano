@@ -4,7 +4,7 @@ use crate::{
         arch,
         build,
         entities::{Caller, FunctionInst},
-        stack::InterpreterStack,
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -14,7 +14,7 @@ pub(super) fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
     match func_inst {
         FunctionInst::External {
             func_type,
@@ -36,7 +36,7 @@ pub(super) fn eval(
             let mut caller = Caller::new(mem_slice);
             callback(&mut caller, args, &mut returns)?;
 
-            let mut out = InterpreterStack::with_exact_capacity(returns.len());
+            let mut out = ResultBuffer::with_exact_capacity(returns.len());
             for value in returns {
                 out.push(value.to_raw());
             }

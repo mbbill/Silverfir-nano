@@ -36,20 +36,6 @@ pub(super) enum LeafLowering {
 }
 
 impl<'a> BlockLowerContext<'a> {
-    pub(super) fn lower_ops(&mut self) -> Result<(), WasmError> {
-        // Copy ops index range to avoid borrow conflict with self.
-        let op_count = self.block().ops.len();
-        for i in 0..op_count {
-            // Re-borrow block for each iteration to satisfy the borrow checker.
-            let inst_ptr = &self.block().ops[i] as *const SsaInst;
-            // SAFETY: the block reference is stable for the lifetime of self,
-            // and lower_inst does not modify block.ops.
-            let inst = unsafe { &*inst_ptr };
-            self.lower_inst(inst)?;
-        }
-        Ok(())
-    }
-
     pub(super) fn lower_terminator(&mut self) -> Result<MachineTerminator, WasmError> {
         // Clone the terminator to avoid borrow conflict with self.
         let terminator = self.block().terminator.clone();
@@ -92,10 +78,6 @@ impl<'a> BlockLowerContext<'a> {
                 kind: MachineTrapKind::Unreachable,
             }),
         }
-    }
-
-    pub(super) fn begin_continuation_block(&mut self) -> Result<(), WasmError> {
-        self.emit_reload_cached_locals()
     }
 
     /// Begin a continuation block after a call, selectively skipping reloads

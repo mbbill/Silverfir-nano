@@ -3,15 +3,15 @@
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConvertOp,
-    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
+    MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp,
+    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
     MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
 
 use super::abi::map_reg;
 use super::enc::{self, Cond};
 use super::reg::Arm64Reg;
-use super::compile::{IndexedMemFusion, FunctionCompiler};
+use super::compile::IndexedMemFusion;
 use super::compile_helpers::map_float_cond;
 
 pub(super) fn int_binary_imm_inst(
@@ -680,7 +680,6 @@ pub(super) fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool 
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -690,7 +689,6 @@ pub(super) fn inst_defines_reg(kind: &MachineInstKind, reg: MachineReg) -> bool 
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
-        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => {
@@ -718,13 +716,12 @@ pub(super) fn inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { src, .. } => value_is_reg(*src, reg),
         MachineInstKind::FloatConst { .. } => false,
-        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => addr.base == reg,
+        MachineInstKind::Load { addr, .. } => addr.base == reg,
         MachineInstKind::Store { addr, src, .. } => addr.base == reg || value_is_reg(*src, reg),
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
         | MachineInstKind::Convert { src, .. } => value_is_reg(*src, reg),
         MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
@@ -840,8 +837,7 @@ pub(super) fn term_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
 pub(super) fn branch_cond_uses_reg(cond: &MachineBranchCond, reg: MachineReg) -> bool {
     match cond {
         MachineBranchCond::Value(value) => value_is_reg(*value, reg),
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             value_is_reg(*lhs, reg) || value_is_reg(*rhs, reg)
         }
     }

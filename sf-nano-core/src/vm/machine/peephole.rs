@@ -503,7 +503,6 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -513,7 +512,6 @@ fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => *dst == reg,
-        MachineInstKind::IntMulWide { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -537,7 +535,6 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Lea { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -547,7 +544,6 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. } => Some(*dst),
-        MachineInstKind::IntMulWide { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -619,9 +615,6 @@ fn branch_cond_uses_reg(cond: &super::machine_ir::MachineBranchCond, reg: Machin
         super::machine_ir::MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
         }
-        super::machine_ir::MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
-            value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
-        }
     }
 }
 
@@ -634,9 +627,6 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
     match kind {
         MachineInstKind::Move { src, .. } => f(src),
         MachineInstKind::FloatConst { .. } => {}
-        MachineInstKind::Lea { addr, .. } => {
-            f(&MachineValue::Reg(addr.base));
-        }
         MachineInstKind::Load { addr, .. } => {
             f(&MachineValue::Reg(addr.base));
         }
@@ -646,10 +636,6 @@ fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue))
         }
         MachineInstKind::IntUnary { src, .. } => f(src),
         MachineInstKind::IntBinary { lhs, rhs, .. } => {
-            f(lhs);
-            f(rhs);
-        }
-        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
         }
@@ -751,11 +737,9 @@ fn visit_replaceable_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Ma
         | MachineInstKind::ConvertFloatToI64Pair { src, .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => f(src),
         MachineInstKind::FloatConst { .. }
-        | MachineInstKind::Lea { .. }
         | MachineInstKind::Load { .. } => {}
         MachineInstKind::Store { src, .. } => f(src),
         MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
@@ -829,11 +813,6 @@ fn replace_value_use(kind: &mut MachineInstKind, old: MachineReg, new_val: Machi
             try_replace(src, old, new_val);
         }
         MachineInstKind::IntBinary { lhs, rhs, .. } => {
-            if !try_replace(lhs, old, new_val) {
-                try_replace(rhs, old, new_val);
-            }
-        }
-        MachineInstKind::IntMulWide { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
             }
@@ -978,15 +957,12 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(src_hi, aliases);
         }
         MachineInstKind::FloatConst { .. } => {}
-        MachineInstKind::Lea { addr, .. } | MachineInstKind::Load { addr, .. } => {
-            rewrite_addr(addr, aliases);
-        }
+        MachineInstKind::Load { addr, .. } => rewrite_addr(addr, aliases),
         MachineInstKind::Store { addr, src, .. } => {
             rewrite_addr(addr, aliases);
             rewrite_value(src, aliases);
         }
         MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntMulWide { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
@@ -1058,99 +1034,6 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
     }
 }
 
-fn visit_terminator_values(term: &MachineTerminator, mut f: impl FnMut(&MachineValue)) {
-    match term {
-        MachineTerminator::Jump(edge) => visit_edge_values(edge, &mut f),
-        MachineTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } => {
-            visit_branch_cond_values(cond, &mut f);
-            visit_edge_values(then_edge, &mut f);
-            visit_edge_values(else_edge, &mut f);
-        }
-        MachineTerminator::JumpTable { index, entries } => {
-            f(index);
-            for edge in entries {
-                visit_edge_values(edge, &mut f);
-            }
-        }
-        MachineTerminator::CallDirect { .. } => {}
-        MachineTerminator::CallIndirect { callee_target, .. } => f(callee_target),
-        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
-    }
-}
-
-fn visit_replaceable_terminator_values(term: &MachineTerminator, mut f: impl FnMut(&MachineValue)) {
-    match term {
-        MachineTerminator::Jump(edge) => visit_edge_values(edge, &mut f),
-        MachineTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } => {
-            visit_branch_cond_values(cond, &mut f);
-            visit_edge_values(then_edge, &mut f);
-            visit_edge_values(else_edge, &mut f);
-        }
-        MachineTerminator::JumpTable { index, entries } => {
-            f(index);
-            for edge in entries {
-                visit_edge_values(edge, &mut f);
-            }
-        }
-        MachineTerminator::CallDirect { .. } => {}
-        MachineTerminator::CallIndirect { callee_target, .. } => f(callee_target),
-        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
-    }
-}
-
-fn visit_edge_values(edge: &MachineEdge, mut f: impl FnMut(&MachineValue)) {
-    for arg in &edge.args {
-        f(arg);
-    }
-}
-
-fn replace_terminator_value_use(
-    term: &mut MachineTerminator,
-    old: MachineReg,
-    new_val: MachineValue,
-) {
-    match term {
-        MachineTerminator::Jump(edge) => replace_edge_value_use(edge, old, new_val),
-        MachineTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } => {
-            replace_branch_cond_value(cond, old, new_val);
-            replace_edge_value_use(then_edge, old, new_val);
-            replace_edge_value_use(else_edge, old, new_val);
-        }
-        MachineTerminator::JumpTable { index, entries } => {
-            if !try_replace(index, old, new_val) {
-                for edge in entries {
-                    replace_edge_value_use(edge, old, new_val);
-                }
-            }
-        }
-        MachineTerminator::CallDirect { .. } => {}
-        MachineTerminator::CallIndirect { callee_target, .. } => {
-            try_replace(callee_target, old, new_val);
-        }
-        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
-    }
-}
-
-fn replace_edge_value_use(edge: &mut MachineEdge, old: MachineReg, new_val: MachineValue) {
-    for arg in &mut edge.args {
-        if try_replace(arg, old, new_val) {
-            break;
-        }
-    }
-}
-
 fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<MachineReg>]) {
     match term {
         MachineTerminator::Jump(edge) => rewrite_edge(edge, aliases),
@@ -1204,8 +1087,7 @@ fn rewrite_float_alias_terminator_sources(
 fn rewrite_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineReg>]) {
     match cond {
         MachineBranchCond::Value(value) => rewrite_value(value, aliases),
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
         }
@@ -1213,10 +1095,7 @@ fn rewrite_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineRe
 }
 
 fn rewrite_float_alias_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineReg>]) {
-    if let MachineBranchCond::FloatCompare { lhs, rhs, .. } = cond {
-        rewrite_float_alias_value(lhs, aliases);
-        rewrite_float_alias_value(rhs, aliases);
-    }
+    let _ = (cond, aliases);
 }
 
 fn rewrite_edge(edge: &mut MachineEdge, aliases: &[Option<MachineReg>]) {
@@ -1262,8 +1141,7 @@ fn rewrite_float_alias_sources(kind: &mut MachineInstKind, aliases: &[Option<Mac
 fn visit_branch_cond_values(cond: &MachineBranchCond, mut f: impl FnMut(&MachineValue)) {
     match cond {
         MachineBranchCond::Value(value) => f(value),
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
         }
@@ -1275,8 +1153,7 @@ fn replace_branch_cond_value(cond: &mut MachineBranchCond, old: MachineReg, new_
         MachineBranchCond::Value(value) => {
             try_replace(value, old, new_val);
         }
-        MachineBranchCond::IntCompare { lhs, rhs, .. }
-        | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             if !try_replace(lhs, old, new_val) {
                 try_replace(rhs, old, new_val);
             }
@@ -1486,11 +1363,7 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8) {
         let fused_cond = match &last_op.kind {
             MachineInstKind::IntCompare {
                 width,
-                kind,
-                sign,
-                dst,
-                lhs,
-                rhs,
+                ..
             } if *width == super::machine_ir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
             MachineInstKind::IntCompare {
                 width,

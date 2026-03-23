@@ -11,7 +11,6 @@ use crate::{
     value_type::{HeapType, RefType, ValueType},
 };
 use alloc::rc::Rc;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -92,7 +91,6 @@ impl<'a> FunctionValidator<'a> {
         let mut context = Context::new(
             function.func_type().params(),
             function.locals(),
-            module.types().clone(),
         );
 
         context.push_ctrl(FrameType::Function, function.func_type_rc())?;
@@ -1006,14 +1004,12 @@ struct Context {
     val_stack: Vec<ValueType>,
     locals_init: Vec<bool>,
     inits: Vec<u32>,
-    type_context: crate::module::type_context::TypeContext,
 }
 
 impl Context {
     fn new(
         params: &[ValueType],
         locals: &[ValueType],
-        type_context: crate::module::type_context::TypeContext,
     ) -> Self {
         let mut all_locals = Vec::new();
         all_locals.extend_from_slice(params);
@@ -1040,7 +1036,6 @@ impl Context {
             val_stack: Vec::new(),
             locals_init,
             inits: Vec::new(),
-            type_context,
         }
     }
 

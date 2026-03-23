@@ -641,7 +641,7 @@ fn table_grow_helper(
         match old_len.checked_add(delta) {
             None => u32::MAX as u64,
             Some(new_len) if new_len > table.limits.get_max() => u32::MAX as u64,
-            Some(new_len) if table.elements.try_reserve(delta).is_err() => u32::MAX as u64,
+            Some(_) if table.elements.try_reserve(delta).is_err() => u32::MAX as u64,
             Some(new_len) => {
                 table.elements.resize_with(new_len, || fill);
                 old_len as u64
@@ -1073,7 +1073,7 @@ mod tests {
         let dst = MemInst::new(Limits::new(1, Some(2)).unwrap());
         module.memories.push(dst);
         module.memories.push(src);
-        let (mut store, mut ctx) = test_context(module);
+        let (store, mut ctx) = test_context(module);
         let meta = MemoryCopyMeta {
             dst_mem_idx: 0,
             src_mem_idx: 1,
@@ -1212,7 +1212,7 @@ mod tests {
             .memories
             .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
         module.data.push(DataInst::new(vec![9, 8, 7, 6]));
-        let (mut store, mut ctx) = test_context(module);
+        let (store, mut ctx) = test_context(module);
 
         let init_meta = MemoryInitMeta {
             data_idx: 0,
@@ -1255,7 +1255,7 @@ mod tests {
             vec![RefHandle::new(11), RefHandle::new(22)],
             ValueType::Ref(RefType::funcref()),
         ));
-        let (mut store, mut ctx) = test_context(module);
+        let (store, mut ctx) = test_context(module);
 
         let init_meta = TableInitMeta {
             elem_idx: 0,

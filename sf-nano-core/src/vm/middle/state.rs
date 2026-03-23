@@ -15,20 +15,11 @@ pub(super) struct ValueAlloc {
 
 impl ValueAlloc {
     #[inline]
-    pub(super) fn fresh(&mut self) -> SsaValue {
-        self.fresh_typed(ValueType::I64)
-    }
-
-    #[inline]
     pub(super) fn fresh_typed(&mut self, ty: ValueType) -> SsaValue {
         let value = SsaValue(self.next);
         self.next += 1;
         self.types.push(ty);
         value
-    }
-
-    pub(super) fn many(&mut self, count: usize) -> Vec<SsaValue> {
-        (0..count).map(|_| self.fresh()).collect()
     }
 
     pub(super) fn many_typed(&mut self, types: &[ValueType]) -> Vec<SsaValue> {
@@ -118,11 +109,6 @@ impl BlockState {
     #[inline]
     pub(super) fn live(&self) -> &[SsaValue] {
         &self.live
-    }
-
-    #[inline]
-    pub(super) fn live_types(&self) -> &[ValueType] {
-        &self.live_types
     }
 
     pub(super) fn top_values(&self, count: usize) -> Result<Vec<SsaValue>, WasmError> {

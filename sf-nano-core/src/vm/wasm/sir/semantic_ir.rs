@@ -243,69 +243,12 @@ impl SemanticProgram {
         Ok(())
     }
 
-    #[cfg(any(debug_assertions, test))]
-    pub(crate) fn reachable_ops(&self) -> Vec<bool> {
-        if self.ops.is_empty() {
-            return Vec::new();
-        }
-
-        let mut reachable = alloc::vec![false; self.ops.len()];
-        let mut pending = alloc::vec![0usize];
-
-        while let Some(index) = pending.pop() {
-            if reachable.get(index).copied().unwrap_or(true) {
-                continue;
-            }
-            reachable[index] = true;
-
-            let Some(op) = self.ops.get(index) else {
-                continue;
-            };
-            for_each_semantic_successor(index, self.ops.len(), op, |target| {
-                let target_index = target.index().as_usize();
-                if target_index < reachable.len() && !reachable[target_index] {
-                    pending.push(target_index);
-                }
-            });
-        }
-
-        reachable
-    }
-
-    #[cfg(not(any(debug_assertions, test)))]
-    #[inline]
-    pub(crate) fn reachable_ops(&self) -> Vec<bool> {
-        Vec::new()
-    }
 }
 
 impl From<PrimitiveOpKind> for SemanticOpKind {
     #[inline]
     fn from(kind: PrimitiveOpKind) -> Self {
         Self::Primitive(kind)
-    }
-}
-
-/// Semantic stack effect.
-#[inline]
-pub(crate) fn stack_effect(kind: &SemanticOpKind) -> (u8, u8) {
-    match kind {
-        SemanticOpKind::Primitive(kind) => super::primitive_op::stack_effect(kind),
-        SemanticOpKind::LocalGet { .. } => (0, 1),
-        SemanticOpKind::LocalSet { .. } => (1, 0),
-        SemanticOpKind::LocalTee { .. } => (0, 0),
-        SemanticOpKind::Block { .. }
-        | SemanticOpKind::Loop { .. }
-        | SemanticOpKind::Else { .. }
-        | SemanticOpKind::End => (0, 0),
-        SemanticOpKind::If { .. } => (1, 0),
-        SemanticOpKind::Br { .. } => (0, 0),
-        SemanticOpKind::BrIf { .. } | SemanticOpKind::BrTable { .. } => (1, 0),
-        SemanticOpKind::CallExternal { .. } | SemanticOpKind::CallInternal { .. } => (0, 0),
-        SemanticOpKind::CallIndirect { .. } => (1, 0),
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
-            (0, 0)
-        }
     }
 }
 
@@ -323,57 +266,6 @@ fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<()
         )));
     }
     Ok(())
-}
-
-#[cfg(any(debug_assertions, test))]
-fn for_each_semantic_successor(
-    index: usize,
-    len: usize,
-    op: &SemanticOp,
-    mut f: impl FnMut(SemanticTarget),
-) {
-    let fallthrough = || {
-        if index + 1 < len {
-            Some(SemanticTarget::new(index + 1))
-        } else {
-            None
-        }
-    };
-
-    match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => {}
-        SemanticOpKind::Br { target, .. } => {
-            f(*target);
-        }
-        SemanticOpKind::BrIf { target, .. } => {
-            f(*target);
-            if let Some(ft) = fallthrough() {
-                f(ft);
-            }
-        }
-        SemanticOpKind::BrTable { entries } => {
-            for entry in entries {
-                f(entry.target);
-            }
-        }
-        SemanticOpKind::If { else_target, .. } => {
-            if let Some(ft) = fallthrough() {
-                f(ft);
-            }
-            f(*else_target);
-        }
-        SemanticOpKind::Else { end_target } => {
-            f(*end_target);
-        }
-        _ => {
-            if let Some(ft) = fallthrough() {
-                f(ft);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

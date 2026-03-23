@@ -10,7 +10,7 @@ use crate::vm::debug::function_trace;
 use crate::vm::entities::{FunctionInst, MemInst, ModuleInst};
 use crate::vm::interp::context::Context;
 use crate::vm::interp::handlers::run_trampoline;
-use crate::vm::stack::InterpreterStack;
+use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 
@@ -20,7 +20,7 @@ pub fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
     if let FunctionInst::External {
         func_type,
         callback,
@@ -46,7 +46,7 @@ pub fn eval(
         let mut caller = crate::vm::entities::Caller::new(mem_slice);
         callback(&mut caller, args, &mut ret_vals)?;
 
-        let mut out = InterpreterStack::with_exact_capacity(results.len());
+        let mut out = ResultBuffer::with_exact_capacity(results.len());
         for v in &ret_vals {
             out.push(v.to_raw());
         }
@@ -79,7 +79,7 @@ pub fn eval(
     internal_eval(func_inst, store, stack_base, stack_end, args.len())?;
 
     let results_len = ft.results().len();
-    let mut out = InterpreterStack::with_exact_capacity(results_len);
+    let mut out = ResultBuffer::with_exact_capacity(results_len);
     unsafe {
         for i in 0..results_len {
             out.push(core::ptr::read(stack_base.add(i)));

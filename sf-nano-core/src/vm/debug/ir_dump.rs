@@ -12,15 +12,13 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFunction,
-            MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-            MachineLoadExtension, MachineMemWidth, MachineModule, MachineReg, MachineSign,
-            MachineRuntimeContract, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineAddr, MachineBranchCond, MachineFloatWidth, MachineFunction,
+            MachineInstKind, MachineIntWidth,
+            MachineLoadExtension, MachineMemWidth, MachineModule, MachineSign,
+            MachineRuntimeContract, MachineStorageType, MachineTerminator,
             MachineValue,
         },
         middle::{
-            frame::FrameSlot,
             ssa_ir::ir::{SsaBlock, SsaBoundaryOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
         },
     },
@@ -465,9 +463,6 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::FloatConst { width, dst, bits } => {
             format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
         }
-        MachineInstKind::Lea { dst, addr } => {
-            format!("lea r{} <- {}", dst.0, maddr(addr))
-        }
         MachineInstKind::Load {
             ty,
             dst,
@@ -518,22 +513,6 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 iw(width),
                 op,
                 dst.0,
-                mval(lhs),
-                mval(rhs)
-            )
-        }
-        MachineInstKind::IntMulWide {
-            sign,
-            dst_lo,
-            dst_hi,
-            lhs,
-            rhs,
-        } => {
-            format!(
-                "i32.mul_wide.{:?} r{},r{} <- {} {}",
-                sign,
-                dst_lo.0,
-                dst_hi.0,
                 mval(lhs),
                 mval(rhs)
             )
@@ -843,12 +822,6 @@ fn render_branch_cond(cond: &MachineBranchCond) -> String {
             mval(lhs),
             mval(rhs)
         ),
-        MachineBranchCond::FloatCompare {
-            width,
-            kind,
-            lhs,
-            rhs,
-        } => format!("{}.cmp.{:?} {} {}", fw(width), kind, mval(lhs), mval(rhs)),
     }
 }
 

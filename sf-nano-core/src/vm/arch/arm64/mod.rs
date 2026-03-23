@@ -23,7 +23,7 @@ use crate::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
         },
-        stack::InterpreterStack,
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -40,7 +40,8 @@ pub(crate) fn eval(
     store: &mut Store,
     args: &[Value],
     backend: &'static str,
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
+    let _ = backend; // consumed by function-trace feature
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid(alloc::format!(
@@ -120,7 +121,6 @@ pub(crate) fn eval(
         return Err(error);
     }
 
-    let results_len = func_type.results().len();
     let out = unsafe {
         crate::vm::runtime::collect_native_results_from_stack(
             stack_base,
@@ -130,6 +130,7 @@ pub(crate) fn eval(
     };
     #[cfg(feature = "function-trace")]
     {
+        let results_len = func_type.results().len();
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
         function_trace::native_root_exit(&mut ctx, spec, results);
     }
@@ -186,23 +187,6 @@ pub(crate) unsafe extern "C" fn arm64_raise_trap(ctx: *mut NativeContext, kind: 
         7 => WasmError::exhaustion("stack overflow".into()),
         _ => WasmError::trap("native helper failed".into()),
     };
-    #[cfg(feature = "function-trace")]
-    function_trace::native_trap_current(ctx, &error);
-    ctx.error = Some(error);
-    1
-}
-
-pub(crate) unsafe extern "C" fn arm64_raise_unsupported(
-    ctx: *mut NativeContext,
-    func_id: u64,
-) -> u32 {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return 1;
-    };
-    let error = WasmError::invalid(alloc::format!(
-        "arm64 backend has not finalized machine function {} yet",
-        func_id
-    ));
     #[cfg(feature = "function-trace")]
     function_trace::native_trap_current(ctx, &error);
     ctx.error = Some(error);

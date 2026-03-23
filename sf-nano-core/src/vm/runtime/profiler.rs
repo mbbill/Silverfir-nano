@@ -1,5 +1,3 @@
-use alloc::string::String;
-
 #[cfg(any(feature = "wasi", feature = "std", test))]
 use std::{
     env,
@@ -280,6 +278,7 @@ fn elf_machine_arch() -> u32 {
 }
 
 #[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 const EM_NONE: u32 = 0;
 #[cfg(any(feature = "wasi", feature = "std", test))]
 const EM_AARCH64: u32 = 183;

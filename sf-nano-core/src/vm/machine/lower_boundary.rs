@@ -10,7 +10,7 @@ use crate::{
         },
         middle::{
             frame::{FrameSlot, FrameSpan},
-            ssa_ir::ir::{SsaBoundaryOp, SsaValue},
+            ssa_ir::ir::SsaBoundaryOp,
         },
         runtime::helper_meta::{
             CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,

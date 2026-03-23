@@ -30,14 +30,6 @@ impl FrameSpan {
     }
 
     #[inline]
-    pub(crate) const fn single(slot: FrameSlot) -> Self {
-        Self {
-            start: slot,
-            count: 1,
-        }
-    }
-
-    #[inline]
     pub(crate) const fn end(self) -> FrameSlot {
         self.start.advance(self.count)
     }
@@ -62,14 +54,6 @@ impl FrameLayoutPlan {
     #[inline]
     pub(crate) const fn operand_slot(self, idx: u16) -> FrameSlot {
         self.operands.start.advance(idx)
-    }
-
-    #[inline]
-    pub(crate) const fn call_scratch_slots(self) -> u16 {
-        match self.call_scratch {
-            Some(span) => span.count,
-            None => 0,
-        }
     }
 
     #[inline]

@@ -7,7 +7,7 @@ use crate::{
     vm::{
         entities::global_offset,
         machine::machine_ir::{
-            machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockId,
+            machine_ptr_width, MachineAddr, MachineBlockId,
             MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge, MachineInst,
             MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
             MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,

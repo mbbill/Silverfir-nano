@@ -23,7 +23,7 @@ pub(crate) mod middle;
 pub(crate) mod arch;
 pub(crate) mod raw_value;
 pub(crate) mod runtime;
-pub(crate) mod stack;
+pub(crate) mod result_buffer;
 pub(crate) mod store;
 pub(crate) mod value;
 pub(crate) mod wasm;

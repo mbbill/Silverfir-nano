@@ -6,7 +6,7 @@ use crate::{
         machine::machine_ir::{
             MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-            MachineIntWidth, MachineReg, MachineSign, MachineStorageType, MachineValue,
+            MachineIntWidth, MachineSign, MachineValue,
         },
         middle::ssa_ir::ir::SsaValue,
         wasm::primitive_op::PrimitiveOpKind,

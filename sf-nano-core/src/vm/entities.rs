@@ -357,10 +357,3 @@ impl Default for ModuleInst {
     }
 }
 
-pub(crate) type FunctionEntity = FunctionInst;
-pub(crate) type TableEntity = TableInst;
-pub(crate) type MemoryEntity = MemInst;
-pub(crate) type GlobalEntity = GlobalInst;
-pub(crate) type ElementEntity = ElementInst;
-pub(crate) type DataEntity = DataInst;
-pub(crate) type ModuleEntity = ModuleInst;

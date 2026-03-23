@@ -76,34 +76,6 @@ impl TypeContext {
 
         function_types_structurally_equal(type1, type2)
     }
-
-    /// Check if two value types are equivalent
-    fn value_types_equivalent(&self, v1: &ValueType, v2: &ValueType) -> bool {
-        match (v1, v2) {
-            (ValueType::I32, ValueType::I32) => true,
-            (ValueType::I64, ValueType::I64) => true,
-            (ValueType::F32, ValueType::F32) => true,
-            (ValueType::F64, ValueType::F64) => true,
-            (ValueType::V128, ValueType::V128) => true,
-            (ValueType::Unknown, ValueType::Unknown) => true,
-
-            (ValueType::Ref(rt1), ValueType::Ref(rt2)) => {
-                if rt1.nullable != rt2.nullable {
-                    return false;
-                }
-
-                match (&rt1.heap_type, &rt2.heap_type) {
-                    (HeapType::Abstract(a1), HeapType::Abstract(a2)) => a1 == a2,
-                    (HeapType::Concrete(idx1), HeapType::Concrete(idx2)) => {
-                        self.types_equivalent(*idx1, *idx2)
-                    }
-                    _ => false,
-                }
-            }
-
-            _ => false,
-        }
-    }
 }
 
 impl core::ops::Deref for TypeContext {

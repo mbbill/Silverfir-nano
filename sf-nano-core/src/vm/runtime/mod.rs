@@ -1,7 +1,7 @@
 use crate::error::WasmError;
 use crate::vm::backend::{active_backend_mode, resolve_backend_mode, BackendKind};
 use crate::vm::entities::FunctionInst;
-use crate::vm::stack::InterpreterStack;
+use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 
@@ -129,7 +129,7 @@ pub(crate) fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
     args: &[Value],
-) -> Result<InterpreterStack, WasmError> {
+) -> Result<ResultBuffer, WasmError> {
     let engine = active_runtime_engine()
         .map_err(|err| WasmError::invalid(alloc::format!("runtime backend unavailable: {err}")))?;
 
@@ -163,8 +163,8 @@ pub(crate) unsafe fn collect_native_results_from_stack(
     stack_base: *const u64,
     result_types: &[ValueType],
     gp_unit_bytes: u8,
-) -> InterpreterStack {
-    let mut out = InterpreterStack::with_exact_capacity(result_types.len());
+) -> ResultBuffer {
+    let mut out = ResultBuffer::with_exact_capacity(result_types.len());
     for (index, ty) in result_types.iter().enumerate() {
         let mut raw = unsafe { *stack_base.add(index) };
         if gp_unit_bytes == 4 && matches!(ty, ValueType::Ref(_)) && raw == u64::from(u32::MAX) {

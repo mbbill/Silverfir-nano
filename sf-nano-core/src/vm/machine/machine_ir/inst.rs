@@ -54,10 +54,6 @@ pub(crate) enum MachineInstKind {
         dst: MachineReg,
         bits: u64,
     },
-    Lea {
-        dst: MachineReg,
-        addr: MachineAddr,
-    },
     Load {
         ty: MachineStorageType,
         dst: MachineReg,
@@ -86,17 +82,6 @@ pub(crate) enum MachineInstKind {
     },
     /// Full-width product of two native-word integer operands.
     ///
-    /// On 32-bit GP targets this is the primitive used to express
-    /// `32x32 -> 64` multiply without re-inflating the IR back into scalar
-    /// `GpI64` values. Inputs are native-word GP values; outputs are the
-    /// low/high word halves of the product.
-    IntMulWide {
-        sign: MachineSign,
-        dst_lo: MachineReg,
-        dst_hi: MachineReg,
-        lhs: MachineValue,
-        rhs: MachineValue,
-    },
     /// 64-bit integer binary op over legalized 32-bit GP register pairs.
     ///
     /// This keeps the shared 32-bit MachineIR compact for the operations that

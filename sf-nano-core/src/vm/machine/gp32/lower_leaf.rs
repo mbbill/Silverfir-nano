@@ -28,12 +28,9 @@ impl<'a> BlockLowerContext<'a> {
         use MachineCompareKind as Cmp;
         use MachineFloatWidth as Fw;
         use MachineIntBinaryOp as BinOp;
-        use MachineIntUnaryOp as UnOp;
         use MachineSign as Sign;
         use MachineStorageType as Ty;
         use PrimitiveOpKind as P;
-
-        use crate::vm::machine::machine_ir::MachineIntUnaryOp;
 
         let result_ty = results
             .first()

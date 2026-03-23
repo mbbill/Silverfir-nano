@@ -5,17 +5,13 @@
 //! without closures.
 
 use std::collections::{HashMap, HashSet};
-use std::format;
 use std::path::PathBuf;
 use std::string::{String, ToString};
 use std::thread_local;
 use std::vec;
 use std::vec::Vec;
 
-use crate::error::WasmError;
-use crate::vm::entities::{Caller, ExternalFn};
 use crate::vm::instance::Import;
-use crate::vm::value::Value;
 
 pub(crate) mod preview1;
 

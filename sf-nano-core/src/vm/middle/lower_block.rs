@@ -24,7 +24,6 @@ use super::{
     spill_plan::PreparedOp,
     lower_term::{
         canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator,
-        maybe_publish_live_window_for_targets,
     },
 };
 

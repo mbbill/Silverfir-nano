@@ -5,10 +5,6 @@
 //! host compiler ABI. These helpers describe the machine-visible subset of the
 //! runtime layout in terms of the backend GP budget unit size.
 
-use super::context::{
-    ctx_offset, function_view_offset, globals_view_offset, memory_view_offset, table_view_offset,
-};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PointerLenAbiLayout {
     pub base_offset: u32,

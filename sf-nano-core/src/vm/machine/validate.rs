@@ -4,7 +4,7 @@ use super::machine_ir::{
     MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConstId,
     MachineConvertOp, MachineEdge, MachineExternId, MachineFloatWidth, MachineFuncId,
     MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-    MachineModule, MachineProgram, MachineReg, MachineSign, MachineStorageType, MachineTerminator,
+    MachineModule, MachineProgram, MachineReg, MachineStorageType, MachineTerminator,
     MachineValue,
 };
 
@@ -131,10 +131,6 @@ impl MachineProgram {
                     )));
                 }
             }
-            MachineInstKind::Lea { dst, addr } => {
-                self.validate_reg(*dst)?;
-                self.validate_addr(*addr)?;
-            }
             MachineInstKind::Load { ty, dst, addr, .. } => {
                 self.validate_reg(*dst)?;
                 self.validate_addr(*addr)?;
@@ -159,25 +155,6 @@ impl MachineProgram {
                 self.validate_reg(*dst)?;
                 self.validate_value(*lhs)?;
                 self.validate_value(*rhs)?;
-            }
-            MachineInstKind::IntMulWide {
-                dst_lo,
-                dst_hi,
-                lhs,
-                rhs,
-                ..
-            } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*lhs)?;
-                self.validate_value(*rhs)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
-                if dst_lo == dst_hi {
-                    return Err(WasmError::internal(
-                        "machine IntMulWide requires distinct low/high destinations".into(),
-                    ));
-                }
             }
             MachineInstKind::Int64PairBinary {
                 op,
@@ -492,8 +469,7 @@ impl MachineProgram {
     fn validate_branch_cond(&self, cond: MachineBranchCond) -> ValidateResult {
         match cond {
             MachineBranchCond::Value(value) => self.validate_value(value),
-            MachineBranchCond::IntCompare { lhs, rhs, .. }
-            | MachineBranchCond::FloatCompare { lhs, rhs, .. } => {
+            MachineBranchCond::IntCompare { lhs, rhs, .. } => {
                 self.validate_value(lhs)?;
                 self.validate_value(rhs)
             }

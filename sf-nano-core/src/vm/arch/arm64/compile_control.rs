@@ -1,14 +1,12 @@
 //! Control-flow emission methods for `FunctionCompiler`:
 //! Terminators, branches, calls, traps, and related dispatch.
 
-use alloc::vec::Vec;
-
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBranchCond, MachineBlockId, MachineCompareKind, MachineConstId, MachineConvertOp,
-    MachineEdge, MachineFloatWidth, MachineFuncId, MachineIntWidth, MachineReg,
+    MachineBranchCond, MachineBlockId, MachineConstId,
+    MachineEdge, MachineFloatWidth, MachineFuncId, MachineReg,
     MachineTerminator, MachineTrapKind, MachineValue,
-    MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+    MACHINE_CTX_REG, MACHINE_FP_REG,
 };
 
 use super::abi::{
@@ -20,7 +18,7 @@ use super::compile::{
     DirectCallPatch, FunctionCompiler, IndexedMemFusion, LabelKind, PendingLocalPtrPatch,
 };
 use super::compile_fusion::is_fallthrough_edge;
-use super::compile_helpers::{map_float_cond, map_int_cond, trap_code};
+use super::compile_helpers::{map_int_cond, trap_code};
 use super::arm64_raise_trap;
 use crate::vm::runtime::context::ctx_offset;
 
@@ -139,23 +137,6 @@ impl<'a> FunctionCompiler<'a> {
                     self.emit_b(else_label);
                 }
             }
-            MachineBranchCond::FloatCompare {
-                width,
-                kind,
-                lhs,
-                rhs,
-            } => {
-                return self.emit_float_branch(
-                    width,
-                    kind,
-                    lhs,
-                    rhs,
-                    then_label,
-                    else_label,
-                    then_fallthrough,
-                    else_fallthrough,
-                );
-            }
         }
         Ok(())
     }
@@ -250,20 +231,6 @@ impl<'a> FunctionCompiler<'a> {
             } => {
                 self.emit_cmp_values(width, lhs, rhs)?;
                 self.emit_b_cond(map_int_cond(kind, sign), trap_label);
-            }
-            MachineBranchCond::FloatCompare {
-                width,
-                kind,
-                lhs,
-                rhs,
-            } => {
-                let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-                let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-                match width {
-                    MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
-                    MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
-                };
-                self.emit_b_cond(map_float_cond(kind), trap_label);
             }
         }
         Ok(())
@@ -607,43 +574,4 @@ impl<'a> FunctionCompiler<'a> {
         }
     }
 
-    pub(super) fn emit_float_branch(
-        &mut self,
-        width: MachineFloatWidth,
-        kind: MachineCompareKind,
-        lhs: MachineValue,
-        rhs: MachineValue,
-        then_label: Option<usize>,
-        else_label: Option<usize>,
-        then_fallthrough: bool,
-        else_fallthrough: bool,
-    ) -> Result<(), WasmError> {
-        let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-        if matches!(rhs, MachineValue::Imm64(0)) {
-            match width {
-                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s_zero(lhs_fp)),
-                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d_zero(lhs_fp)),
-            };
-        } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
-            match width {
-                MachineFloatWidth::F32 => self.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
-                MachineFloatWidth::F64 => self.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
-            };
-        }
-        let cond = map_float_cond(kind);
-        if else_fallthrough {
-            if let Some(label) = then_label {
-                self.emit_b_cond(cond, label);
-            }
-        } else if then_fallthrough {
-            if let Some(label) = else_label {
-                self.emit_b_cond(cond.invert(), label);
-            }
-        } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
-            self.emit_b_cond(cond, then_label);
-            self.emit_b(else_label);
-        }
-        Ok(())
-    }
 }

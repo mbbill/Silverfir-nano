@@ -19,7 +19,6 @@ use crate::{
 };
 use alloc::collections::BTreeSet;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use super::entities::{Data, Element};
 

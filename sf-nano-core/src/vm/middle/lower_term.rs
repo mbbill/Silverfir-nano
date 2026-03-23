@@ -17,7 +17,7 @@ use crate::{
         },
         wasm::{
             common::{BrTableEntry, SemanticTarget},
-            primitive_op::{self, PrimitiveOpKind},
+            primitive_op::PrimitiveOpKind,
             semantic_ir::SemanticOpKind,
         },
     },

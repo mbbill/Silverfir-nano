@@ -25,6 +25,7 @@ pub(crate) struct PlanConfig {
 }
 
 impl PlanConfig {
+    #[cfg(test)]
     #[inline]
     pub(crate) const fn new(
         gp_local_cache_budget: u8,
@@ -43,6 +44,7 @@ impl PlanConfig {
         )
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) const fn new_with_gp_unit_bytes(
         gp_local_cache_budget: u8,

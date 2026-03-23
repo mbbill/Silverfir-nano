@@ -66,68 +66,6 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
     assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(4))]);
 }
 
-fn keeps_cached_local_writes_but_rewrites_their_sources() {
-    let mut program = MachineProgram {
-        entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
-            id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
-                MachineInst {
-                    kind: MachineInstKind::Move {
-                        ty: MachineStorageType::GpWord,
-                        dst: MachineReg(7),
-                        src: MachineValue::Reg(MachineReg(4)),
-                    },
-                },
-                MachineInst {
-                    kind: MachineInstKind::Move {
-                        ty: MachineStorageType::GpWord,
-                        dst: MachineReg(5),
-                        src: MachineValue::Reg(MachineReg(7)),
-                    },
-                },
-                MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord,
-                        addr: MachineAddr {
-                            base: MachineReg(1),
-                            offset: 0,
-                        },
-                        width: MachineMemWidth::U64,
-                        src: MachineValue::Reg(MachineReg(5)),
-                    },
-                },
-            ],
-            terminator: MachineTerminator::Return,
-        }],
-    };
-
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
-
-    let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 2);
-    assert!(matches!(
-        block.ops[0].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(5),
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        block.ops[1].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
-}
-
 #[test]
 fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_reg() {
     let mut program = MachineProgram {

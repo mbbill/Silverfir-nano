@@ -49,6 +49,7 @@ pub(crate) struct BackendConfig {
 }
 
 impl BackendConfig {
+    #[cfg(any(test, feature = "interp"))]
     #[inline]
     pub(crate) const fn new(
         gp_local_cache_budget: u8,
@@ -153,25 +154,6 @@ impl BackendMode {
         }
     }
 
-    #[inline]
-    pub const fn resolve(self) -> BackendKind {
-        match self {
-            Self::Auto => {
-                #[cfg(feature = "micro-jit")]
-                {
-                    return BackendKind::Native;
-                }
-                #[cfg(all(not(feature = "micro-jit"), feature = "interp", feature = "fusion"))]
-                {
-                    return BackendKind::Fusion;
-                }
-                BackendKind::Base
-            }
-            Self::Base => BackendKind::Base,
-            Self::Fusion => BackendKind::Fusion,
-            Self::Native => BackendKind::Native,
-        }
-    }
 }
 
 static ACTIVE_BACKEND_MODE: AtomicU8 = AtomicU8::new(BackendMode::Native as u8);
@@ -234,11 +216,14 @@ pub(crate) fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'s
             {
                 return Ok(BackendKind::Native);
             }
-            #[cfg(feature = "interp")]
+            #[cfg(all(not(feature = "micro-jit"), feature = "interp"))]
             {
                 return Ok(BackendKind::Base);
             }
-            Err("no execution backend compiled in")
+            #[cfg(not(any(feature = "micro-jit", feature = "interp")))]
+            {
+                Err("no execution backend compiled in")
+            }
         }
     }
 }

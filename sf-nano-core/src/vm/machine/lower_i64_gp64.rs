@@ -19,7 +19,7 @@ use super::{
 };
 
 use crate::vm::machine::machine_ir::{
-    MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType, MachineValue,
+    MachineInst, MachineInstKind, MachineLoadExtension, MachineValue,
 };
 
 pub(super) struct Gp64Lowering;

@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::vm::middle::{
-    ssa_ir::ir::{SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
+    ssa_ir::ir::{SsaBlock, SsaEdge, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
     frame::FrameLayoutPlan,
 };
 
