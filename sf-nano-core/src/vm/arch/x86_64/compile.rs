@@ -174,6 +174,7 @@ pub fn compile_module(
     let mut base_offsets = Vec::with_capacity(artifacts.len());
     let mut running_offset = 0usize;
     for artifact in &artifacts {
+        running_offset = page_align_function(running_offset, artifact.text.len());
         base_offsets.push(running_offset);
         running_offset = running_offset.saturating_add(artifact.text.len());
     }
@@ -247,7 +248,18 @@ pub fn compile_module(
 
     let written_start = executable.len();
     let mut entries = Vec::with_capacity(artifacts.len());
-    for artifact in artifacts {
+    for (func_idx, artifact) in artifacts.into_iter().enumerate() {
+        // Emit INT3 padding to match the aligned base_offsets.
+        let current = executable.len() - written_start;
+        let expected = base_offsets[func_idx];
+        debug_assert!(expected >= current);
+        let padding = expected - current;
+        if padding > 0 {
+            const INT3: u8 = 0xCC;
+            for _ in 0..padding {
+                executable.emit_bytes(&[INT3]);
+            }
+        }
         let text_bytes = artifact.text.finish();
         let text_len = text_bytes.len();
         let debug_regions = artifact.debug_regions;
@@ -1173,4 +1185,26 @@ impl<'a> FunctionCompiler<'a> {
                 ))
             })
     }
+}
+
+/// Adjust `offset` so that a function of `func_size` bytes avoids crossing a
+/// page boundary when the required padding is small.
+#[inline]
+fn page_align_function(offset: usize, func_size: usize) -> usize {
+    const PAGE_SIZE: usize = 16384;
+    const MAX_PADDING: usize = 1024;
+
+    if func_size == 0 || func_size > PAGE_SIZE {
+        return offset;
+    }
+    let start_page = offset / PAGE_SIZE;
+    let end_page = (offset + func_size - 1) / PAGE_SIZE;
+    if start_page != end_page {
+        let next_page = (start_page + 1) * PAGE_SIZE;
+        let padding = next_page - offset;
+        if padding <= MAX_PADDING {
+            return next_page;
+        }
+    }
+    offset
 }
