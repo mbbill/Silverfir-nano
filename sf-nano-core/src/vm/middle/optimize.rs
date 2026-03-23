@@ -55,21 +55,55 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
     }
     mark_terminator_uses(&block.terminator, &mut used_in_terminator);
 
-    // Rewrite operands in arithmetic/comparison ops only.
-    // A constant can be folded if it has no terminator uses (linear SSA
-    // guarantees exactly one use in the op stream, so no terminator use
-    // means total uses == 1).
+    // Two rewrites in a single pass:
+    //
+    // (a) Full evaluation: if ALL args are known constants, try to compute
+    //     the result at compile time and replace the op with a const def.
+    //     The result is recorded as a new known constant for cascading.
+    //
+    // (b) Operand folding: for ops that accept Imm64, replace single-use
+    //     constant Value operands with Const(bits).
     for inst in &mut block.ops {
-        if let SsaInstKind::Value { op, args, .. } = &mut inst.kind {
-            if !can_accept_const_operand(op.primitive()) {
-                continue;
+        if let SsaInstKind::Value { op, args, results } = &mut inst.kind {
+            // (a) Try full evaluation when all args are known constants.
+            if !args.is_empty() && can_accept_const_operand(op.primitive()) {
+                let const_args: Vec<u64> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        SsaOperand::Value(v) => known_const.get(v.0 as usize).copied().flatten(),
+                        SsaOperand::Const(bits) => Some(*bits),
+                    })
+                    .collect();
+                if const_args.len() == args.len() {
+                    if let Some((result_bits, result_prim)) =
+                        try_eval(op.primitive(), &const_args)
+                    {
+                        if let Some(r) = results.first() {
+                            if let Some(slot) = known_const.get_mut(r.0 as usize) {
+                                *slot = Some(result_bits);
+                            }
+                            let new_op =
+                                crate::vm::middle::ssa_ir::leaf::SsaLeafOp::from_primitive(
+                                    result_prim,
+                                )
+                                .expect("const primitive must be a valid leaf op");
+                            *op = new_op;
+                            args.clear();
+                        }
+                        continue;
+                    }
+                }
             }
-            for operand in args.iter_mut() {
-                if let SsaOperand::Value(v) = operand {
-                    let idx = v.0 as usize;
-                    if let Some(Some(bits)) = known_const.get(idx) {
-                        if !used_in_terminator.get(idx).copied().unwrap_or(true) {
-                            *operand = SsaOperand::Const(*bits);
+
+            // (b) Operand folding: replace single-use const Value with Const.
+            if can_accept_const_operand(op.primitive()) {
+                for operand in args.iter_mut() {
+                    if let SsaOperand::Value(v) = operand {
+                        let idx = v.0 as usize;
+                        if let Some(Some(bits)) = known_const.get(idx) {
+                            if !used_in_terminator.get(idx).copied().unwrap_or(true) {
+                                *operand = SsaOperand::Const(*bits);
+                            }
                         }
                     }
                 }
@@ -168,6 +202,209 @@ fn can_accept_const_operand(kind: &crate::vm::wasm::primitive_op::PrimitiveOpKin
         | P::F32DemoteF64 | P::F64PromoteF32
         | P::I32ReinterpretF32 | P::I64ReinterpretF64 | P::F32ReinterpretI32 | P::F64ReinterpretI64
     )
+}
+
+/// Try to evaluate a primitive op with all-constant inputs at compile time.
+/// Returns `(result_bits, const_primitive)` on success.
+/// Returns `None` for trapping ops that would trap, non-evaluable ops, or
+/// ops whose result type is context-dependent.
+fn try_eval(
+    kind: &crate::vm::wasm::primitive_op::PrimitiveOpKind,
+    args: &[u64],
+) -> Option<(u64, crate::vm::wasm::primitive_op::PrimitiveOpKind)> {
+    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
+
+    let result_ty = crate::vm::wasm::primitive_op::result_type(kind)?;
+
+    let bits = match kind {
+        // --- i32 binary ---
+        P::I32Add => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_add(b) as u64 }
+        P::I32Sub => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_sub(b) as u64 }
+        P::I32Mul => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_mul(b) as u64 }
+        P::I32DivS => { let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32); if b == 0 || (a == i32::MIN && b == -1) { return None; } (a.wrapping_div(b) as u32) as u64 }
+        P::I32DivU => { let (a, b) = (args[0] as u32, args[1] as u32); if b == 0 { return None; } (a / b) as u64 }
+        P::I32RemS => { let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32); if b == 0 { return None; } (a.wrapping_rem(b) as u32) as u64 }
+        P::I32RemU => { let (a, b) = (args[0] as u32, args[1] as u32); if b == 0 { return None; } (a % b) as u64 }
+        P::I32And => (args[0] as u32 & args[1] as u32) as u64,
+        P::I32Or  => (args[0] as u32 | args[1] as u32) as u64,
+        P::I32Xor => (args[0] as u32 ^ args[1] as u32) as u64,
+        P::I32Shl  => ((args[0] as u32).wrapping_shl(args[1] as u32 & 31)) as u64,
+        P::I32ShrS => ((args[0] as u32 as i32).wrapping_shr(args[1] as u32 & 31) as u32) as u64,
+        P::I32ShrU => ((args[0] as u32).wrapping_shr(args[1] as u32 & 31)) as u64,
+        P::I32Rotl => ((args[0] as u32).rotate_left(args[1] as u32 & 31)) as u64,
+        P::I32Rotr => ((args[0] as u32).rotate_right(args[1] as u32 & 31)) as u64,
+        // --- i64 binary ---
+        P::I64Add => args[0].wrapping_add(args[1]),
+        P::I64Sub => args[0].wrapping_sub(args[1]),
+        P::I64Mul => args[0].wrapping_mul(args[1]),
+        P::I64DivS => { let (a, b) = (args[0] as i64, args[1] as i64); if b == 0 || (a == i64::MIN && b == -1) { return None; } a.wrapping_div(b) as u64 }
+        P::I64DivU => { if args[1] == 0 { return None; } args[0] / args[1] }
+        P::I64RemS => { let (a, b) = (args[0] as i64, args[1] as i64); if b == 0 { return None; } a.wrapping_rem(b) as u64 }
+        P::I64RemU => { if args[1] == 0 { return None; } args[0] % args[1] }
+        P::I64And => args[0] & args[1],
+        P::I64Or  => args[0] | args[1],
+        P::I64Xor => args[0] ^ args[1],
+        P::I64Shl  => args[0].wrapping_shl((args[1] & 63) as u32),
+        P::I64ShrS => (args[0] as i64).wrapping_shr((args[1] & 63) as u32) as u64,
+        P::I64ShrU => args[0].wrapping_shr((args[1] & 63) as u32),
+        P::I64Rotl => args[0].rotate_left((args[1] & 63) as u32),
+        P::I64Rotr => args[0].rotate_right((args[1] & 63) as u32),
+        // --- f32 binary ---
+        P::F32Add => { let r = f32::from_bits(args[0] as u32) + f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
+        P::F32Sub => { let r = f32::from_bits(args[0] as u32) - f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
+        P::F32Mul => { let r = f32::from_bits(args[0] as u32) * f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
+        P::F32Div => { let r = f32::from_bits(args[0] as u32) / f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
+        P::F32Min => { wasm_f32_min(args[0] as u32, args[1] as u32) as u64 }
+        P::F32Max => { wasm_f32_max(args[0] as u32, args[1] as u32) as u64 }
+        P::F32Copysign => { let r = f32::from_bits(args[0] as u32).copysign(f32::from_bits(args[1] as u32)); r.to_bits() as u64 }
+        // --- f64 binary ---
+        P::F64Add => { let r = f64::from_bits(args[0]) + f64::from_bits(args[1]); canon_f64(r) }
+        P::F64Sub => { let r = f64::from_bits(args[0]) - f64::from_bits(args[1]); canon_f64(r) }
+        P::F64Mul => { let r = f64::from_bits(args[0]) * f64::from_bits(args[1]); canon_f64(r) }
+        P::F64Div => { let r = f64::from_bits(args[0]) / f64::from_bits(args[1]); canon_f64(r) }
+        P::F64Min => { wasm_f64_min(args[0], args[1]) }
+        P::F64Max => { wasm_f64_max(args[0], args[1]) }
+        P::F64Copysign => { let r = f64::from_bits(args[0]).copysign(f64::from_bits(args[1])); r.to_bits() }
+        // --- i32/i64 compare ---
+        P::I32Eq  => bool32(args[0] as u32 == args[1] as u32),
+        P::I32Ne  => bool32(args[0] as u32 != args[1] as u32),
+        P::I32LtS => bool32((args[0] as u32 as i32) <  (args[1] as u32 as i32)),
+        P::I32LtU => bool32((args[0] as u32) < (args[1] as u32)),
+        P::I32GtS => bool32((args[0] as u32 as i32) >  (args[1] as u32 as i32)),
+        P::I32GtU => bool32((args[0] as u32) > (args[1] as u32)),
+        P::I32LeS => bool32((args[0] as u32 as i32) <= (args[1] as u32 as i32)),
+        P::I32LeU => bool32((args[0] as u32) <= (args[1] as u32)),
+        P::I32GeS => bool32((args[0] as u32 as i32) >= (args[1] as u32 as i32)),
+        P::I32GeU => bool32((args[0] as u32) >= (args[1] as u32)),
+        P::I64Eq  => bool32(args[0] == args[1]),
+        P::I64Ne  => bool32(args[0] != args[1]),
+        P::I64LtS => bool32((args[0] as i64) <  (args[1] as i64)),
+        P::I64LtU => bool32(args[0] < args[1]),
+        P::I64GtS => bool32((args[0] as i64) >  (args[1] as i64)),
+        P::I64GtU => bool32(args[0] > args[1]),
+        P::I64LeS => bool32((args[0] as i64) <= (args[1] as i64)),
+        P::I64LeU => bool32(args[0] <= args[1]),
+        P::I64GeS => bool32((args[0] as i64) >= (args[1] as i64)),
+        P::I64GeU => bool32(args[0] >= args[1]),
+        // --- f32/f64 compare ---
+        P::F32Eq => bool32(f32::from_bits(args[0] as u32) == f32::from_bits(args[1] as u32)),
+        P::F32Ne => bool32(f32::from_bits(args[0] as u32) != f32::from_bits(args[1] as u32)),
+        P::F32Lt => bool32(f32::from_bits(args[0] as u32) <  f32::from_bits(args[1] as u32)),
+        P::F32Gt => bool32(f32::from_bits(args[0] as u32) >  f32::from_bits(args[1] as u32)),
+        P::F32Le => bool32(f32::from_bits(args[0] as u32) <= f32::from_bits(args[1] as u32)),
+        P::F32Ge => bool32(f32::from_bits(args[0] as u32) >= f32::from_bits(args[1] as u32)),
+        P::F64Eq => bool32(f64::from_bits(args[0]) == f64::from_bits(args[1])),
+        P::F64Ne => bool32(f64::from_bits(args[0]) != f64::from_bits(args[1])),
+        P::F64Lt => bool32(f64::from_bits(args[0]) <  f64::from_bits(args[1])),
+        P::F64Gt => bool32(f64::from_bits(args[0]) >  f64::from_bits(args[1])),
+        P::F64Le => bool32(f64::from_bits(args[0]) <= f64::from_bits(args[1])),
+        P::F64Ge => bool32(f64::from_bits(args[0]) >= f64::from_bits(args[1])),
+        // --- unary ---
+        P::I32Eqz => bool32(args[0] as u32 == 0),
+        P::I64Eqz => bool32(args[0] == 0),
+        P::I32Clz => (args[0] as u32).leading_zeros() as u64,
+        P::I32Ctz => (args[0] as u32).trailing_zeros() as u64,
+        P::I32Popcnt => (args[0] as u32).count_ones() as u64,
+        P::I64Clz => args[0].leading_zeros() as u64,
+        P::I64Ctz => args[0].trailing_zeros() as u64,
+        P::I64Popcnt => args[0].count_ones() as u64,
+        P::F32Abs => (f32::from_bits(args[0] as u32).abs().to_bits()) as u64,
+        P::F32Neg => ((-f32::from_bits(args[0] as u32)).to_bits()) as u64,
+        P::F64Abs => f64::from_bits(args[0]).abs().to_bits(),
+        P::F64Neg => (-f64::from_bits(args[0])).to_bits(),
+        // --- extensions ---
+        P::I32Extend8S  => ((args[0] as u32 as i8)  as i32 as u32) as u64,
+        P::I32Extend16S => ((args[0] as u32 as i16) as i32 as u32) as u64,
+        P::I64Extend8S  => (args[0] as i8  as i64) as u64,
+        P::I64Extend16S => (args[0] as i16 as i64) as u64,
+        P::I64Extend32S => (args[0] as i32 as i64) as u64,
+        // --- conversions ---
+        P::I32WrapI64     => (args[0] as u32) as u64,
+        P::I64ExtendI32S  => ((args[0] as u32 as i32) as i64) as u64,
+        P::I64ExtendI32U  => (args[0] as u32) as u64,
+        P::I32ReinterpretF32 => args[0] & 0xFFFF_FFFF,
+        P::I64ReinterpretF64 => args[0],
+        P::F32ReinterpretI32 => args[0] & 0xFFFF_FFFF,
+        P::F64ReinterpretI64 => args[0],
+        P::F32ConvertI32S => (((args[0] as u32 as i32) as f32).to_bits()) as u64,
+        P::F32ConvertI32U => (((args[0] as u32) as f32).to_bits()) as u64,
+        P::F32ConvertI64S => (((args[0] as i64) as f32).to_bits()) as u64,
+        P::F32ConvertI64U => ((args[0] as f32).to_bits()) as u64,
+        P::F64ConvertI32S => ((args[0] as u32 as i32) as f64).to_bits(),
+        P::F64ConvertI32U => ((args[0] as u32) as f64).to_bits(),
+        P::F64ConvertI64S => ((args[0] as i64) as f64).to_bits(),
+        P::F64ConvertI64U => (args[0] as f64).to_bits(),
+        P::F32DemoteF64   => (canon_f32((f64::from_bits(args[0]) as f32))) as u64,
+        P::F64PromoteF32  => canon_f64(f32::from_bits(args[0] as u32) as f64),
+        // Trapping truncations: only fold when in range.
+        P::I32TruncF32S | P::I32TruncF32U | P::I32TruncF64S | P::I32TruncF64U
+        | P::I64TruncF32S | P::I64TruncF32U | P::I64TruncF64S | P::I64TruncF64U => return None,
+        // Saturating truncations and float rounding: skip for simplicity.
+        P::I32TruncSatF32S | P::I32TruncSatF32U | P::I32TruncSatF64S | P::I32TruncSatF64U
+        | P::I64TruncSatF32S | P::I64TruncSatF32U | P::I64TruncSatF64S | P::I64TruncSatF64U
+        | P::F32Ceil | P::F32Floor | P::F32Trunc | P::F32Nearest | P::F32Sqrt
+        | P::F64Ceil | P::F64Floor | P::F64Trunc | P::F64Nearest | P::F64Sqrt => return None,
+        _ => return None,
+    };
+
+    use crate::value_type::ValueType;
+    let prim = match result_ty {
+        ValueType::I32 => P::I32Const { value: bits as u32 },
+        ValueType::I64 => P::I64Const { value: bits },
+        ValueType::F32 => P::F32Const { value: bits as u32 },
+        ValueType::F64 => P::F64Const { value: bits },
+        _ => return None,
+    };
+    Some((bits, prim))
+}
+
+#[inline]
+fn bool32(b: bool) -> u64 { if b { 1 } else { 0 } }
+
+#[inline]
+fn canon_f32(v: f32) -> u32 {
+    if v.is_nan() { 0x7fc0_0000 } else { v.to_bits() }
+}
+
+#[inline]
+fn canon_f64(v: f64) -> u64 {
+    if v.is_nan() { 0x7ff8_0000_0000_0000 } else { v.to_bits() }
+}
+
+fn wasm_f32_min(a: u32, b: u32) -> u32 {
+    let (fa, fb) = (f32::from_bits(a), f32::from_bits(b));
+    if fa.is_nan() || fb.is_nan() { return 0x7fc0_0000; }
+    if fa == 0.0 && fb == 0.0 {
+        return if (a | b) & 0x8000_0000 != 0 { 0x8000_0000 } else { 0 };
+    }
+    canon_f32(fa.min(fb))
+}
+
+fn wasm_f32_max(a: u32, b: u32) -> u32 {
+    let (fa, fb) = (f32::from_bits(a), f32::from_bits(b));
+    if fa.is_nan() || fb.is_nan() { return 0x7fc0_0000; }
+    if fa == 0.0 && fb == 0.0 {
+        return if (a & b) & 0x8000_0000 != 0 { 0x8000_0000 } else { 0 };
+    }
+    canon_f32(fa.max(fb))
+}
+
+fn wasm_f64_min(a: u64, b: u64) -> u64 {
+    let (fa, fb) = (f64::from_bits(a), f64::from_bits(b));
+    if fa.is_nan() || fb.is_nan() { return 0x7ff8_0000_0000_0000; }
+    if fa == 0.0 && fb == 0.0 {
+        return if (a | b) & 0x8000_0000_0000_0000 != 0 { 0x8000_0000_0000_0000 } else { 0 };
+    }
+    canon_f64(fa.min(fb))
+}
+
+fn wasm_f64_max(a: u64, b: u64) -> u64 {
+    let (fa, fb) = (f64::from_bits(a), f64::from_bits(b));
+    if fa.is_nan() || fb.is_nan() { return 0x7ff8_0000_0000_0000; }
+    if fa == 0.0 && fb == 0.0 {
+        return if (a & b) & 0x8000_0000_0000_0000 != 0 { 0x8000_0000_0000_0000 } else { 0 };
+    }
+    canon_f64(fa.max(fb))
 }
 
 /// Mark values that appear in terminator edge bindings or as branch/table
