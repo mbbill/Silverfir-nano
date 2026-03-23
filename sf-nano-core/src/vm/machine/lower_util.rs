@@ -88,7 +88,7 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
         for (&value, &count) in &op_uses {
             debug_assert_eq!(
                 count, 1,
-                "LIR value {:?} has {} uses within ops (linear SSA requires exactly 1)",
+                "SSA-IR value {:?} has {} uses within ops (linear SSA requires exactly 1)",
                 value, count,
             );
         }

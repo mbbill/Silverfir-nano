@@ -31,7 +31,7 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
     ) -> Result<MachineTerminator, WasmError> {
         self.ensure_no_live_values(
-            "prepared LIR call reached native lowering with live transient SSA values; values must be published before the call",
+            "prepared SSA-IR call reached native lowering with live transient SSA values; values must be published before the call",
         )?;
 
         let callee_id = MachineFuncId(callee);
@@ -146,7 +146,7 @@ impl<'a> BlockLowerContext<'a> {
         sidecar: &mut SidecarBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
-            "prepared LIR external call reached native lowering with live transient SSA values; values must be published before the call",
+            "prepared SSA-IR external call reached native lowering with live transient SSA values; values must be published before the call",
         )?;
 
         let target = sidecar.extern_target(MachineHelperSymbol::CallExternal);
@@ -180,7 +180,7 @@ impl<'a> BlockLowerContext<'a> {
         sidecar: &mut SidecarBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
-            "prepared LIR runtime boundary reached native lowering with live transient SSA values; values must be published before the boundary",
+            "prepared SSA-IR runtime boundary reached native lowering with live transient SSA values; values must be published before the boundary",
         )?;
 
         let (target, metadata) = self.runtime_call_site(boundary, sidecar)?;

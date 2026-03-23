@@ -144,7 +144,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         }
     }
 
-    // Phase 3: Prepare all functions (frame layout + LIR lowering).
+    // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
     let mut lowered_inputs = Vec::new();
     let mut prepared_functions = Vec::new();
     for (func_idx, func) in module.functions.iter().enumerate() {
@@ -211,7 +211,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         lowered.module.validate_32bit_gp_target(max_gp_regs)?;
     }
 
-    // Collect LIR for dump before moving lowered data
+    // Collect SSA-IR for dump before moving lowered data
     let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions
         .iter()
         .map(|(id, prepared)| ir_dump::DumpFunctionLir {

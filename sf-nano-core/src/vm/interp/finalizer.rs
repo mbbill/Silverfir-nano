@@ -1,8 +1,8 @@
-//! Lower LIR into the interpreter instruction stream.
+//! Lower SSA-IR into the interpreter instruction stream.
 //!
 //! The interpreter still executes a small handler machine with implicit TOS
 //! registers, so this pass assigns stable frame homes for SSA values and emits
-//! the handler sequence that materializes each LIR block.
+//! the handler sequence that materializes each SSA-IR block.
 
 use alloc::vec::Vec;
 
@@ -98,10 +98,10 @@ impl FinalLayout {
     #[inline]
     fn value_home(&self, value: SsaValue) -> Result<u16, WasmError> {
         let offset = u16::try_from(value.0)
-            .map_err(|_| WasmError::internal("LIR value id exceeds u16".into()))?;
+            .map_err(|_| WasmError::internal("SSA-IR value id exceeds u16".into()))?;
         if offset >= self.value_count {
             return Err(WasmError::internal(
-                "LIR value id exceeds finalized home-slot range".into(),
+                "SSA-IR value id exceeds finalized home-slot range".into(),
             ));
         }
         self.value_home_base

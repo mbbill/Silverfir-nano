@@ -1,4 +1,4 @@
-//! Canonical leaf Wasm op vocabulary shared across semantic/planning/LIR.
+//! Canonical leaf Wasm op vocabulary shared across semantic/planning/SSA-IR.
 //!
 //! This stays intentionally backend-agnostic and excludes function-body-only
 //! structure such as locals, calls, returns, structured control, and branch

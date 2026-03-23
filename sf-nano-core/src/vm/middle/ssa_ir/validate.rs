@@ -1,4 +1,4 @@
-//! Structural validation for prepared LIR.
+//! Structural validation for prepared SSA-IR.
 
 #[cfg(any(debug_assertions, test))]
 use alloc::collections::BTreeMap;
@@ -22,7 +22,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     if program.blocks.is_empty() {
         if program.entry.as_usize() != 0 {
             return Err(WasmError::internal(
-                "empty LIR program must use entry block 0".into(),
+                "empty SSA-IR program must use entry block 0".into(),
             ));
         }
         return Ok(());
@@ -30,7 +30,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 
     if program.entry.as_usize() >= program.blocks.len() {
         return Err(WasmError::internal(alloc::format!(
-            "LIR entry block {} is out of range for {} blocks",
+            "SSA-IR entry block {} is out of range for {} blocks",
             program.entry.as_usize(),
             program.blocks.len(),
         )));
@@ -62,7 +62,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     for (index, slot) in program.local_cache.gp_preferred_slots.iter().enumerate() {
         if program.local_cache.gp_preferred_slots[..index].contains(slot) {
             return Err(WasmError::internal(alloc::format!(
-                "LIR local-cache preferences contain duplicate slot {:?}",
+                "SSA-IR local-cache preferences contain duplicate slot {:?}",
                 slot,
             )));
         }
@@ -70,7 +70,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     if program.local_cache.gp_preferred_slots.len() != program.local_cache.gp_preferred_types.len()
     {
         return Err(WasmError::internal(alloc::format!(
-            "LIR GP local-cache preferences contain {} slots but {} type entries",
+            "SSA-IR GP local-cache preferences contain {} slots but {} type entries",
             program.local_cache.gp_preferred_slots.len(),
             program.local_cache.gp_preferred_types.len(),
         )));
@@ -78,7 +78,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len()
     {
         return Err(WasmError::internal(alloc::format!(
-            "LIR FP local-cache preferences contain {} slots but {} type entries",
+            "SSA-IR FP local-cache preferences contain {} slots but {} type entries",
             program.local_cache.fp_preferred_slots.len(),
             program.local_cache.fp_preferred_types.len(),
         )));
@@ -86,7 +86,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     for (index, slot) in program.local_cache.fp_preferred_slots.iter().enumerate() {
         if program.local_cache.fp_preferred_slots[..index].contains(slot) {
             return Err(WasmError::internal(alloc::format!(
-                "LIR FP local-cache preferences contain duplicate slot {:?}",
+                "SSA-IR FP local-cache preferences contain duplicate slot {:?}",
                 slot,
             )));
         }
@@ -98,7 +98,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
                 | ValueType::F64
         ) {
             return Err(WasmError::internal(
-                "LIR GP local-cache preferences must not contain float types".into(),
+                "SSA-IR GP local-cache preferences must not contain float types".into(),
             ));
         }
     }
@@ -109,7 +109,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
                 | ValueType::F64
         ) {
             return Err(WasmError::internal(
-                "LIR FP local-cache preferences must contain only float types".into(),
+                "SSA-IR FP local-cache preferences must contain only float types".into(),
             ));
         }
     }
@@ -308,7 +308,7 @@ pub(crate) fn validate_program(_program: &SsaProgram) -> Result<(), WasmError> {
 fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
     if block.id.as_usize() != index {
         return Err(WasmError::internal(alloc::format!(
-            "LIR block {} has mismatched id {}",
+            "SSA-IR block {} has mismatched id {}",
             index,
             block.id.as_usize(),
         )));
@@ -337,7 +337,7 @@ fn validate_edge(
 ) -> Result<(), WasmError> {
     let Some(target) = program.blocks.get(edge.target.as_usize()) else {
         return Err(WasmError::internal(alloc::format!(
-            "LIR block {} has edge to out-of-range target {}",
+            "SSA-IR block {} has edge to out-of-range target {}",
             source_block,
             edge.target.as_usize(),
         )));
@@ -354,7 +354,7 @@ fn validate_edge(
         )?;
         if seen_params.contains(&binding.param) {
             return Err(WasmError::internal(alloc::format!(
-                "LIR edge b{} -> b{} binds param {:?} more than once",
+                "SSA-IR edge b{} -> b{} binds param {:?} more than once",
                 source_block,
                 edge.target.as_usize(),
                 binding.param,
@@ -365,7 +365,7 @@ fn validate_edge(
 
     if edge.bindings.len() != target.params.len() {
         return Err(WasmError::internal(alloc::format!(
-            "LIR edge b{} -> b{} has {} bindings, but target expects {} params",
+            "SSA-IR edge b{} -> b{} has {} bindings, but target expects {} params",
             source_block,
             edge.target.as_usize(),
             edge.bindings.len(),
@@ -376,7 +376,7 @@ fn validate_edge(
     for param in &target.params {
         if !seen_params.contains(param) {
             return Err(WasmError::internal(alloc::format!(
-                "LIR edge b{} -> b{} does not bind target param {:?}",
+                "SSA-IR edge b{} -> b{} does not bind target param {:?}",
                 source_block,
                 edge.target.as_usize(),
                 param,
@@ -397,7 +397,7 @@ fn validate_binding(
 ) -> Result<(), WasmError> {
     if !target.params.contains(&binding.param) {
         return Err(WasmError::internal(alloc::format!(
-            "LIR edge b{} -> b{} binds unknown target param {:?}",
+            "SSA-IR edge b{} -> b{} binds unknown target param {:?}",
             source_block,
             target_block,
             binding.param,
@@ -409,7 +409,7 @@ fn validate_binding(
         if let (Some(param_ty), Some(value_ty)) = (param_ty, value_ty) {
             if param_ty != value_ty {
                 return Err(WasmError::internal(alloc::format!(
-                    "LIR edge b{} -> b{} binds param {:?} ({:?}) from value {:?} ({:?})",
+                    "SSA-IR edge b{} -> b{} binds param {:?} ({:?}) from value {:?} ({:?})",
                     source_block,
                     target_block,
                     binding.param,

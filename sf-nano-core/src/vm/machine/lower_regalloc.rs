@@ -1,4 +1,4 @@
-//! Register allocation and register-file partition for LIR -> MachineIR lowering.
+//! Register allocation and register-file partition for SSA-IR -> MachineIR lowering.
 
 use alloc::vec::Vec;
 
@@ -227,7 +227,7 @@ impl<'a> BlockLowerContext<'a> {
         let (lo, hi) = self.use_value_regs(value)?;
         hi.map(|hi| (lo, hi)).ok_or_else(|| {
             WasmError::internal(alloc::format!(
-                "LIR i64 value {:?} does not have a paired machine-register mapping",
+                "SSA-IR i64 value {:?} does not have a paired machine-register mapping",
                 value
             ))
         })
@@ -320,7 +320,7 @@ impl<'a> BlockLowerContext<'a> {
     fn value_reg(&self, value: SsaValue) -> Result<MachineReg, WasmError> {
         self.try_value_reg(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
-                "no machine register assigned for LIR value {:?}",
+                "no machine register assigned for SSA-IR value {:?}",
                 value
             ))
         })
@@ -329,7 +329,7 @@ impl<'a> BlockLowerContext<'a> {
     fn value_regs(&self, value: SsaValue) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         self.try_value_regs(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
-                "no machine register pair assigned for LIR value {:?}",
+                "no machine register pair assigned for SSA-IR value {:?}",
                 value
             ))
         })
@@ -345,7 +345,7 @@ impl<'a> BlockLowerContext<'a> {
         }
         let Some(reg) = self.first_free_transient(ty) else {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeded {} transient register budget during native lowering in block b{} for value {}",
+                "prepared SSA-IR exceeded {} transient register budget during native lowering in block b{} for value {}",
                 if ty.is_fp() { "FP" } else { "GP" },
                 self.block_id(),
                 value.0,
@@ -365,14 +365,14 @@ impl<'a> BlockLowerContext<'a> {
         }
         if self.try_value_reg(value).is_some() {
             return Err(WasmError::internal(alloc::format!(
-                "LIR value {:?} already has a scalar machine-register mapping; cannot also allocate a pair",
+                "SSA-IR value {:?} already has a scalar machine-register mapping; cannot also allocate a pair",
                 value
             )));
         }
 
         let Some((lo, hi)) = self.first_free_gp_pair_transient() else {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                "prepared SSA-IR exceeded GP transient pair budget during native lowering in block b{} for value {}",
                 self.block_id(),
                 value.0,
             )));

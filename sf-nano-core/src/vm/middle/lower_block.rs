@@ -53,7 +53,7 @@ pub(super) fn lower_block_range(
     let last_index = semantic_range
         .end
         .checked_sub(1)
-        .ok_or_else(|| WasmError::internal("LIR block cannot be empty".into()))?;
+        .ok_or_else(|| WasmError::internal("SSA-IR block cannot be empty".into()))?;
 
     for semantic_index in semantic_range.start..last_index {
         // End ops in the body need their publication logic — the same

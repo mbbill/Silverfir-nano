@@ -1867,7 +1867,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     let message = alloc::format!("{err}");
     assert!(
         message.contains("StoreSlot src for cached local slot FrameSlot(0)")
-            || message.contains("typed LIR store to cached local slot"),
+            || message.contains("typed SSA-IR store to cached local slot"),
         "unexpected error: {message}"
     );
 }

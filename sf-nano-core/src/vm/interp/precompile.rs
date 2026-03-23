@@ -106,6 +106,6 @@ pub fn precompile_module_two_pass(store: &Store) -> Result<(), WasmError> {
     }
 
     // Keep internal calls on the shared call_internal path until the call_local
-    // specialization is rebuilt against the new LIR-driven lowering.
+    // specialization is rebuilt against the new SSA-IR-driven lowering.
     Ok(())
 }

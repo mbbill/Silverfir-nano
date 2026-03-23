@@ -20,7 +20,7 @@ pub enum BackendKind {
 /// view regs).
 ///
 /// Different layers consume different subsets of this budget:
-/// - planning/LIR shapes the live transient window from
+/// - planning/SSA-IR shapes the live transient window from
 ///   `gp_transient_budget`/`fp_transient_budget`
 /// - native lowering maps `gp_local_cache_budget`/`fp_local_cache_budget`
 ///   onto cache regs

@@ -38,7 +38,7 @@ impl I64Lowering for Gp32Lowering {
             let cached = ctx.cached_locals()[cached_index];
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
-                    "typed LIR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
+                    "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
                     slot, ty, dst, cached.ty,
                 )));
             }
@@ -96,7 +96,7 @@ impl I64Lowering for Gp32Lowering {
             let cached = ctx.cached_locals()[cached_index];
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
-                    "typed LIR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
+                    "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
                     slot, ty, src, cached.ty,
                 )));
             }

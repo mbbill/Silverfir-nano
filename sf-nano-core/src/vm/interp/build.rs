@@ -1,7 +1,7 @@
 //! Interpreter compilation entry.
 //!
 //! This file runs the shared frontend pipeline for the interpreter backend:
-//! Wasm decode -> preparation -> prepared LIR.
+//! Wasm decode -> preparation -> prepared SSA-IR.
 //! Final interpreter instruction emission happens in `finalizer.rs`.
 //!
 //! The interpreter owns the planning inputs it passes into the shared frontend.

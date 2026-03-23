@@ -1,7 +1,7 @@
-//! LIR-local leaf-op vocabulary.
+//! SSA-IR leaf-op vocabulary.
 //!
 //! This wraps `PrimitiveOpKind` but excludes operations that are designated as
-//! true slot-based boundary ops in prepared LIR.
+//! true slot-based boundary ops in prepared SSA-IR.
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 

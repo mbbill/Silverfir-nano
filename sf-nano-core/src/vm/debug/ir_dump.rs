@@ -2,7 +2,7 @@
 //!
 //! Enable by setting `SF_NATIVE_DUMP_DIR=/path/to/output_dir`.
 //! The dump writes exactly two files for the current module compile:
-//! - `native_index.txt`: function/region metadata, LIR, MachineIR, runtime contract
+//! - `native_index.txt`: function/region metadata, SSA-IR, MachineIR, runtime contract
 //! - `native_code.bin`: concatenated emitted native machine code bytes
 
 use alloc::{format, string::String, vec::Vec};
@@ -43,7 +43,7 @@ pub(crate) struct DebugRegion {
     pub label: String,
 }
 
-/// Per-function LIR data for the dump.
+/// Per-function SSA-IR data for the dump.
 pub(crate) struct DumpFunctionLir<'a> {
     pub func_idx: u32,
     pub ssa: &'a SsaProgram,
@@ -227,8 +227,8 @@ fn write_dump_impl(
         }
         let _ = writeln!(index);
 
-        // LIR
-        let _ = writeln!(index, "lir:");
+        // SSA-IR
+        let _ = writeln!(index, "ssa_ir:");
         if let Some(lir) = lir_by_func.get(&func_idx) {
             render_lir_program(&mut index, lir);
         } else {
@@ -246,7 +246,7 @@ fn write_dump_impl(
     Ok(())
 }
 
-// ---- LIR rendering ----
+// ---- SSA-IR rendering ----
 
 fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);

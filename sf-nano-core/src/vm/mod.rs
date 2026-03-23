@@ -2,8 +2,8 @@
 //!
 //! Pipeline layers:
 //! - `wasm/` decodes Wasm bytecode into Semantic IR (SIR)
-//! - `middle/` prepares SIR into LIR with explicit spill/fill
-//! - `machine/` lowers LIR into MachineIR (MIR)
+//! - `middle/` prepares SIR into SSA-IR with explicit spill/fill
+//! - `machine/` lowers SSA-IR into MachineIR (MIR)
 //! - `arch/` compiles MIR into native code
 //! - `runtime/` provides execution infrastructure
 

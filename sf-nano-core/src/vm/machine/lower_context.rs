@@ -562,7 +562,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             let Some(hi) = self.first_free_transient(MachineStorageType::GpWord) else {
                 return Err(WasmError::internal(alloc::format!(
-                    "prepared LIR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                    "prepared SSA-IR exceeded GP transient pair budget during native lowering in block b{} for value {}",
                     self.block.id.0,
                     value.0,
                 )));

@@ -117,7 +117,7 @@ impl BlockState {
         }
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR transient underflow: requested {} values from live window {} (stack_height={}, spill_depth={})",
+                "prepared SSA-IR transient underflow: requested {} values from live window {} (stack_height={}, spill_depth={})",
                 count,
                 self.live.len(),
                 self.stack_height,
@@ -131,9 +131,9 @@ impl BlockState {
         let value = self
             .live
             .pop()
-            .ok_or_else(|| WasmError::internal("prepared LIR transient underflow".into()))?;
+            .ok_or_else(|| WasmError::internal("prepared SSA-IR transient underflow".into()))?;
         self.live_types.pop().ok_or_else(|| {
-            WasmError::internal("prepared LIR lost type tracking for a live value".into())
+            WasmError::internal("prepared SSA-IR lost type tracking for a live value".into())
         })?;
         self.stack_height = self.stack_height.saturating_sub(1);
         self.spill_depth = self.spill_depth.min(self.stack_height);
@@ -143,7 +143,7 @@ impl BlockState {
     pub(super) fn consume_top(&mut self, count: usize) -> Result<(), WasmError> {
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR transient underflow: tried to consume {} values from live window {}",
+                "prepared SSA-IR transient underflow: tried to consume {} values from live window {}",
                 count,
                 self.live.len(),
             )));
@@ -163,7 +163,7 @@ impl BlockState {
     ) -> Result<(), WasmError> {
         if results.len() != result_types.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR result/value type length mismatch: {} values, {} types",
+                "prepared SSA-IR result/value type length mismatch: {} values, {} types",
                 results.len(),
                 result_types.len(),
             )));
@@ -178,7 +178,7 @@ impl BlockState {
         let count = count as usize;
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR spill requested {} values from live window {}",
+                "prepared SSA-IR spill requested {} values from live window {}",
                 count,
                 self.live.len(),
             )));
@@ -196,7 +196,7 @@ impl BlockState {
     ) -> Result<(), WasmError> {
         if values.len() != value_types.len() {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR fill/value type length mismatch: {} values, {} types",
+                "prepared SSA-IR fill/value type length mismatch: {} values, {} types",
                 values.len(),
                 value_types.len(),
             )));
@@ -239,7 +239,7 @@ impl BlockState {
             || fp_live > self.fp_transient_budget as usize
         {
             return Err(WasmError::internal(alloc::format!(
-                "prepared LIR exceeds configured transient bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
+                "prepared SSA-IR exceeds configured transient bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
                 gp_live,
                 self.gp_transient_budget,
                 fp_live,

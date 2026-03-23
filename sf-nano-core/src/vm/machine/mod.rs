@@ -1,9 +1,9 @@
-//! Machine layer: LIR → MIR lowering and transforms.
+//! Machine layer: SSA-IR → MachineIR lowering and transforms.
 //!
 //! This layer sits between the middle layer (`middle/`) and the architecture
 //! backends (`arch/`). It owns:
-//! - `mir/` — the MachineIR contract definitions consumed by `arch/`
-//! - `lower_*` modules — the lowering passes that transform LIR into MachineIR
+//! - `machine_ir/` — the MachineIR contract definitions consumed by `arch/`
+//! - `lower_*` modules — the lowering passes that transform SSA-IR into MachineIR
 //! - MachineIR transforms (peephole optimization, validation)
 
 mod gp32;

@@ -84,7 +84,7 @@ pub(super) fn edge_to_target(
     };
     if mapped_height != target_entry.stack_height {
         return Err(WasmError::internal(alloc::format!(
-            "prepared LIR edge to semantic op {} computes stack height {}, but target expects {}",
+            "prepared SSA-IR edge to semantic op {} computes stack height {}, but target expects {}",
             target.index().as_usize(),
             mapped_height,
             target_entry.stack_height,
@@ -97,7 +97,7 @@ pub(super) fn edge_to_target(
                 .top_values(target_entry.live_value_count() as usize)
                 .map_err(|err| {
                     WasmError::internal(alloc::format!(
-                        "prepared LIR edge b? -> semantic op {} could not bind {} live values: {}",
+                        "prepared SSA-IR edge b? -> semantic op {} could not bind {} live values: {}",
                         target.index().as_usize(),
                         target_entry.live_value_count(),
                         err
@@ -171,7 +171,7 @@ fn bind_values(
 ) -> Result<Vec<SsaBinding>, WasmError> {
     if target_params.len() != values.len() {
         return Err(WasmError::internal(alloc::format!(
-            "prepared LIR edge binding mismatch: target expects {} params but source provides {} values",
+            "prepared SSA-IR edge binding mismatch: target expects {} params but source provides {} values",
             target_params.len(),
             values.len(),
         )));

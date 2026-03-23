@@ -1,4 +1,4 @@
-//! Prepared backend-facing LIR.
+//! Prepared backend-facing SSA-IR.
 //!
 //! This is the frontend/native handoff for the engine's prepared single-pass
 //! pipeline:
@@ -14,7 +14,7 @@ use crate::value_type::ValueType;
 use super::{leaf::SsaLeafOp, target::SsaTarget};
 use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
-/// One SSA value in prepared LIR.
+/// One SSA value in prepared SSA-IR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SsaValue(pub u32);
 
@@ -74,7 +74,7 @@ pub(crate) struct SsaLocalCachePrefs {
     pub fp_local_info: Vec<CachedLocalInfo>,
 }
 
-/// Full prepared LIR program for one function.
+/// Full prepared SSA-IR program for one function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
@@ -88,7 +88,7 @@ pub(crate) struct SsaProgram {
     pub value_types: Vec<ValueType>,
 }
 
-/// One LIR basic block.
+/// One SSA-IR basic block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SsaBlock {
     pub id: SsaTarget,

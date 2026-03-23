@@ -1,6 +1,6 @@
 
 // ---------------------------------------------------------------------------
-// Lowering: prepared LIR → MachineIR
+// Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
 
 use alloc::{vec, vec::Vec};
@@ -46,7 +46,7 @@ use super::{
     lower_sidecar::SidecarBuilder,
 };
 
-/// One prepared function ready for LIR -> MachineIR lowering.
+/// One prepared function ready for SSA-IR -> MachineIR lowering.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LowerFunctionInput<'a> {
     pub id: MachineFuncId,
@@ -66,7 +66,7 @@ pub(crate) struct LowerModuleInput<'a> {
     pub use_guard_pages: bool,
 }
 
-/// Result of lowering prepared LIR into MachineIR plus runtime-side contract.
+/// Result of lowering prepared SSA-IR into MachineIR plus runtime-side contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LoweredMachineModule {
     pub module: MachineModule,
@@ -338,7 +338,7 @@ fn lower_function(
                         let args = *args;
                         let results = *results;
                         lower.ensure_no_live_values(
-                            "prepared LIR call_indirect reached native lowering with live transient SSA values; values must be published before the call",
+                            "prepared SSA-IR call_indirect reached native lowering with live transient SSA values; values must be published before the call",
                         )?;
                         // After the checked block resolves the table entry, this canonical frame
                         // slot is reused to carry the resolved function index through the rest of
@@ -611,7 +611,7 @@ fn derive_return_results(program: &SsaProgram) -> Result<Option<MachineFrameRegi
             Some(current) if current == region => {}
             Some(_) => {
                 return Err(WasmError::internal(
-                    "prepared LIR uses inconsistent return result spans across blocks".into(),
+                    "prepared SSA-IR uses inconsistent return result spans across blocks".into(),
                 ));
             }
         }

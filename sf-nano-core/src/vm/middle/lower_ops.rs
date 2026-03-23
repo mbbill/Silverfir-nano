@@ -1,4 +1,4 @@
-//! Straight-line prepared LIR op lowering.
+//! Straight-line prepared SSA-IR op lowering.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -127,7 +127,7 @@ pub(super) fn lower_boundary_primitive(
 ) -> Result<(), WasmError> {
     if !state.live().is_empty() {
         return Err(WasmError::internal(
-            "boundary primitive reached LIR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
+            "boundary primitive reached SSA-IR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
         ));
     }
     let (pop, push) = primitive_op::stack_effect(kind);
@@ -237,7 +237,7 @@ pub(super) fn lower_local_tee(
     local_types: &[ValueType],
 ) -> Result<(), WasmError> {
     // Pop the value, store it, then reload from the slot to produce a fresh
-    // single-use value. This maintains the linear-SSA invariant: every LIR
+    // single-use value. This maintains the linear-SSA invariant: every SSA-IR
     // value is used exactly once.
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
@@ -378,7 +378,7 @@ pub(super) fn lower_block_body_op(
             ) =>
         {
             Err(WasmError::internal(
-                "unreachable must end a prepared LIR block, not appear in the body".into(),
+                "unreachable must end a prepared SSA-IR block, not appear in the body".into(),
             ))
         }
         SemanticOpKind::Primitive(kind) => {
@@ -425,7 +425,7 @@ pub(super) fn lower_block_body_op(
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
         SemanticOpKind::Else { .. } => Err(WasmError::internal(
-            "else must end a prepared LIR block, not appear in the body".into(),
+            "else must end a prepared SSA-IR block, not appear in the body".into(),
         )),
         SemanticOpKind::If { .. }
         | SemanticOpKind::Br { .. }
@@ -434,7 +434,7 @@ pub(super) fn lower_block_body_op(
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => Err(WasmError::internal(
-            "control-flow terminators must end a prepared LIR block".into(),
+            "control-flow terminators must end a prepared SSA-IR block".into(),
         )),
     }
 }

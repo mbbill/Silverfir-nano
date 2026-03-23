@@ -69,7 +69,7 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::Return { .. } => {
                 if self.values_iter().next().is_some() {
                     return Err(WasmError::internal(
-                        "LIR return reached native lowering with live transient SSA values; results must be published before return".into(),
+                        "SSA-IR return reached native lowering with live transient SSA values; results must be published before return".into(),
                     ));
                 }
                 Ok(MachineTerminator::Return)
@@ -105,7 +105,7 @@ impl<'a> BlockLowerContext<'a> {
                     let cached = self.cached_locals()[cached_index];
                     if cached.ty != ty {
                         return Err(WasmError::internal(alloc::format!(
-                            "typed LIR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
+                            "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
                             slot,
                             ty,
                             dst,
@@ -145,7 +145,7 @@ impl<'a> BlockLowerContext<'a> {
                     let cached = self.cached_locals()[cached_index];
                     if cached.ty != ty {
                         return Err(WasmError::internal(alloc::format!(
-                            "typed LIR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
+                            "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
                             slot,
                             ty,
                             src,
@@ -339,7 +339,7 @@ impl<'a> BlockLowerContext<'a> {
                 .find(|binding| binding.param == *target_param)
                 .ok_or_else(|| {
                     WasmError::internal(
-                        "missing LIR edge binding for target param during native lowering".into(),
+                        "missing SSA-IR edge binding for target param during native lowering".into(),
                     )
                 })?;
             let regs = self.value_regs_for_edge(binding.value)?;
@@ -361,7 +361,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         self.try_value_regs(value).ok_or_else(|| {
             WasmError::internal(alloc::format!(
-                "no machine register pair assigned for LIR value {:?}",
+                "no machine register pair assigned for SSA-IR value {:?}",
                 value
             ))
         })

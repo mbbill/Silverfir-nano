@@ -1,17 +1,17 @@
-//! Middle layer: SIR → LIR.
+//! Middle layer: SIR → SSA-IR.
 //!
 //! This layer sits between the Wasm semantic frontend (`wasm/`) and the
 //! machine lowering layer (`machine/`). It transforms decoded semantic IR
-//! into prepared LIR with explicit spill/fill and canonical frame layout.
+//! into prepared SSA-IR with explicit spill/fill and canonical frame layout.
 //!
-//! - `lir/` — the LIR contract definitions consumed by `machine/`
+//! - `ssa_ir/` — the SSA-IR contract definitions consumed by `machine/`
 //! - `config.rs` — backend budget configuration
 //! - `frame.rs` — shared frame types and layout planning
 //! - `local_cache.rs` — cached local analysis
 //! - `spill_plan.rs` — spill/fill planning pass
-//! - `lower_*.rs` — SIR → LIR lowering steps
+//! - `lower_*.rs` — SIR → SSA-IR lowering steps
 //! - `state.rs` — preparation state (value allocation, budget tracking)
-//! - `optimize.rs` — post-construction LIR optimization
+//! - `optimize.rs` — post-construction SSA-IR optimization
 
 pub(crate) mod config;
 pub(crate) mod frame;
