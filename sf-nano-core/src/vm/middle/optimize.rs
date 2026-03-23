@@ -344,7 +344,7 @@ fn try_eval(
         P::F64ConvertI32U => ((args[0] as u32) as f64).to_bits(),
         P::F64ConvertI64S => ((args[0] as i64) as f64).to_bits(),
         P::F64ConvertI64U => (args[0] as f64).to_bits(),
-        P::F32DemoteF64   => (canon_f32((f64::from_bits(args[0]) as f32))) as u64,
+        P::F32DemoteF64   => canon_f32(f64::from_bits(args[0]) as f32) as u64,
         P::F64PromoteF32  => canon_f64(f32::from_bits(args[0] as u32) as f64),
         // Trapping truncations: fold only when in range, return None to
         // preserve the runtime trap otherwise.
@@ -352,9 +352,9 @@ fn try_eval(
         P::I32TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f32 { return None; } (f as u32) as u64 }
         P::I32TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i32::MIN as f64 || f > i32::MAX as f64 { return None; } (f as i32 as u32) as u64 }
         P::I32TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f64 { return None; } (f as u32) as u64 }
-        P::I64TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i64::MIN as f32 || f > i64::MAX as f32 { return None; } (f as i64 as u64) }
+        P::I64TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i64::MIN as f32 || f > i64::MAX as f32 { return None; } f as i64 as u64 }
         P::I64TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f32 { return None; } f as u64 }
-        P::I64TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i64::MIN as f64 || f > i64::MAX as f64 { return None; } (f as i64 as u64) }
+        P::I64TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i64::MIN as f64 || f > i64::MAX as f64 { return None; } f as i64 as u64 }
         P::I64TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f64 { return None; } f as u64 }
         // Saturating truncations: always produce a defined result.
         P::I32TruncSatF32S => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() { 0 } else { (f as i32).max(i32::MIN).min(i32::MAX) } as u32) as u64 }
