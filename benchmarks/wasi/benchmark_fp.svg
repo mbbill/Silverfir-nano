@@ -20,21 +20,21 @@
   <rect x="4" y="112" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
   <text x="168" y="132.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
   <rect x="175" y="114" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.35s" fill="freeze"/></rect>
-  <text x="657.0" y="133.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">808</text>
+  <text x="657.0" y="133.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">811</text>
   <text x="168" y="163.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="145" width="463.1" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="463.1" dur="0.39s" fill="freeze"/></rect>
-  <text x="630.1" y="164.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">855</text>
+  <rect x="175" y="145" width="464.8" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="464.8" dur="0.39s" fill="freeze"/></rect>
+  <text x="631.8" y="164.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">855</text>
   <text x="168" y="194.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="176" width="194.6" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="194.6" dur="0.43s" fill="freeze"/></rect>
-  <text x="361.6" y="195.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">2,035</text>
+  <rect x="175" y="176" width="195.3" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="195.3" dur="0.43s" fill="freeze"/></rect>
+  <text x="362.3" y="195.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">2,035</text>
 
   <line x1="20" y1="214" x2="680" y2="214" stroke="#eaeef2" stroke-width="1"/>
   <text x="168" y="234.0" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">c-ray (4K)</text>
   <text x="182" y="234.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">ms</text>
   <rect x="4" y="242" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
   <text x="168" y="262.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="244" width="262.9" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="262.9" dur="0.39s" fill="freeze"/></rect>
-  <text x="429.9" y="263.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">3,629</text>
+  <rect x="175" y="244" width="262.5" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="262.5" dur="0.39s" fill="freeze"/></rect>
+  <text x="429.5" y="263.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">3,635</text>
   <text x="168" y="293.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
   <rect x="175" y="275" width="464.2" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="464.2" dur="0.43s" fill="freeze"/></rect>
   <text x="631.2" y="294.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">2,055</text>
