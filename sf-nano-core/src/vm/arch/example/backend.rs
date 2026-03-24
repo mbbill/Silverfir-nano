@@ -1,8 +1,8 @@
 //! Backend state and `ArchBackend` trait glue.
 //!
 //! This is the bridge between the common pipeline and the example-specific
-//! instruction emission. It contains only type definitions and trait glue —
-//! all emission logic lives in `inst.rs` and `control.rs`.
+//! instruction lowering. It contains only type definitions and trait glue —
+//! all lowering logic lives in `inst.rs` and `control.rs`.
 
 use alloc::vec::Vec;
 
@@ -18,6 +18,7 @@ use crate::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
             MachineFunction, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
+            MACHINE_CTX_REG, MACHINE_FP_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
@@ -27,7 +28,7 @@ use crate::{
 };
 
 use super::{
-    abi::RegisterPlan,
+    abi,
     enc::{self, Cond},
     reg::{FpReg, GpReg},
 };
@@ -35,11 +36,11 @@ use super::{
 // ── Frame constants ──────────────────────────────────────────────────────────
 
 const STACK_SLOT_BYTES: u32 = 8;
-const GP_SAVE_BYTES: u32 = RegisterPlan::CALLEE_SAVED_GP.len() as u32 * STACK_SLOT_BYTES;
-const FP_SAVE_BYTES: u32 = RegisterPlan::CALLEE_SAVED_FP.len() as u32 * STACK_SLOT_BYTES;
+const GP_SAVE_BYTES: u32 = abi::CALLEE_SAVED_GP.len() as u32 * STACK_SLOT_BYTES;
+const FP_SAVE_BYTES: u32 = abi::CALLEE_SAVED_FP.len() as u32 * STACK_SLOT_BYTES;
 const FRAME_BYTES: u32 = {
     let total = GP_SAVE_BYTES + FP_SAVE_BYTES;
-    let align = RegisterPlan::STACK_ALIGNMENT_BYTES;
+    let align = abi::STACK_ALIGNMENT_BYTES;
     total.div_ceil(align) * align
 };
 
@@ -77,7 +78,7 @@ pub(crate) struct ExampleBackend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<GpReg, 2>,
-    pub(super) fp_scratch: ScratchPool<FpReg, 2>,
+    pub(super) fp_scratch: ScratchPool<FpReg, 3>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -85,15 +86,15 @@ pub(crate) struct ExampleBackend<'a> {
 impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
     const NAME: &'static str = "example";
 
-    fn max_total_regs() -> usize { RegisterPlan::max_total_machine_regs() }
-    fn max_fp_regs() -> usize { RegisterPlan::max_fp_machine_regs() }
+    fn max_total_regs() -> usize { abi::max_total_machine_regs() }
+    fn max_fp_regs() -> usize { abi::max_fp_machine_regs() }
 
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, Self::max_fp_regs()),
             fixups: Vec::new(),
-            gp_scratch: ScratchPool::new(RegisterPlan::GP_SCRATCHES),
-            fp_scratch: ScratchPool::new(RegisterPlan::FP_SCRATCHES),
+            gp_scratch: abi::new_gp_scratch_pool(),
+            fp_scratch: abi::new_fp_scratch_pool(),
         }
     }
 
@@ -101,37 +102,36 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
     fn core_mut(&mut self) -> &mut CompilerCore<'a> { &mut self.core }
     fn into_core(self) -> CompilerCore<'a> { self.core }
 
-    fn emit_prologue(&mut self) {
+    fn lower_prologue(&mut self) {
         // Allocate frame and save callee-saved GP registers.
         self.core.text.emit_u32(enc::sub_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
-        for (i, reg) in RegisterPlan::CALLEE_SAVED_GP.iter().copied().enumerate() {
+        for (i, reg) in abi::CALLEE_SAVED_GP.iter().copied().enumerate() {
             self.core.text.emit_u32(enc::str_64(reg, GpReg::SP, i as u16));
         }
         // A real backend would also save CALLEE_SAVED_FP here.
 
-        // Move entry arguments into pinned roles.
+        // Move C entry arguments into MachineIR fixed roles.
         self.core.text.emit_u32(enc::mov_reg_64(
-            RegisterPlan::FIXED.ctx, RegisterPlan::ENTRY.ctx_arg,
+            abi::map_fixed_gp(MACHINE_CTX_REG), abi::C_ARG0,
         ));
         self.core.text.emit_u32(enc::mov_reg_64(
-            RegisterPlan::FIXED.frame, RegisterPlan::ENTRY.frame_arg,
+            abi::map_fixed_gp(MACHINE_FP_REG), abi::C_ARG1,
         ));
     }
 
-    fn emit_epilogue(&mut self) {
-        // Restore callee-saved GP registers and deallocate frame.
-        for (i, reg) in RegisterPlan::CALLEE_SAVED_GP.iter().copied().enumerate().rev() {
+    fn lower_epilogue(&mut self) {
+        for (i, reg) in abi::CALLEE_SAVED_GP.iter().copied().enumerate().rev() {
             self.core.text.emit_u32(enc::ldr_64(reg, GpReg::SP, i as u16));
         }
         self.core.text.emit_u32(enc::add_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
         self.core.text.emit_u32(enc::ret());
     }
 
-    fn emit_return_ok_status(&mut self) {
-        self.materialize_u64(RegisterPlan::RETURN.status, 0);
+    fn lower_return_ok_status(&mut self) {
+        self.materialize_u64(abi::C_RET0, 0);
     }
 
-    fn emit_block(
+    fn lower_block(
         &mut self,
         block: &MachineBlock,
         fallthrough: Option<MachineBlockId>,
@@ -141,34 +141,31 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         self.core.reset_block_fp_state(block)?;
         for (index, inst) in block.ops.iter().enumerate() {
             self.core.current_op_index = Some(index);
-            self.emit_inst(inst)?;
-            // Catch scratch leaks between instructions.
+            self.lower_inst(inst)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
         }
         self.core.current_op_index = None;
-        let result = self.emit_terminator(&block.terminator, fallthrough);
+        let result = self.lower_terminator(&block.terminator, fallthrough);
         self.core.current_block = None;
         result
     }
 
-    fn emit_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
-        self.lower_inst(inst)
+    fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
+        self.lower_inst_dispatch(inst)
     }
 
-    fn emit_terminator(
+    fn lower_terminator(
         &mut self,
         term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        self.lower_terminator(term, fallthrough)
+        self.lower_terminator_dispatch(term, fallthrough)
     }
 
-    fn emit_trap(&mut self, _kind: MachineTrapKind) {
-        // A real backend would emit a trap stub here.
-    }
+    fn lower_trap(&mut self, _kind: MachineTrapKind) {}
 
-    fn emit_unconditional_branch(&mut self, label: usize) {
+    fn lower_unconditional_branch(&mut self, label: usize) {
         self.lower_b(label);
     }
 
@@ -190,36 +187,47 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         Ok(())
     }
 
-    fn emit_source_move(
+    // ── Scratch allocation for parallel-move protocol ────────────────────
+
+    fn alloc_gp_scratch(&mut self) -> u8 { self.gp_scratch.alloc() }
+    fn free_gp_scratch(&mut self, id: u8) { self.gp_scratch.free_index(id) }
+    fn alloc_fp_scratch(&mut self) -> u8 { self.fp_scratch.alloc() }
+    fn free_fp_scratch(&mut self, id: u8) { self.fp_scratch.free_index(id) }
+
+    // ── Parallel move primitives ─────────────────────────────────────────
+
+    fn lower_source_move(
         &mut self,
         dst: MachineBlockParam,
         src: ParallelSource,
     ) -> Result<(), WasmError> {
-        self.lower_source_move(dst, src)
+        self.lower_source_move_dispatch(dst, src)
     }
 
-    fn emit_gp_cycle_break(
+    fn lower_gp_cycle_break(
         &mut self,
         dst: MachineReg,
         src: MachineReg,
+        scratch_id: u8,
     ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
         let src_gp = self.map_gp_reg(src)?;
-        let temp = RegisterPlan::TEMPS.gp_cycle_break;
+        let temp = self.gp_scratch.reg(scratch_id);
         self.core.text.emit_u32(enc::mov_reg_64(temp, dst_gp));
         self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
         Ok(())
     }
 
-    fn emit_fp_cycle_break(
+    fn lower_fp_cycle_break(
         &mut self,
         dst: MachineBlockParam,
         src: MachineReg,
         _float_width: Option<MachineFloatWidth>,
+        scratch_id: u8,
     ) -> Result<(), WasmError> {
         let dst_fp = self.map_fp_reg(dst.reg)?;
         let src_fp = self.map_fp_reg(src)?;
-        let temp = RegisterPlan::TEMPS.fp_cycle_break;
+        let temp = self.fp_scratch.reg(scratch_id);
         self.core.text.emit_u32(enc::fmov_d(temp, dst_fp));
         self.core.text.emit_u32(enc::fmov_d(dst_fp, src_fp));
         Ok(())

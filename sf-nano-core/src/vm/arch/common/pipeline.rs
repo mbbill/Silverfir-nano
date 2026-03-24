@@ -36,7 +36,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 
     // Prologue
     let prologue_start = b.core().text.len();
-    b.emit_prologue();
+    b.lower_prologue();
     let internal_entry_offset = b.core().text.len();
     debug_regions.push(DebugRegion {
         offset: prologue_start,
@@ -60,7 +60,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         b.core_mut().bind_label(label);
         let block_start = b.core().text.len();
         let fallthrough = block_layout.get(index + 1).copied();
-        b.emit_block(block, fallthrough)?;
+        b.lower_block(block, fallthrough)?;
         let block_end = b.core().text.len();
         debug_regions.push(DebugRegion {
             offset: block_start,
@@ -79,7 +79,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         b.core_mut().current_edge_target = Some(edge.target);
         emit_parallel_moves::<A>(&mut b, &edge.params, &edge.args, &edge.arg_float_widths)?;
         let target_label = b.core().block_label(edge.target)?;
-        b.emit_unconditional_branch(target_label);
+        b.lower_unconditional_branch(target_label);
         b.core_mut().current_edge_target = None;
     }
     let edge_end = b.core().text.len();
@@ -96,21 +96,21 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 
     let return_ok_label = b.core().return_ok_label;
     b.core_mut().bind_label(return_ok_label);
-    b.emit_return_ok_status();
-    b.emit_epilogue();
+    b.lower_return_ok_status();
+    b.lower_epilogue();
 
     let stack_overflow_label = b.core().stack_overflow_label;
     b.core_mut().bind_label(stack_overflow_label);
-    b.emit_trap(MachineTrapKind::StackOverflow);
+    b.lower_trap(MachineTrapKind::StackOverflow);
 
     let return_error_label = b.core().return_error_label;
     b.core_mut().bind_label(return_error_label);
-    b.emit_epilogue();
+    b.lower_epilogue();
 
     let deferred = core::mem::take(&mut b.core_mut().deferred_traps);
     for (label, kind) in deferred {
         b.core_mut().bind_label(label);
-        b.emit_trap(kind);
+        b.lower_trap(kind);
     }
 
     let tail_end = b.core().text.len();
@@ -187,35 +187,50 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
 
         if let Some(index) = ready {
             let (dst, src) = pending.remove(index);
-            backend.emit_source_move(dst, src)?;
+            // Free the scratch after the temp is consumed by emit_source_move.
+            let free_scratch = match src {
+                ParallelSource::GpTemp(id) => Some((id, false)),
+                ParallelSource::FpTemp(id, _) => Some((id, true)),
+                _ => None,
+            };
+            backend.lower_source_move(dst, src)?;
+            match free_scratch {
+                Some((id, false)) => backend.free_gp_scratch(id),
+                Some((id, true)) => backend.free_fp_scratch(id),
+                None => {}
+            }
             continue;
         }
 
-        // Cycle detected — break it by saving dst to a temp register.
+        // Cycle detected — allocate a scratch temp and break the cycle.
         let (dst, src) = pending.remove(0);
         let ParallelSource::Reg {
             reg: src_reg,
             float_width,
         } = src
         else {
-            backend.emit_source_move(dst, src)?;
+            backend.lower_source_move(dst, src)?;
             continue;
         };
 
         if dst.ty.is_fp() {
-            backend.emit_fp_cycle_break(dst, src_reg, float_width)?;
+            let scratch_id = backend.alloc_fp_scratch();
+            backend.lower_fp_cycle_break(dst, src_reg, float_width, scratch_id)?;
+            for (_, source) in pending.iter_mut() {
+                if matches!(*source, ParallelSource::Reg { reg, .. } if reg == dst.reg) {
+                    *source = ParallelSource::FpTemp(
+                        scratch_id,
+                        dst.ty.float_width().expect("FP temp width"),
+                    );
+                }
+            }
         } else {
-            backend.emit_gp_cycle_break(dst.reg, src_reg)?;
-        }
-
-        // Rewrite remaining references to the broken dst to use the temp.
-        for (_, source) in pending.iter_mut() {
-            if matches!(*source, ParallelSource::Reg { reg, .. } if reg == dst.reg) {
-                *source = if dst.ty.is_fp() {
-                    ParallelSource::FpTemp(dst.ty.float_width().expect("FP temp width"))
-                } else {
-                    ParallelSource::GpTemp
-                };
+            let scratch_id = backend.alloc_gp_scratch();
+            backend.lower_gp_cycle_break(dst.reg, src_reg, scratch_id)?;
+            for (_, source) in pending.iter_mut() {
+                if matches!(*source, ParallelSource::Reg { reg, .. } if reg == dst.reg) {
+                    *source = ParallelSource::GpTemp(scratch_id);
+                }
             }
         }
     }

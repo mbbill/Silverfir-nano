@@ -48,7 +48,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     // ── Terminator dispatch ──────────────────────────────────────────────
 
-    pub(super) fn lower_terminator(
+    pub(super) fn lower_terminator_dispatch(
         &mut self,
         term: &MachineTerminator,
         _fallthrough: Option<MachineBlockId>,

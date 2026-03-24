@@ -14,11 +14,14 @@ use crate::vm::runtime::code_buf::CodeBuffer;
 
 /// Trait that each architecture backend implements.
 ///
+/// ## Naming convention
+///
+/// - `lower_*` — translate MachineIR into encoded instructions (lowering).
+/// - `emit_nop_padding` — the one exception: writes raw padding bytes into
+///   the code buffer, not MachineIR lowering.
+///
 /// The backend MUST have a `pub core: CompilerCore<'a>` field.
 /// Pipeline functions access it directly for shared state.
-///
-/// Only truly arch-specific behaviour lives on this trait: instruction
-/// encoding, register mapping, prologue/epilogue, branch mechanics.
 pub(crate) trait ArchBackend<'a>: Sized {
     /// Architecture name for error messages (e.g. "arm64").
     const NAME: &'static str;
@@ -41,20 +44,18 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Prologue / epilogue / tail ───────────────────────────────────────
 
-    fn emit_prologue(&mut self);
-    fn emit_epilogue(&mut self);
+    fn lower_prologue(&mut self);
+    fn lower_epilogue(&mut self);
+    fn lower_return_ok_status(&mut self);
 
-    /// Emit the return-ok status value (e.g. `MOV X0, #0` or `XOR EAX, EAX`).
-    fn emit_return_ok_status(&mut self);
+    // ── Block lowering ───────────────────────────────────────────────────
 
-    // ── Block emission ───────────────────────────────────────────────────
-
-    /// Emit a single block's instructions and terminator.
+    /// Lower a single block's instructions and terminator.
     ///
-    /// Default: iterate `block.ops` calling `emit_inst`, then `emit_terminator`.
+    /// Default: iterate `block.ops` calling `lower_inst`, then `lower_terminator`.
     /// Backends override this for peephole patterns (e.g. arm64 float-compare
     /// fusion, zero-store pair fusion).
-    fn emit_block(
+    fn lower_block(
         &mut self,
         block: &MachineBlock,
         fallthrough: Option<MachineBlockId>,
@@ -64,18 +65,18 @@ pub(crate) trait ArchBackend<'a>: Sized {
         self.core_mut().reset_block_fp_state(block)?;
         for (index, inst) in block.ops.iter().enumerate() {
             self.core_mut().current_op_index = Some(index);
-            self.emit_inst(inst)?;
+            self.lower_inst(inst)?;
         }
         self.core_mut().current_op_index = None;
-        let result = self.emit_terminator(&block.terminator, fallthrough);
+        let result = self.lower_terminator(&block.terminator, fallthrough);
         self.core_mut().current_block = None;
         result
     }
 
-    // ── Instruction & terminator emission (fully arch-specific) ──────────
+    // ── Instruction & terminator lowering (fully arch-specific) ──────────
 
-    fn emit_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError>;
-    fn emit_terminator(
+    fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError>;
+    fn lower_terminator(
         &mut self,
         term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
@@ -83,46 +84,49 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Trap & branch ────────────────────────────────────────────────────
 
-    fn emit_trap(&mut self, kind: MachineTrapKind);
-
-    /// Emit an unconditional branch to a label (with fixup).
-    fn emit_unconditional_branch(&mut self, label: usize);
+    fn lower_trap(&mut self, kind: MachineTrapKind);
+    fn lower_unconditional_branch(&mut self, label: usize);
 
     /// Resolve all branch fixups after code generation is complete.
     fn patch_fixups(&mut self) -> Result<(), WasmError>;
 
-    // ── Parallel move primitives ─────────────────────────────────────────
-    // The cycle-resolution algorithm is shared (in pipeline.rs);
-    // these are the arch-specific move primitives it calls.
+    // ── Scratch allocation for parallel-move protocol ───────────────────
 
-    fn emit_source_move(
+    fn alloc_gp_scratch(&mut self) -> u8;
+    fn free_gp_scratch(&mut self, id: u8);
+    fn alloc_fp_scratch(&mut self) -> u8;
+    fn free_fp_scratch(&mut self, id: u8);
+
+    // ── Parallel move primitives ─────────────────────────────────────────
+
+    fn lower_source_move(
         &mut self,
         dst: MachineBlockParam,
         src: ParallelSource,
     ) -> Result<(), WasmError>;
 
-    fn emit_gp_cycle_break(
+    fn lower_gp_cycle_break(
         &mut self,
         dst: MachineReg,
         src: MachineReg,
+        scratch_id: u8,
     ) -> Result<(), WasmError>;
 
-    fn emit_fp_cycle_break(
+    fn lower_fp_cycle_break(
         &mut self,
         dst: MachineBlockParam,
         src: MachineReg,
         float_width: Option<MachineFloatWidth>,
+        scratch_id: u8,
     ) -> Result<(), WasmError>;
 
     // ── Linking ──────────────────────────────────────────────────────────
 
-    /// Emit NOP/INT3 padding in the executable code buffer.
+    /// Write NOP/INT3 padding into the executable code buffer (true emission).
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize);
 
-    /// The per-function compiled entry type (e.g. CompiledArm64Entry).
     type CompiledEntry: Clone + core::fmt::Debug;
 
-    /// Construct a CompiledEntry from emitted function metadata.
     fn make_entry(
         buf: &CodeBuffer,
         emitted: &super::pipeline::EmittedFunction,

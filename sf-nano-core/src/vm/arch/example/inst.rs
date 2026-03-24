@@ -34,7 +34,7 @@ use crate::{
 };
 
 use super::{
-    abi::RegisterPlan,
+    abi,
     enc,
     operands::{PreparedFp, PreparedGp},
     reg::{FpReg, GpReg},
@@ -65,7 +65,7 @@ fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<GpReg, WasmError> {
             "expected GP register, got FP machine reg {}", reg.0
         )));
     }
-    RegisterPlan::map_gp(reg)
+    abi::map_gp(reg)
 }
 
 /// Map a MachineReg to a physical FP register.
@@ -76,7 +76,7 @@ fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<FpReg, WasmError> {
         .ok_or_else(|| WasmError::invalid(alloc::format!(
             "expected FP register, got machine reg {}", reg.0
         )))?;
-    RegisterPlan::map_fp(index).ok_or_else(|| {
+    abi::map_fp(index).ok_or_else(|| {
         WasmError::invalid(alloc::format!(
             "example backend has no FP mapping for machine reg {}", reg.0
         ))
@@ -127,7 +127,7 @@ fn prepare_fp<'p>(
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     gp_pool: &ScratchPool<GpReg, 2>,
-    fp_pool: &'p ScratchPool<FpReg, 2>,
+    fp_pool: &'p ScratchPool<FpReg, 3>,
     _width: MachineFloatWidth,
     value: MachineValue,
 ) -> Result<PreparedFp<'p>, WasmError> {
@@ -163,7 +163,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     // ── Instruction dispatch ─────────────────────────────────────────────
 
-    pub(super) fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
+    pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
             MachineInstKind::Move { dst, src, ty } => {
                 self.lower_move(*ty, *dst, *src)
@@ -371,7 +371,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     // ── Parallel-move source move ────────────────────────────────────────
 
-    pub(super) fn lower_source_move(
+    pub(super) fn lower_source_move_dispatch(
         &mut self,
         dst: MachineBlockParam,
         src: ParallelSource,
@@ -387,8 +387,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
                     let src_gp = self.map_gp_reg(reg)?;
                     self.core.text.emit_u32(enc::fmov_d_from_gp(dst_fp, src_gp));
                 }
-                ParallelSource::FpTemp(_) => {
-                    let temp = RegisterPlan::TEMPS.fp_cycle_break;
+                ParallelSource::FpTemp(id, _) => {
+                    let temp = self.fp_scratch.reg(id);
                     self.core.text.emit_u32(enc::fmov_d(dst_fp, temp));
                 }
                 ParallelSource::Imm(bits) => {
@@ -396,8 +396,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
                     materialize_u64_into(&mut self.core.text, *gp, bits);
                     self.core.text.emit_u32(enc::fmov_d_from_gp(dst_fp, *gp));
                 }
-                ParallelSource::GpTemp => {
-                    let temp = RegisterPlan::TEMPS.gp_cycle_break;
+                ParallelSource::GpTemp(id) => {
+                    let temp = self.gp_scratch.reg(id);
                     self.core.text.emit_u32(enc::fmov_d_from_gp(dst_fp, temp));
                 }
             }
@@ -418,12 +418,12 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 ParallelSource::Imm(v) => {
                     materialize_u64_into(&mut self.core.text, dst_gp, v);
                 }
-                ParallelSource::GpTemp => {
-                    let temp = RegisterPlan::TEMPS.gp_cycle_break;
+                ParallelSource::GpTemp(id) => {
+                    let temp = self.gp_scratch.reg(id);
                     self.core.text.emit_u32(enc::mov_reg_64(dst_gp, temp));
                 }
-                ParallelSource::FpTemp(_) => {
-                    let temp = RegisterPlan::TEMPS.fp_cycle_break;
+                ParallelSource::FpTemp(id, _) => {
+                    let temp = self.fp_scratch.reg(id);
                     self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, temp));
                 }
             }

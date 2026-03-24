@@ -33,7 +33,7 @@ impl PreparedGp<'_> {
 
 pub(super) enum PreparedFp<'a> {
     Mapped(FpReg),
-    Scratch(ScratchGuard<'a, FpReg, 2>),
+    Scratch(ScratchGuard<'a, FpReg, 3>),
 }
 
 impl PreparedFp<'_> {

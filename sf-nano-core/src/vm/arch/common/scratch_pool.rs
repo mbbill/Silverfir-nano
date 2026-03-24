@@ -64,6 +64,37 @@ impl<R: Copy, const N: usize> ScratchPool<R, N> {
         panic!("ScratchPool: all {} registers are in use", N);
     }
 
+    /// Allocate a scratch register without RAII, returning its pool index.
+    /// The caller must later call `free_index()` with the same index.
+    ///
+    /// Use this only for protocol-scoped allocations (e.g. cycle-break temps)
+    /// where the lifetime spans multiple trait method calls and RAII guards
+    /// cannot cross the borrow boundary. Prefer `scoped_alloc()` everywhere else.
+    pub(crate) fn alloc(&self) -> u8 {
+        let mask = self.in_use.get();
+        let mut cursor = self.cursor.get() as usize;
+        for _ in 0..N {
+            let idx = cursor % N;
+            cursor += 1;
+            if mask & (1 << idx) == 0 {
+                self.in_use.set(mask | (1 << idx));
+                self.cursor.set(cursor as u8);
+                return idx as u8;
+            }
+        }
+        panic!("ScratchPool: all {} registers are in use", N);
+    }
+
+    /// Free a scratch register allocated by `alloc()`.
+    pub(crate) fn free_index(&self, idx: u8) {
+        self.free(idx);
+    }
+
+    /// Get the physical register at a pool index (allocated by `alloc()`).
+    pub(crate) fn reg(&self, idx: u8) -> R {
+        self.regs[idx as usize]
+    }
+
     /// Assert that all scratch registers have been freed.
     /// Called between instructions to catch leaks.
     #[inline]

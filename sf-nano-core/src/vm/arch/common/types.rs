@@ -80,8 +80,11 @@ pub(crate) enum ParallelSource {
         float_width: Option<MachineFloatWidth>,
     },
     Imm(u64),
-    GpTemp,
-    FpTemp(MachineFloatWidth),
+    /// GP cycle-break temp. The `u8` is the scratch pool index
+    /// allocated by `alloc_gp_scratch` and freed by `free_gp_scratch`.
+    GpTemp(u8),
+    /// FP cycle-break temp. The `u8` is the scratch pool index.
+    FpTemp(u8, MachineFloatWidth),
 }
 
 impl From<u64> for ParallelSource {
