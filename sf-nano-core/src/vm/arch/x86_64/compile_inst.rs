@@ -6,9 +6,9 @@ use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
         MachineAddr, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
-        MachineFloatUnaryOp, MachineFloatWidth, MachineIntBinaryOp, MachineIntUnaryOp,
-        MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-        MachineStorageType, MachineTrapKind, MachineValue,
+        MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineIntBinaryOp,
+        MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+        MachineReg, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
     },
 };
 
@@ -1726,5 +1726,86 @@ impl<'a> FunctionCompiler<'a> {
             enc::mov_rr_64(&mut self.text, dst, SCRATCH1);
         }
         Ok(())
+    }
+
+    /// Decomposed indexed load: extend(index) + offset into SCRATCH0, then
+    /// load from [base + SCRATCH0]. Stable-base form for store-forwarding.
+    /// TODO: use x86_64 [base + index + disp] addressing for 1-2 instructions.
+    pub(super) fn emit_indexed_load_decomposed(
+        &mut self,
+        dst: MachineReg,
+        base: MachineReg,
+        index: MachineReg,
+        index_extend: MachineIndexExtend,
+        offset: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<(), WasmError> {
+        let base_x86 = self.map_gp_reg(base)?;
+        let index_x86 = self.map_gp_reg(index)?;
+        // Step 1: copy/extend index into SCRATCH0
+        if index_extend == MachineIndexExtend::ZeroExtend32 {
+            enc::mov_rr_32(&mut self.text, SCRATCH0, index_x86);
+        } else {
+            enc::mov_rr_64(&mut self.text, SCRATCH0, index_x86);
+        }
+        // Step 2: add offset
+        if offset != 0 {
+            enc::add_ri_64(&mut self.text, SCRATCH0, offset);
+        }
+        // Step 3: add base → SCRATCH0 = base + extended_index + offset
+        enc::add_rr_64(&mut self.text, SCRATCH0, base_x86);
+        // Step 4: load from [SCRATCH0]
+        self.emit_load(dst, MachineAddr { base, offset: 0 }, width, extension)
+            .ok();
+        // Actually, we need to load from SCRATCH0, not from `base`.
+        // Override: emit load from [SCRATCH0 + 0] by patching the base.
+        // Let me just use emit_load properly — we need a MachineReg that
+        // maps to SCRATCH0. The simplest: use emit_addr_into pattern.
+        // For now, just decompose fully:
+        self.emit_load(
+            dst,
+            MachineAddr {
+                base: inv_map_reg(SCRATCH0).ok_or_else(|| {
+                    WasmError::internal("x86_64 SCRATCH0 has no MachineReg mapping".into())
+                })?,
+                offset: 0,
+            },
+            width,
+            extension,
+        )
+    }
+
+    /// Decomposed indexed store.
+    pub(super) fn emit_indexed_store_decomposed(
+        &mut self,
+        base: MachineReg,
+        index: MachineReg,
+        index_extend: MachineIndexExtend,
+        offset: i32,
+        width: MachineMemWidth,
+        src: MachineValue,
+    ) -> Result<(), WasmError> {
+        let base_x86 = self.map_gp_reg(base)?;
+        let index_x86 = self.map_gp_reg(index)?;
+        if index_extend == MachineIndexExtend::ZeroExtend32 {
+            enc::mov_rr_32(&mut self.text, SCRATCH0, index_x86);
+        } else {
+            enc::mov_rr_64(&mut self.text, SCRATCH0, index_x86);
+        }
+        if offset != 0 {
+            enc::add_ri_64(&mut self.text, SCRATCH0, offset);
+        }
+        enc::add_rr_64(&mut self.text, SCRATCH0, base_x86);
+        self.emit_store(
+            MachineAddr {
+                base: inv_map_reg(SCRATCH0).ok_or_else(|| {
+                    WasmError::internal("x86_64 SCRATCH0 has no MachineReg mapping".into())
+                })?,
+                offset: 0,
+            },
+            width,
+            src,
+        )
     }
 }

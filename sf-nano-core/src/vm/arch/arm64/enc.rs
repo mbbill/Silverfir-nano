@@ -166,16 +166,7 @@ pub(super) fn add_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(1, 0, 0, rd, rn, rm)
 }
 
-/// `ADD Xd, Xn, Wm, UXTW` — 64-bit add with 32-bit zero-extending source.
-pub(super) fn add_ext_uxtw_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    // Add/sub (extended register): sf=1 op=0 S=0 opt=00 Rm option=010(UXTW) imm3=000 Rn Rd
-    (1 << 31)          // sf = 1 (64-bit)
-        | (0b01011001 << 21) // op=0 S=0 + opcode class
-        | (rm.idx() << 16)
-        | (0b010 << 13)      // option = UXTW
-        | (rn.idx() << 5)
-        | rd.idx()
-}
+
 
 pub(super) fn sub_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(0, 1, 0, rd, rn, rm)
@@ -370,24 +361,7 @@ pub(super) fn asr_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
 pub(super) fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b01, rt, rn, imm12)
 }
-pub(super) fn ldr_32(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b10, 0b01, rt, rn, imm12)
-}
-pub(super) fn ldrb(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b00, 0b01, rt, rn, imm12)
-}
-pub(super) fn ldrh(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b01, 0b01, rt, rn, imm12)
-}
-pub(super) fn ldrsb_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b00, 0b10, rt, rn, imm12)
-}
-pub(super) fn ldrsh_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b01, 0b10, rt, rn, imm12)
-}
-pub(super) fn ldrsw(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b10, 0b10, rt, rn, imm12)
-}
+
 
 pub(super) fn ldr_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xf860_6800, rt, rn, rm, false)
@@ -455,15 +429,7 @@ pub(super) fn ldr_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32
 pub(super) fn str_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b00, rt, rn, imm12)
 }
-pub(super) fn str_32(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b10, 0b00, rt, rn, imm12)
-}
-pub(super) fn strb(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b00, 0b00, rt, rn, imm12)
-}
-pub(super) fn strh(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
-    ldst_unsigned_offset(0b01, 0b00, rt, rn, imm12)
-}
+
 
 pub(super) fn ldr_reg_32(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xb860_6800, rt, rn, rm, false)

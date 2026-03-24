@@ -746,16 +746,17 @@ impl<'a> FunctionCompiler<'a> {
                 if *offset == 0 {
                     self.emit_indexed_load(*dst, *base, *index, *width, *extension, false, uxtw)
                 } else {
-                    // offset != 0: emit `add SCRATCH0, base, index [,UXTW]`
-                    // then load from `[SCRATCH0 + offset]`.
-                    let base_arm = self.map_gp_reg(*base)?;
-                    let index_arm = self.map_gp_reg(*index)?;
-                    if uxtw {
-                        self.text.emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base_arm, index_arm));
-                    } else {
-                        self.text.emit_u32(enc::add_reg_64(SCRATCH0, base_arm, index_arm));
-                    }
-                    self.emit_load_from_base(*dst, SCRATCH0, *offset, *width, *extension)
+                    // Stable-base form: fold the offset into the index
+                    // register, then use a register-indexed load with the
+                    // ORIGINAL memory base. This keeps the base register
+                    // stable across store/load pairs so the CPU's address
+                    // predictor can match them for store-to-load forwarding.
+                    //
+                    //   MOV/UXTW  SCRATCH0, W_index
+                    //   ADD       SCRATCH0, SCRATCH0, #offset
+                    //   LDR       dst, [base, SCRATCH0]
+                    self.emit_index_with_offset(*index, uxtw, *offset)?;
+                    self.emit_indexed_load_arm64(*dst, *base, SCRATCH0, *width, *extension)
                 }
             }
             MachineInstKind::IndexedStore {
@@ -770,14 +771,8 @@ impl<'a> FunctionCompiler<'a> {
                 if *offset == 0 {
                     self.emit_indexed_store(*base, *index, *width, *src, false, uxtw)
                 } else {
-                    let base_arm = self.map_gp_reg(*base)?;
-                    let index_arm = self.map_gp_reg(*index)?;
-                    if uxtw {
-                        self.text.emit_u32(enc::add_ext_uxtw_64(SCRATCH0, base_arm, index_arm));
-                    } else {
-                        self.text.emit_u32(enc::add_reg_64(SCRATCH0, base_arm, index_arm));
-                    }
-                    self.emit_store_to_base(SCRATCH0, *offset, *width, *src)
+                    self.emit_index_with_offset(*index, uxtw, *offset)?;
+                    self.emit_indexed_store_arm64(*base, SCRATCH0, *width, *src)
                 }
             }
         }

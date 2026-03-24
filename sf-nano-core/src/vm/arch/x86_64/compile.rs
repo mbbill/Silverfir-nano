@@ -734,8 +734,29 @@ impl<'a> FunctionCompiler<'a> {
             MachineInstKind::ReinterpretI64PairToF64 { .. } => Err(WasmError::internal(
                 "x86_64 backend received ReinterpretI64PairToF64; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
-            MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
-                todo!("x86_64: emit IndexedLoad / IndexedStore")
+            MachineInstKind::IndexedLoad {
+                dst,
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                extension,
+            } => {
+                // Decompose: extend(index) + offset → scratch, then
+                // load from [base + scratch].
+                // TODO: use x86_64's [base + index + disp] addressing for 1-2 instr.
+                self.emit_indexed_load_decomposed(*dst, *base, *index, *index_extend, *offset, *width, *extension)
+            }
+            MachineInstKind::IndexedStore {
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                src,
+            } => {
+                self.emit_indexed_store_decomposed(*base, *index, *index_extend, *offset, *width, *src)
             }
         }
     }

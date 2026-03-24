@@ -355,8 +355,25 @@ pub(super) fn compile_inst(
         MachineInstKind::CallHelper(call) => {
             compile_call_helper(fc, call)?;
         }
-        MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
-            todo!("armv7a: emit IndexedLoad / IndexedStore")
+        MachineInstKind::IndexedLoad {
+            dst, base, index, offset, width, extension, ..
+        } => {
+            // Decompose: base + index + offset → SCRATCH0, then load from [SCRATCH0].
+            // ARMv7 is 32-bit — no UXTW needed (index_extend is ignored).
+            let base_hw = map_reg(*base)?;
+            let index_hw = map_reg(*index)?;
+            fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
+            let scratch_mr = inv_map_reg(SCRATCH0);
+            compile_load(fc, *dst, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *extension)?;
+        }
+        MachineInstKind::IndexedStore {
+            base, index, offset, width, src, ..
+        } => {
+            let base_hw = map_reg(*base)?;
+            let index_hw = map_reg(*index)?;
+            fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
+            let scratch_mr = inv_map_reg(SCRATCH0);
+            compile_store(fc, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *src)?;
         }
     }
     Ok(())

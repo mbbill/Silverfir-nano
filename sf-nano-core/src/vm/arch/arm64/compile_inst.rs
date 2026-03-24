@@ -535,158 +535,103 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
-    /// Emit a load from `[base_arm64 + offset]` where `base_arm64` is an
-    /// already-mapped ARM64 register (typically SCRATCH0 after a UXTW add).
-    pub(super) fn emit_load_from_base(
+    /// Prepare SCRATCH0 = zext_or_copy(index) + offset.
+    /// Used by the stable-base indexed memory emit path.
+    pub(super) fn emit_index_with_offset(
+        &mut self,
+        index: MachineReg,
+        uxtw: bool,
+        offset: i32,
+    ) -> Result<(), WasmError> {
+        let index_arm = self.map_gp_reg(index)?;
+        if uxtw {
+            self.text.emit_u32(enc::mov_reg_32(SCRATCH0, index_arm));
+        } else {
+            self.text.emit_u32(enc::mov_reg_64(SCRATCH0, index_arm));
+        }
+        let off = offset as i64;
+        if off > 0 && off < 4096 {
+            self.text.emit_u32(enc::add_imm_64(SCRATCH0, SCRATCH0, off as u32));
+        } else if off < 0 && -off < 4096 {
+            self.text.emit_u32(enc::sub_imm_64(SCRATCH0, SCRATCH0, (-off) as u32));
+        } else {
+            super::compile_helpers::materialize_u64_into(&mut self.text, SCRATCH1, off as u64);
+            self.text.emit_u32(enc::add_reg_64(SCRATCH0, SCRATCH0, SCRATCH1));
+        }
+        Ok(())
+    }
+
+    /// Register-indexed load using pre-mapped ARM64 index register.
+    /// `base` is a MachineReg (mapped normally); `index_arm` is already an Arm64Reg.
+    pub(super) fn emit_indexed_load_arm64(
         &mut self,
         dst: MachineReg,
-        base: Arm64Reg,
-        offset: i32,
+        base: MachineReg,
+        index_arm: Arm64Reg,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<(), WasmError> {
-        use super::compile_helpers::mem_width_bytes;
-        // FP loads: compute full address, then use regular FP load.
+        let base_arm = self.map_gp_reg(base)?;
         if self.is_fp_reg(dst) {
-            // SCRATCH0 already holds the UXTW base; add offset to it.
-            if offset != 0 {
-                let off = offset as i64;
-                if off > 0 && off < 4096 {
-                    self.text.emit_u32(enc::add_imm_64(base, base, off as u32));
-                } else if off < 0 && -off < 4096 {
-                    self.text.emit_u32(enc::sub_imm_64(base, base, (-off) as u32));
-                } else {
-                    super::compile_helpers::materialize_u64_into(&mut self.text, SCRATCH1, off.unsigned_abs());
-                    self.text.emit_u32(if off >= 0 {
-                        enc::add_reg_64(base, base, SCRATCH1)
-                    } else {
-                        enc::sub_reg_64(base, base, SCRATCH1)
-                    });
-                }
-            }
             let dst_fp = self.map_fp_reg(dst)?;
-            let tracked_width = match width {
-                MachineMemWidth::U32 => {
-                    self.text.emit_u32(enc::ldr_s_reg(dst_fp, base, Arm64Reg::Xzr, false));
-                    MachineFloatWidth::F32
-                }
-                MachineMemWidth::U64 => {
-                    self.text.emit_u32(enc::ldr_d_reg(dst_fp, base, Arm64Reg::Xzr, false));
-                    MachineFloatWidth::F64
-                }
+            let inst = match width {
+                MachineMemWidth::U32 => enc::ldr_s_reg(dst_fp, base_arm, index_arm, false),
+                MachineMemWidth::U64 => enc::ldr_d_reg(dst_fp, base_arm, index_arm, false),
                 _ => return Err(WasmError::invalid(
-                    "arm64 unsupported FP load width in emit_load_from_base".into(),
-                )),
-            };
-            self.set_fp_reg_width(dst, tracked_width)?;
-            return Ok(());
-        }
-        let off = offset as i64;
-        let scale = mem_width_bytes(width);
-        let dst = self.map_gp_reg(dst)?;
-        // Try scaled unsigned immediate: offset must be positive, aligned, and < 4096*scale.
-        if off >= 0 && (off % scale) == 0 && (off / scale) < 4096 {
-            let imm12 = (off / scale) as u32;
-            let inst = match (width, extension) {
-                (MachineMemWidth::U8, MachineLoadExtension::None)
-                | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => enc::ldrb(dst, base, imm12),
-                (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => enc::ldrsb_64(dst, base, imm12),
-                (MachineMemWidth::U16, MachineLoadExtension::None)
-                | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => enc::ldrh(dst, base, imm12),
-                (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => enc::ldrsh_64(dst, base, imm12),
-                (MachineMemWidth::U32, MachineLoadExtension::None)
-                | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => enc::ldr_32(dst, base, imm12),
-                (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => enc::ldrsw(dst, base, imm12),
-                (MachineMemWidth::U64, MachineLoadExtension::None)
-                | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => enc::ldr_64(dst, base, imm12),
-                _ => {
-                    return Err(WasmError::invalid(
-                        "arm64 unsupported load extension in emit_load_from_base".into(),
-                    ))
-                }
+                    "arm64: narrow FP indexed load not supported".into())),
             };
             self.text.emit_u32(inst);
+            let tracked = if width == MachineMemWidth::U32 { MachineFloatWidth::F32 } else { MachineFloatWidth::F64 };
+            self.set_fp_reg_width(dst, tracked)?;
             return Ok(());
         }
-        // Fallback: add offset to base, then load with zero offset.
-        // Large offset: add offset to base scratch register then do a zero-offset load.
-        if off > 0 && off < 4096 {
-            self.text.emit_u32(enc::add_imm_64(base, base, off as u32));
-        } else if off < 0 && -off < 4096 {
-            self.text.emit_u32(enc::sub_imm_64(base, base, (-off) as u32));
-        } else {
-            super::compile_helpers::materialize_u64_into(&mut self.text, SCRATCH1, off.unsigned_abs());
-            self.text.emit_u32(if off >= 0 {
-                enc::add_reg_64(base, base, SCRATCH1)
-            } else {
-                enc::sub_reg_64(base, base, SCRATCH1)
-            });
-        }
+        let dst_arm = self.map_gp_reg(dst)?;
         let inst = match (width, extension) {
             (MachineMemWidth::U8, MachineLoadExtension::None)
-            | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => enc::ldrb_reg(dst, base, Arm64Reg::Xzr),
-            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => enc::ldrsb_reg_64(dst, base, Arm64Reg::Xzr),
+            | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => enc::ldrb_reg(dst_arm, base_arm, index_arm),
+            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => enc::ldrsb_reg_64(dst_arm, base_arm, index_arm),
             (MachineMemWidth::U16, MachineLoadExtension::None)
-            | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => enc::ldrh_reg(dst, base, Arm64Reg::Xzr),
-            (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => enc::ldrsh_reg_64(dst, base, Arm64Reg::Xzr),
+            | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => enc::ldrh_reg(dst_arm, base_arm, index_arm),
+            (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => enc::ldrsh_reg_64(dst_arm, base_arm, index_arm),
             (MachineMemWidth::U32, MachineLoadExtension::None)
-            | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => enc::ldr_reg_32(dst, base, Arm64Reg::Xzr),
-            (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => enc::ldrsw_reg(dst, base, Arm64Reg::Xzr),
+            | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => enc::ldr_reg_32(dst_arm, base_arm, index_arm),
+            (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => enc::ldrsw_reg(dst_arm, base_arm, index_arm),
             (MachineMemWidth::U64, MachineLoadExtension::None)
-            | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => enc::ldr_reg_64(dst, base, Arm64Reg::Xzr),
-            _ => {
-                return Err(WasmError::invalid(
-                    "arm64 unsupported load extension in emit_load_from_base".into(),
-                ))
-            }
+            | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => enc::ldr_reg_64(dst_arm, base_arm, index_arm),
+            _ => return Err(WasmError::invalid("arm64: unsupported indexed load extension".into())),
         };
         self.text.emit_u32(inst);
         Ok(())
     }
 
-    /// Emit a store to `[base_arm64 + offset]` where `base_arm64` is an
-    /// already-mapped ARM64 register (typically SCRATCH0 after a UXTW add).
-    pub(super) fn emit_store_to_base(
+    /// Register-indexed store using pre-mapped ARM64 index register.
+    pub(super) fn emit_indexed_store_arm64(
         &mut self,
-        base: Arm64Reg,
-        offset: i32,
+        base: MachineReg,
+        index_arm: Arm64Reg,
         width: MachineMemWidth,
         src: MachineValue,
     ) -> Result<(), WasmError> {
-        use super::compile_helpers::mem_width_bytes;
-        let off = offset as i64;
-        let scale = mem_width_bytes(width);
-        let src_reg = self.materialize_value(SCRATCH1, src)?;
-        if off >= 0 && (off % scale) == 0 && (off / scale) < 4096 {
-            let imm12 = (off / scale) as u32;
-            let inst = match width {
-                MachineMemWidth::U8 => enc::strb(src_reg, base, imm12),
-                MachineMemWidth::U16 => enc::strh(src_reg, base, imm12),
-                MachineMemWidth::U32 => enc::str_32(src_reg, base, imm12),
-                MachineMemWidth::U64 => enc::str_64(src_reg, base, imm12),
-            };
-            self.text.emit_u32(inst);
-            return Ok(());
+        let base_arm = self.map_gp_reg(base)?;
+        if let MachineValue::Reg(src_reg) = src {
+            if self.is_fp_reg(src_reg) {
+                let src_fp = self.map_fp_reg(src_reg)?;
+                let inst = match width {
+                    MachineMemWidth::U32 => enc::str_s_reg(src_fp, base_arm, index_arm, false),
+                    MachineMemWidth::U64 => enc::str_d_reg(src_fp, base_arm, index_arm, false),
+                    _ => return Err(WasmError::invalid(
+                        "arm64: narrow FP indexed store not supported".into())),
+                };
+                self.text.emit_u32(inst);
+                return Ok(());
+            }
         }
-        if off > 0 && off < 4096 {
-            self.text.emit_u32(enc::add_imm_64(base, base, off as u32));
-        } else if off < 0 && -off < 4096 {
-            self.text.emit_u32(enc::sub_imm_64(base, base, (-off) as u32));
-        } else {
-            super::compile_helpers::materialize_u64_into(&mut self.text, SCRATCH1, off.unsigned_abs());
-            self.text.emit_u32(if off >= 0 {
-                enc::add_reg_64(base, base, SCRATCH1)
-            } else {
-                enc::sub_reg_64(base, base, SCRATCH1)
-            });
-        }
-        // Re-materialize src since SCRATCH1 may have been clobbered for offset.
-        let src_reg = self.materialize_value(SCRATCH1, src)?;
+        let src_arm = self.materialize_value(SCRATCH1, src)?;
         let inst = match width {
-            MachineMemWidth::U8 => enc::strb_reg(src_reg, base, Arm64Reg::Xzr),
-            MachineMemWidth::U16 => enc::strh_reg(src_reg, base, Arm64Reg::Xzr),
-            MachineMemWidth::U32 => enc::str_reg_32(src_reg, base, Arm64Reg::Xzr),
-            MachineMemWidth::U64 => enc::str_reg_64(src_reg, base, Arm64Reg::Xzr),
+            MachineMemWidth::U8 => enc::strb_reg(src_arm, base_arm, index_arm),
+            MachineMemWidth::U16 => enc::strh_reg(src_arm, base_arm, index_arm),
+            MachineMemWidth::U32 => enc::str_reg_32(src_arm, base_arm, index_arm),
+            MachineMemWidth::U64 => enc::str_reg_64(src_arm, base_arm, index_arm),
         };
         self.text.emit_u32(inst);
         Ok(())
