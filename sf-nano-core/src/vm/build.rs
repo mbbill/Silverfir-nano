@@ -233,9 +233,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     #[cfg(target_arch = "aarch64")]
     let arm64_entries = match active_backend {
         arch::NativeBackend::Arm64 => {
-            // Old backend (commented out for comparison):
-            // Some(arch::arm64::compile::compile_module(module, &compiled)?)
-            Some(arch::common::pipeline::compile_module::<arch::arm64_new::backend::Arm64Backend>(module, &compiled)?)
+            Some(arch::common::pipeline::compile_module::<arch::arm64::backend::Arm64Backend>(module, &compiled)?)
         }
         #[cfg(any(
             debug_assertions,

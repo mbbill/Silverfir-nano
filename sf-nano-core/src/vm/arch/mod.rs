@@ -9,7 +9,7 @@ use crate::vm::backend::BackendConfig;
 pub(crate) mod common;
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) mod arm64_new;
+pub(crate) mod arm64;
 #[cfg(target_arch = "arm")]
 pub mod armv7a;
 #[cfg(any(
@@ -88,7 +88,7 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         // mapping and ABI constraints stay in the backend-specific ABI/layout
         // code; this function selects policy, not hardware facts.
         #[cfg(target_arch = "aarch64")]
-        NativeBackend::Arm64 => arm64_new::config::compile_backend_config(),
+        NativeBackend::Arm64 => arm64::config::compile_backend_config(),
         #[cfg(target_arch = "arm")]
         NativeBackend::Armv7a => armv7a::config::compile_backend_config(),
         #[cfg(target_arch = "x86_64")]
