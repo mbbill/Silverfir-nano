@@ -561,6 +561,18 @@ impl<'a> FunctionCompiler<'a> {
         Ok(())
     }
 
+    /// Add an immediate offset to an already-mapped ARM64 register in-place.
+    pub(super) fn emit_add_imm_to_reg(&mut self, reg: Arm64Reg, off: i64) {
+        if off > 0 && off < 4096 {
+            self.text.emit_u32(enc::add_imm_64(reg, reg, off as u32));
+        } else if off < 0 && -off < 4096 {
+            self.text.emit_u32(enc::sub_imm_64(reg, reg, (-off) as u32));
+        } else {
+            super::compile_helpers::materialize_u64_into(&mut self.text, SCRATCH1, off as u64);
+            self.text.emit_u32(enc::add_reg_64(reg, reg, SCRATCH1));
+        }
+    }
+
     /// Register-indexed load using pre-mapped ARM64 index register.
     /// `base` is a MachineReg (mapped normally); `index_arm` is already an Arm64Reg.
     pub(super) fn emit_indexed_load_arm64(

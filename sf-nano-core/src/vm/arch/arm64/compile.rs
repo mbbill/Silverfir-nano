@@ -746,17 +746,24 @@ impl<'a> FunctionCompiler<'a> {
                 if *offset == 0 {
                     self.emit_indexed_load(*dst, *base, *index, *width, *extension, false, uxtw)
                 } else {
-                    // Stable-base form: fold the offset into the index
-                    // register, then use a register-indexed load with the
-                    // ORIGINAL memory base. This keeps the base register
-                    // stable across store/load pairs so the CPU's address
-                    // predictor can match them for store-to-load forwarding.
-                    //
-                    //   MOV/UXTW  SCRATCH0, W_index
-                    //   ADD       SCRATCH0, SCRATCH0, #offset
-                    //   LDR       dst, [base, SCRATCH0]
-                    self.emit_index_with_offset(*index, uxtw, *offset)?;
-                    self.emit_indexed_load_arm64(*dst, *base, SCRATCH0, *width, *extension)
+                    // Stable-base form: fold index + offset into a scratch,
+                    // then register-indexed load with the ORIGINAL memory base.
+                    // For GP loads, use dst as the scratch to avoid false
+                    // dependency chains between consecutive loads. For FP
+                    // loads, fall back to SCRATCH0.
+                    let index_arm = self.map_gp_reg(*index)?;
+                    let scratch = if self.is_fp_reg(*dst) {
+                        SCRATCH0
+                    } else {
+                        self.map_gp_reg(*dst)?
+                    };
+                    if uxtw {
+                        self.text.emit_u32(enc::mov_reg_32(scratch, index_arm));
+                    } else {
+                        self.text.emit_u32(enc::mov_reg_64(scratch, index_arm));
+                    }
+                    self.emit_add_imm_to_reg(scratch, *offset as i64);
+                    self.emit_indexed_load_arm64(*dst, *base, scratch, *width, *extension)
                 }
             }
             MachineInstKind::IndexedStore {
