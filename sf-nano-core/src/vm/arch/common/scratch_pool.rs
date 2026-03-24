@@ -1,259 +1,201 @@
-//! Lightweight scratch register pool with round-robin allocation and
-//! scoped RAII guards.
+//! Rotating scratch register pool with explicit ownership.
 //!
-//! The pool owns the physical register table. Callers never see the raw
-//! table — they get registers only through `ScratchGuard`, which frees
-//! the slot on drop.
-//!
-//! Uses `Cell` for interior mutability so that `alloc`/`free` take `&self`,
-//! avoiding borrow conflicts when the pool is a sibling field of the emitter.
+//! Uses interior mutability (`Cell`) so that `scoped_alloc` takes `&self`,
+//! avoiding borrow conflicts when the backend needs `&mut self` for emission
+//! while scratch guards are alive.
 
 use core::cell::Cell;
+use core::fmt;
+use core::ops::Deref;
 
 /// A pool of `N` scratch registers of type `R`.
 ///
-/// `R` is the physical register type (e.g. `Arm64Reg` or `u32` for FP D-regs).
-/// The pool hands out registers via `scoped_alloc()` which returns a guard
-/// that frees the slot on drop.
-///
-/// Round-robin allocation distributes scratch usage across registers to
-/// reduce WAW false-dependency chains in tight loops.
+/// Allocation rotates: even with alloc/free/alloc/free, consecutive allocs
+/// return different registers.
 pub(crate) struct ScratchPool<R: Copy, const N: usize> {
     regs: [R; N],
     in_use: Cell<u8>,
-    next: Cell<u8>,
+    cursor: Cell<u8>,
 }
 
-impl<R: Copy, const N: usize> ScratchPool<R, N> {
-    const _ASSERT_CAPACITY: () = assert!(N <= 8, "ScratchPool supports at most 8 slots");
-
-    #[inline]
-    pub const fn new(regs: [R; N]) -> Self {
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::_ASSERT_CAPACITY;
-        Self {
-            regs,
-            in_use: Cell::new(0),
-            next: Cell::new(0),
-        }
-    }
-
-    /// Allocate a scratch register and return a guard that frees it on drop.
-    ///
-    /// The guard dereferences to `R`, so you can use `*guard` anywhere a
-    /// physical register is needed.
-    ///
-    /// ```ignore
-    /// let s = pool.scoped_alloc();
-    /// text.emit_u32(enc::mov(*s, ...));
-    /// // s freed here on drop
-    /// ```
-    #[inline]
-    pub fn scoped_alloc(&self) -> ScratchGuard<'_, R, N> {
-        let idx = self.alloc_idx();
-        ScratchGuard {
-            pool: self,
-            idx,
-            reg: self.regs[idx],
-        }
-    }
-
-    /// Raw index allocation. Prefer `scoped_alloc()` for automatic cleanup.
-    #[inline]
-    pub fn alloc_idx(&self) -> usize {
-        let bits = self.in_use.get();
-        let start = self.next.get() as usize;
-        for i in 0..N {
-            let idx = (start + i) % N;
-            if bits & (1 << idx) == 0 {
-                self.in_use.set(bits | (1 << idx));
-                self.next.set(((idx + 1) % N) as u8);
-                return idx;
-            }
-        }
-        panic!(
-            "scratch pool exhausted (capacity {}, in_use 0b{:0width$b})",
-            N,
-            bits,
-            width = N
-        );
-    }
-
-    /// Return a scratch slot to the pool by index.
-    #[inline]
-    pub fn free_idx(&self, idx: usize) {
-        debug_assert!(idx < N, "scratch index {} out of range (capacity {})", idx, N);
-        let bits = self.in_use.get();
-        debug_assert!(
-            bits & (1 << idx) != 0,
-            "double-free of scratch index {}",
-            idx
-        );
-        self.in_use.set(bits & !(1 << idx));
-    }
-
-    /// Free all scratch slots. Preserves the round-robin cursor.
-    #[inline]
-    pub fn free_all(&self) {
-        self.in_use.set(0);
-    }
-
-    /// Assert all slots are free. Debug check at instruction boundaries.
-    #[inline]
-    pub fn assert_all_free(&self) {
-        debug_assert_eq!(
-            self.in_use.get(),
-            0,
-            "scratch pool leak: in_use 0b{:0width$b}",
-            self.in_use.get(),
-            width = N
-        );
-    }
-
-    /// Get the physical register for a given pool index.
-    /// Use only for well-known dedicated slots (e.g. parallel-move temp).
-    #[inline]
-    pub fn reg_at(&self, idx: usize) -> R {
-        self.regs[idx]
-    }
-}
-
-impl<R: Copy, const N: usize> core::fmt::Debug for ScratchPool<R, N> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<R: Copy + fmt::Debug, const N: usize> fmt::Debug for ScratchPool<R, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScratchPool")
-            .field("capacity", &N)
-            .field("in_use", &format_args!("0b{:0width$b}", self.in_use.get(), width = N))
-            .field("next", &self.next.get())
+            .field("regs", &self.regs)
+            .field("in_use", &self.in_use.get())
+            .field("cursor", &self.cursor.get())
             .finish()
     }
 }
 
-// ── ScratchGuard ─────────────────────────────────────────────────────────────
+impl<R: Copy, const N: usize> ScratchPool<R, N> {
+    const _ASSERT_SIZE: () = assert!(N <= 8, "ScratchPool supports at most 8 registers");
 
-/// RAII guard that frees a scratch slot when dropped.
-///
-/// Dereferences to the physical register `R`, so `*guard` gives the register
-/// for use in instruction encoding.
-pub(crate) struct ScratchGuard<'a, R: Copy, const N: usize> {
-    pool: &'a ScratchPool<R, N>,
-    idx: usize,
-    reg: R,
-}
+    pub(crate) fn new(regs: [R; N]) -> Self {
+        #[allow(clippy::let_unit_value)]
+        let _ = Self::_ASSERT_SIZE;
+        Self {
+            regs,
+            in_use: Cell::new(0),
+            cursor: Cell::new(0),
+        }
+    }
 
-impl<R: Copy, const N: usize> ScratchGuard<'_, R, N> {
-    /// Explicitly free the pool slot and return the physical register value.
+    /// Allocate a scratch register, returning an RAII guard.
     ///
-    /// Use this at the point where the scratch register's last read occurs.
-    /// The returned `R` is a `Copy` value — safe to keep for later patching
-    /// (which only needs the register identity, not a live hardware register).
-    ///
-    /// Consumes the guard so it cannot be used after release. If you forget
-    /// to call this, `Drop` frees the slot at scope end as a safety net.
+    /// Takes `&self` (not `&mut self`) thanks to interior mutability.
+    /// Panics if all registers are in use.
+    pub(crate) fn scoped_alloc(&self) -> ScratchGuard<'_, R, N> {
+        let mask = self.in_use.get();
+        let mut cursor = self.cursor.get() as usize;
+        for _ in 0..N {
+            let idx = cursor % N;
+            cursor += 1;
+            if mask & (1 << idx) == 0 {
+                self.in_use.set(mask | (1 << idx));
+                self.cursor.set(cursor as u8);
+                return ScratchGuard {
+                    pool: self,
+                    idx: idx as u8,
+                    reg: self.regs[idx],
+                };
+            }
+        }
+        panic!("ScratchPool: all {} registers are in use", N);
+    }
+
+    /// Assert that all scratch registers have been freed.
+    /// Called between instructions to catch leaks.
     #[inline]
-    pub fn release(self) -> R {
-        let reg = self.reg;
-        // Free the slot now, then suppress the Drop.
-        self.pool.free_idx(self.idx);
-        core::mem::forget(self);
-        reg
+    pub(crate) fn assert_all_free(&self) {
+        debug_assert_eq!(
+            self.in_use.get(),
+            0,
+            "ScratchPool: {} register(s) still in use after instruction",
+            self.in_use.get().count_ones()
+        );
+    }
+
+    fn free(&self, idx: u8) {
+        let mask = self.in_use.get();
+        debug_assert!(
+            mask & (1 << idx) != 0,
+            "ScratchPool: double-free of slot {}",
+            idx
+        );
+        self.in_use.set(mask & !(1 << idx));
     }
 }
 
-impl<R: Copy, const N: usize> core::ops::Deref for ScratchGuard<'_, R, N> {
+/// RAII guard for an allocated scratch register. Derefs to `R`.
+/// Frees the pool slot on drop, or explicitly via `release()`.
+pub(crate) struct ScratchGuard<'a, R: Copy, const N: usize> {
+    pool: &'a ScratchPool<R, N>,
+    idx: u8,
+    reg: R,
+}
+
+impl<R: Copy + fmt::Debug, const N: usize> fmt::Debug for ScratchGuard<'_, R, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScratchGuard")
+            .field("idx", &self.idx)
+            .field("reg", &self.reg)
+            .finish()
+    }
+}
+
+impl<R: Copy, const N: usize> Deref for ScratchGuard<'_, R, N> {
     type Target = R;
+
     #[inline]
     fn deref(&self) -> &R {
         &self.reg
     }
 }
 
-impl<R: Copy, const N: usize> Drop for ScratchGuard<'_, R, N> {
+impl<R: Copy, const N: usize> ScratchGuard<'_, R, N> {
+    /// Consume the guard, free the pool slot, return the register value.
+    ///
+    /// Use when you need the register value to outlive the guard
+    /// (e.g. for patching a previously-emitted instruction).
     #[inline]
-    fn drop(&mut self) {
-        self.pool.free_idx(self.idx);
+    pub(crate) fn release(self) -> R {
+        let reg = self.reg;
+        // Free before forgetting so drop doesn't double-free.
+        self.pool.free(self.idx);
+        core::mem::forget(self);
+        reg
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+impl<R: Copy, const N: usize> Drop for ScratchGuard<'_, R, N> {
+    fn drop(&mut self) {
+        self.pool.free(self.idx);
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TestReg(u8);
+
     #[test]
-    fn round_robin_two_slots() {
-        let pool = ScratchPool::new([10u32, 20]);
-        let s = pool.scoped_alloc();
-        assert_eq!(*s, 10);
-        drop(s);
-        let s = pool.scoped_alloc();
-        assert_eq!(*s, 20); // cursor advanced
-        drop(s);
-        let s = pool.scoped_alloc();
-        assert_eq!(*s, 10); // wraps
-        drop(s);
+    fn alloc_returns_different_regs_on_consecutive_alloc_free() {
+        let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
+
+        let g1 = pool.scoped_alloc();
+        assert_eq!(*g1, TestReg(10));
+        drop(g1);
+
+        let g2 = pool.scoped_alloc();
+        assert_eq!(*g2, TestReg(11));
+        drop(g2);
+
+        let g3 = pool.scoped_alloc();
+        assert_eq!(*g3, TestReg(10));
+        drop(g3);
     }
 
     #[test]
-    fn simultaneous_alloc_gives_different_regs() {
-        let pool = ScratchPool::new([10u32, 20]);
-        let a = pool.scoped_alloc();
-        let b = pool.scoped_alloc();
-        assert_ne!(*a, *b);
-    }
+    fn alloc_two_simultaneously() {
+        let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
 
-    #[test]
-    #[should_panic(expected = "scratch pool exhausted")]
-    fn exhaustion_panics() {
-        let pool = ScratchPool::new([10u32, 20]);
-        let _a = pool.scoped_alloc();
-        let _b = pool.scoped_alloc();
-        let _c = pool.scoped_alloc(); // panics
-    }
-
-    #[test]
-    fn scoped_guard_frees_on_drop() {
-        let pool = ScratchPool::new([10u32, 20]);
-        {
-            let _s = pool.scoped_alloc();
-            let _t = pool.scoped_alloc();
-            // both live — pool full
-        }
-        // both dropped — pool empty
+        let g1 = pool.scoped_alloc();
+        let g2 = pool.scoped_alloc();
+        assert_ne!(*g1, *g2);
+        drop(g1);
+        drop(g2);
         pool.assert_all_free();
     }
 
     #[test]
-    fn free_all_preserves_cursor() {
-        let pool = ScratchPool::new([10u32, 20, 30]);
-        let _ = pool.scoped_alloc(); // gets 10
-        pool.free_all();
-        let s = pool.scoped_alloc(); // cursor at 1 → gets 20
-        assert_eq!(*s, 20);
-        pool.free_all();
-        let s = pool.scoped_alloc(); // cursor at 2 → gets 30
-        assert_eq!(*s, 30);
+    #[should_panic(expected = "all 2 registers are in use")]
+    fn alloc_exhaustion_panics() {
+        let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
+        let _g1 = pool.scoped_alloc();
+        let _g2 = pool.scoped_alloc();
+        let _g3 = pool.scoped_alloc(); // should panic
     }
 
     #[test]
-    fn release_frees_and_returns_reg() {
-        let pool = ScratchPool::new([10u32, 20]);
-        let s = pool.scoped_alloc();
-        assert_eq!(*s, 10);
-        let reg = s.release(); // explicitly free
-        assert_eq!(reg, 10);
-        pool.assert_all_free(); // slot is freed
-        // reg is still usable as a Copy value
-        assert_eq!(reg, 10);
+    fn release_returns_reg_and_frees_slot() {
+        let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
+        let g = pool.scoped_alloc();
+        let reg = g.release();
+        assert_eq!(reg, TestReg(10));
+        pool.assert_all_free();
     }
 
     #[test]
-    fn release_then_realloc() {
-        let pool = ScratchPool::new([10u32, 20]);
-        let s = pool.scoped_alloc(); // gets 10
-        let _ = s.release();
-        // Slot freed, cursor at 1. Next alloc gives 20.
-        let s = pool.scoped_alloc();
-        assert_eq!(*s, 20);
+    fn rotation_wraps_around() {
+        let pool = ScratchPool::new([TestReg(0), TestReg(1), TestReg(2)]);
+        for expected in [0, 1, 2, 0, 1, 2, 0] {
+            let g = pool.scoped_alloc();
+            assert_eq!(*g, TestReg(expected));
+            drop(g);
+        }
     }
+
 }

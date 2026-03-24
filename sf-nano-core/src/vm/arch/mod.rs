@@ -20,6 +20,10 @@ pub(crate) mod emulator;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
+#[cfg(debug_assertions)]
+#[allow(dead_code)]
+mod example;
+
 /// Macro for cfg-gating items that require the emulator/reference backend.
 ///
 /// The emulator is available in debug builds (any target) and on targets
