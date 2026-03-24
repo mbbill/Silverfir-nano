@@ -66,10 +66,10 @@ pub fn eval(
         .ok_or_else(|| {
             WasmError::internal("native entry function is missing runtime metadata".into())
         })?;
-    let entry = code.armv7a_entry().ok_or_else(|| {
+    let entry = code.native_entry().ok_or_else(|| {
         WasmError::internal("armv7a native entry is missing finalized code".into())
     })?;
-    let root_return = code.armv7a_root_return().ok_or_else(|| {
+    let root_return = code.native_root_return().ok_or_else(|| {
         WasmError::internal("armv7a native root return continuation is missing".into())
     })?;
 

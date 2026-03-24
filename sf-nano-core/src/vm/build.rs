@@ -233,7 +233,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     #[cfg(target_arch = "aarch64")]
     let arm64_entries = match active_backend {
         arch::NativeBackend::Arm64 => {
-            Some(arch::arm64::compile::compile_module(module, &compiled)?)
+            // Old backend (commented out for comparison):
+            // Some(arch::arm64::compile::compile_module(module, &compiled)?)
+            Some(arch::common::pipeline::compile_module::<arch::arm64_new::backend::Arm64Backend>(module, &compiled)?)
         }
         #[cfg(any(
             debug_assertions,
@@ -417,32 +419,32 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
         #[cfg(target_arch = "aarch64")]
         {
-            let arm64_entry = arm64_entries
+            let native_entry = arm64_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_arm64_entry(
-                arm64_entry.map(|entry| entry.entry),
-                arm64_entry.map(|entry| entry.root_return),
+            code = code.with_entry(
+                native_entry.map(|e| e.entry),
+                native_entry.map(|e| e.root_return),
             );
         }
         #[cfg(target_arch = "arm")]
         {
-            let armv7a_entry = armv7a_entries
+            let native_entry = armv7a_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_armv7a_entry(
-                armv7a_entry.map(|entry| entry.entry),
-                armv7a_entry.map(|entry| entry.root_return),
+            code = code.with_entry(
+                native_entry.map(|e| e.entry),
+                native_entry.map(|e| e.root_return),
             );
         }
         #[cfg(target_arch = "x86_64")]
         {
-            let x86_64_entry = x86_64_entries
+            let native_entry = x86_64_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_x86_64_entry(
-                x86_64_entry.map(|entry| entry.entry),
-                x86_64_entry.map(|entry| entry.root_return),
+            code = code.with_entry(
+                native_entry.map(|e| e.entry),
+                native_entry.map(|e| e.root_return),
             );
         }
         spec.set_native_code(code, NativeCodeCache::compiled());

@@ -13,20 +13,9 @@ use crate::{
     },
 };
 
-#[cfg(target_arch = "aarch64")]
-pub(crate) type Arm64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
-#[cfg(target_arch = "aarch64")]
-pub(crate) type Arm64CodePtr = *const u8;
-
-#[cfg(target_arch = "arm")]
-pub(crate) type Armv7aRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
-#[cfg(target_arch = "arm")]
-pub(crate) type Armv7aCodePtr = *const u8;
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) type X86_64RootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type X86_64CodePtr = *const u8;
+/// Native entry point: identical signature across all architectures.
+pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+pub(crate) type NativeCodePtr = *const u8;
 
 #[derive(Clone, Debug)]
 struct AlignedConstData {
@@ -137,18 +126,8 @@ impl CompiledNativeModule {
 pub(crate) struct NativeCode {
     compiled: Rc<CompiledNativeModule>,
     func_id: MachineFuncId,
-    #[cfg(target_arch = "aarch64")]
-    arm64_entry: Option<Arm64RootEntry>,
-    #[cfg(target_arch = "aarch64")]
-    arm64_root_return: Option<Arm64CodePtr>,
-    #[cfg(target_arch = "arm")]
-    armv7a_entry: Option<Armv7aRootEntry>,
-    #[cfg(target_arch = "arm")]
-    armv7a_root_return: Option<Armv7aCodePtr>,
-    #[cfg(target_arch = "x86_64")]
-    x86_64_entry: Option<X86_64RootEntry>,
-    #[cfg(target_arch = "x86_64")]
-    x86_64_root_return: Option<X86_64CodePtr>,
+    entry: Option<NativeRootEntry>,
+    root_return: Option<NativeCodePtr>,
 }
 
 impl NativeCode {
@@ -157,30 +136,19 @@ impl NativeCode {
         Self {
             compiled,
             func_id,
-            #[cfg(target_arch = "aarch64")]
-            arm64_entry: None,
-            #[cfg(target_arch = "aarch64")]
-            arm64_root_return: None,
-            #[cfg(target_arch = "arm")]
-            armv7a_entry: None,
-            #[cfg(target_arch = "arm")]
-            armv7a_root_return: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_64_entry: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_64_root_return: None,
+            entry: None,
+            root_return: None,
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub(crate) fn with_arm64_entry(
+    pub(crate) fn with_entry(
         mut self,
-        entry: Option<Arm64RootEntry>,
-        root_return: Option<Arm64CodePtr>,
+        entry: Option<NativeRootEntry>,
+        root_return: Option<NativeCodePtr>,
     ) -> Self {
-        self.arm64_entry = entry;
-        self.arm64_root_return = root_return;
+        self.entry = entry;
+        self.root_return = root_return;
         self
     }
 
@@ -199,66 +167,15 @@ impl NativeCode {
         &self.compiled
     }
 
-    #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub(crate) const fn arm64_entry(&self) -> Option<Arm64RootEntry> {
-        self.arm64_entry
+    pub(crate) fn native_entry(&self) -> Option<NativeRootEntry> {
+        self.entry
     }
 
-    #[cfg(target_arch = "aarch64")]
     #[inline]
-    pub(crate) const fn arm64_root_return(&self) -> Option<Arm64CodePtr> {
-        self.arm64_root_return
+    pub(crate) fn native_root_return(&self) -> Option<NativeCodePtr> {
+        self.root_return
     }
-
-    #[cfg(target_arch = "arm")]
-    #[inline]
-    pub(crate) fn with_armv7a_entry(
-        mut self,
-        entry: Option<Armv7aRootEntry>,
-        root_return: Option<Armv7aCodePtr>,
-    ) -> Self {
-        self.armv7a_entry = entry;
-        self.armv7a_root_return = root_return;
-        self
-    }
-
-    #[cfg(target_arch = "arm")]
-    #[inline]
-    pub(crate) const fn armv7a_entry(&self) -> Option<Armv7aRootEntry> {
-        self.armv7a_entry
-    }
-
-    #[cfg(target_arch = "arm")]
-    #[inline]
-    pub(crate) const fn armv7a_root_return(&self) -> Option<Armv7aCodePtr> {
-        self.armv7a_root_return
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub(crate) fn with_x86_64_entry(
-        mut self,
-        entry: Option<X86_64RootEntry>,
-        root_return: Option<X86_64CodePtr>,
-    ) -> Self {
-        self.x86_64_entry = entry;
-        self.x86_64_root_return = root_return;
-        self
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub(crate) const fn x86_64_entry(&self) -> Option<X86_64RootEntry> {
-        self.x86_64_entry
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[inline]
-    pub(crate) const fn x86_64_root_return(&self) -> Option<X86_64CodePtr> {
-        self.x86_64_root_return
-    }
-
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

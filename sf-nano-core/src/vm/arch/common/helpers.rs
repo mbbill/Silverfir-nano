@@ -1,0 +1,148 @@
+use crate::vm::machine::machine_ir::{
+    MachineConvertOp, MachineFloatWidth, MachineMemWidth, MachineProgram, MachineTrapKind,
+};
+
+// ── Trap code mapping ────────────────────────────────────────────────────────
+
+pub(crate) fn trap_code(kind: MachineTrapKind) -> u64 {
+    match kind {
+        MachineTrapKind::Unreachable => 0,
+        MachineTrapKind::MemoryOutOfBounds => 1,
+        MachineTrapKind::TableOutOfBounds => 2,
+        MachineTrapKind::InvalidFunctionReference => 3,
+        MachineTrapKind::IndirectCallTypeMismatch => 4,
+        MachineTrapKind::IntegerDivideByZero => 5,
+        MachineTrapKind::IntegerOverflow => 6,
+        MachineTrapKind::StackOverflow => 7,
+        MachineTrapKind::HelperFailure => 8,
+    }
+}
+
+pub(crate) const MACHINE_TRAP_KIND_COUNT: usize = 9;
+
+pub(crate) fn trap_kind_index(kind: MachineTrapKind) -> usize {
+    trap_code(kind) as usize
+}
+
+// ── Memory width ─────────────────────────────────────────────────────────────
+
+pub(crate) fn mem_width_bytes(width: MachineMemWidth) -> i64 {
+    match width {
+        MachineMemWidth::U8 => 1,
+        MachineMemWidth::U16 => 2,
+        MachineMemWidth::U32 => 4,
+        MachineMemWidth::U64 => 8,
+    }
+}
+
+// ── Convert op helpers ───────────────────────────────────────────────────────
+
+pub(crate) fn convert_op_code(op: MachineConvertOp) -> u64 {
+    match op {
+        MachineConvertOp::I32TruncF32S => 0,
+        MachineConvertOp::I32TruncF32U => 1,
+        MachineConvertOp::I32TruncF64S => 2,
+        MachineConvertOp::I32TruncF64U => 3,
+        MachineConvertOp::I64TruncF32S => 4,
+        MachineConvertOp::I64TruncF32U => 5,
+        MachineConvertOp::I64TruncF64S => 6,
+        MachineConvertOp::I64TruncF64U => 7,
+        MachineConvertOp::I32TruncSatF32S => 8,
+        MachineConvertOp::I32TruncSatF32U => 9,
+        MachineConvertOp::I32TruncSatF64S => 10,
+        MachineConvertOp::I32TruncSatF64U => 11,
+        MachineConvertOp::I64TruncSatF32S => 12,
+        MachineConvertOp::I64TruncSatF32U => 13,
+        MachineConvertOp::I64TruncSatF64S => 14,
+        MachineConvertOp::I64TruncSatF64U => 15,
+        _ => u64::MAX,
+    }
+}
+
+pub(crate) fn convert_result_float_width(op: MachineConvertOp) -> Option<MachineFloatWidth> {
+    Some(match op {
+        MachineConvertOp::F32ConvertI32S
+        | MachineConvertOp::F32ConvertI32U
+        | MachineConvertOp::F32ConvertI64S
+        | MachineConvertOp::F32ConvertI64U
+        | MachineConvertOp::F32DemoteF64
+        | MachineConvertOp::F32ReinterpretI32 => MachineFloatWidth::F32,
+        MachineConvertOp::F64ConvertI32S
+        | MachineConvertOp::F64ConvertI32U
+        | MachineConvertOp::F64ConvertI64S
+        | MachineConvertOp::F64ConvertI64U
+        | MachineConvertOp::F64PromoteF32
+        | MachineConvertOp::F64ReinterpretI64 => MachineFloatWidth::F64,
+        _ => return None,
+    })
+}
+
+// ── FP transient count ───────────────────────────────────────────────────────
+
+pub(crate) fn defaulted_fp_transient_count(program: &MachineProgram) -> usize {
+    if program.fp_transient_count != 0 {
+        return program.fp_transient_count as usize;
+    }
+    let fp_bank_count = program.reg_count.saturating_sub(program.first_fp_reg) as usize;
+    fp_bank_count.min(2)
+}
+
+// ── Page alignment ───────────────────────────────────────────────────────────
+
+/// Align a function start to reduce instruction-cache and iTLB pressure.
+///
+/// 1. Cache-line alignment: round up to 64 bytes.
+/// 2. Page-boundary avoidance: if the function fits within one 16 KB page
+///    but would straddle a boundary, bump to the next page (up to 1 KB pad).
+#[inline]
+pub(crate) fn page_align_function(offset: usize, func_size: usize) -> usize {
+    let aligned = (offset + 63) & !63;
+
+    if func_size == 0 {
+        return aligned;
+    }
+
+    const PAGE_SIZE: usize = 16384;
+    const MAX_PADDING: usize = 1024;
+
+    if func_size <= PAGE_SIZE {
+        let start_page = aligned / PAGE_SIZE;
+        let end_page = (aligned + func_size - 1) / PAGE_SIZE;
+        if start_page != end_page {
+            let next_page = (start_page + 1) * PAGE_SIZE;
+            let padding = next_page - aligned;
+            if padding <= MAX_PADDING {
+                return next_page;
+            }
+        }
+    }
+    aligned
+}
+
+// ── Fallthrough check ────────────────────────────────────────────────────────
+
+use crate::vm::machine::machine_ir::{MachineBlockId, MachineValue};
+
+/// Returns true if jumping to `target` with `args` can be elided because the
+/// target is the physical fallthrough and the args are an identity mapping.
+pub(crate) fn is_fallthrough_edge(
+    target: MachineBlockId,
+    args: &[MachineValue],
+    fallthrough: Option<MachineBlockId>,
+    blocks: &[crate::vm::machine::machine_ir::MachineBlock],
+) -> bool {
+    if fallthrough != Some(target) {
+        return false;
+    }
+    let Some(block) = blocks.get(target.as_usize()) else {
+        return false;
+    };
+    if block.params.len() != args.len() {
+        return false;
+    }
+    block
+        .params
+        .iter()
+        .zip(args.iter())
+        .all(|(param, arg)| matches!(arg, MachineValue::Reg(r) if *r == param.reg))
+}

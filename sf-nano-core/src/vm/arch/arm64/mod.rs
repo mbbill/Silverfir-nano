@@ -2,14 +2,14 @@ mod abi;
 pub(crate) mod compile;
 mod compile_control;
 mod compile_fusion;
-mod compile_helpers;
+pub(crate) mod compile_helpers;
 mod compile_inst;
 #[cfg(test)]
 mod compile_tests;
 pub(crate) mod config;
 mod emit;
-mod enc;
-mod reg;
+pub(crate) mod enc;
+pub(crate) mod reg;
 
 use alloc::vec;
 

@@ -67,7 +67,7 @@ pub(super) fn eval(
             match active_backend {
                 #[cfg(target_arch = "aarch64")]
                 arch::NativeBackend::Arm64 => {
-                    arch::arm64::eval(spec, code, store, args, arch::NativeBackend::Arm64.as_str())
+                    arch::common::eval::eval(spec, code, store, args, arch::NativeBackend::Arm64.as_str())
                 }
                 #[cfg(target_arch = "arm")]
                 arch::NativeBackend::Armv7a => arch::armv7a::eval(
