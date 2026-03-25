@@ -950,13 +950,19 @@ pub(crate) fn clock_time_get(
     args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    let _clock_id = as_i32(&args[0])?;
+    let clock_id = as_i32(&args[0])?;
     let _precision = as_i64(&args[1])?;
     let time_ptr = as_i32(&args[2])? as u32;
 
-    let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
-        Err(_) => 0,
+    let nanos = if clock_id == 0 {
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
+            Err(_) => 0,
+        }
+    } else {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = START.get_or_init(std::time::Instant::now);
+        start.elapsed().as_nanos() as u64
     };
 
     let mem = get_mem(caller)?;
