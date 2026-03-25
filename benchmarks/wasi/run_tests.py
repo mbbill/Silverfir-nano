@@ -104,10 +104,8 @@ TESTS = [
         "cli_args": ["--dir", "."],
         "args": ["speedtest1.wasm", "--memdb", "--nosync", "--journal", "off",
                  "--size", "1000", "--testset", "main"],
-        "pattern": r"^\s*(\d+ - .+?\.{2,}\s+\S+s|TOTAL\.+\s+\S+s)",
+        "pattern": r"^\s*(TOTAL\.+\s+\S+s)",
         "source": "stdout",
-        "multi": True,
-        "separator": "\n    ",
     },
 ]
 
