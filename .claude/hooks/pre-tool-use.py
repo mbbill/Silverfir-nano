@@ -83,6 +83,31 @@ def is_path_allowed(path):
     return False
 
 
+_TMP_PREFIXES = ["/tmp", "/private/tmp"]
+
+def _is_tmp_path(path):
+    """Check if a resolved path falls under /tmp."""
+    if not path:
+        return False
+    try:
+        resolved = os.path.realpath(os.path.expanduser(path))
+    except (ValueError, OSError):
+        return False
+    return any(resolved == p or resolved.startswith(p + "/") for p in _TMP_PREFIXES)
+
+
+def _extract_git_target_dir(tokens, start_idx):
+    """Extract the target directory from git -C or --git-dir flags."""
+    _GIT_DIR_FLAGS = {"-C", "--git-dir", "--work-tree"}
+    i = start_idx
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _GIT_DIR_FLAGS and i + 1 < len(tokens):
+            return tokens[i + 1]
+        i += 1
+    return None
+
+
 def _extract_git_subcommand(tokens, start_idx):
     """Given tokens starting after 'git', find the subcommand (skipping flags like -C, --no-pager)."""
     # git flags that consume the next argument
@@ -126,6 +151,11 @@ def _check_git_command(tokens, start_idx):
     Returns:
         ("allow", reason) or ("deny", reason)
     """
+    # All git operations are allowed when targeting /tmp
+    target_dir = _extract_git_target_dir(tokens, start_idx)
+    if target_dir and _is_tmp_path(target_dir):
+        return ("allow", f"git in /tmp: {' '.join(tokens)[:80]}")
+
     subcmd = _extract_git_subcommand(tokens, start_idx)
 
     if subcmd is None:
