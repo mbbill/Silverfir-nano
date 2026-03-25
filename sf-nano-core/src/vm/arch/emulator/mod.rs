@@ -17,11 +17,11 @@ use crate::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
             MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
-            MachineHelperCall, MachineInst, MachineInstKind, MachineIntBinaryOp,
-            MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-            MachineProgram, MachineReg, MachineSign, MachineTerminator, MachineTrapKind,
-            MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineHelperCall, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineMemWidth, MachineProgram, MachineReg, MachineSign, MachineTerminator,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         raw_value::{
             as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32,
@@ -603,10 +603,32 @@ impl<'a> Emulator<'a> {
                     return Err(trap_from_kind(*kind));
                 }
             }
-            MachineInstKind::IndexedLoad { .. } | MachineInstKind::IndexedStore { .. } => {
-                return Err(WasmError::internal(
-                    "emulator does not support IndexedLoad/IndexedStore yet".into(),
-                ));
+            MachineInstKind::IndexedLoad {
+                dst,
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                extension,
+            } => {
+                let (addr_value, base_kind) =
+                    self.indexed_addr_value(*base, *index, *index_extend, *offset)?;
+                let value = self.load_at(addr_value, base_kind, *width, *extension)?;
+                self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
+            }
+            MachineInstKind::IndexedStore {
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                src,
+            } => {
+                let (addr_value, base_kind) =
+                    self.indexed_addr_value(*base, *index, *index_extend, *offset)?;
+                let value = self.read_value(*src)?;
+                self.store_at(addr_value, base_kind, *width, value)?;
             }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
         }
@@ -953,6 +975,25 @@ impl<'a> Emulator<'a> {
             .wrapping_add_signed(i64::from(addr.offset))
     }
 
+    fn indexed_addr_value(
+        &self,
+        base: MachineReg,
+        index: MachineReg,
+        index_extend: MachineIndexExtend,
+        offset: i32,
+    ) -> Result<(u64, RegAddrKind), WasmError> {
+        let base_value = self.read_reg(base)?;
+        let index = self.read_reg(index)?;
+        let index = match index_extend {
+            MachineIndexExtend::None => index,
+            MachineIndexExtend::ZeroExtend32 => u64::from(index as u32),
+        };
+        Ok((
+            base_value.wrapping_add(index).wrapping_add_signed(i64::from(offset)),
+            self.reg_addr_kind(base),
+        ))
+    }
+
     /// Check that a pointer dereference targets valid memory.  When guard-page
     /// backing is active the MIR omits explicit bounds-check TrapIf
     /// instructions, relying on a signal handler that the emulator does not
@@ -1008,7 +1049,16 @@ impl<'a> Emulator<'a> {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<u64, WasmError> {
-        let addr_value = self.addr_value(addr);
+        self.load_at(self.addr_value(addr), self.reg_addr_kind(addr.base), width, extension)
+    }
+
+    fn load_at(
+        &self,
+        addr_value: u64,
+        base_kind: RegAddrKind,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<u64, WasmError> {
         if let Some(result) = self.address_space.load(self.ctx, addr_value, width) {
             return result.map(|raw| match (width, extension) {
                 (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
@@ -1029,7 +1079,7 @@ impl<'a> Emulator<'a> {
             )));
         }
         let ptr = addr_value as *const u8;
-        if self.reg_addr_kind(addr.base) == RegAddrKind::Mem0 {
+        if base_kind == RegAddrKind::Mem0 {
             self.check_mem0_access(addr_value, mem_width_bytes(width))?;
         } else {
             self.check_access(ptr as usize, mem_width_bytes(width))?;
@@ -1065,7 +1115,16 @@ impl<'a> Emulator<'a> {
         width: MachineMemWidth,
         value: u64,
     ) -> Result<(), WasmError> {
-        let addr_value = self.addr_value(addr);
+        self.store_at(self.addr_value(addr), self.reg_addr_kind(addr.base), width, value)
+    }
+
+    fn store_at(
+        &self,
+        addr_value: u64,
+        base_kind: RegAddrKind,
+        width: MachineMemWidth,
+        value: u64,
+    ) -> Result<(), WasmError> {
         if let Some(result) = self.address_space.store(self.ctx, addr_value, width, value) {
             return result;
         }
@@ -1075,7 +1134,7 @@ impl<'a> Emulator<'a> {
             )));
         }
         let ptr = addr_value as *mut u8;
-        if self.reg_addr_kind(addr.base) == RegAddrKind::Mem0 {
+        if base_kind == RegAddrKind::Mem0 {
             self.check_mem0_access(addr_value, mem_width_bytes(width))?;
         } else {
             self.check_access(ptr as usize, mem_width_bytes(width))?;
@@ -2079,11 +2138,11 @@ mod tests {
             entities::{Caller, FunctionInst, MemInst, ModuleInst, TableInst},
             machine::machine_ir::{
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-                MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction, MachineInst,
-                MachineInstKind, MachineIntWidth, MachineMemWidth, MachineModule, MachineProgram,
-                MachineReg, MachineRuntimeContract, MachineSign, MachineStorageType,
-                MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
-                MACHINE_MEM0_BASE_REG,
+                MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction, MachineIndexExtend,
+                MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth, MachineModule,
+                MachineProgram, MachineReg, MachineRuntimeContract, MachineSign,
+                MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+                MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },
             runtime::{self, code::CompiledNativeModule},
             store::Store,
@@ -2321,6 +2380,78 @@ mod tests {
             emulator.reg_addr_kind(MachineReg(MACHINE_FIXED_REG_COUNT)),
             RegAddrKind::Mem0
         );
+    }
+
+    #[test]
+    fn indexed_addr_zero_extends_i32_index_and_preserves_mem0_base() {
+        let compiled = Rc::new(
+            CompiledNativeModule::new(
+                NativeBackend::Reference,
+                super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                MachineModule {
+                    functions: vec![MachineFunction {
+                        id: MachineFuncId(0),
+                        program: MachineProgram {
+                            entry: MachineBlockId(0),
+                            first_fp_reg: MACHINE_FIXED_REG_COUNT + 2,
+                            reg_count: MACHINE_FIXED_REG_COUNT + 2,
+                            fp_transient_count: 0,
+                            fp_reg_init_widths: Vec::new(),
+                            blocks: vec![MachineBlock {
+                                id: MachineBlockId(0),
+                                params: Vec::new(),
+                                ops: Vec::new(),
+                                terminator: MachineTerminator::Return,
+                            }],
+                        },
+                    }],
+                    consts: Vec::new(),
+                    externs: Vec::new(),
+                },
+                MachineRuntimeContract::default(),
+            )
+            .expect("compiled machine module"),
+        );
+
+        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::new(vec![])));
+        let mut ctx = crate::vm::runtime::context::NativeContext::new(
+            (&mut store) as *mut Store,
+            core::ptr::null_mut(),
+        );
+        let mut emulator = Emulator {
+            ctx: &mut ctx,
+            compiled: &compiled,
+            root_frame: core::ptr::null_mut(),
+            func_id: MachineFuncId(0),
+            block_id: MachineBlockId(0),
+            fp: core::ptr::null_mut(),
+            regs: super::init_entry_regs(
+                &compiled,
+                MACHINE_FIXED_REG_COUNT + 2,
+                0,
+                0,
+                0x4000_0000,
+                64,
+            ),
+            addr_kinds: super::init_entry_addr_kinds(MACHINE_FIXED_REG_COUNT + 2),
+            call_stack: Vec::new(),
+            address_space: EmulatorAddressSpace::Host,
+        };
+        emulator
+            .write_reg(MachineReg(MACHINE_FIXED_REG_COUNT), u64::MAX)
+            .expect("index reg");
+
+        let (addr_value, kind) = emulator
+            .indexed_addr_value(
+                MACHINE_MEM0_BASE_REG,
+                MachineReg(MACHINE_FIXED_REG_COUNT),
+                MachineIndexExtend::ZeroExtend32,
+                4,
+            )
+            .expect("indexed addr");
+        let base = emulator.read_reg(MACHINE_MEM0_BASE_REG).expect("mem0 base");
+        assert_eq!(addr_value, base.wrapping_add(u64::from(u32::MAX)).wrapping_add(4));
+        assert_eq!(kind, RegAddrKind::Mem0);
     }
 
     #[test]
