@@ -251,7 +251,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     #[cfg(target_arch = "x86_64")]
     let x86_64_entries = match active_backend {
         arch::NativeBackend::X86_64 => {
-            Some(arch::x86_64::compile::compile_module(module, &compiled)?)
+            Some(arch::common::pipeline::compile_module::<arch::x86_64::backend::X86_64Backend>(module, &compiled)?)
         }
         _ => None,
     };

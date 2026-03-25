@@ -78,13 +78,9 @@ pub(super) fn eval(
                     arch::NativeBackend::Armv7a.as_str(),
                 ),
                 #[cfg(target_arch = "x86_64")]
-                arch::NativeBackend::X86_64 => arch::x86_64::eval(
-                    spec,
-                    code,
-                    store,
-                    args,
-                    arch::NativeBackend::X86_64.as_str(),
-                ),
+                arch::NativeBackend::X86_64 => {
+                    arch::common::eval::eval(spec, code, store, args, arch::NativeBackend::X86_64.as_str())
+                }
                 #[cfg(any(
                     debug_assertions,
                     not(any(target_arch = "aarch64", target_arch = "x86_64"))
