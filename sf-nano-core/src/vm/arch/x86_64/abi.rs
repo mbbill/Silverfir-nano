@@ -63,14 +63,10 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
 
     // Callee-saved GP registers (fixed + cached locals).
     // No callee-saved FP regs on System V AMD64.
-    callee_saved_gp: &[
-        X86Reg::RBX,  // ctx
-        X86Reg::RBP,  // fp
-        X86Reg::R12,  // mem0_base
-        X86Reg::R13,  // mem0_size
-        X86Reg::R14,  // GP local cache
-        X86Reg::R15,  // GP local cache
-    ],
+    #[cfg(not(target_os = "windows"))]
+    callee_saved_gp: &[X86Reg::RBX, X86Reg::RBP, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15],
+    #[cfg(target_os = "windows")]
+    callee_saved_gp: &[X86Reg::RBX, X86Reg::RBP, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15, X86Reg::RDI, X86Reg::RSI],
 
     stack_alignment_bytes: 16,
 };
@@ -83,9 +79,20 @@ const _: () = assert!(
 
 // ── C ABI boundary registers ─────────────────────────────────────────────────
 
+#[cfg(not(target_os = "windows"))]
 pub(super) const C_ARG0: X86Reg = X86Reg::RDI;
+#[cfg(not(target_os = "windows"))]
 pub(super) const C_ARG1: X86Reg = X86Reg::RSI;
+#[cfg(not(target_os = "windows"))]
 pub(super) const C_ARG2: X86Reg = X86Reg::RDX;
+#[cfg(target_os = "windows")]
+pub(super) const C_ARG0: X86Reg = X86Reg::RCX;
+#[cfg(target_os = "windows")]
+pub(super) const C_ARG1: X86Reg = X86Reg::RDX;
+#[cfg(target_os = "windows")]
+pub(super) const C_ARG2: X86Reg = X86Reg::R8;
+#[cfg(target_os = "windows")]
+pub(super) const C_ARG3: X86Reg = X86Reg::R9;
 pub(super) const C_RET0: X86Reg = X86Reg::RAX;
 
 // ── Derived config ───────────────────────────────────────────────────────────

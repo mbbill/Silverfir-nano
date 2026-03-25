@@ -16,7 +16,7 @@ use crate::{
             MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{X86_64CodePtr, X86_64RootEntry, CompiledNativeModule},
+            code::{NativeCodePtr, NativeRootEntry, CompiledNativeModule},
             code_buf::CodeBuffer,
             context::ctx_offset,
         },
@@ -48,7 +48,10 @@ const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 /// After pushing abi::REG_PLAN.callee_saved_gp (6 regs = 48 bytes) + return address
 /// (8 bytes) = 56 bytes. To maintain 16-byte alignment we need 8 more bytes
 /// of padding (56 + 8 = 64 = 16*4).
-const STACK_PADDING: u32 = 8;
+#[cfg(not(target_os = "windows"))]
+const STACK_PADDING: u32 = { let n = abi::REG_PLAN.callee_saved_gp.len() as u32; if (8 + n * 8) % 16 == 0 { 0 } else { 8 } };
+#[cfg(target_os = "windows")]
+const STACK_PADDING: u32 = { let gp = abi::REG_PLAN.callee_saved_gp.len() as u32 * 8; let xmm = 10 * 16u32; let shadow = 32u32; let extra = xmm + shadow; let pre = 8 + gp + extra; extra + if pre % 16 == 0 { 0 } else { 8 } };
 
 // ── Branch fixup types ───────────────────────────────────────────────────────
 
@@ -67,12 +70,12 @@ pub(super) struct BranchFixup {
 /// Result of compiling one function to x86_64 machine code.
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledX86_64Entry {
-    pub entry: X86_64RootEntry,
+    pub entry: NativeRootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
-    pub root_return: X86_64CodePtr,
+    pub root_return: NativeCodePtr,
     #[cfg(has_guard_pages)]
-    pub return_error: X86_64CodePtr,
+    pub return_error: NativeCodePtr,
 }
 
 // ── X86_64Backend ────────────────────────────────────────────────────────────
@@ -107,15 +110,13 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn into_core(self) -> CompilerCore<'a> { self.core }
 
     fn lower_prologue(&mut self) {
-        // Push callee-saved GP regs
-        for &reg in &abi::REG_PLAN.callee_saved_gp {
-            enc::push(&mut self.core.text, reg);
-        }
-        // Align stack to 16 bytes
+        for &reg in abi::REG_PLAN.callee_saved_gp { enc::push(&mut self.core.text, reg); }
         if STACK_PADDING > 0 {
-            enc::sub_rsp_imm8(&mut self.core.text, STACK_PADDING as u8);
+            if STACK_PADDING <= 127 { enc::sub_rsp_imm8(&mut self.core.text, STACK_PADDING as u8); }
+            else { enc::sub_rsp_imm32(&mut self.core.text, STACK_PADDING); }
         }
-        // System V AMD64: RDI = ctx, RSI = fp. Move to fixed regs.
+        #[cfg(target_os = "windows")]
+        for i in 0..10u32 { enc::movaps_store_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32); }
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_CTX_REG), C_ARG0);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), C_ARG1);
         // Load mem0 base/size from ctx
@@ -134,14 +135,13 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn lower_epilogue(&mut self) {
-        // Undo stack alignment
+        #[cfg(target_os = "windows")]
+        for i in 0..10u32 { enc::movaps_load_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32); }
         if STACK_PADDING > 0 {
-            enc::add_rsp_imm8(&mut self.core.text, STACK_PADDING as u8);
+            if STACK_PADDING <= 127 { enc::add_rsp_imm8(&mut self.core.text, STACK_PADDING as u8); }
+            else { enc::add_rsp_imm32(&mut self.core.text, STACK_PADDING); }
         }
-        // Pop callee-saved GP regs in reverse order
-        for &reg in abi::REG_PLAN.callee_saved_gp.iter().rev() {
-            enc::pop(&mut self.core.text, reg);
-        }
+        for &reg in abi::REG_PLAN.callee_saved_gp.iter().rev() { enc::pop(&mut self.core.text, reg); }
         enc::ret(&mut self.core.text);
     }
 
@@ -250,7 +250,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         buf: &CodeBuffer,
         emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
     ) -> Self::CompiledEntry {
-        let entry = unsafe { buf.fn_ptr::<X86_64RootEntry>(emitted.text_offset) };
+        let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
         let root_return = unsafe { buf.ptr(emitted.text_offset + emitted.root_return_offset) };
         #[cfg(has_guard_pages)]
         let return_error = unsafe { buf.ptr(emitted.text_offset + emitted.return_error_offset) };

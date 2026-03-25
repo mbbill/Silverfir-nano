@@ -148,23 +148,7 @@ impl<'a> X86_64Backend<'a> {
                     self.emit_jmp(else_label);
                 }
             }
-            MachineBranchCond::FloatCompare {
-                width,
-                kind,
-                lhs,
-                rhs,
-            } => {
-                return self.lower_float_branch(
-                    width,
-                    kind,
-                    lhs,
-                    rhs,
-                    then_label,
-                    else_label,
-                    then_fallthrough,
-                    else_fallthrough,
-                );
-            }
+
         }
         Ok(())
     }
@@ -194,24 +178,7 @@ impl<'a> X86_64Backend<'a> {
                 self.lower_cmp_values(width, lhs, rhs)?;
                 self.emit_jcc(map_int_cond(kind, sign), trap_label);
             }
-            MachineBranchCond::FloatCompare {
-                width,
-                kind,
-                lhs,
-                rhs,
-            } => {
-                let lhs_fp = self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
-                let rhs_fp = self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), self.fp_scratch.reg(1))?;
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                    }
-                };
-                self.emit_jcc(map_float_cond(kind), trap_label);
-            }
+
         }
         Ok(())
     }
@@ -273,14 +240,9 @@ impl<'a> X86_64Backend<'a> {
     // ── Trap stub ────────────────────────────────────────────────────────────
 
     pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
-        // MOV RDI, ctx (arg0)
-        enc::mov_rr_64(
-            &mut self.core.text,
-            X86Reg::RDI,
-            map_fixed_reg(MACHINE_CTX_REG),
-        );
-        // MOV RSI, trap_code (arg1)
-        self.materialize_u64(X86Reg::RSI, trap_code(kind));
+        use super::abi::{C_ARG0, C_ARG1};
+        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
+        self.materialize_u64(C_ARG1, trap_code(kind));
         // MOV R11, raise_trap address
         self.materialize_u64(
             self.gp_scratch.reg(1),

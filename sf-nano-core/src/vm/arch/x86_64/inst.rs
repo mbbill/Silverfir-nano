@@ -13,6 +13,12 @@ use crate::{
     },
 };
 
+use super::abi::{C_ARG0, C_ARG1, C_ARG2};
+#[cfg(target_os = "windows")]
+use super::abi::C_ARG3;
+#[cfg(target_os = "windows")]
+use super::helpers::x86_64_trapping_trunc_win;
+
 use super::{
     abi::{fp_machine_reg, map_fixed_reg},
     backend::X86_64Backend,
@@ -33,7 +39,6 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.lower_float_const(*width, *dst, *bits)
             }
-            MachineInstKind::Lea { dst, addr } => self.lower_lea(*dst, *addr),
             MachineInstKind::Load {
                 ty: _,
                 dst,
@@ -60,9 +65,6 @@ impl<'a> X86_64Backend<'a> {
                 lhs,
                 rhs,
             } => self.lower_int_binary(*width, *op, *dst, *lhs, *rhs),
-            MachineInstKind::IntMulWide { .. } => Err(WasmError::internal(
-                "x86_64 backend received IntMulWide; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
-            )),
             MachineInstKind::Int64PairBinary { .. } => Err(WasmError::internal(
                 "x86_64 backend received Int64PairBinary; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
@@ -91,7 +93,10 @@ impl<'a> X86_64Backend<'a> {
                 cond,
                 ..
             } => self.lower_select(*ty, *dst, *on_true, *on_false, *cond),
-            MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
+            MachineInstKind::TrapIf { kind, cond } => {
+                let trap_label = self.core.ensure_trap_label(*kind);
+                self.lower_branch_if(cond, trap_label)
+            }
             MachineInstKind::CallHelper(call) => {
                 self.lower_call_helper(call.target.0 as usize, call.metadata.0 as usize)
             }
@@ -1722,25 +1727,20 @@ impl<'a> X86_64Backend<'a> {
         const_idx: usize,
     ) -> Result<(), WasmError> {
         let binding = self
-            .compiled
+            .core.compiled
             .module()
             .externs
             .get(extern_idx)
             .ok_or_else(|| WasmError::internal("x86_64 helper target is out of range".into()))?;
         let metadata = self
-            .compiled
+            .core.compiled
             .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
                 const_idx as u32,
             ))
             .ok_or_else(|| WasmError::internal("x86_64 helper metadata is out of range".into()))?;
-        // System V AMD64 ABI: RDI=ctx, RSI=fp, RDX=metadata
-        enc::mov_rr_64(
-            &mut self.core.text,
-            X86Reg::RDI,
-            map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
-        );
-        enc::mov_rr_64(&mut self.core.text, X86Reg::RSI, map_fixed_reg(MACHINE_FP_REG));
-        self.materialize_u64(X86Reg::RDX, metadata as u64);
+        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+        enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
+        self.materialize_u64(C_ARG2, metadata as u64);
         self.materialize_u64(
             self.gp_scratch.reg(1),
             resolve_helper_entry(binding.symbol) as usize as u64,
@@ -1820,25 +1820,31 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         // The C helper call clobbers all GP transient registers. Save them.
         self.save_gp_transients();
-        // Call: x86_64_trapping_trunc(ctx, src_bits, op_code) -> TruncResult{status, value}
-        // System V: RDI=ctx, RSI=src_bits, RDX=op_code
-        // Returns: RAX=status, RDX=value (struct in RAX+RDX)
-        enc::mov_rr_64(
-            &mut self.core.text,
-            X86Reg::RDI,
-            map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
-        );
-        enc::mov_rr_64(&mut self.core.text, X86Reg::RSI, src);
-        self.materialize_u64(X86Reg::RDX, convert_op_code(op));
-        self.materialize_u64(self.gp_scratch.reg(1), x86_64_trapping_trunc as usize as u64);
-        enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-        // Save result before restoring transients (RDX would be clobbered)
-        enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX); // save result value
-        let status = X86Reg::RAX; // save status
-        self.restore_gp_transients();
-        // Check status
-        enc::test_rr_64(&mut self.core.text, status, status);
-        self.emit_jcc(Cc::NE, self.core.return_error_label);
+        #[cfg(not(target_os = "windows"))]
+        {
+            enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+            enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
+            self.materialize_u64(C_ARG2, convert_op_code(op));
+            self.materialize_u64(self.gp_scratch.reg(1), x86_64_trapping_trunc as usize as u64);
+            enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
+            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX);
+            self.restore_gp_transients();
+            enc::test_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
+            self.emit_jcc(Cc::NE, self.core.return_error_label);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+            enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
+            self.materialize_u64(C_ARG2, convert_op_code(op));
+            enc::mov_rr_64(&mut self.core.text, C_ARG3, X86Reg::RSP);
+            self.materialize_u64(self.gp_scratch.reg(1), x86_64_trapping_trunc_win as usize as u64);
+            enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
+            enc::load_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RSP, 0);
+            self.restore_gp_transients();
+            enc::test_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
+            self.emit_jcc(Cc::NE, self.core.return_error_label);
+        }
         if dst != self.gp_scratch.reg(1) {
             enc::mov_rr_64(&mut self.core.text, dst, self.gp_scratch.reg(1));
         }
@@ -1853,10 +1859,8 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         // The C helper call clobbers all GP transient registers. Save them.
         self.save_gp_transients();
-        // Call: x86_64_saturating_trunc(src_bits, op_code) -> u64
-        // System V: RDI=src_bits, RSI=op_code. Returns RAX.
-        enc::mov_rr_64(&mut self.core.text, X86Reg::RDI, src);
-        self.materialize_u64(X86Reg::RSI, convert_op_code(op));
+        enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
+        self.materialize_u64(C_ARG1, convert_op_code(op));
         self.materialize_u64(self.gp_scratch.reg(1), x86_64_saturating_trunc as usize as u64);
         enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
         // Save result before restoring transients
@@ -1923,7 +1927,6 @@ impl<'a> X86_64Backend<'a> {
         self.lower_store_to(
             self.gp_scratch.reg(0),
             0,
-            },
             width,
             src,
         )
