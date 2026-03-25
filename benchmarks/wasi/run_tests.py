@@ -156,15 +156,12 @@ def run_test(cli, test, cli_extra=()):
     stdout = proc.stdout.decode("utf-8", errors="replace")
     stderr = proc.stderr.decode("utf-8", errors="replace")
 
-    # Check for errors
+    # Any nonzero exit is a failure, even if the process printed benchmark lines.
     combined = stdout + stderr
-    if "Error" in combined and exit_code != 0:
+    if exit_code != 0:
         for line in combined.splitlines():
             if "Error" in line:
                 return name, "FAIL", line.strip(), elapsed
-        return name, "FAIL", f"exit code {exit_code}", elapsed
-
-    if exit_code != 0 and not pattern:
         return name, "FAIL", f"exit code {exit_code}", elapsed
 
     # Extract compile stats if present: [arch] (func:N, ssa:N, mir:N, code:N)
