@@ -1,3 +1,18 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Arm64FpReg(u8);
+
+impl Arm64FpReg {
+    #[inline]
+    pub(crate) const fn new(index: u8) -> Self {
+        Self(index)
+    }
+
+    #[inline]
+    pub(crate) const fn index(self) -> u32 {
+        self.0 as u32
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Arm64Reg {
@@ -38,7 +53,7 @@ impl Arm64Reg {
     pub(crate) const SP: Self = Self::Xzr;
 
     #[inline]
-    pub(crate) const fn idx(self) -> u32 {
+    pub(crate) const fn index(self) -> u32 {
         self as u32
     }
 }

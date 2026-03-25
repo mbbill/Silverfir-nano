@@ -10,13 +10,125 @@ use crate::vm::machine::machine_ir::{
     MACHINE_CTX_REG,
 };
 
-use super::{enc, reg::Arm64Reg};
-use super::abi::{inv_map_reg, fp_machine_reg, map_fixed_reg, map_reg, SCRATCH0, SCRATCH1, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2};
+use super::{abi, enc, reg::{Arm64FpReg, Arm64Reg}};
+use super::abi::{fp_machine_reg, map_fixed_reg, map_reg};
+use super::operands::{PreparedGp, PreparedFp};
+
 use super::backend::BranchFixup;
 use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_int_cond, map_float_cond};
 use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_width, mem_width_bytes};
+use crate::vm::arch::common::scratch_pool::ScratchPool;
 use crate::vm::arch::common::text_emitter::TextEmitter;
 use crate::vm::arch::common::types::ParallelSource;
+use crate::vm::machine::machine_ir::MachineFunction;
+
+// ── Operand preparation (free functions) ─────────────────────────────────────
+//
+// `prepare_gp` and `prepare_fp` are **free functions** instead of methods
+// on `Arm64Backend`. This is a deliberate Rust borrow-checker workaround:
+//
+// The returned `PreparedGp` holds an RAII guard that borrows `&ScratchPool`.
+// If prepare were a `&mut self` method, the guard's lifetime would lock the
+// entire backend, preventing a second prepare call or any `text.emit_u32()`.
+//
+// As free functions taking disjoint field references, Rust can see that the
+// returned guard borrows only the pool (`&ScratchPool`, shared via `Cell`),
+// while `&mut TextEmitter` is reborrowed only for the call's duration.
+// This lets multiple `PreparedGp` values coexist — exactly what two-operand
+// patterns like `lower_int_binary` require.
+
+// materialize_u64_into is defined at the end of this file as a free function.
+
+/// Map a MachineReg to a physical GP register, rejecting FP regs.
+fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
+    if func.program.is_fp_reg(reg) {
+        return Err(WasmError::invalid(alloc::format!(
+            "expected GP register, got FP machine reg {}", reg.0
+        )));
+    }
+    abi::map_reg(reg)
+}
+
+/// Map a MachineReg to a physical FP register.
+fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
+    let index = reg.0
+        .checked_sub(func.program.first_fp_reg)
+        .map(|i| i as usize)
+        .ok_or_else(|| WasmError::invalid(alloc::format!(
+            "expected FP register, got machine reg {}", reg.0
+        )))?;
+    abi::fp_machine_reg(index).ok_or_else(|| {
+        WasmError::invalid(alloc::format!(
+            "arm64 has no FP mapping for machine reg {}", reg.0
+        ))
+    })
+}
+
+/// Prepare a MachineValue as a GP register.
+///
+/// - `Reg(gp)` → `Mapped(physical_gp)` — no scratch used.
+/// - `Reg(fp)` → scratch alloc + fmov.
+/// - `Imm64`   → scratch alloc + materialize.
+pub(super) fn prepare_gp<'p>(
+    func: &MachineFunction,
+    fp_widths: &[Option<MachineFloatWidth>],
+    text: &mut TextEmitter,
+    pool: &'p ScratchPool<Arm64Reg, 2>,
+    value: MachineValue,
+) -> Result<PreparedGp<'p>, WasmError> {
+    match value {
+        MachineValue::Reg(reg) if func.program.is_fp_reg(reg) => {
+            let scratch = pool.scoped_alloc();
+            let src_fp = map_fp(func, reg)?;
+            let index = (reg.0 - func.program.first_fp_reg) as usize;
+            let width = fp_widths.get(index).and_then(|w| *w).ok_or_else(|| {
+                WasmError::invalid(alloc::format!(
+                    "missing float-width for machine reg {}", reg.0
+                ))
+            })?;
+            text.emit_u32(match width {
+                MachineFloatWidth::F32 => enc::fmov_gp_from_s(*scratch, src_fp),
+                MachineFloatWidth::F64 => enc::fmov_gp_from_d(*scratch, src_fp),
+            });
+            Ok(PreparedGp::Scratch(scratch))
+        }
+        MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(func, reg)?)),
+        MachineValue::Imm64(v) => {
+            let scratch = pool.scoped_alloc();
+            materialize_u64_into(text, *scratch, v);
+            Ok(PreparedGp::Scratch(scratch))
+        }
+    }
+}
+
+/// Prepare a MachineValue as an FP register.
+///
+/// - `Reg(fp)` → `Mapped(physical_fp)` — no scratch used.
+/// - otherwise → GP scratch + materialize + fmov into FP scratch.
+///   The GP scratch is released before returning.
+pub(super) fn prepare_fp<'p>(
+    func: &MachineFunction,
+    fp_widths: &[Option<MachineFloatWidth>],
+    text: &mut TextEmitter,
+    gp_pool: &ScratchPool<Arm64Reg, 2>,
+    fp_pool: &'p ScratchPool<Arm64FpReg, 3>,
+    width: MachineFloatWidth,
+    value: MachineValue,
+) -> Result<PreparedFp<'p>, WasmError> {
+    if let MachineValue::Reg(reg) = value {
+        if func.program.is_fp_reg(reg) {
+            return Ok(PreparedFp::Mapped(map_fp(func, reg)?));
+        }
+    }
+    let gp = prepare_gp(func, fp_widths, text, gp_pool, value)?;
+    let fp_scratch = fp_pool.scoped_alloc();
+    text.emit_u32(match width {
+        MachineFloatWidth::F32 => enc::fmov_s_from_gp(*fp_scratch, gp.reg()),
+        MachineFloatWidth::F64 => enc::fmov_d_from_gp(*fp_scratch, gp.reg()),
+    });
+    // gp dropped here — GP scratch slot freed immediately
+    Ok(PreparedFp::Scratch(fp_scratch))
+}
 
 impl<'a> super::backend::Arm64Backend<'a> {
 
@@ -27,7 +139,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         map_reg(reg)
     }
 
-    pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<u32, WasmError> {
+    pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
         let index = self.core.fp_reg_index(reg)?;
         fp_machine_reg(index).ok_or_else(|| {
             WasmError::invalid(alloc::format!(
@@ -44,97 +156,58 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Branch emission ──────────────────────────────────────────────────
 
-    pub(super) fn emit_b(&mut self, label: usize) {
+    pub(super) fn lower_b(&mut self, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::b(0));
         self.fixups.push(BranchFixup {
             inst_offset, label, kind: super::backend::BranchFixupKind::B,
         });
     }
 
-    pub(super) fn emit_b_cond(&mut self, cond: enc::Cond, label: usize) {
+    pub(super) fn lower_b_cond(&mut self, cond: enc::Cond, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::b_cond(cond, 0));
         self.fixups.push(BranchFixup {
             inst_offset, label, kind: super::backend::BranchFixupKind::BCond(cond),
         });
     }
 
-    pub(super) fn emit_cbnz(&mut self, reg: Arm64Reg, label: usize) {
+    pub(super) fn lower_cbnz(&mut self, reg: Arm64Reg, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::cbnz_64(reg, 0));
         self.fixups.push(BranchFixup {
             inst_offset, label, kind: super::backend::BranchFixupKind::Cbnz(reg),
         });
     }
 
-    pub(super) fn emit_cbz(&mut self, reg: Arm64Reg, label: usize) {
+    pub(super) fn lower_cbz(&mut self, reg: Arm64Reg, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::cbz_64(reg, 0));
         self.fixups.push(BranchFixup {
             inst_offset, label, kind: super::backend::BranchFixupKind::Cbz(reg),
         });
     }
 
-    // ── Value materialization ────────────────────────────────────────────
-
-    /// Move a `MachineValue` into a GP register. If the value is already a
-    /// GP register, returns the mapped physical register (scratch unused).
-    /// Otherwise materializes into `scratch` and returns it.
-    pub(super) fn materialize_value(
-        &mut self, scratch: Arm64Reg, value: MachineValue,
-    ) -> Result<Arm64Reg, WasmError> {
-        match value {
-            MachineValue::Reg(reg) if self.core.is_fp_reg(reg) => {
-                let src_fp = self.map_fp_reg(reg)?;
-                match self.core.fp_reg_width(reg)? {
-                    MachineFloatWidth::F32 => {
-                        self.core.text.emit_u32(enc::fmov_gp_from_s(scratch, src_fp));
-                    }
-                    MachineFloatWidth::F64 => {
-                        self.core.text.emit_u32(enc::fmov_gp_from_d(scratch, src_fp));
-                    }
-                };
-                Ok(scratch)
-            }
-            MachineValue::Reg(reg) => self.map_gp_reg(reg),
-            MachineValue::Imm64(value) => {
-                self.materialize_u64(scratch, value);
-                Ok(scratch)
-            }
-        }
-    }
-
     /// Emit a CMP/CMP-imm for two integer operands, setting flags.
-    pub(super) fn emit_cmp_values(
+    pub(super) fn lower_cmp_values(
         &mut self, width: MachineIntWidth, lhs: MachineValue, rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        if let Some(inst) = cmp_imm_inst(width, lhs, rhs)? {
-            self.core.text.emit_u32(inst);
-            return Ok(());
+        if let (MachineValue::Reg(lhs_reg), MachineValue::Imm64(imm)) = (lhs, rhs) {
+            let lhs_phys = map_gp(self.core.function, lhs_reg)?;
+            if let Some(inst) = cmp_imm_inst(width, lhs_phys, imm) {
+                self.core.text.emit_u32(inst);
+                return Ok(());
+            }
         }
-        let lhs = self.materialize_value(SCRATCH0, lhs)?;
-        let rhs = self.materialize_value(SCRATCH1, rhs)?;
+        let lhs = prepare_gp(
+            self.core.function, &self.core.fp_reg_widths,
+            &mut self.core.text, &self.gp_scratch, lhs,
+        )?.release();
+        let rhs = prepare_gp(
+            self.core.function, &self.core.fp_reg_widths,
+            &mut self.core.text, &self.gp_scratch, rhs,
+        )?.release();
         match width {
             MachineIntWidth::I32 => self.core.text.emit_u32(enc::cmp_reg_32(lhs, rhs)),
             MachineIntWidth::I64 => self.core.text.emit_u32(enc::cmp_reg_64(lhs, rhs)),
         };
         Ok(())
-    }
-
-    /// Prepare a float operand: if already in an FP register, return it.
-    /// Otherwise materialize bits into `gp_scratch`, FMOV into `fp_scratch`.
-    pub(super) fn prepare_float_operand(
-        &mut self, width: MachineFloatWidth, value: MachineValue,
-        gp_scratch: Arm64Reg, fp_scratch: u32,
-    ) -> Result<u32, WasmError> {
-        if let MachineValue::Reg(reg) = value {
-            if self.core.is_fp_reg(reg) {
-                return self.map_fp_reg(reg);
-            }
-        }
-        let gp = self.materialize_value(gp_scratch, value)?;
-        match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fmov_s_from_gp(fp_scratch, gp)),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fmov_d_from_gp(fp_scratch, gp)),
-        };
-        Ok(fp_scratch)
     }
 
     /// Look up runtime metadata for a machine function.
@@ -146,55 +219,55 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Instruction dispatch ─────────────────────────────────────────────
 
-pub(super) fn emit_inst_dispatch(&mut self,
+pub(super) fn lower_inst_dispatch(&mut self,
 inst: &MachineInst) -> Result<(), WasmError> {
     match &inst.kind {
-        MachineInstKind::Move { dst, src, ty } => self.emit_move(*ty, *dst, *src),
-        MachineInstKind::FloatConst { width, dst, bits } => self.emit_float_const(*width, *dst, *bits),
+        MachineInstKind::Move { dst, src, ty } => self.lower_move(*ty, *dst, *src),
+        MachineInstKind::FloatConst { width, dst, bits } => self.lower_float_const(*width, *dst, *bits),
         MachineInstKind::Load { dst, addr, width, extension, .. } => {
-            self.emit_load(*dst, *addr, *width, *extension)
+            self.lower_load(*dst, *addr, *width, *extension)
         }
-        MachineInstKind::Store { addr, width, src, .. } => self.emit_store(*addr, *width, *src),
+        MachineInstKind::Store { addr, width, src, .. } => self.lower_store(*addr, *width, *src),
         MachineInstKind::IntUnary { width, op, dst, src } => {
-            self.emit_int_unary(*width, *op, *dst, *src)
+            self.lower_int_unary(*width, *op, *dst, *src)
         }
         MachineInstKind::IntBinary { width, op, dst, lhs, rhs } => {
-            self.emit_int_binary(*width, *op, *dst, *lhs, *rhs)
+            self.lower_int_binary(*width, *op, *dst, *lhs, *rhs)
         }
         MachineInstKind::IntCompare { width, kind, sign, dst, lhs, rhs } => {
-            self.emit_int_compare(*width, *kind, *sign, *dst, *lhs, *rhs)
+            self.lower_int_compare(*width, *kind, *sign, *dst, *lhs, *rhs)
         }
         MachineInstKind::Select { ty, dst, on_true, on_false, cond, .. } => {
-            self.emit_select(*ty, *dst, *on_true, *on_false, *cond)
+            self.lower_select(*ty, *dst, *on_true, *on_false, *cond)
         }
-        MachineInstKind::TrapIf { kind, cond } => self.emit_trap_if(*kind, cond),
+        MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
         MachineInstKind::CallHelper(call) => {
-            self.emit_call_helper(call.target.0 as usize, call.metadata.0 as usize)
+            self.lower_call_helper(call.target.0 as usize, call.metadata.0 as usize)
         }
         MachineInstKind::FloatUnary { width, op, dst, src } => {
-            self.emit_float_unary(*width, *op, *dst, *src)
+            self.lower_float_unary(*width, *op, *dst, *src)
         }
         MachineInstKind::FloatBinary { width, op, dst, lhs, rhs } => {
-            self.emit_float_binary(*width, *op, *dst, *lhs, *rhs)
+            self.lower_float_binary(*width, *op, *dst, *lhs, *rhs)
         }
         MachineInstKind::FloatCompare { width, kind, dst, lhs, rhs } => {
-            self.emit_float_compare(*width, *kind, *dst, *lhs, *rhs)
+            self.lower_float_compare(*width, *kind, *dst, *lhs, *rhs)
         }
-        MachineInstKind::Convert { op, dst, src } => self.emit_convert(*op, *dst, *src),
+        MachineInstKind::Convert { op, dst, src } => self.lower_convert(*op, *dst, *src),
         MachineInstKind::IndexedLoad { dst, base, index, index_extend, offset, width, extension } => {
             let uxtw = *index_extend == MachineIndexExtend::ZeroExtend32;
             if *offset == 0 {
-                self.emit_indexed_load(*dst, *base, *index, *width, *extension, false, uxtw)
+                self.lower_indexed_load(*dst, *base, *index, *width, *extension, false, uxtw)
             } else {
-                self.emit_indexed_load_with_offset(*dst, *base, *index, *offset, *width, *extension, uxtw)
+                self.lower_indexed_load_with_offset(*dst, *base, *index, *offset, *width, *extension, uxtw)
             }
         }
         MachineInstKind::IndexedStore { base, index, index_extend, offset, width, src } => {
             let uxtw = *index_extend == MachineIndexExtend::ZeroExtend32;
             if *offset == 0 {
-                self.emit_indexed_store(*base, *index, *width, *src, false, uxtw)
+                self.lower_indexed_store(*base, *index, *width, *src, false, uxtw)
             } else {
-                self.emit_indexed_store_with_offset(*base, *index, *offset, *width, *src, uxtw)
+                self.lower_indexed_store_with_offset(*base, *index, *offset, *width, *src, uxtw)
             }
         }
         // 32-bit legalized instructions -- should not reach arm64 codegen.
@@ -215,7 +288,7 @@ inst: &MachineInst) -> Result<(), WasmError> {
 }
 
 /// Emit a parallel-move source -> destination.
-pub(super) fn emit_source_move_dispatch(&mut self,
+pub(super) fn lower_source_move_dispatch(&mut self,
 dst: MachineBlockParam,
     src: ParallelSource,
 ) -> Result<(), WasmError> {
@@ -262,7 +335,7 @@ dst: MachineBlockParam,
         ParallelSource::Imm(value) => {
             if let Some(width) = dst.ty.float_width() {
                 let dst_fp = self.map_fp_reg(dst.reg)?;
-                let scratch = SCRATCH0;
+                let scratch = *self.gp_scratch.scoped_alloc();
                 self.materialize_u64(scratch, value);
                 self.core.text.emit_u32(match width {
                     MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, scratch),
@@ -273,18 +346,18 @@ dst: MachineBlockParam,
                 self.materialize_u64(self.map_gp_reg(dst.reg)?, value);
             }
         }
-        ParallelSource::GpTemp => {
-            // Well-known temp: SCRATCH1 (X17), set by emit_gp_cycle_break.
+        ParallelSource::GpTemp(id) => {
+            let temp = self.gp_scratch.reg(id);
             self.core
                 .text
-                .emit_u32(enc::mov_reg_64(self.map_gp_reg(dst.reg)?, SCRATCH1));
+                .emit_u32(enc::mov_reg_64(self.map_gp_reg(dst.reg)?, temp));
         }
-        ParallelSource::FpTemp(width) => {
-            // Well-known temp: FP_SCRATCH2 (D2), set by emit_fp_cycle_break.
+        ParallelSource::FpTemp(id, width) => {
+            let temp = self.fp_scratch.reg(id);
             let dst_fp = self.map_fp_reg(dst.reg)?;
             self.core.text.emit_u32(match width {
-                MachineFloatWidth::F32 => enc::fmov_s(dst_fp, FP_SCRATCH2),
-                MachineFloatWidth::F64 => enc::fmov_d(dst_fp, FP_SCRATCH2),
+                MachineFloatWidth::F32 => enc::fmov_s(dst_fp, temp),
+                MachineFloatWidth::F64 => enc::fmov_d(dst_fp, temp),
             });
             self.core.set_fp_reg_width(dst.reg, width)?;
         }
@@ -294,7 +367,7 @@ dst: MachineBlockParam,
 
 // ── Move / Float constant ────────────────────────────────────────────────────
 
-fn emit_move(&mut self,
+fn lower_move(&mut self,
 ty: MachineStorageType,
     dst: MachineReg,
     src: MachineValue,
@@ -332,7 +405,7 @@ ty: MachineStorageType,
                 Ok(())
             }
             MachineValue::Imm64(value) => {
-                let scratch = SCRATCH0;
+                let scratch = *self.gp_scratch.scoped_alloc();
                 self.materialize_u64(scratch, value);
                 self.core.text.emit_u32(match width {
                     MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, scratch),
@@ -372,7 +445,7 @@ ty: MachineStorageType,
     }
 }
 
-fn emit_float_const(&mut self,
+fn lower_float_const(&mut self,
 width: MachineFloatWidth,
     dst: MachineReg,
     bits: u64,
@@ -388,7 +461,7 @@ width: MachineFloatWidth,
         MachineFloatWidth::F32 => u64::from(bits as u32),
         MachineFloatWidth::F64 => bits,
     };
-    let scratch = SCRATCH0;
+    let scratch = *self.gp_scratch.scoped_alloc();
     self.materialize_u64(scratch, imm);
     self.core.text.emit_u32(match width {
         MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, scratch),
@@ -402,7 +475,7 @@ width: MachineFloatWidth,
 
 /// Compute an effective address into `dst`. May use an additional scratch
 /// register from the pool for large offsets.
-fn emit_addr_into(&mut self,
+fn lower_addr_into(&mut self,
 dst: Arm64Reg,
     addr: MachineAddr,
 ) -> Result<(), WasmError> {
@@ -426,8 +499,8 @@ dst: Arm64Reg,
             .emit_u32(enc::sub_imm_64(dst, base, (-offset) as u32));
         return Ok(());
     }
-    // Large offset: use SCRATCH1 (dst may be SCRATCH0).
-    let off_scratch = SCRATCH1;
+    // Large offset: use a second scratch (dst may already be a scratch).
+    let off_scratch = *self.gp_scratch.scoped_alloc();
     self.materialize_u64(off_scratch, offset.unsigned_abs());
     if offset >= 0 {
         self.core
@@ -442,7 +515,7 @@ dst: Arm64Reg,
 }
 
 /// Add an immediate offset to an already-mapped ARM64 register in-place.
-fn emit_add_imm_to_reg(&mut self,
+fn lower_add_imm_to_reg(&mut self,
 reg: Arm64Reg, off: i64) {
     if off > 0 && off < 4096 {
         self.core.text.emit_u32(enc::add_imm_64(reg, reg, off as u32));
@@ -451,15 +524,15 @@ reg: Arm64Reg, off: i64) {
             .text
             .emit_u32(enc::sub_imm_64(reg, reg, (-off) as u32));
     } else {
-        // Use SCRATCH1 because reg may be SCRATCH0.
-        materialize_u64_into(&mut self.core.text, SCRATCH1, off as u64);
-        self.core.text.emit_u32(enc::add_reg_64(reg, reg, SCRATCH1));
+        let tmp = *self.gp_scratch.scoped_alloc();
+        materialize_u64_into(&mut self.core.text, tmp, off as u64);
+        self.core.text.emit_u32(enc::add_reg_64(reg, reg, tmp));
     }
 }
 
 // ── Load / Store ─────────────────────────────────────────────────────────────
 
-fn emit_load(&mut self,
+fn lower_load(&mut self,
 dst: MachineReg,
     addr: MachineAddr,
     width: MachineMemWidth,
@@ -510,8 +583,8 @@ dst: MachineReg,
             self.core.set_fp_reg_width(dst, tracked_width)?;
             return Ok(());
         }
-        let addr_scratch = SCRATCH0;
-        self.emit_addr_into(addr_scratch, addr)?;
+        let addr_scratch = *self.gp_scratch.scoped_alloc();
+        self.lower_addr_into(addr_scratch, addr)?;
         self.core.text.emit_u32(match (tracked_width, width, extension) {
             (MachineFloatWidth::F32, MachineMemWidth::U32, MachineLoadExtension::None)
             | (
@@ -548,8 +621,8 @@ dst: MachineReg,
             return Ok(());
         }
     }
-    let addr_scratch = SCRATCH0;
-    self.emit_addr_into(addr_scratch, addr)?;
+    let addr_scratch = *self.gp_scratch.scoped_alloc();
+    self.lower_addr_into(addr_scratch, addr)?;
     let inst = match (width, extension) {
         (MachineMemWidth::U8, MachineLoadExtension::None)
         | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
@@ -586,7 +659,7 @@ dst: MachineReg,
     Ok(())
 }
 
-fn emit_store(&mut self,
+fn lower_store(&mut self,
 addr: MachineAddr,
     width: MachineMemWidth,
     src: MachineValue,
@@ -611,8 +684,8 @@ addr: MachineAddr,
                 });
                 return Ok(());
             }
-            let addr_scratch = SCRATCH0;
-            self.emit_addr_into(addr_scratch, addr)?;
+            let addr_scratch = *self.gp_scratch.scoped_alloc();
+            self.lower_addr_into(addr_scratch, addr)?;
             self.core.text.emit_u32(match width {
                 MachineMemWidth::U32 => enc::str_s_reg(src_fp, addr_scratch, Arm64Reg::Xzr, false),
                 MachineMemWidth::U64 => enc::str_d_reg(src_fp, addr_scratch, Arm64Reg::Xzr, false),
@@ -639,16 +712,22 @@ addr: MachineAddr,
     if width == MachineMemWidth::U64 {
         let offset = addr.offset as i64;
         if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
-            let src_reg = self.materialize_value(SCRATCH0, src)?;
+            let src_reg = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             self.core
                 .text
                 .emit_u32(enc::str_64(src_reg, base, (offset / 8) as u32));
             return Ok(());
         }
     }
-    let addr_scratch = SCRATCH0;
-    self.emit_addr_into(addr_scratch, addr)?;
-    let src_reg = self.materialize_value(SCRATCH1, src)?;
+    let addr_scratch = *self.gp_scratch.scoped_alloc();
+    self.lower_addr_into(addr_scratch, addr)?;
+    let src_reg = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, src,
+    )?.release();
     let inst = match width {
         MachineMemWidth::U8 => enc::strb_reg(src_reg, addr_scratch, Arm64Reg::Xzr),
         MachineMemWidth::U16 => enc::strh_reg(src_reg, addr_scratch, Arm64Reg::Xzr),
@@ -661,7 +740,7 @@ addr: MachineAddr,
 
 // ── Indexed Load / Store ─────────────────────────────────────────────────────
 
-fn emit_indexed_load(&mut self,
+fn lower_indexed_load(&mut self,
 dst: MachineReg,
     base_reg: MachineReg,
     index_reg: MachineReg,
@@ -781,7 +860,7 @@ dst: MachineReg,
 
 /// Indexed load with a non-zero offset: fold index + offset into a scratch,
 /// then register-indexed load with the ORIGINAL memory base.
-fn emit_indexed_load_with_offset(&mut self,
+fn lower_indexed_load_with_offset(&mut self,
 dst: MachineReg,
     base_reg: MachineReg,
     index_reg: MachineReg,
@@ -794,7 +873,7 @@ dst: MachineReg,
     // For GP loads, use dst as the scratch to avoid false dependency chains
     // between consecutive loads. For FP loads, fall back to a pool scratch.
     let scratch = if self.core.is_fp_reg(dst) {
-        SCRATCH0
+        *self.gp_scratch.scoped_alloc()
     } else {
         self.map_gp_reg(dst)?
     };
@@ -803,7 +882,7 @@ dst: MachineReg,
     } else {
         self.core.text.emit_u32(enc::mov_reg_64(scratch, index_arm));
     }
-    self.emit_add_imm_to_reg(scratch, offset as i64);
+    self.lower_add_imm_to_reg(scratch, offset as i64);
     // Register-indexed load using the pre-computed scratch as the index.
     let base_arm = self.map_gp_reg(base_reg)?;
     if self.core.is_fp_reg(dst) {
@@ -838,7 +917,7 @@ dst: MachineReg,
     Ok(())
 }
 
-fn emit_indexed_store(&mut self,
+fn lower_indexed_store(&mut self,
 base_reg: MachineReg,
     index_reg: MachineReg,
     width: MachineMemWidth,
@@ -870,7 +949,10 @@ base_reg: MachineReg,
             return Ok(());
         }
     }
-    let src_reg = self.materialize_value(SCRATCH1, src)?;
+    let src_reg = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, src,
+    )?.release();
     let inst = match width {
         MachineMemWidth::U8 => {
             if uxtw { enc::strb_reg_uxtw(src_reg, base, index) }
@@ -898,7 +980,7 @@ base_reg: MachineReg,
 
 /// Indexed store with a non-zero offset: fold index + offset into a scratch,
 /// then register-indexed store with the ORIGINAL memory base.
-fn emit_indexed_store_with_offset(&mut self,
+fn lower_indexed_store_with_offset(&mut self,
 base_reg: MachineReg,
     index_reg: MachineReg,
     offset: i32,
@@ -906,15 +988,14 @@ base_reg: MachineReg,
     src: MachineValue,
     uxtw: bool,
 ) -> Result<(), WasmError> {
-    // Prepare SCRATCH = zext_or_copy(index) + offset
     let index_arm = self.map_gp_reg(index_reg)?;
-    let idx_scratch = SCRATCH0;
+    let idx_scratch = *self.gp_scratch.scoped_alloc();
     if uxtw {
         self.core.text.emit_u32(enc::mov_reg_32(idx_scratch, index_arm));
     } else {
         self.core.text.emit_u32(enc::mov_reg_64(idx_scratch, index_arm));
     }
-    self.emit_add_imm_to_reg(idx_scratch, offset as i64);
+    self.lower_add_imm_to_reg(idx_scratch, offset as i64);
 
     // Register-indexed store using pre-mapped index register.
     let base_arm = self.map_gp_reg(base_reg)?;
@@ -931,7 +1012,10 @@ base_reg: MachineReg,
             return Ok(());
         }
     }
-    let src_arm = self.materialize_value(SCRATCH1, src)?;
+    let src_arm = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, src,
+    )?.release();
     let inst = match width {
         MachineMemWidth::U8 => enc::strb_reg(src_arm, base_arm, idx_scratch),
         MachineMemWidth::U16 => enc::strh_reg(src_arm, base_arm, idx_scratch),
@@ -944,14 +1028,17 @@ base_reg: MachineReg,
 
 // ── Integer unary ────────────────────────────────────────────────────────────
 
-fn emit_int_unary(&mut self,
+fn lower_int_unary(&mut self,
 width: MachineIntWidth,
     op: MachineIntUnaryOp,
     dst: MachineReg,
     src: MachineValue,
 ) -> Result<(), WasmError> {
     let dst = self.map_gp_reg(dst)?;
-    let src = self.materialize_value(SCRATCH0, src)?;
+    let src = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, src,
+    )?.release();
     match (width, op) {
         (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => {
             self.core.text.emit_u32(enc::cmp_reg_32(src, Arm64Reg::Xzr));
@@ -992,18 +1079,18 @@ width: MachineIntWidth,
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Popcnt) => {
             // FMOV D0, X_src (move GP to FP); CNT V0.8B; ADDV B0; UMOV Wd, V0.B[0]
-            let fp_scratch = FP_SCRATCH0;
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_scratch, src));
-            self.core.text.emit_u32(enc::cnt_8b(fp_scratch, fp_scratch));
-            self.core.text.emit_u32(enc::addv_8b(fp_scratch, fp_scratch));
-            self.core.text.emit_u32(enc::umov_b0(dst, fp_scratch));
+            let fp_scratch = self.fp_scratch.scoped_alloc();
+            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, src));
+            self.core.text.emit_u32(enc::cnt_8b(*fp_scratch, *fp_scratch));
+            self.core.text.emit_u32(enc::addv_8b(*fp_scratch, *fp_scratch));
+            self.core.text.emit_u32(enc::umov_b0(dst, *fp_scratch));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Popcnt) => {
-            let fp_scratch = FP_SCRATCH0;
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_scratch, src));
-            self.core.text.emit_u32(enc::cnt_8b(fp_scratch, fp_scratch));
-            self.core.text.emit_u32(enc::addv_8b(fp_scratch, fp_scratch));
-            self.core.text.emit_u32(enc::umov_b0(dst, fp_scratch));
+            let fp_scratch = self.fp_scratch.scoped_alloc();
+            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, src));
+            self.core.text.emit_u32(enc::cnt_8b(*fp_scratch, *fp_scratch));
+            self.core.text.emit_u32(enc::addv_8b(*fp_scratch, *fp_scratch));
+            self.core.text.emit_u32(enc::umov_b0(dst, *fp_scratch));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Extend32S) => {
             // i32.extend32_s is a nop (already 32-bit)
@@ -1017,7 +1104,7 @@ width: MachineIntWidth,
 
 // ── Integer binary ───────────────────────────────────────────────────────────
 
-fn emit_int_binary(&mut self,
+fn lower_int_binary(&mut self,
 width: MachineIntWidth,
     op: MachineIntBinaryOp,
     dst: MachineReg,
@@ -1025,12 +1112,41 @@ width: MachineIntWidth,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
     let dst = self.map_gp_reg(dst)?;
-    if let Some(inst) = int_binary_imm_inst(width, op, dst, lhs, rhs)? {
-        self.core.text.emit_u32(inst);
-        return Ok(());
+    // Try immediate form: check reg+imm and imm+reg (for commutative ops).
+    if let MachineValue::Imm64(imm) = rhs {
+        if let MachineValue::Reg(lhs_reg) = lhs {
+            let lhs_phys = map_gp(self.core.function, lhs_reg)?;
+            if let Some(inst) = int_binary_imm_inst(width, op, dst, lhs_phys, imm) {
+                self.core.text.emit_u32(inst);
+                return Ok(());
+            }
+        }
     }
-    let lhs = self.materialize_value(SCRATCH0, lhs)?;
-    let rhs = self.materialize_value(SCRATCH1, rhs)?;
+    if let MachineValue::Imm64(imm) = lhs {
+        if let MachineValue::Reg(rhs_reg) = rhs {
+            let rhs_phys = map_gp(self.core.function, rhs_reg)?;
+            // Commutative ops: swap operands for imm selection.
+            match op {
+                MachineIntBinaryOp::Add | MachineIntBinaryOp::Mul
+                | MachineIntBinaryOp::And | MachineIntBinaryOp::Or
+                | MachineIntBinaryOp::Xor => {
+                    if let Some(inst) = int_binary_imm_inst(width, op, dst, rhs_phys, imm) {
+                        self.core.text.emit_u32(inst);
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let lhs = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, lhs,
+    )?.release();
+    let rhs = prepare_gp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, rhs,
+    )?.release();
     match (width, op) {
         (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
             self.core.text.emit_u32(enc::add_reg_32(dst, lhs, rhs));
@@ -1093,46 +1209,46 @@ width: MachineIntWidth,
             self.core.text.emit_u32(enc::rorv_64(dst, lhs, rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
-            // rotl(x, n) = rotr(x, -n). Pick a scratch that doesn't clobber lhs.
-            let neg_dst = if lhs == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+            // rotl(x, n) = rotr(x, -n)
+            let neg_dst = *self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::neg_reg_32(neg_dst, rhs));
             self.core.text.emit_u32(enc::rorv_32(dst, lhs, neg_dst));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
-            let neg_dst = if lhs == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+            let neg_dst = *self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::neg_reg_64(neg_dst, rhs));
             self.core.text.emit_u32(enc::rorv_64(dst, lhs, neg_dst));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::DivS) => {
-            self.emit_div_s_32(dst, lhs, rhs);
+            self.lower_div_s_32(dst, lhs, rhs);
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::DivS) => {
-            self.emit_div_s_64(dst, lhs, rhs);
+            self.lower_div_s_64(dst, lhs, rhs);
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::DivU) => {
-            self.emit_div_u_check(lhs, rhs, MachineIntWidth::I32);
+            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I32);
             self.core.text.emit_u32(enc::udiv_32(dst, lhs, rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::DivU) => {
-            self.emit_div_u_check(lhs, rhs, MachineIntWidth::I64);
+            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I64);
             self.core.text.emit_u32(enc::udiv_64(dst, lhs, rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::RemS) => {
-            self.emit_rem_s_32(dst, lhs, rhs);
+            self.lower_rem_s_32(dst, lhs, rhs);
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::RemS) => {
-            self.emit_rem_s_64(dst, lhs, rhs);
+            self.lower_rem_s_64(dst, lhs, rhs);
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::RemU) => {
-            self.emit_div_u_check(lhs, rhs, MachineIntWidth::I32);
+            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I32);
             // rem = lhs - (lhs / rhs) * rhs
-            let tmp = SCRATCH0;
+            let tmp = *self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::udiv_32(tmp, lhs, rhs));
             self.core.text.emit_u32(enc::msub_32(dst, tmp, rhs, lhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::RemU) => {
-            self.emit_div_u_check(lhs, rhs, MachineIntWidth::I64);
-            let tmp = SCRATCH0;
+            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I64);
+            let tmp = *self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::udiv_64(tmp, lhs, rhs));
             self.core.text.emit_u32(enc::msub_64(dst, tmp, rhs, lhs));
         }
@@ -1142,7 +1258,7 @@ width: MachineIntWidth,
 
 // ── Division / remainder helpers with trap checks ────────────────────────────
 
-fn emit_div_u_check(&mut self,
+fn lower_div_u_check(&mut self,
 _lhs: Arm64Reg, rhs: Arm64Reg, width: MachineIntWidth) {
     // rhs == 0 => trap IntegerDivideByZero
     match width {
@@ -1151,33 +1267,33 @@ _lhs: Arm64Reg, rhs: Arm64Reg, width: MachineIntWidth) {
     };
     // Branch to a trap stub
     let trap_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, trap_label);
+    self.lower_b_cond(enc::Cond::Eq, trap_label);
     self.core
         .deferred_traps
         .push((trap_label, MachineTrapKind::IntegerDivideByZero));
 }
 
-fn emit_div_s_32(&mut self,
+fn lower_div_s_32(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     // Check rhs == 0 => IntegerDivideByZero
     self.core.text.emit_u32(enc::cmp_reg_32(rhs, Arm64Reg::Xzr));
     let div_zero_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, div_zero_label);
+    self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
         .deferred_traps
         .push((div_zero_label, MachineTrapKind::IntegerDivideByZero));
 
     // Check lhs == i32::MIN && rhs == -1 => IntegerOverflow
-    let scratch = SCRATCH0;
+    let scratch = *self.gp_scratch.scoped_alloc();
     self.materialize_u64(scratch, i32::MIN as u32 as u64);
     self.core.text.emit_u32(enc::cmp_reg_32(lhs, scratch));
     let not_min = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Ne, not_min);
+    self.lower_b_cond(enc::Cond::Ne, not_min);
     // lhs is MIN, check rhs == -1
     self.materialize_u64(scratch, (-1i32) as u32 as u64);
     self.core.text.emit_u32(enc::cmp_reg_32(rhs, scratch));
     let overflow_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, overflow_label);
+    self.lower_b_cond(enc::Cond::Eq, overflow_label);
     self.core
         .deferred_traps
         .push((overflow_label, MachineTrapKind::IntegerOverflow));
@@ -1186,23 +1302,23 @@ dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     self.core.text.emit_u32(enc::sdiv_32(dst, lhs, rhs));
 }
 
-fn emit_div_s_64(&mut self,
+fn lower_div_s_64(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     self.core.text.emit_u32(enc::cmp_reg_64(rhs, Arm64Reg::Xzr));
     let div_zero_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, div_zero_label);
+    self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
         .deferred_traps
         .push((div_zero_label, MachineTrapKind::IntegerDivideByZero));
-    let scratch = SCRATCH0;
+    let scratch = *self.gp_scratch.scoped_alloc();
     self.materialize_u64(scratch, i64::MIN as u64);
     self.core.text.emit_u32(enc::cmp_reg_64(lhs, scratch));
     let not_min = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Ne, not_min);
+    self.lower_b_cond(enc::Cond::Ne, not_min);
     self.materialize_u64(scratch, (-1i64) as u64);
     self.core.text.emit_u32(enc::cmp_reg_64(rhs, scratch));
     let overflow_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, overflow_label);
+    self.lower_b_cond(enc::Cond::Eq, overflow_label);
     self.core
         .deferred_traps
         .push((overflow_label, MachineTrapKind::IntegerOverflow));
@@ -1211,38 +1327,38 @@ dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     self.core.text.emit_u32(enc::sdiv_64(dst, lhs, rhs));
 }
 
-fn emit_rem_s_32(&mut self,
+fn lower_rem_s_32(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     // Check rhs == 0 => IntegerDivideByZero
     self.core.text.emit_u32(enc::cmp_reg_32(rhs, Arm64Reg::Xzr));
     let div_zero_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, div_zero_label);
+    self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
         .deferred_traps
         .push((div_zero_label, MachineTrapKind::IntegerDivideByZero));
 
     // rem = lhs - (lhs / rhs) * rhs  (wrapping, so MIN % -1 = 0, no trap)
-    let scratch = SCRATCH0;
+    let scratch = *self.gp_scratch.scoped_alloc();
     self.core.text.emit_u32(enc::sdiv_32(scratch, lhs, rhs));
     self.core.text.emit_u32(enc::msub_32(dst, scratch, rhs, lhs));
 }
 
-fn emit_rem_s_64(&mut self,
+fn lower_rem_s_64(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     self.core.text.emit_u32(enc::cmp_reg_64(rhs, Arm64Reg::Xzr));
     let div_zero_label = self.core.new_label();
-    self.emit_b_cond(enc::Cond::Eq, div_zero_label);
+    self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
         .deferred_traps
         .push((div_zero_label, MachineTrapKind::IntegerDivideByZero));
-    let scratch = SCRATCH0;
+    let scratch = *self.gp_scratch.scoped_alloc();
     self.core.text.emit_u32(enc::sdiv_64(scratch, lhs, rhs));
     self.core.text.emit_u32(enc::msub_64(dst, scratch, rhs, lhs));
 }
 
 // ── Integer compare ──────────────────────────────────────────────────────────
 
-fn emit_int_compare(&mut self,
+fn lower_int_compare(&mut self,
 width: MachineIntWidth,
     kind: MachineCompareKind,
     sign: MachineSign,
@@ -1250,7 +1366,7 @@ width: MachineIntWidth,
     lhs: MachineValue,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
-    self.emit_cmp_values(width, lhs, rhs)?;
+    self.lower_cmp_values(width, lhs, rhs)?;
     let dst = self.map_gp_reg(dst)?;
     let cond = map_int_cond(kind, sign);
     match width {
@@ -1266,7 +1382,7 @@ width: MachineIntWidth,
 
 // ── Select ───────────────────────────────────────────────────────────────────
 
-fn emit_select(&mut self,
+fn lower_select(&mut self,
 ty: MachineStorageType,
     dst: MachineReg,
     on_true: MachineValue,
@@ -1277,20 +1393,26 @@ ty: MachineStorageType,
         match cond {
             MachineValue::Imm64(value) => {
                 let selected = if value != 0 { on_true } else { on_false };
-                return self.emit_move(ty, dst, selected);
+                return self.lower_move(ty, dst, selected);
             }
             MachineValue::Reg(reg) => {
-                let true_fp =
-                    self.prepare_float_operand(width, on_true, SCRATCH0, FP_SCRATCH0)?;
-                let false_fp =
-                    self.prepare_float_operand(width, on_false, SCRATCH1, FP_SCRATCH1)?;
+                let true_fp = prepare_fp(
+                    self.core.function, &self.core.fp_reg_widths,
+                    &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+                    width, on_true,
+                )?;
+                let false_fp = prepare_fp(
+                    self.core.function, &self.core.fp_reg_widths,
+                    &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+                    width, on_false,
+                )?;
                 let dst_fp = self.map_fp_reg(dst)?;
                 self.core
                     .text
                     .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
                 self.core.text.emit_u32(match width {
-                    MachineFloatWidth::F32 => enc::fcsel_s(dst_fp, true_fp, false_fp, enc::Cond::Ne),
-                    MachineFloatWidth::F64 => enc::fcsel_d(dst_fp, true_fp, false_fp, enc::Cond::Ne),
+                    MachineFloatWidth::F32 => enc::fcsel_s(dst_fp, true_fp.reg(), false_fp.reg(), enc::Cond::Ne),
+                    MachineFloatWidth::F64 => enc::fcsel_d(dst_fp, true_fp.reg(), false_fp.reg(), enc::Cond::Ne),
                 });
                 self.core.set_fp_reg_width(dst, width)?;
                 Ok(())
@@ -1301,7 +1423,14 @@ ty: MachineStorageType,
         match cond {
             MachineValue::Imm64(value) => {
                 let selected = if value != 0 { on_true } else { on_false };
-                return self.emit_move(ty, inv_map_reg(dst), selected);
+                let src = prepare_gp(
+                    self.core.function, &self.core.fp_reg_widths,
+                    &mut self.core.text, &self.gp_scratch, selected,
+                )?;
+                if dst != src.reg() {
+                    self.core.text.emit_u32(enc::mov_reg_64(dst, src.reg()));
+                }
+                return Ok(());
             }
             MachineValue::Reg(reg) => {
                 self.core
@@ -1309,32 +1438,42 @@ ty: MachineStorageType,
                     .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
             }
         }
-        let true_reg = self.materialize_value(SCRATCH0, on_true)?;
-        let false_reg = self.materialize_value(SCRATCH1, on_false)?;
+        let true_reg = prepare_gp(
+            self.core.function, &self.core.fp_reg_widths,
+            &mut self.core.text, &self.gp_scratch, on_true,
+        )?;
+        let false_reg = prepare_gp(
+            self.core.function, &self.core.fp_reg_widths,
+            &mut self.core.text, &self.gp_scratch, on_false,
+        )?;
         // Always use csel_64: GpWord covers both i32 and reference types,
         // and refs need full 64-bit values preserved (e.g. null sentinel).
         self.core
             .text
-            .emit_u32(enc::csel_64(dst, true_reg, false_reg, enc::Cond::Ne));
+            .emit_u32(enc::csel_64(dst, true_reg.reg(), false_reg.reg(), enc::Cond::Ne));
         Ok(())
     }
 }
 
 // ── Float operations ─────────────────────────────────────────────────────────
 
-fn emit_float_unary(&mut self,
+fn lower_float_unary(&mut self,
 width: MachineFloatWidth,
     op: MachineFloatUnaryOp,
     dst: MachineReg,
     src: MachineValue,
 ) -> Result<(), WasmError> {
-    let src_fp = self.prepare_float_operand(width, src, SCRATCH0, FP_SCRATCH0)?;
+    let src_fp = prepare_fp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+        width, src,
+    )?.release();
     let result_fp = if self.core.is_fp_reg(dst) {
         let dst_fp = self.map_fp_reg(dst)?;
         self.core.set_fp_reg_width(dst, width)?;
         dst_fp
     } else {
-        FP_SCRATCH2
+        *self.fp_scratch.scoped_alloc()
     };
     // Perform the FP operation
     match (width, op) {
@@ -1395,21 +1534,29 @@ width: MachineFloatWidth,
     Ok(())
 }
 
-fn emit_float_binary(&mut self,
+fn lower_float_binary(&mut self,
 width: MachineFloatWidth,
     op: MachineFloatBinaryOp,
     dst: MachineReg,
     lhs: MachineValue,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
-    let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-    let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+    let lhs_fp = prepare_fp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+        width, lhs,
+    )?.release();
+    let rhs_fp = prepare_fp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+        width, rhs,
+    )?.release();
     let result_fp = if self.core.is_fp_reg(dst) {
         let dst_fp = self.map_fp_reg(dst)?;
         self.core.set_fp_reg_width(dst, width)?;
         dst_fp
     } else {
-        FP_SCRATCH2
+        *self.fp_scratch.scoped_alloc()
     };
     match (width, op) {
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
@@ -1441,7 +1588,7 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fmin_s(result_fp, lhs_fp, rhs_fp));
             self.core.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp));
             let done = self.core.new_label();
-            self.emit_b_cond(enc::Cond::Vc, done); // no NaN => FMIN result is correct
+            self.lower_b_cond(enc::Cond::Vc, done); // no NaN => FMIN result is correct
             // NaN case: FADD produces NaN from NaN input
             self.core.text.emit_u32(enc::fadd_s(result_fp, lhs_fp, rhs_fp));
             self.core.bind_label(done);
@@ -1450,7 +1597,7 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fmin_d(result_fp, lhs_fp, rhs_fp));
             self.core.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp));
             let done = self.core.new_label();
-            self.emit_b_cond(enc::Cond::Vc, done);
+            self.lower_b_cond(enc::Cond::Vc, done);
             self.core.text.emit_u32(enc::fadd_d(result_fp, lhs_fp, rhs_fp));
             self.core.bind_label(done);
         }
@@ -1458,7 +1605,7 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fmax_s(result_fp, lhs_fp, rhs_fp));
             self.core.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp));
             let done = self.core.new_label();
-            self.emit_b_cond(enc::Cond::Vc, done);
+            self.lower_b_cond(enc::Cond::Vc, done);
             self.core.text.emit_u32(enc::fadd_s(result_fp, lhs_fp, rhs_fp));
             self.core.bind_label(done);
         }
@@ -1466,17 +1613,20 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fmax_d(result_fp, lhs_fp, rhs_fp));
             self.core.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp));
             let done = self.core.new_label();
-            self.emit_b_cond(enc::Cond::Vc, done);
+            self.lower_b_cond(enc::Cond::Vc, done);
             self.core.text.emit_u32(enc::fadd_d(result_fp, lhs_fp, rhs_fp));
             self.core.bind_label(done);
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Copysign) => {
             // copysign: magnitude of lhs, sign of rhs
-            let neg_fp = FP_SCRATCH0;
+            let neg_fp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fabs_s(result_fp, lhs_fp)); // |lhs|
             self.core.text.emit_u32(enc::fneg_s(neg_fp, result_fp)); // -|lhs|
-            let rhs_gp = self.materialize_value(SCRATCH1, rhs)?;
-            let shift_reg = SCRATCH0;
+            let rhs_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, rhs,
+            )?.release();
+            let shift_reg = *self.gp_scratch.scoped_alloc();
             self.materialize_u64(shift_reg, 31);
             self.core.text.emit_u32(enc::lsrv_64(shift_reg, rhs_gp, shift_reg));
             self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
@@ -1485,11 +1635,14 @@ width: MachineFloatWidth,
                 .emit_u32(enc::fcsel_s(result_fp, neg_fp, result_fp, enc::Cond::Ne));
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Copysign) => {
-            let neg_fp = FP_SCRATCH0;
+            let neg_fp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fabs_d(result_fp, lhs_fp));
             self.core.text.emit_u32(enc::fneg_d(neg_fp, result_fp));
-            let rhs_gp = self.materialize_value(SCRATCH1, rhs)?;
-            let shift_reg = SCRATCH0;
+            let rhs_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, rhs,
+            )?.release();
+            let shift_reg = *self.gp_scratch.scoped_alloc();
             self.materialize_u64(shift_reg, 63);
             self.core.text.emit_u32(enc::lsrv_64(shift_reg, rhs_gp, shift_reg));
             self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
@@ -1512,7 +1665,7 @@ width: MachineFloatWidth,
     Ok(())
 }
 
-fn emit_float_compare(&mut self,
+fn lower_float_compare(&mut self,
 width: MachineFloatWidth,
     kind: MachineCompareKind,
     dst: MachineReg,
@@ -1520,18 +1673,25 @@ width: MachineFloatWidth,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
     let dst_gp = self.map_gp_reg(dst)?;
-    let lhs_fp = self.prepare_float_operand(width, lhs, SCRATCH0, FP_SCRATCH0)?;
-    // Compare against zero: use FCMP Dn, #0.0 when rhs is immediate zero.
+    let lhs_fp = prepare_fp(
+        self.core.function, &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+        width, lhs,
+    )?;
     if matches!(rhs, MachineValue::Imm64(0)) {
         match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s_zero(lhs_fp)),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d_zero(lhs_fp)),
+            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s_zero(lhs_fp.reg())),
+            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d_zero(lhs_fp.reg())),
         };
     } else {
-        let rhs_fp = self.prepare_float_operand(width, rhs, SCRATCH1, FP_SCRATCH1)?;
+        let rhs_fp = prepare_fp(
+            self.core.function, &self.core.fp_reg_widths,
+            &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+            width, rhs,
+        )?;
         match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp)),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp)),
+            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s(lhs_fp.reg(), rhs_fp.reg())),
+            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d(lhs_fp.reg(), rhs_fp.reg())),
         };
     }
     // Wasm float comparisons: unordered (NaN) => false for all except Ne
@@ -1541,24 +1701,24 @@ width: MachineFloatWidth,
 }
 
 /// Resolve FP destination register for convert ops: if dst is FP, map it;
-/// otherwise use FP_SCRATCH1 as a temporary.
+/// otherwise allocate an FP scratch.
 fn resolve_convert_fp_dst(
     &mut self,
     dst: MachineReg,
     width: MachineFloatWidth,
-) -> Result<u32, WasmError> {
+) -> Result<Arm64FpReg, WasmError> {
     if self.core.is_fp_reg(dst) {
         let dst_fp = self.map_fp_reg(dst)?;
         self.core.set_fp_reg_width(dst, width)?;
         Ok(dst_fp)
     } else {
-        Ok(FP_SCRATCH1)
+        Ok(*self.fp_scratch.scoped_alloc())
     }
 }
 
 // ── Convert ──────────────────────────────────────────────────────────────────
 
-fn emit_convert(&mut self,
+fn lower_convert(&mut self,
 op: MachineConvertOp,
     dst: MachineReg,
     src: MachineValue,
@@ -1567,61 +1727,54 @@ op: MachineConvertOp,
     match op {
         // Integer wrapping / extension (no FP involved)
         MachineConvertOp::I32WrapI64 => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
-            // Just mask to 32 bits
             self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
         }
         MachineConvertOp::I64ExtendI32S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::sxtw(dst_gp, src_gp));
         }
         MachineConvertOp::I64ExtendI32U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
         }
         MachineConvertOp::I32ReinterpretF32 => {
             let dst_gp = self.map_gp_reg(dst)?;
-            if let MachineValue::Reg(src_reg) = src {
-                if self.core.is_fp_reg(src_reg) {
-                    let src_fp = self.map_fp_reg(src_reg)?;
-                    self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, src_fp));
-                } else {
-                    let src_gp = self.map_gp_reg(src_reg)?;
-                    if dst_gp != src_gp {
-                        self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
-                    }
-                }
-            } else {
-                let src_gp = self.materialize_value(SCRATCH0, src)?;
-                if dst_gp != src_gp {
-                    self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
-                }
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            if dst_gp != src_gp {
+                self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
             }
         }
         MachineConvertOp::I64ReinterpretF64 => {
             let dst_gp = self.map_gp_reg(dst)?;
-            if let MachineValue::Reg(src_reg) = src {
-                if self.core.is_fp_reg(src_reg) {
-                    let src_fp = self.map_fp_reg(src_reg)?;
-                    self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, src_fp));
-                } else {
-                    let src_gp = self.map_gp_reg(src_reg)?;
-                    if dst_gp != src_gp {
-                        self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
-                    }
-                }
-            } else {
-                let src_gp = self.materialize_value(SCRATCH0, src)?;
-                if dst_gp != src_gp {
-                    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
-                }
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            if dst_gp != src_gp {
+                self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
             }
         }
         MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let width = dst_float_width.expect("float reinterpret width");
             let dst_fp = self.resolve_convert_fp_dst(dst, width)?;
             self.core.text.emit_u32(match width {
@@ -1635,8 +1788,11 @@ op: MachineConvertOp,
         }
         // Float promotion / demotion
         MachineConvertOp::F64PromoteF32 => {
-            let src_fp =
-                self.prepare_float_operand(MachineFloatWidth::F32, src, SCRATCH0, FP_SCRATCH0)?;
+            let src_fp = prepare_fp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+                MachineFloatWidth::F32, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
             self.core.text.emit_u32(enc::fcvt_d_from_s(dst_fp, src_fp));
             if !self.core.is_fp_reg(dst) {
@@ -1645,8 +1801,11 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F32DemoteF64 => {
-            let src_fp =
-                self.prepare_float_operand(MachineFloatWidth::F64, src, SCRATCH0, FP_SCRATCH0)?;
+            let src_fp = prepare_fp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
+                MachineFloatWidth::F64, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
             self.core.text.emit_u32(enc::fcvt_s_from_d(dst_fp, src_fp));
             if !self.core.is_fp_reg(dst) {
@@ -1656,7 +1815,10 @@ op: MachineConvertOp,
         }
         // Int -> Float conversions
         MachineConvertOp::F32ConvertI32S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
             self.core.text.emit_u32(enc::scvtf_s_32(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1665,7 +1827,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F32ConvertI32U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
             self.core.text.emit_u32(enc::ucvtf_s_32(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1674,7 +1839,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F32ConvertI64S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
             self.core.text.emit_u32(enc::scvtf_s_64(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1683,7 +1851,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F32ConvertI64U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
             self.core.text.emit_u32(enc::ucvtf_s_64(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1692,7 +1863,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F64ConvertI32S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
             self.core.text.emit_u32(enc::scvtf_d_32(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1701,7 +1875,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F64ConvertI32U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
             self.core.text.emit_u32(enc::ucvtf_d_32(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1710,7 +1887,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F64ConvertI64S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
             self.core.text.emit_u32(enc::scvtf_d_64(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1719,7 +1899,10 @@ op: MachineConvertOp,
             }
         }
         MachineConvertOp::F64ConvertI64U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
             self.core.text.emit_u32(enc::ucvtf_d_64(dst_fp, src_gp));
             if !self.core.is_fp_reg(dst) {
@@ -1737,64 +1920,91 @@ op: MachineConvertOp,
         | MachineConvertOp::I64TruncF64S
         | MachineConvertOp::I64TruncF64U => {
             let dst_gp = self.map_gp_reg(dst)?;
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            self.emit_trapping_trunc(op, dst_gp, src_gp)?;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            self.lower_trapping_trunc(op, dst_gp, src_gp)?;
         }
         // Saturating truncations -- inline via native fcvtzs/fcvtzu
         // ARM64 fcvtzs/fcvtzu already matches Wasm saturating semantics:
         // NaN->0, overflow->clamp to min/max.
         MachineConvertOp::I32TruncSatF32S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_32_s(dst_gp, fp_tmp));
         }
         MachineConvertOp::I32TruncSatF32U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_32_s(dst_gp, fp_tmp));
         }
         MachineConvertOp::I32TruncSatF64S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_32_d(dst_gp, fp_tmp));
         }
         MachineConvertOp::I32TruncSatF64U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_32_d(dst_gp, fp_tmp));
         }
         MachineConvertOp::I64TruncSatF32S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_64_s(dst_gp, fp_tmp));
         }
         MachineConvertOp::I64TruncSatF32U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_64_s(dst_gp, fp_tmp));
         }
         MachineConvertOp::I64TruncSatF64S => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_64_d(dst_gp, fp_tmp));
         }
         MachineConvertOp::I64TruncSatF64U => {
-            let src_gp = self.materialize_value(SCRATCH0, src)?;
-            let fp_tmp = FP_SCRATCH0;
+            let src_gp = prepare_gp(
+                self.core.function, &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, src,
+            )?.release();
+            let fp_tmp = *self.fp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_64_d(dst_gp, fp_tmp));
@@ -1803,27 +2013,27 @@ op: MachineConvertOp,
     Ok(())
 }
 
-fn emit_trapping_trunc(&mut self,
+fn lower_trapping_trunc(&mut self,
 op: MachineConvertOp,
     dst: Arm64Reg,
     src: Arm64Reg,
 ) -> Result<(), WasmError> {
     use super::helpers::arm64_trapping_trunc;
 
-    // Call the helper: extern "C" fn(ctx, src_bits) -> status
+    // Call the helper: extern "C" fn(ctx, src_bits, op_code) -> status
     self.core.text.emit_u32(enc::mov_reg_64(
-        Arm64Reg::X0,
+        abi::C_ARG0,
         map_fixed_reg(MACHINE_CTX_REG),
     ));
-    self.core.text.emit_u32(enc::mov_reg_64(Arm64Reg::X1, src));
-    self.materialize_u64(Arm64Reg::X2, convert_op_code(op));
-    let scratch = SCRATCH0;
-    self.materialize_u64(scratch, arm64_trapping_trunc as usize as u64);
-    self.core.text.emit_u32(enc::blr(scratch));
-    // X0 = status (0 = ok), X1 = result value
+    self.core.text.emit_u32(enc::mov_reg_64(abi::C_ARG1, src));
+    self.materialize_u64(abi::C_ARG2, convert_op_code(op));
+    let call_scratch = self.gp_scratch.scoped_alloc().release();
+    self.materialize_u64(call_scratch, arm64_trapping_trunc as usize as u64);
+    self.core.text.emit_u32(enc::blr(call_scratch));
+    // C_RET0 = status (0 = ok), C_RET1 = result value
     let return_error_label = self.core.return_error_label;
-    self.emit_cbnz(Arm64Reg::X0, return_error_label);
-    self.core.text.emit_u32(enc::mov_reg_64(dst, Arm64Reg::X1));
+    self.lower_cbnz(abi::C_RET0, return_error_label);
+    self.core.text.emit_u32(enc::mov_reg_64(dst, abi::C_RET1));
     Ok(())
 }
 

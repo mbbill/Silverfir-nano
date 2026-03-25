@@ -23,16 +23,35 @@ use crate::{
     },
 };
 
-use super::{enc, reg::Arm64Reg};
+use super::{abi, enc, reg::{Arm64FpReg, Arm64Reg}};
 use super::abi::{
-    emit_shared_epilogue, emit_shared_prologue, map_fixed_reg,
     max_fp_machine_regs, max_total_machine_regs, FP_MACHINE_REG_COUNT,
 };
 use crate::vm::arch::common::{
     backend::ArchBackend,
     core::CompilerCore,
+    scratch_pool::ScratchPool,
     types::{DebugRegion, ParallelSource},
 };
+
+// ── Frame layout constants ───────────────────────────────────────────────────
+
+const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
+const CALLEE_SAVED_GP_FRAME_SIZE: u32 = abi::CALLEE_SAVED_GP_PAIRS.len() as u32 * (2 * STACK_SLOT_BYTES);
+const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
+const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::CALLEE_SAVED_FP.len() as u32 * STACK_SLOT_BYTES;
+const CALLEE_SAVED_FRAME_SIZE: u32 = {
+    let total = CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE;
+    total.div_ceil(abi::STACK_ALIGNMENT_BYTES) * abi::STACK_ALIGNMENT_BYTES
+};
+
+const fn stack_u64_slot(offset_bytes: u32) -> u32 {
+    offset_bytes / STACK_SLOT_BYTES
+}
+
+const fn stack_pair_imm(offset_bytes: u32) -> i32 {
+    (offset_bytes / STACK_SLOT_BYTES) as i32
+}
 
 // ── Branch fixup types ───────────────────────────────────────────────────────
 
@@ -67,6 +86,8 @@ pub(crate) struct CompiledArm64Entry {
 pub(crate) struct Arm64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: Vec<BranchFixup>,
+    pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
+    pub(super) fp_scratch: ScratchPool<Arm64FpReg, 3>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -81,6 +102,8 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         Self {
             core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
             fixups: Vec::new(),
+            gp_scratch: abi::new_gp_scratch_pool(),
+            fp_scratch: abi::new_fp_scratch_pool(),
         }
     }
 
@@ -88,35 +111,67 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     fn core_mut(&mut self) -> &mut CompilerCore<'a> { &mut self.core }
     fn into_core(self) -> CompilerCore<'a> { self.core }
 
-    fn emit_prologue(&mut self) {
-        emit_shared_prologue(&mut self.core.text);
-        self.core.text.emit_u32(enc::mov_reg_64(
-            map_fixed_reg(MACHINE_CTX_REG), Arm64Reg::X0,
+    fn lower_prologue(&mut self) {
+        // Allocate frame and save callee-saved registers.
+        self.core.text.emit_u32(enc::sub_imm_64(
+            Arm64Reg::SP, Arm64Reg::SP, CALLEE_SAVED_FRAME_SIZE,
         ));
-        self.core.text.emit_u32(enc::mov_reg_64(
-            map_fixed_reg(MACHINE_FP_REG), Arm64Reg::X1,
-        ));
+        for (index, (lhs, rhs)) in abi::CALLEE_SAVED_GP_PAIRS.iter().copied().enumerate() {
+            self.core.text.emit_u32(enc::stp_64(
+                lhs, rhs, Arm64Reg::SP,
+                stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
+            ));
+        }
+        for (index, reg) in abi::CALLEE_SAVED_FP.iter().copied().enumerate() {
+            self.core.text.emit_u32(enc::str_d(
+                reg, Arm64Reg::SP,
+                stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
+            ));
+        }
+
+        // Move entry arguments into pinned roles.
+        let ctx = abi::map_fixed_reg(MACHINE_CTX_REG);
+        let frame = abi::map_fixed_reg(MACHINE_FP_REG);
+        self.core.text.emit_u32(enc::mov_reg_64(ctx, abi::C_ARG0));
+        self.core.text.emit_u32(enc::mov_reg_64(frame, abi::C_ARG1));
         self.core.text.emit_u32(enc::ldr_64(
-            map_fixed_reg(MACHINE_MEM0_BASE_REG),
-            map_fixed_reg(MACHINE_CTX_REG),
+            abi::map_fixed_reg(MACHINE_MEM0_BASE_REG),
+            ctx,
             (ctx_offset::MEM0_BASE / 8) as u32,
         ));
         self.core.text.emit_u32(enc::ldr_64(
-            map_fixed_reg(MACHINE_MEM0_SIZE_REG),
-            map_fixed_reg(MACHINE_CTX_REG),
+            abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
+            ctx,
             (ctx_offset::MEM0_SIZE / 8) as u32,
         ));
     }
 
-    fn emit_epilogue(&mut self) {
-        emit_shared_epilogue(&mut self.core.text);
+    fn lower_epilogue(&mut self) {
+        // Restore callee-saved FP registers.
+        for (index, reg) in abi::CALLEE_SAVED_FP.iter().copied().enumerate() {
+            self.core.text.emit_u32(enc::ldr_d(
+                reg, Arm64Reg::SP,
+                stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
+            ));
+        }
+        // Restore callee-saved GP registers and deallocate frame.
+        for (index, (lhs, rhs)) in abi::CALLEE_SAVED_GP_PAIRS.iter().copied().enumerate() {
+            self.core.text.emit_u32(enc::ldp_64(
+                lhs, rhs, Arm64Reg::SP,
+                stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
+            ));
+        }
+        self.core.text.emit_u32(enc::add_imm_64(
+            Arm64Reg::SP, Arm64Reg::SP, CALLEE_SAVED_FRAME_SIZE,
+        ));
+        self.core.text.emit_u32(enc::ret());
     }
 
-    fn emit_return_ok_status(&mut self) {
-        self.materialize_u64(Arm64Reg::X0, 0);
+    fn lower_return_ok_status(&mut self) {
+        self.materialize_u64(abi::C_RET0, 0);
     }
 
-    fn emit_block(
+    fn lower_block(
         &mut self,
         block: &MachineBlock,
         fallthrough: Option<MachineBlockId>,
@@ -136,7 +191,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 if let MachineInstKind::FloatCompare { width, lhs, rhs, .. }
                     = &block.ops[index].kind
                 {
-                    self.emit_fcmp_values(*width, *lhs, *rhs)?;
+                    self.lower_fcmp_values(*width, *lhs, *rhs)?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
                     index += 1;
                     continue;
                 }
@@ -146,10 +203,15 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 self.core.text.emit_u32(
                     enc::stp_64(Arm64Reg::Xzr, Arm64Reg::Xzr, base_reg, imm7),
                 );
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
                 index += 2;
                 continue;
             }
-            self.emit_inst(&block.ops[index])?;
+            self.lower_inst(&block.ops[index])?;
+            // Catch scratch leaks between instructions.
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
             index += 1;
         }
         self.core.current_op_index = None;
@@ -157,35 +219,35 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         let result = if let Some(cond) = fused_fcmp_cond {
             match &block.terminator {
                 MachineTerminator::Branch { then_edge, else_edge, .. } => {
-                    self.emit_fused_cond_branch(cond, then_edge, else_edge, fallthrough)
+                    self.lower_fused_cond_branch(cond, then_edge, else_edge, fallthrough)
                 }
                 _ => unreachable!(),
             }
         } else {
-            self.emit_terminator(&block.terminator, fallthrough)
+            self.lower_terminator(&block.terminator, fallthrough)
         };
         self.core.current_block = None;
         result
     }
 
-    fn emit_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
-        self.emit_inst_dispatch(inst)
+    fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
+        self.lower_inst_dispatch(inst)
     }
 
-    fn emit_terminator(
+    fn lower_terminator(
         &mut self,
         term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        self.emit_terminator_dispatch(term, fallthrough)
+        self.lower_terminator_dispatch(term, fallthrough)
     }
 
-    fn emit_trap(&mut self, kind: MachineTrapKind) {
-        self.emit_trap_dispatch(kind);
+    fn lower_trap(&mut self, kind: MachineTrapKind) {
+        self.lower_trap_dispatch(kind);
     }
 
-    fn emit_unconditional_branch(&mut self, label: usize) {
-        self.emit_b(label);
+    fn lower_unconditional_branch(&mut self, label: usize) {
+        self.lower_b(label);
     }
 
     fn patch_fixups(&mut self) -> Result<(), WasmError> {
@@ -208,35 +270,41 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         Ok(())
     }
 
-    fn emit_source_move(
+    fn alloc_gp_scratch(&mut self) -> u8 { self.gp_scratch.alloc() }
+    fn free_gp_scratch(&mut self, id: u8) { self.gp_scratch.free_index(id) }
+    fn alloc_fp_scratch(&mut self) -> u8 { self.fp_scratch.alloc() }
+    fn free_fp_scratch(&mut self, id: u8) { self.fp_scratch.free_index(id) }
+
+    fn lower_source_move(
         &mut self, dst: MachineBlockParam, src: ParallelSource,
     ) -> Result<(), WasmError> {
-        self.emit_source_move_dispatch(dst, src)
+        self.lower_source_move_dispatch(dst, src)
     }
 
-    fn emit_gp_cycle_break(
-        &mut self, dst: MachineReg, src: MachineReg,
+    fn lower_gp_cycle_break(
+        &mut self, dst: MachineReg, src: MachineReg, scratch_id: u8,
     ) -> Result<(), WasmError> {
-        use super::abi::SCRATCH1;
+        let temp = self.gp_scratch.reg(scratch_id);
         let dst_gp = self.map_gp_reg(dst)?;
         let src_gp = self.map_gp_reg(src)?;
-        self.core.text.emit_u32(enc::mov_reg_64(SCRATCH1, dst_gp));
+        self.core.text.emit_u32(enc::mov_reg_64(temp, dst_gp));
         self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
         Ok(())
     }
 
-    fn emit_fp_cycle_break(
+    fn lower_fp_cycle_break(
         &mut self,
         dst: MachineBlockParam,
         src: MachineReg,
         _float_width: Option<MachineFloatWidth>,
+        scratch_id: u8,
     ) -> Result<(), WasmError> {
-        use super::abi::FP_SCRATCH2;
+        let temp = self.fp_scratch.reg(scratch_id);
         let dst_fp = self.map_fp_reg(dst.reg)?;
         let width = dst.ty.float_width().expect("FP param width");
         self.core.text.emit_u32(match width {
-            MachineFloatWidth::F32 => enc::fmov_s(FP_SCRATCH2, dst_fp),
-            MachineFloatWidth::F64 => enc::fmov_d(FP_SCRATCH2, dst_fp),
+            MachineFloatWidth::F32 => enc::fmov_s(temp, dst_fp),
+            MachineFloatWidth::F64 => enc::fmov_d(temp, dst_fp),
         });
         let src_fp = self.map_fp_reg(src)?;
         self.core.text.emit_u32(match width {

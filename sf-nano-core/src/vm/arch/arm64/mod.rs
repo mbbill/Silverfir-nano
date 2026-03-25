@@ -6,4 +6,5 @@ pub(crate) mod enc;
 mod fusion;
 pub(crate) mod helpers;
 mod inst;
+mod operands;
 pub(crate) mod reg;

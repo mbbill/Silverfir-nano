@@ -1,4 +1,4 @@
-use super::reg::Arm64Reg;
+use super::reg::{Arm64FpReg, Arm64Reg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -46,9 +46,9 @@ fn add_sub_shifted_reg(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, rm:
         | (op << 30)
         | (s << 29)
         | (0b01011 << 24)
-        | (rm.idx() << 16)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rm.index() << 16)
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn logical_shifted_reg(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -56,9 +56,9 @@ fn logical_shifted_reg(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm
         | (opc << 29)
         | (0b01010 << 24)
         | (n << 21)
-        | (rm.idx() << 16)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rm.index() << 16)
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn logical_imm(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
@@ -68,27 +68,27 @@ fn logical_imm(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32,
         | (n << 22)
         | (immr << 16)
         | (imms << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn madd(sf: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, ra: Arm64Reg) -> u32 {
     (sf << 31)
         | (0b00_11011_000 << 21)
-        | (rm.idx() << 16)
-        | (ra.idx() << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rm.index() << 16)
+        | (ra.index() << 10)
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn shift_var(sf: u32, op2: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     (sf << 31)
         | (0b00_11010_110 << 21)
-        | (rm.idx() << 16)
+        | (rm.index() << 16)
         | (0b0010 << 12)
         | (op2 << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn add_sub_imm(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
@@ -98,24 +98,24 @@ fn add_sub_imm(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, imm12: u32)
         | (s << 29)
         | (0b100010 << 23)
         | (imm12 << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn cond_select(sf: u32, op2: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u32 {
     (sf << 31)
         | (0b0_0_11010100 << 21)
-        | (rm.idx() << 16)
+        | (rm.index() << 16)
         | ((cond as u32) << 12)
         | (op2 << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn move_wide(sf: u32, opc: u32, rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
     let hw = shift / 16;
     debug_assert!(shift % 16 == 0);
-    (sf << 31) | (opc << 29) | (0b100101 << 23) | (hw << 21) | ((imm16 as u32) << 5) | rd.idx()
+    (sf << 31) | (opc << 29) | (0b100101 << 23) | (hw << 21) | ((imm16 as u32) << 5) | rd.index()
 }
 
 fn sbfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
@@ -125,8 +125,8 @@ fn sbfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u3
         | (n << 22)
         | (immr << 16)
         | (imms << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn ubfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u32 {
@@ -136,26 +136,26 @@ fn ubfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u3
         | (n << 22)
         | (immr << 16)
         | (imms << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 fn ldst_unsigned_offset(size: u32, opc: u32, rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
-    (size << 30) | (0b111_0_01 << 24) | (opc << 22) | (imm12 << 10) | (rn.idx() << 5) | rt.idx()
+    (size << 30) | (0b111_0_01 << 24) | (opc << 22) | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
 fn ldst_register_offset(base: u32, rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
-    base | ((scaled as u32) << 12) | (rm.idx() << 16) | (rn.idx() << 5) | rt.idx()
+    base | ((scaled as u32) << 12) | (rm.index() << 16) | (rn.index() << 5) | rt.index()
 }
 
-fn fp_ldst_register_offset(base: u32, rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
-    base | ((scaled as u32) << 12) | (rm.idx() << 16) | (rn.idx() << 5) | rt
+fn fp_ldst_register_offset(base: u32, rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+    base | ((scaled as u32) << 12) | (rm.index() << 16) | (rn.index() << 5) | rt.index()
 }
 
 fn load_store_pair(base: u32, rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {
     let imm7_bits = (imm7 as u32) & 0x7f;
-    base | (imm7_bits << 15) | (rt2.idx() << 10) | (rn.idx() << 5) | rt.idx()
+    base | (imm7_bits << 15) | (rt2.index() << 10) | (rn.index() << 5) | rt.index()
 }
 
 pub(crate) fn add_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -301,11 +301,11 @@ pub(crate) fn movk_64(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
 }
 
 pub(crate) fn clz_32(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
-    (0b0_10_11010_110 << 21) | (0b00000 << 16) | (0b00010_0 << 10) | (rn.idx() << 5) | rd.idx()
+    (0b0_10_11010_110 << 21) | (0b00000 << 16) | (0b00010_0 << 10) | (rn.index() << 5) | rd.index()
 }
 
 pub(crate) fn clz_64(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
-    (0b1_10_11010_110 << 21) | (0b00000 << 16) | (0b00010_0 << 10) | (rn.idx() << 5) | rd.idx()
+    (0b1_10_11010_110 << 21) | (0b00000 << 16) | (0b00010_0 << 10) | (rn.index() << 5) | rd.index()
 }
 
 pub(crate) fn sxtb_32(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
@@ -499,59 +499,59 @@ pub(crate) fn strh_reg_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0x7820_6800, rt, rn, rm, true)
 }
 
-pub(crate) fn ldr_s(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+pub(crate) fn ldr_s(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
-    0xbd40_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+    0xbd40_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
-pub(crate) fn ldr_d(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+pub(crate) fn ldr_d(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
-    0xfd40_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+    0xfd40_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
-pub(crate) fn str_s(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+pub(crate) fn str_s(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
-    0xbd00_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+    0xbd00_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
-pub(crate) fn str_d(rt: u32, rn: Arm64Reg, imm12: u32) -> u32 {
+pub(crate) fn str_d(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
-    0xfd00_0000 | (imm12 << 10) | (rn.idx() << 5) | rt
+    0xfd00_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
-pub(crate) fn ldr_s_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+pub(crate) fn ldr_s_reg(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xbc60_6800, rt, rn, rm, scaled)
 }
 
-pub(crate) fn ldr_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+pub(crate) fn ldr_d_reg(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xfc60_6800, rt, rn, rm, scaled)
 }
 
 /// `ldr Dd, [Xn, Wm, UXTW]` — load with 32-bit zero-extending index.
-pub(crate) fn ldr_d_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+pub(crate) fn ldr_d_reg_uxtw(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     fp_ldst_register_offset(0xfc60_4800, rt, rn, rm, false)
 }
 
 /// `ldr Sd, [Xn, Wm, UXTW]` — load with 32-bit zero-extending index.
-pub(crate) fn ldr_s_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+pub(crate) fn ldr_s_reg_uxtw(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     fp_ldst_register_offset(0xbc60_4800, rt, rn, rm, false)
 }
 
-pub(crate) fn str_s_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+pub(crate) fn str_s_reg(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xbc20_6800, rt, rn, rm, scaled)
 }
 
-pub(crate) fn str_d_reg(rt: u32, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+pub(crate) fn str_d_reg(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
     fp_ldst_register_offset(0xfc20_6800, rt, rn, rm, scaled)
 }
 
 /// `str Dd, [Xn, Wm, UXTW]` — store with 32-bit zero-extending index.
-pub(crate) fn str_d_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+pub(crate) fn str_d_reg_uxtw(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     fp_ldst_register_offset(0xfc20_4800, rt, rn, rm, false)
 }
 
 /// `str Sd, [Xn, Wm, UXTW]` — store with 32-bit zero-extending index.
-pub(crate) fn str_s_reg_uxtw(rt: u32, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+pub(crate) fn str_s_reg_uxtw(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     fp_ldst_register_offset(0xbc20_4800, rt, rn, rm, false)
 }
 
@@ -570,7 +570,7 @@ pub(crate) fn b(imm26: i32) -> u32 {
 
 pub(crate) fn ldr_lit_64(rt: Arm64Reg, imm19: i32) -> u32 {
     let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
-    (0b01011000 << 24) | (imm19_bits << 5) | rt.idx()
+    (0b01011000 << 24) | (imm19_bits << 5) | rt.index()
 }
 
 pub(crate) fn b_cond(cond: Cond, imm19: i32) -> u32 {
@@ -580,24 +580,24 @@ pub(crate) fn b_cond(cond: Cond, imm19: i32) -> u32 {
 
 pub(crate) fn cbz_64(rt: Arm64Reg, imm19: i32) -> u32 {
     let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
-    (0b1_011010_0 << 24) | (imm19_bits << 5) | rt.idx()
+    (0b1_011010_0 << 24) | (imm19_bits << 5) | rt.index()
 }
 
 pub(crate) fn cbnz_64(rt: Arm64Reg, imm19: i32) -> u32 {
     let imm19_bits = (imm19 as u32) & 0x0007_FFFF;
-    (0b1_011010_1 << 24) | (imm19_bits << 5) | rt.idx()
+    (0b1_011010_1 << 24) | (imm19_bits << 5) | rt.index()
 }
 
 pub(crate) fn br(rn: Arm64Reg) -> u32 {
-    (0b1101011_0000 << 21) | (0b11111 << 16) | (rn.idx() << 5)
+    (0b1101011_0000 << 21) | (0b11111 << 16) | (rn.index() << 5)
 }
 
 pub(crate) fn blr(rn: Arm64Reg) -> u32 {
-    (0b1101011_0001 << 21) | (0b11111 << 16) | (rn.idx() << 5)
+    (0b1101011_0001 << 21) | (0b11111 << 16) | (rn.index() << 5)
 }
 
 pub(crate) fn ret() -> u32 {
-    (0b1101011_0010 << 21) | (0b11111 << 16) | (Arm64Reg::X30.idx() << 5)
+    (0b1101011_0010 << 21) | (0b11111 << 16) | (Arm64Reg::X30.index() << 5)
 }
 
 // --- Integer data-processing (2 source) ---
@@ -605,10 +605,10 @@ pub(crate) fn ret() -> u32 {
 fn data_proc_2src(sf: u32, opcode: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     (sf << 31)
         | (0b0_11010110 << 21)
-        | (rm.idx() << 16)
+        | (rm.index() << 16)
         | (opcode << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 pub(crate) fn udiv_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -639,11 +639,11 @@ pub(crate) fn rorv_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 fn msub(sf: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, ra: Arm64Reg) -> u32 {
     (sf << 31)
         | (0b00_11011_000 << 21)
-        | (rm.idx() << 16)
+        | (rm.index() << 16)
         | (1 << 15)
-        | (ra.idx() << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (ra.index() << 10)
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 pub(crate) fn msub_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, ra: Arm64Reg) -> u32 {
@@ -661,8 +661,8 @@ fn data_proc_1src(sf: u32, opcode2: u32, opcode: u32, rd: Arm64Reg, rn: Arm64Reg
         | (0b1_0_11010110 << 21)
         | (opcode2 << 16)
         | (opcode << 10)
-        | (rn.idx() << 5)
-        | rd.idx()
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 pub(crate) fn rbit_32(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
@@ -795,49 +795,49 @@ pub(crate) fn eor_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
 // FP register index is just 0-31, same encoding slot as GP but in FP instruction formats.
 
 /// Scalar floating-point data-processing (2 source)
-fn fp_data_proc_2src(ftype: u32, opcode: u32, rd: u32, rn: u32, rm: u32) -> u32 {
+fn fp_data_proc_2src(ftype: u32, opcode: u32, rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     (0b0001_1110 << 24)
         | (ftype << 22)
         | (1 << 21)
-        | (rm << 16)
+        | (rm.index() << 16)
         | (opcode << 12)
         | (0b10 << 10)
-        | (rn << 5)
-        | rd
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 /// Scalar floating-point data-processing (1 source)
-fn fp_data_proc_1src(ftype: u32, opcode: u32, rd: u32, rn: u32) -> u32 {
+fn fp_data_proc_1src(ftype: u32, opcode: u32, rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     (0b0001_1110 << 24)
         | (ftype << 22)
         | (1 << 21)
         | (opcode << 15)
         | (0b10000 << 10)
-        | (rn << 5)
-        | rd
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 /// Floating-point comparison
-fn fp_compare(ftype: u32, rn: u32, rm: u32, opc: u32) -> u32 {
+fn fp_compare(ftype: u32, rn: Arm64FpReg, rm: Arm64FpReg, opc: u32) -> u32 {
     (0b0001_1110 << 24)
         | (ftype << 22)
         | (1 << 21)
-        | (rm << 16)
+        | (rm.index() << 16)
         | (0b00_1000 << 10)
-        | (rn << 5)
+        | (rn.index() << 5)
         | opc
 }
 
 /// Floating-point conditional select
-fn fp_csel(ftype: u32, rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 {
+fn fp_csel(ftype: u32, rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg, cond: Cond) -> u32 {
     (0b0001_1110 << 24)
         | (ftype << 22)
         | (1 << 21)
-        | (rm << 16)
+        | (rm.index() << 16)
         | ((cond as u32) << 12)
         | (0b11 << 10)
-        | (rn << 5)
-        | rd
+        | (rn.index() << 5)
+        | rd.index()
 }
 
 /// Conversion between FP and integer
@@ -855,231 +855,231 @@ fn fp_int_conv(sf: u32, ftype: u32, rmode: u32, opcode: u32, rd: u32, rn: u32) -
 
 // FMOV between GP and FP registers
 /// FMOV Wd, Sn (FP to GP, 32-bit)
-pub(crate) fn fmov_gp_from_s(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(0, 0b00, 0b00, 0b110, rd.idx(), rn)
+pub(crate) fn fmov_gp_from_s(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b110, rd.index(), rn.index())
 }
 /// FMOV Sd, Wn (GP to FP, 32-bit)
-pub(crate) fn fmov_s_from_gp(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(0, 0b00, 0b00, 0b111, rd, rn.idx())
+pub(crate) fn fmov_s_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b111, rd.index(), rn.index())
 }
 /// FMOV Xd, Dn (FP to GP, 64-bit)
-pub(crate) fn fmov_gp_from_d(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(1, 0b01, 0b00, 0b110, rd.idx(), rn)
+pub(crate) fn fmov_gp_from_d(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b110, rd.index(), rn.index())
 }
 /// FMOV Dd, Xn (GP to FP, 64-bit)
-pub(crate) fn fmov_d_from_gp(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(1, 0b01, 0b00, 0b111, rd, rn.idx())
+pub(crate) fn fmov_d_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b111, rd.index(), rn.index())
 }
 /// FMOV Sd, Sn
-pub(crate) fn fmov_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fmov_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b000000, rd, rn)
 }
 /// FMOV Dd, Dn
-pub(crate) fn fmov_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fmov_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000000, rd, rn)
 }
 
 // F32 arithmetic
-pub(crate) fn fadd_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fadd_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0010, rd, rn, rm)
 }
-pub(crate) fn fsub_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fsub_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0011, rd, rn, rm)
 }
-pub(crate) fn fmul_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmul_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0000, rd, rn, rm)
 }
-pub(crate) fn fdiv_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fdiv_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0001, rd, rn, rm)
 }
-pub(crate) fn fmin_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmin_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0101, rd, rn, rm)
 }
-pub(crate) fn fmax_s(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmax_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0100, rd, rn, rm)
 }
 
 // F64 arithmetic
-pub(crate) fn fadd_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fadd_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0010, rd, rn, rm)
 }
-pub(crate) fn fsub_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fsub_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0011, rd, rn, rm)
 }
-pub(crate) fn fmul_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmul_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0000, rd, rn, rm)
 }
-pub(crate) fn fdiv_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fdiv_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0001, rd, rn, rm)
 }
-pub(crate) fn fmin_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmin_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0101, rd, rn, rm)
 }
-pub(crate) fn fmax_d(rd: u32, rn: u32, rm: u32) -> u32 {
+pub(crate) fn fmax_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b01, 0b0100, rd, rn, rm)
 }
 
 // F32 unary
-pub(crate) fn fabs_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fabs_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b000001, rd, rn)
 }
-pub(crate) fn fneg_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fneg_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b000010, rd, rn)
 }
-pub(crate) fn fsqrt_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fsqrt_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b000011, rd, rn)
 }
-pub(crate) fn frintn_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintn_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b001000, rd, rn)
 }
-pub(crate) fn frintp_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintp_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b001001, rd, rn)
 }
-pub(crate) fn frintm_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintm_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b001010, rd, rn)
 }
-pub(crate) fn frintz_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintz_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b001011, rd, rn)
 }
 
 // F64 unary
-pub(crate) fn fabs_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fabs_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000001, rd, rn)
 }
-pub(crate) fn fneg_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fneg_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000010, rd, rn)
 }
-pub(crate) fn fsqrt_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fsqrt_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000011, rd, rn)
 }
-pub(crate) fn frintn_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintn_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b001000, rd, rn)
 }
-pub(crate) fn frintp_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintp_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b001001, rd, rn)
 }
-pub(crate) fn frintm_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintm_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b001010, rd, rn)
 }
-pub(crate) fn frintz_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn frintz_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b001011, rd, rn)
 }
 
 // FP compare
-pub(crate) fn fcmp_s(rn: u32, rm: u32) -> u32 {
+pub(crate) fn fcmp_s(rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_compare(0b00, rn, rm, 0b00000)
 }
-pub(crate) fn fcmp_d(rn: u32, rm: u32) -> u32 {
+pub(crate) fn fcmp_d(rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_compare(0b01, rn, rm, 0b00000)
 }
 /// FCMP Sn, #0.0
-pub(crate) fn fcmp_s_zero(rn: u32) -> u32 {
-    fp_compare(0b00, rn, 0, 0b01000)
+pub(crate) fn fcmp_s_zero(rn: Arm64FpReg) -> u32 {
+    fp_compare(0b00, rn, Arm64FpReg::new(0), 0b01000)
 }
 /// FCMP Dn, #0.0
-pub(crate) fn fcmp_d_zero(rn: u32) -> u32 {
-    fp_compare(0b01, rn, 0, 0b01000)
+pub(crate) fn fcmp_d_zero(rn: Arm64FpReg) -> u32 {
+    fp_compare(0b01, rn, Arm64FpReg::new(0), 0b01000)
 }
 
 // FP conditional select
-pub(crate) fn fcsel_s(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 {
+pub(crate) fn fcsel_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg, cond: Cond) -> u32 {
     fp_csel(0b00, rd, rn, rm, cond)
 }
-pub(crate) fn fcsel_d(rd: u32, rn: u32, rm: u32, cond: Cond) -> u32 {
+pub(crate) fn fcsel_d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg, cond: Cond) -> u32 {
     fp_csel(0b01, rd, rn, rm, cond)
 }
 
 // FP conversion between sizes
 /// FCVT Dd, Sn (F32 -> F64)
-pub(crate) fn fcvt_d_from_s(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fcvt_d_from_s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b00, 0b000101, rd, rn)
 }
 /// FCVT Sd, Dn (F64 -> F32)
-pub(crate) fn fcvt_s_from_d(rd: u32, rn: u32) -> u32 {
+pub(crate) fn fcvt_s_from_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000100, rd, rn)
 }
 
 // FP to integer conversions (truncation toward zero)
 /// FCVTZS Wd, Sn
-pub(crate) fn fcvtzs_32_s(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(0, 0b00, 0b11, 0b000, rd.idx(), rn)
+pub(crate) fn fcvtzs_32_s(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(0, 0b00, 0b11, 0b000, rd.index(), rn.index())
 }
 /// FCVTZS Xd, Sn
-pub(crate) fn fcvtzs_64_s(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(1, 0b00, 0b11, 0b000, rd.idx(), rn)
+pub(crate) fn fcvtzs_64_s(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(1, 0b00, 0b11, 0b000, rd.index(), rn.index())
 }
 /// FCVTZS Wd, Dn
-pub(crate) fn fcvtzs_32_d(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(0, 0b01, 0b11, 0b000, rd.idx(), rn)
+pub(crate) fn fcvtzs_32_d(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(0, 0b01, 0b11, 0b000, rd.index(), rn.index())
 }
 /// FCVTZS Xd, Dn
-pub(crate) fn fcvtzs_64_d(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(1, 0b01, 0b11, 0b000, rd.idx(), rn)
+pub(crate) fn fcvtzs_64_d(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(1, 0b01, 0b11, 0b000, rd.index(), rn.index())
 }
 
 /// FCVTZU Wd, Sn
-pub(crate) fn fcvtzu_32_s(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(0, 0b00, 0b11, 0b001, rd.idx(), rn)
+pub(crate) fn fcvtzu_32_s(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(0, 0b00, 0b11, 0b001, rd.index(), rn.index())
 }
 /// FCVTZU Xd, Sn
-pub(crate) fn fcvtzu_64_s(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(1, 0b00, 0b11, 0b001, rd.idx(), rn)
+pub(crate) fn fcvtzu_64_s(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(1, 0b00, 0b11, 0b001, rd.index(), rn.index())
 }
 /// FCVTZU Wd, Dn
-pub(crate) fn fcvtzu_32_d(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(0, 0b01, 0b11, 0b001, rd.idx(), rn)
+pub(crate) fn fcvtzu_32_d(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(0, 0b01, 0b11, 0b001, rd.index(), rn.index())
 }
 /// FCVTZU Xd, Dn
-pub(crate) fn fcvtzu_64_d(rd: Arm64Reg, rn: u32) -> u32 {
-    fp_int_conv(1, 0b01, 0b11, 0b001, rd.idx(), rn)
+pub(crate) fn fcvtzu_64_d(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    fp_int_conv(1, 0b01, 0b11, 0b001, rd.index(), rn.index())
 }
 
 // Integer to FP conversions
 /// SCVTF Sd, Wn
-pub(crate) fn scvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(0, 0b00, 0b00, 0b010, rd, rn.idx())
+pub(crate) fn scvtf_s_32(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b010, rd.index(), rn.index())
 }
 /// SCVTF Sd, Xn
-pub(crate) fn scvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(1, 0b00, 0b00, 0b010, rd, rn.idx())
+pub(crate) fn scvtf_s_64(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b00, 0b00, 0b010, rd.index(), rn.index())
 }
 /// SCVTF Dd, Wn
-pub(crate) fn scvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(0, 0b01, 0b00, 0b010, rd, rn.idx())
+pub(crate) fn scvtf_d_32(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b01, 0b00, 0b010, rd.index(), rn.index())
 }
 /// SCVTF Dd, Xn
-pub(crate) fn scvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(1, 0b01, 0b00, 0b010, rd, rn.idx())
+pub(crate) fn scvtf_d_64(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b010, rd.index(), rn.index())
 }
 
 /// UCVTF Sd, Wn
-pub(crate) fn ucvtf_s_32(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(0, 0b00, 0b00, 0b011, rd, rn.idx())
+pub(crate) fn ucvtf_s_32(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b00, 0b00, 0b011, rd.index(), rn.index())
 }
 /// UCVTF Sd, Xn
-pub(crate) fn ucvtf_s_64(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(1, 0b00, 0b00, 0b011, rd, rn.idx())
+pub(crate) fn ucvtf_s_64(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b00, 0b00, 0b011, rd.index(), rn.index())
 }
 /// UCVTF Dd, Wn
-pub(crate) fn ucvtf_d_32(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(0, 0b01, 0b00, 0b011, rd, rn.idx())
+pub(crate) fn ucvtf_d_32(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(0, 0b01, 0b00, 0b011, rd.index(), rn.index())
 }
 /// UCVTF Dd, Xn
-pub(crate) fn ucvtf_d_64(rd: u32, rn: Arm64Reg) -> u32 {
-    fp_int_conv(1, 0b01, 0b00, 0b011, rd, rn.idx())
+pub(crate) fn ucvtf_d_64(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    fp_int_conv(1, 0b01, 0b00, 0b011, rd.index(), rn.index())
 }
 
 // NEON instructions for popcnt
 /// FMOV Dd, Xn (same as fmov_d_from_gp but with explicit naming for NEON use)
 /// CNT Vd.8B, Vn.8B  (count bits per byte)
-pub(crate) fn cnt_8b(rd: u32, rn: u32) -> u32 {
-    (0b0_0_001110_00_10000_00101_10 << 10) | (rn << 5) | rd
+pub(crate) fn cnt_8b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    (0b0_0_001110_00_10000_00101_10 << 10) | (rn.index() << 5) | rd.index()
 }
 /// ADDV Bd, Vn.8B  (horizontal add of bytes)
-pub(crate) fn addv_8b(rd: u32, rn: u32) -> u32 {
-    (0b0_0_001110_00_11000_11011_10 << 10) | (rn << 5) | rd
+pub(crate) fn addv_8b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    (0b0_0_001110_00_11000_11011_10 << 10) | (rn.index() << 5) | rd.index()
 }
 /// UMOV Wd, Vn.B[0]  (extract byte 0 to GP)
-pub(crate) fn umov_b0(rd: Arm64Reg, rn: u32) -> u32 {
-    (0b0_0_001110000 << 21) | (0b00001 << 16) | (0b001_1_1_1 << 10) | (rn << 5) | rd.idx()
+pub(crate) fn umov_b0(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
+    (0b0_0_001110000 << 21) | (0b00001 << 16) | (0b001_1_1_1 << 10) | (rn.index() << 5) | rd.index()
 }

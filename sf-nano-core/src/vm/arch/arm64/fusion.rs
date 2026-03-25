@@ -4,87 +4,45 @@
 //! These are pure functions — they inspect MachineIR and return optional
 //! instruction encodings. No compiler state is accessed.
 
-use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBranchCond, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
     MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
 
 use super::{enc::{self, Cond}, reg::Arm64Reg};
-use super::abi::map_reg;
 
 // ── Immediate instruction selection ──────────────────────────────────────────
 
+/// Try to select a reg+imm immediate form for a binary op.
+/// Takes already-mapped physical registers — the caller handles MachineValue
+/// matching and register mapping.
 pub(super) fn int_binary_imm_inst(
     width: MachineIntWidth,
     op: MachineIntBinaryOp,
     dst: Arm64Reg,
-    lhs: MachineValue,
-    rhs: MachineValue,
-) -> Result<Option<u32>, WasmError> {
-    match (width, op, lhs, rhs) {
-        (MachineIntWidth::I32, MachineIntBinaryOp::Add, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(add_sub_imm_inst_32(true, dst, map_reg(lhs)?, rhs))
+    lhs: Arm64Reg,
+    rhs: u64,
+) -> Option<u32> {
+    match (width, op) {
+        (MachineIntWidth::I32, MachineIntBinaryOp::Add) => add_sub_imm_inst_32(true, dst, lhs, rhs),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Add) => add_sub_imm_inst_64(true, dst, lhs, rhs),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => add_sub_imm_inst_32(false, dst, lhs, rhs),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => add_sub_imm_inst_64(false, dst, lhs, rhs),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Mul) => mul_imm_inst_32(dst, lhs, rhs as u32),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Mul) => mul_imm_inst_64(dst, lhs, rhs),
+        (MachineIntWidth::I32, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor)) => {
+            logical_imm_inst_32(op, dst, lhs, rhs as u32)
         }
-        (MachineIntWidth::I32, MachineIntBinaryOp::Add, MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(add_sub_imm_inst_32(true, dst, map_reg(rhs)?, lhs))
+        (MachineIntWidth::I64, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor)) => {
+            logical_imm_inst_64(op, dst, lhs, rhs)
         }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Add, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(add_sub_imm_inst_64(true, dst, map_reg(lhs)?, rhs))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Add, MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(add_sub_imm_inst_64(true, dst, map_reg(rhs)?, lhs))
-        }
-        (MachineIntWidth::I32, MachineIntBinaryOp::Sub, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(add_sub_imm_inst_32(false, dst, map_reg(lhs)?, rhs))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Sub, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(add_sub_imm_inst_64(false, dst, map_reg(lhs)?, rhs))
-        }
-        (MachineIntWidth::I32, MachineIntBinaryOp::Mul, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(mul_imm_inst_32(dst, map_reg(lhs)?, rhs as u32))
-        }
-        (MachineIntWidth::I32, MachineIntBinaryOp::Mul, MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(mul_imm_inst_32(dst, map_reg(rhs)?, lhs as u32))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Mul, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(mul_imm_inst_64(dst, map_reg(lhs)?, rhs))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Mul, MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(mul_imm_inst_64(dst, map_reg(rhs)?, lhs))
-        }
-        (MachineIntWidth::I32, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor), MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(logical_imm_inst_32(op, dst, map_reg(lhs)?, rhs as u32))
-        }
-        (MachineIntWidth::I32, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor), MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(logical_imm_inst_32(op, dst, map_reg(rhs)?, lhs as u32))
-        }
-        (MachineIntWidth::I64, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor), MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(logical_imm_inst_64(op, dst, map_reg(lhs)?, rhs))
-        }
-        (MachineIntWidth::I64, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor), MachineValue::Imm64(lhs), MachineValue::Reg(rhs)) => {
-            Ok(logical_imm_inst_64(op, dst, map_reg(rhs)?, lhs))
-        }
-        // Shift by immediate
-        (MachineIntWidth::I32, MachineIntBinaryOp::Shl, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::lsl_imm_32(dst, map_reg(lhs)?, (rhs as u32) & 31)))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::Shl, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::lsl_imm_64(dst, map_reg(lhs)?, (rhs as u32) & 63)))
-        }
-        (MachineIntWidth::I32, MachineIntBinaryOp::ShrU, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::lsr_imm_32(dst, map_reg(lhs)?, (rhs as u32) & 31)))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::ShrU, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::lsr_imm_64(dst, map_reg(lhs)?, (rhs as u32) & 63)))
-        }
-        (MachineIntWidth::I32, MachineIntBinaryOp::ShrS, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::asr_imm_32(dst, map_reg(lhs)?, (rhs as u32) & 31)))
-        }
-        (MachineIntWidth::I64, MachineIntBinaryOp::ShrS, MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => {
-            Ok(Some(enc::asr_imm_64(dst, map_reg(lhs)?, (rhs as u32) & 63)))
-        }
-        _ => Ok(None),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => Some(enc::lsl_imm_32(dst, lhs, (rhs as u32) & 31)),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => Some(enc::lsl_imm_64(dst, lhs, (rhs as u32) & 63)),
+        (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => Some(enc::lsr_imm_32(dst, lhs, (rhs as u32) & 31)),
+        (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => Some(enc::lsr_imm_64(dst, lhs, (rhs as u32) & 63)),
+        (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => Some(enc::asr_imm_32(dst, lhs, (rhs as u32) & 31)),
+        (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => Some(enc::asr_imm_64(dst, lhs, (rhs as u32) & 63)),
+        _ => None,
     }
 }
 
@@ -213,18 +171,13 @@ fn logical_imm_inst_64(op: MachineIntBinaryOp, dst: Arm64Reg, lhs: Arm64Reg, imm
 
 pub(super) fn cmp_imm_inst(
     width: MachineIntWidth,
-    lhs: MachineValue,
-    rhs: MachineValue,
-) -> Result<Option<u32>, WasmError> {
-    let (lhs, rhs) = match (lhs, rhs) {
-        (MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) => (lhs, rhs),
-        _ => return Ok(None),
-    };
-    let lhs = map_reg(lhs)?;
-    Ok(match width {
+    lhs: Arm64Reg,
+    rhs: u64,
+) -> Option<u32> {
+    match width {
         MachineIntWidth::I32 => try_imm12_u32(rhs as u32).map(|imm12| enc::cmp_imm_32(lhs, imm12)),
         MachineIntWidth::I64 => try_imm12_u64(rhs).map(|imm12| enc::cmp_imm_64(lhs, imm12)),
-    })
+    }
 }
 
 pub(super) fn try_imm12_u32(value: u32) -> Option<u32> {
