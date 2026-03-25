@@ -7,7 +7,7 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineModule,
-            MachineRuntimeContract, MACHINE_FIXED_REG_COUNT,
+            MachineRuntimeContract,
         },
         runtime::context::NativeContext,
     },
@@ -67,10 +67,7 @@ impl CompiledNativeModule {
         runtime: MachineRuntimeContract,
     ) -> Result<Self, WasmError> {
         if backend.is_32bit_gp_target() {
-            let max_gp_regs = MACHINE_FIXED_REG_COUNT
-                + backend.gp_local_cache_budget as u16
-                + backend.gp_transient_budget as u16;
-            module.validate_32bit_gp_target(max_gp_regs)?;
+            module.validate_32bit_gp_target(backend.first_fp_reg())?;
         }
         let mut aligned_consts = Vec::with_capacity(module.consts.len());
         for konst in &module.consts {

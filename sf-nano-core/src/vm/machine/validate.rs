@@ -1,4 +1,5 @@
 use crate::error::WasmError;
+use crate::vm::backend::BackendConfig;
 
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond,
@@ -12,23 +13,31 @@ use super::machine_ir::{
     MachineAddr, MachineConstId, MachineEdge, MachineExternId, MachineFloatWidth,
     MachineFuncId, MachineInst, MachineReg, MachineValue,
 };
+#[cfg(any(debug_assertions, test))]
+use super::machine_ir::is_fp_reg;
 
 type ValidateResult = Result<(), WasmError>;
 
 impl MachineProgram {
-    pub(crate) fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
-        if self.first_fp_reg != max_gp_regs {
+    pub(crate) fn validate_32bit_gp_target(
+        &self,
+        max_gp_regs: u16,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        let first_fp = config.first_fp_reg();
+        let total = config.total_reg_count();
+        if first_fp != max_gp_regs {
             return Err(WasmError::internal(alloc::format!(
                 "expected first_fp_reg {} for 32-bit GP target MachineIR, found {}",
                 max_gp_regs,
-                self.first_fp_reg,
+                first_fp,
             )));
         }
-        if self.reg_count < self.first_fp_reg {
+        if total < first_fp {
             return Err(WasmError::internal(alloc::format!(
                 "machine reg_count {} is below 32-bit GP-target fp boundary {}",
-                self.reg_count,
-                self.first_fp_reg,
+                total,
+                first_fp,
             )));
         }
 
@@ -46,7 +55,7 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    pub(crate) fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self, config: BackendConfig) -> Result<(), WasmError> {
         if self.blocks.is_empty() {
             if self.entry.as_usize() != 0 {
                 return Err(WasmError::internal(
@@ -64,11 +73,13 @@ impl MachineProgram {
             )));
         }
 
-        let fp_bank_count = self.reg_count.saturating_sub(self.first_fp_reg) as usize;
-        if self.fp_transient_count as usize > fp_bank_count {
+        let reg_count = config.total_reg_count();
+        let first_fp = config.first_fp_reg();
+        let fp_bank_count = reg_count.saturating_sub(first_fp) as usize;
+        if config.fp_transient_budget as usize > fp_bank_count {
             return Err(WasmError::internal(alloc::format!(
                 "machine fp_transient_count {} exceeds fp bank size {}",
-                self.fp_transient_count,
+                config.fp_transient_budget,
                 fp_bank_count,
             )));
         }
@@ -89,12 +100,12 @@ impl MachineProgram {
                 )));
             }
             for param in &block.params {
-                self.validate_param(*param)?;
+                self.validate_param(*param, config)?;
             }
             for inst in &block.ops {
-                self.validate_inst(inst)?;
+                self.validate_inst(inst, config)?;
             }
-            self.validate_term(&block.terminator, index)?;
+            self.validate_term(&block.terminator, index, config)?;
         }
 
         Ok(())
@@ -102,14 +113,14 @@ impl MachineProgram {
 
     #[cfg(not(any(debug_assertions, test)))]
     #[inline]
-    pub(crate) fn validate(&self) -> Result<(), WasmError> {
+    pub(crate) fn validate(&self, _config: BackendConfig) -> Result<(), WasmError> {
         Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_param(&self, param: MachineBlockParam) -> ValidateResult {
-        self.validate_reg(param.reg)?;
-        if self.is_fp_reg(param.reg) != param.ty.is_fp() {
+    fn validate_param(&self, param: MachineBlockParam, config: BackendConfig) -> ValidateResult {
+        self.validate_reg(param.reg, config)?;
+        if is_fp_reg(param.reg, config) != param.ty.is_fp() {
             return Err(WasmError::internal(alloc::format!(
                 "machine block param {} has mismatched storage type {:?} for its register bank",
                 param.reg.0,
@@ -120,16 +131,16 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_inst(&self, inst: &MachineInst) -> ValidateResult {
+    fn validate_inst(&self, inst: &MachineInst, config: BackendConfig) -> ValidateResult {
         match &inst.kind {
             MachineInstKind::Move { ty, dst, src } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*src)?;
-                self.validate_reg_storage_type(*dst, *ty)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*src, config)?;
+                self.validate_reg_storage_type(*dst, *ty, config)?;
             }
             MachineInstKind::FloatConst { dst, .. } => {
-                self.validate_reg(*dst)?;
-                if !self.is_fp_reg(*dst) {
+                self.validate_reg(*dst, config)?;
+                if !is_fp_reg(*dst, config) {
                     return Err(WasmError::internal(alloc::format!(
                         "machine FloatConst destination {} must be an FP register",
                         dst.0,
@@ -137,29 +148,29 @@ impl MachineProgram {
                 }
             }
             MachineInstKind::Load { ty, dst, addr, .. } => {
-                self.validate_reg(*dst)?;
-                self.validate_addr(*addr)?;
-                self.validate_reg_storage_type(*dst, *ty)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_addr(*addr, config)?;
+                self.validate_reg_storage_type(*dst, *ty, config)?;
             }
             MachineInstKind::Store { ty, addr, src, .. } => {
-                self.validate_addr(*addr)?;
-                self.validate_value(*src)?;
+                self.validate_addr(*addr, config)?;
+                self.validate_value(*src, config)?;
                 if let MachineValue::Reg(src_reg) = src {
-                    self.validate_reg_storage_type(*src_reg, *ty)?;
+                    self.validate_reg_storage_type(*src_reg, *ty, config)?;
                 }
             }
             MachineInstKind::IntUnary { dst, src, .. }
             | MachineInstKind::FloatUnary { dst, src, .. }
             | MachineInstKind::Convert { dst, src, .. } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*src)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*src, config)?;
             }
             MachineInstKind::IntBinary { dst, lhs, rhs, .. }
             | MachineInstKind::IntCompare { dst, lhs, rhs, .. }
             | MachineInstKind::FloatBinary { dst, lhs, rhs, .. } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*lhs)?;
-                self.validate_value(*rhs)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
             }
             MachineInstKind::Int64PairBinary {
                 op,
@@ -170,14 +181,14 @@ impl MachineProgram {
                 rhs_lo,
                 rhs_hi,
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*lhs_lo)?;
-                self.validate_value(*lhs_hi)?;
-                self.validate_value(*rhs_lo)?;
-                self.validate_value(*rhs_hi)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*lhs_lo, config)?;
+                self.validate_value(*lhs_hi, config)?;
+                self.validate_value(*rhs_lo, config)?;
+                self.validate_value(*rhs_hi, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if !matches!(
                     op,
                     MachineIntBinaryOp::Add
@@ -206,14 +217,14 @@ impl MachineProgram {
                 rhs_hi,
                 ..
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*lhs_lo)?;
-                self.validate_value(*lhs_hi)?;
-                self.validate_value(*rhs_lo)?;
-                self.validate_value(*rhs_hi)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*lhs_lo, config)?;
+                self.validate_value(*lhs_hi, config)?;
+                self.validate_value(*rhs_lo, config)?;
+                self.validate_value(*rhs_hi, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if dst_lo == dst_hi {
                     return Err(WasmError::internal(
                         "machine Int64PairDivRem requires distinct low/high destinations".into(),
@@ -227,12 +238,12 @@ impl MachineProgram {
                 src_lo,
                 src_hi,
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*src_lo)?;
-                self.validate_value(*src_hi)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*src_lo, config)?;
+                self.validate_value(*src_hi, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if !matches!(
                     op,
                     MachineIntUnaryOp::Clz
@@ -260,13 +271,13 @@ impl MachineProgram {
                 lhs_hi,
                 rhs,
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*lhs_lo)?;
-                self.validate_value(*lhs_hi)?;
-                self.validate_value(*rhs)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*lhs_lo, config)?;
+                self.validate_value(*lhs_hi, config)?;
+                self.validate_value(*rhs, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if !matches!(
                     op,
                     MachineIntBinaryOp::Shl
@@ -286,9 +297,9 @@ impl MachineProgram {
                 }
             }
             MachineInstKind::FloatCompare { dst, lhs, rhs, .. } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*lhs)?;
-                self.validate_value(*rhs)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
             }
             MachineInstKind::Int64PairCompare {
                 dst,
@@ -298,12 +309,12 @@ impl MachineProgram {
                 rhs_hi,
                 ..
             } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*lhs_lo)?;
-                self.validate_value(*lhs_hi)?;
-                self.validate_value(*rhs_lo)?;
-                self.validate_value(*rhs_hi)?;
-                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*lhs_lo, config)?;
+                self.validate_value(*lhs_hi, config)?;
+                self.validate_value(*rhs_lo, config)?;
+                self.validate_value(*rhs_hi, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
             }
             MachineInstKind::ConvertI64PairToFloat {
                 width,
@@ -312,15 +323,16 @@ impl MachineProgram {
                 src_hi,
                 ..
             } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*src_lo)?;
-                self.validate_value(*src_hi)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*src_lo, config)?;
+                self.validate_value(*src_hi, config)?;
                 self.validate_reg_storage_type(
                     *dst,
                     match width {
                         MachineFloatWidth::F32 => MachineStorageType::Fp32,
                         MachineFloatWidth::F64 => MachineStorageType::Fp64,
                     },
+                    config,
                 )?;
             }
             MachineInstKind::ConvertFloatToI64Pair {
@@ -329,11 +341,11 @@ impl MachineProgram {
                 dst_hi,
                 src,
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*src)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*src, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if !matches!(
                     op,
                     MachineConvertOp::I64TruncF32S
@@ -361,6 +373,7 @@ impl MachineProgram {
                             }
                             _ => MachineStorageType::Fp64,
                         },
+                        config,
                     )?;
                 }
                 if dst_lo == dst_hi {
@@ -375,13 +388,13 @@ impl MachineProgram {
                 dst_hi,
                 src,
             } => {
-                self.validate_reg(*dst_lo)?;
-                self.validate_reg(*dst_hi)?;
-                self.validate_value(*src)?;
-                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord)?;
-                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord)?;
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*src, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if let MachineValue::Reg(src_reg) = src {
-                    self.validate_reg_storage_type(*src_reg, MachineStorageType::Fp64)?;
+                    self.validate_reg_storage_type(*src_reg, MachineStorageType::Fp64, config)?;
                 }
                 if dst_lo == dst_hi {
                     return Err(WasmError::internal(
@@ -395,15 +408,15 @@ impl MachineProgram {
                 src_lo,
                 src_hi,
             } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*src_lo)?;
-                self.validate_value(*src_hi)?;
-                self.validate_reg_storage_type(*dst, MachineStorageType::Fp64)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*src_lo, config)?;
+                self.validate_value(*src_hi, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::Fp64, config)?;
                 if let MachineValue::Reg(src_lo_reg) = src_lo {
-                    self.validate_reg_storage_type(*src_lo_reg, MachineStorageType::GpWord)?;
+                    self.validate_reg_storage_type(*src_lo_reg, MachineStorageType::GpWord, config)?;
                 }
                 if let MachineValue::Reg(src_hi_reg) = src_hi {
-                    self.validate_reg_storage_type(*src_hi_reg, MachineStorageType::GpWord)?;
+                    self.validate_reg_storage_type(*src_hi_reg, MachineStorageType::GpWord, config)?;
                 }
             }
             MachineInstKind::Select {
@@ -413,11 +426,11 @@ impl MachineProgram {
                 on_false,
                 cond,
             } => {
-                self.validate_reg(*dst)?;
-                self.validate_value(*on_true)?;
-                self.validate_value(*on_false)?;
-                self.validate_value(*cond)?;
-                self.validate_reg_storage_type(*dst, *ty)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*on_true, config)?;
+                self.validate_value(*on_false, config)?;
+                self.validate_value(*cond, config)?;
+                self.validate_reg_storage_type(*dst, *ty, config)?;
             }
             MachineInstKind::IndexedLoad {
                 dst,
@@ -425,9 +438,9 @@ impl MachineProgram {
                 index,
                 ..
             } => {
-                self.validate_reg(*dst)?;
-                self.validate_reg(*base)?;
-                self.validate_reg(*index)?;
+                self.validate_reg(*dst, config)?;
+                self.validate_reg(*base, config)?;
+                self.validate_reg(*index, config)?;
             }
             MachineInstKind::IndexedStore {
                 base,
@@ -435,12 +448,12 @@ impl MachineProgram {
                 src,
                 ..
             } => {
-                self.validate_reg(*base)?;
-                self.validate_reg(*index)?;
-                self.validate_value(*src)?;
+                self.validate_reg(*base, config)?;
+                self.validate_reg(*index, config)?;
+                self.validate_value(*src, config)?;
             }
             MachineInstKind::TrapIf { cond, .. } => {
-                self.validate_branch_cond(*cond)?;
+                self.validate_branch_cond(*cond, config)?;
             }
             MachineInstKind::CallHelper(_) => {}
         }
@@ -448,22 +461,22 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_term(&self, term: &MachineTerminator, source_block: usize) -> ValidateResult {
+    fn validate_term(&self, term: &MachineTerminator, source_block: usize, config: BackendConfig) -> ValidateResult {
         match term {
-            MachineTerminator::Jump(edge) => self.validate_edge(edge, source_block),
+            MachineTerminator::Jump(edge) => self.validate_edge(edge, source_block, config),
             MachineTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
             } => {
-                self.validate_branch_cond(*cond)?;
-                self.validate_edge(then_edge, source_block)?;
-                self.validate_edge(else_edge, source_block)
+                self.validate_branch_cond(*cond, config)?;
+                self.validate_edge(then_edge, source_block, config)?;
+                self.validate_edge(else_edge, source_block, config)
             }
             MachineTerminator::JumpTable { index, entries } => {
-                self.validate_value(*index)?;
+                self.validate_value(*index, config)?;
                 for edge in entries {
-                    self.validate_edge(edge, source_block)?;
+                    self.validate_edge(edge, source_block, config)?;
                 }
                 Ok(())
             }
@@ -472,7 +485,7 @@ impl MachineProgram {
                 continuation,
                 ..
             } => {
-                self.validate_reg(*callee_frame_base)?;
+                self.validate_reg(*callee_frame_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::CallIndirect {
@@ -481,8 +494,8 @@ impl MachineProgram {
                 continuation,
                 ..
             } => {
-                self.validate_value(*callee_target)?;
-                self.validate_reg(*callee_frame_base)?;
+                self.validate_value(*callee_target, config)?;
+                self.validate_reg(*callee_frame_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::Return => Ok(()),
@@ -491,18 +504,18 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_branch_cond(&self, cond: MachineBranchCond) -> ValidateResult {
+    fn validate_branch_cond(&self, cond: MachineBranchCond, config: BackendConfig) -> ValidateResult {
         match cond {
-            MachineBranchCond::Value(value) => self.validate_value(value),
+            MachineBranchCond::Value(value) => self.validate_value(value, config),
             MachineBranchCond::IntCompare { lhs, rhs, .. } => {
-                self.validate_value(lhs)?;
-                self.validate_value(rhs)
+                self.validate_value(lhs, config)?;
+                self.validate_value(rhs, config)
             }
         }
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_edge(&self, edge: &MachineEdge, source_block: usize) -> ValidateResult {
+    fn validate_edge(&self, edge: &MachineEdge, source_block: usize, config: BackendConfig) -> ValidateResult {
         self.validate_block_id(edge.target, source_block, "edge target")?;
         let target = &self.blocks[edge.target.as_usize()];
         if edge.args.len() != target.params.len() {
@@ -515,7 +528,7 @@ impl MachineProgram {
             )));
         }
         for value in &edge.args {
-            self.validate_value(*value)?;
+            self.validate_value(*value, config)?;
         }
         Ok(())
     }
@@ -539,40 +552,42 @@ impl MachineProgram {
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_value(&self, value: MachineValue) -> ValidateResult {
+    fn validate_value(&self, value: MachineValue, config: BackendConfig) -> ValidateResult {
         match value {
-            MachineValue::Reg(reg) => self.validate_reg(reg),
+            MachineValue::Reg(reg) => self.validate_reg(reg, config),
             MachineValue::Imm64(_) => Ok(()),
         }
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_addr(&self, addr: MachineAddr) -> ValidateResult {
-        self.validate_reg(addr.base)
+    fn validate_addr(&self, addr: MachineAddr, config: BackendConfig) -> ValidateResult {
+        self.validate_reg(addr.base, config)
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_reg(&self, reg: MachineReg) -> ValidateResult {
-        if reg.0 >= self.reg_count {
+    fn validate_reg(&self, reg: MachineReg, config: BackendConfig) -> ValidateResult {
+        let reg_count = config.total_reg_count();
+        let first_fp = config.first_fp_reg();
+        if reg.0 >= reg_count {
             return Err(WasmError::internal(alloc::format!(
                 "machine register {} exceeds declared register count {}",
                 reg.0,
-                self.reg_count,
+                reg_count,
             )));
         }
-        if self.first_fp_reg > self.reg_count {
+        if first_fp > reg_count {
             return Err(WasmError::internal(alloc::format!(
                 "machine first_fp_reg {} exceeds declared register count {}",
-                self.first_fp_reg,
-                self.reg_count,
+                first_fp,
+                reg_count,
             )));
         }
         Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]
-    fn validate_reg_storage_type(&self, reg: MachineReg, ty: MachineStorageType) -> ValidateResult {
-        if self.is_fp_reg(reg) != ty.is_fp() {
+    fn validate_reg_storage_type(&self, reg: MachineReg, ty: MachineStorageType, config: BackendConfig) -> ValidateResult {
+        if is_fp_reg(reg, config) != ty.is_fp() {
             return Err(WasmError::internal(alloc::format!(
                 "machine register {} has storage type {:?} in the wrong bank",
                 reg.0,
@@ -587,7 +602,7 @@ impl MachineModule {
     pub(crate) fn validate_32bit_gp_target(&self, max_gp_regs: u16) -> Result<(), WasmError> {
         for func in &self.functions {
             func.program
-                .validate_32bit_gp_target(max_gp_regs)
+                .validate_32bit_gp_target(max_gp_regs, self.config)
                 .map_err(|err| {
                     WasmError::internal(alloc::format!(
                         "machine function {} is not valid 32-bit GP-target MachineIR: {}",
@@ -619,7 +634,7 @@ impl MachineModule {
                     func.id.0,
                 )));
             }
-            func.program.validate()?;
+            func.program.validate(self.config)?;
             self.validate_function_refs(func.id, &func.program)?;
         }
 

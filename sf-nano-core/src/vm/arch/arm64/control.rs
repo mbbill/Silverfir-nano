@@ -195,7 +195,7 @@ pub(super) fn lower_fcmp_values(&mut self,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
     let lhs_fp = super::inst::prepare_fp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, lhs,
     )?;
@@ -206,7 +206,7 @@ pub(super) fn lower_fcmp_values(&mut self,
         };
     } else {
         let rhs_fp = super::inst::prepare_fp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
             width, rhs,
         )?;
@@ -327,7 +327,7 @@ fn lower_jump_table(&mut self,
     let s0 = self.gp_scratch.scoped_alloc().release();
     let s1 = self.gp_scratch.scoped_alloc().release();
     let index_reg = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, index,
     )?.release();
     self.materialize_u64(abi::C_ARG0, (entries.len() - 1) as u64);
@@ -408,7 +408,7 @@ fn lower_call_indirect(&mut self,
 
     // Load the callee function id into a register
     let callee_id_reg = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, callee_target,
     )?.release();
 

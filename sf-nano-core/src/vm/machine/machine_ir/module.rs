@@ -1,6 +1,7 @@
 use super::types::MachineFloatWidth;
 use alloc::vec::Vec;
 
+use crate::vm::backend::BackendConfig;
 use super::super::peephole;
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
 use super::contract::MachineExternBinding;
@@ -17,29 +18,11 @@ pub(crate) struct MachineConstData {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineProgram {
     pub entry: MachineBlockId,
-    /// Registers `[first_fp_reg, reg_count)` belong to the FP bank.
-    pub first_fp_reg: u16,
-    pub reg_count: u16,
-    /// Number of FP-bank registers reserved for transient SSA values.
-    pub fp_transient_count: u16,
     /// Initial semantic width for each FP-bank register, indexed by
-    /// `reg - first_fp_reg`. FP cached-local regs use `Some(width)`;
+    /// `reg - config.first_fp_reg()`. FP cached-local regs use `Some(width)`;
     /// transient regs start as `None`.
     pub fp_reg_init_widths: Vec<Option<MachineFloatWidth>>,
     pub blocks: Vec<super::cfg::MachineBlock>,
-}
-
-impl MachineProgram {
-    #[inline]
-    pub(crate) fn is_fp_reg(&self, reg: super::MachineReg) -> bool {
-        reg.0 >= self.first_fp_reg && reg.0 < self.reg_count
-    }
-
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn is_gp_reg(&self, reg: super::MachineReg) -> bool {
-        reg.0 < self.first_fp_reg
-    }
 }
 
 /// One machine function inside a machine module.
@@ -56,6 +39,7 @@ pub(crate) struct MachineFunction {
 /// calls and other out-of-line native targets.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineModule {
+    pub config: BackendConfig,
     pub functions: Vec<MachineFunction>,
     pub consts: Vec<MachineConstData>,
     pub externs: Vec<MachineExternBinding>,
@@ -63,12 +47,10 @@ pub(crate) struct MachineModule {
 
 impl MachineModule {
     /// Run ISA-agnostic optimization passes on all functions.
-    ///
-    /// `first_transient` is the first GP transient register. FP transients are
-    /// the prefix of the FP bank with length `fp_transient_count`.
-    pub(crate) fn optimize(&mut self, first_transient: u16, gp_reg_width: u8) {
+    pub(crate) fn optimize(&mut self) {
+        let config = self.config;
         for func in &mut self.functions {
-            peephole::optimize(&mut func.program, first_transient, gp_reg_width);
+            peephole::optimize(&mut func.program, config);
         }
     }
 }

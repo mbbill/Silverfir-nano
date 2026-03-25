@@ -108,7 +108,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
             *function,
-            input.backend.gp_unit_bytes,
+            input.backend,
             &max_regfile,
             &function_runtime,
             call_link,
@@ -129,13 +129,12 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
             function.unwrap_or_else(|| {
                 stub_machine_function(
                     MachineFuncId(index as u32),
-                    max_regfile.first_fp_reg(),
-                    max_regfile.reg_count(),
                 )
             })
         })
         .collect();
     let module = MachineModule {
+        config: input.backend,
         functions,
         consts,
         externs,
@@ -178,13 +177,14 @@ fn lower_function_runtime(
 
 fn lower_function(
     input: LowerFunctionInput<'_>,
-    gp_reg_width: u8,
+    config: BackendConfig,
     regfile: &MachineRegFile,
     runtime: &[MachineFunctionRuntime],
     call_link: MachineCallLinkLayout,
     sidecar: &mut SidecarBuilder,
     guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
+    let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();
     let mut original_blocks = alloc::vec![None; original_block_count];
     let mut extra_blocks = Vec::new();
@@ -556,13 +556,10 @@ fn lower_function(
 
     let program = MachineProgram {
         entry: MachineBlockId(input.ssa.entry.as_u32()),
-        first_fp_reg: regfile.first_fp_reg(),
-        reg_count: regfile.reg_count(),
-        fp_transient_count: regfile.fp_transient_count() as u16,
         fp_reg_init_widths: fp_reg_init_widths(&regfile, &input.ssa.local_cache)?,
         blocks,
     };
-    program.validate()?;
+    program.validate(config)?;
 
     Ok(MachineFunction {
         id: input.id,
@@ -570,14 +567,11 @@ fn lower_function(
     })
 }
 
-fn stub_machine_function(id: MachineFuncId, first_fp_reg: u16, reg_count: u16) -> MachineFunction {
+fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
     MachineFunction {
         id,
         program: MachineProgram {
             entry: MachineBlockId(0),
-            first_fp_reg,
-            reg_count,
-            fp_transient_count: 0,
             fp_reg_init_widths: Vec::new(),
             blocks: vec![MachineBlock {
                 id: MachineBlockId(0),

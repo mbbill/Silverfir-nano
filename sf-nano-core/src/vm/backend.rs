@@ -30,7 +30,7 @@ pub enum BackendKind {
 ///
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BackendConfig {
     /// Size in bytes of one GP budget unit on the target backend.
     ///
@@ -86,6 +86,36 @@ impl BackendConfig {
     #[inline]
     pub(crate) const fn is_32bit_gp_target(self) -> bool {
         self.gp_unit_bytes == 4
+    }
+
+    // ── Register layout helpers ──────────────────────────────────────────
+    //
+    // Layout: [fixed(4) | gp_cache | gp_trans | fp_trans | fp_cache]
+    //
+    // These derive partition boundaries from the budget so that no
+    // call-site needs to recompute them manually.
+
+    /// Number of fixed MachineIR registers (ctx, fp, mem0_base, mem0_size).
+    pub(crate) const FIXED: u16 = 4;
+
+    /// First GP transient MachineReg ID (= first reg after GP cache).
+    #[inline]
+    pub(crate) const fn first_gp_transient(self) -> u16 {
+        Self::FIXED + self.gp_local_cache_budget as u16
+    }
+
+    /// First FP MachineReg ID (= first reg after all GP regs).
+    #[inline]
+    pub(crate) const fn first_fp_reg(self) -> u16 {
+        Self::FIXED + self.gp_local_cache_budget as u16 + self.gp_transient_budget as u16
+    }
+
+    /// Total MachineReg count across all partitions.
+    #[inline]
+    pub(crate) const fn total_reg_count(self) -> u16 {
+        self.first_fp_reg()
+            + self.fp_transient_budget as u16
+            + self.fp_local_cache_budget as u16
     }
 }
 

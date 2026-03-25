@@ -1,5 +1,6 @@
+use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineConvertOp, MachineFloatWidth, MachineMemWidth, MachineProgram, MachineTrapKind,
+    MachineConvertOp, MachineFloatWidth, MachineMemWidth, MachineTrapKind,
 };
 
 // ── Trap code mapping ────────────────────────────────────────────────────────
@@ -79,11 +80,11 @@ pub(crate) fn convert_result_float_width(op: MachineConvertOp) -> Option<Machine
 
 // ── FP transient count ───────────────────────────────────────────────────────
 
-pub(crate) fn defaulted_fp_transient_count(program: &MachineProgram) -> usize {
-    if program.fp_transient_count != 0 {
-        return program.fp_transient_count as usize;
+pub(crate) fn defaulted_fp_transient_count(config: BackendConfig) -> usize {
+    if config.fp_transient_budget != 0 {
+        return config.fp_transient_budget as usize;
     }
-    let fp_bank_count = program.reg_count.saturating_sub(program.first_fp_reg) as usize;
+    let fp_bank_count = (config.total_reg_count() - config.first_fp_reg()) as usize;
     fp_bank_count.min(2)
 }
 

@@ -3233,7 +3233,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
             MachineInstKind::Store {
                 src: MachineValue::Reg(reg),
                 ..
-            } if reg.0 >= program.first_fp_reg
+            } if reg.0 >= lowered.module.config.first_fp_reg()
         )
     }));
 }
@@ -3298,7 +3298,7 @@ fn lowers_f32_const_to_fp_machine_const() {
                 width: crate::vm::machine::machine_ir::MachineFloatWidth::F32,
                 bits: 0x4120_0000,
                 dst,
-            } if dst.0 >= program.first_fp_reg
+            } if dst.0 >= lowered.module.config.first_fp_reg()
         ) || matches!(
             inst.kind,
             MachineInstKind::Store {
@@ -3370,7 +3370,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         })
         .expect("there should be a Load instruction");
     assert!(
-        program.is_fp_reg(load_dst),
+        crate::vm::machine::machine_ir::is_fp_reg(load_dst, lowered.module.config),
         "typed F64 LoadSlot must allocate into FP bank, got GP reg {}",
         load_dst.0,
     );
@@ -3432,7 +3432,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
         })
         .expect("there should be a Load instruction");
     assert!(
-        program.is_gp_reg(load_dst),
+        crate::vm::machine::machine_ir::is_gp_reg(load_dst, lowered.module.config),
         "untyped LoadSlot must stay in GP bank, got FP reg {}",
         load_dst.0,
     );

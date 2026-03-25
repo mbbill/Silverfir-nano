@@ -1,5 +1,6 @@
 use alloc::{vec, vec::Vec};
 
+use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId, MachineEdge,
     MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
@@ -7,13 +8,15 @@ use crate::vm::machine::machine_ir::{
 };
 use crate::vm::machine::machine_ir::{MachineExternBinding, MachineHelperSymbol};
 
+/// Minimal config for validate tests: no cache/transient budget beyond the minimum.
+fn minimal_config() -> BackendConfig {
+    BackendConfig::new(0, 1, 0, 0)
+}
+
 #[test]
 fn rejects_edge_arity_mismatch() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 2,
-        reg_count: 2,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
@@ -34,7 +37,7 @@ fn rejects_edge_arity_mismatch() {
         ],
     };
 
-    let err = program.validate().unwrap_err();
+    let err = program.validate(minimal_config()).unwrap_err();
     assert!(alloc::format!("{err}").contains("supplies 0 args"));
 }
 
@@ -42,9 +45,6 @@ fn rejects_edge_arity_mismatch() {
 fn rejects_out_of_range_register() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 1,
-        reg_count: 1,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -60,20 +60,18 @@ fn rejects_out_of_range_register() {
         }],
     };
 
-    let err = program.validate().unwrap_err();
+    let err = program.validate(minimal_config()).unwrap_err();
     assert!(alloc::format!("{err}").contains("exceeds declared register count"));
 }
 
 #[test]
 fn rejects_out_of_range_helper_metadata() {
     let module = MachineModule {
+        config: minimal_config(),
         functions: alloc::vec![MachineFunction {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             program: MachineProgram {
                 entry: MachineBlockId(0),
-                first_fp_reg: 2,
-                reg_count: 2,
-                fp_transient_count: 0,
                 fp_reg_init_widths: vec![],
                 blocks: alloc::vec![MachineBlock {
                     id: MachineBlockId(0),

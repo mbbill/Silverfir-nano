@@ -25,8 +25,10 @@ use crate::{
     error::WasmError,
     vm::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
+        backend::BackendConfig,
         machine::machine_ir::{
-            MachineAddr, MachineBlockParam, MachineFloatWidth, MachineFunction,
+            is_fp_reg, fp_reg_index,
+            MachineAddr, MachineBlockParam, MachineFloatWidth,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
             MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
         },
@@ -59,8 +61,8 @@ pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: GpReg, value: u6
 }
 
 /// Map a MachineReg to a physical GP register, rejecting FP regs.
-fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<GpReg, WasmError> {
-    if func.program.is_fp_reg(reg) {
+fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<GpReg, WasmError> {
+    if is_fp_reg(reg, config) {
         return Err(WasmError::invalid(alloc::format!(
             "expected GP register, got FP machine reg {}", reg.0
         )));
@@ -69,10 +71,8 @@ fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<GpReg, WasmError> {
 }
 
 /// Map a MachineReg to a physical FP register.
-fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<FpReg, WasmError> {
-    let index = reg.0
-        .checked_sub(func.program.first_fp_reg)
-        .map(|i| i as usize)
+fn map_fp(config: BackendConfig, reg: MachineReg) -> Result<FpReg, WasmError> {
+    let index = fp_reg_index(reg, config)
         .ok_or_else(|| WasmError::invalid(alloc::format!(
             "expected FP register, got machine reg {}", reg.0
         )))?;
@@ -89,17 +89,17 @@ fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<FpReg, WasmError> {
 /// - `Reg(fp)` → scratch alloc + fmov.
 /// - `Imm64`   → scratch alloc + materialize.
 fn prepare_gp<'p>(
-    func: &MachineFunction,
+    config: BackendConfig,
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     pool: &'p ScratchPool<GpReg, 2>,
     value: MachineValue,
 ) -> Result<PreparedGp<'p>, WasmError> {
     match value {
-        MachineValue::Reg(reg) if func.program.is_fp_reg(reg) => {
+        MachineValue::Reg(reg) if is_fp_reg(reg, config) => {
             let scratch = pool.scoped_alloc();
-            let src_fp = map_fp(func, reg)?;
-            let index = (reg.0 - func.program.first_fp_reg) as usize;
+            let src_fp = map_fp(config, reg)?;
+            let index = fp_reg_index(reg, config).unwrap();
             let _width = fp_widths.get(index).and_then(|w| *w).ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
                     "missing float-width for machine reg {}", reg.0
@@ -108,7 +108,7 @@ fn prepare_gp<'p>(
             text.emit_u32(enc::fmov_gp_from_d(*scratch, src_fp));
             Ok(PreparedGp::Scratch(scratch))
         }
-        MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(func, reg)?)),
+        MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(config, reg)?)),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             materialize_u64_into(text, *scratch, v);
@@ -123,7 +123,7 @@ fn prepare_gp<'p>(
 /// - otherwise → GP scratch + materialize + fmov into FP scratch.
 ///   The GP scratch is released before returning.
 fn prepare_fp<'p>(
-    func: &MachineFunction,
+    config: BackendConfig,
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     gp_pool: &ScratchPool<GpReg, 2>,
@@ -132,11 +132,11 @@ fn prepare_fp<'p>(
     value: MachineValue,
 ) -> Result<PreparedFp<'p>, WasmError> {
     if let MachineValue::Reg(reg) = value {
-        if func.program.is_fp_reg(reg) {
-            return Ok(PreparedFp::Mapped(map_fp(func, reg)?));
+        if is_fp_reg(reg, config) {
+            return Ok(PreparedFp::Mapped(map_fp(config, reg)?));
         }
     }
-    let gp = prepare_gp(func, fp_widths, text, gp_pool, value)?;
+    let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
     text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, gp.reg()));
     // gp dropped here — GP scratch slot freed immediately
@@ -150,11 +150,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
     // ── Register mapping (thin wrappers for convenience) ─────────────────
 
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<GpReg, WasmError> {
-        map_gp(self.core.function, reg)
+        map_gp(self.core.compiled.backend(), reg)
     }
 
     pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<FpReg, WasmError> {
-        map_fp(self.core.function, reg)
+        map_fp(self.core.compiled.backend(), reg)
     }
 
     pub(super) fn materialize_u64(&mut self, dst: GpReg, value: u64) {
@@ -198,7 +198,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
         if let Some(width) = ty.float_width() {
             let dst_fp = self.map_fp_reg(dst)?;
             let src_fp = prepare_fp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 width, src,
             )?;
@@ -209,7 +209,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         let dst_gp = self.map_gp_reg(dst)?;
         let src_gp = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, src,
         )?;
         if dst_gp != src_gp.reg() {
@@ -238,11 +238,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Register fallback: prepare both operands (may allocate scratches).
         let lhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, lhs,
         )?;
         let rhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
         )?;
         let (l, r) = (lhs.reg(), rhs.reg());
@@ -272,13 +272,13 @@ impl<'a> super::backend::ExampleBackend<'a> {
             MachineIntBinaryOp::Add => match (lhs, rhs) {
                 (MachineValue::Reg(r), MachineValue::Imm64(imm)) |
                 (MachineValue::Imm64(imm), MachineValue::Reg(r)) => {
-                    Ok(select::add_imm_inst(dst, map_gp(self.core.function, r)?, imm))
+                    Ok(select::add_imm_inst(dst, map_gp(self.core.compiled.backend(), r)?, imm))
                 }
                 _ => Ok(None),
             },
             MachineIntBinaryOp::Sub => match (lhs, rhs) {
                 (MachineValue::Reg(r), MachineValue::Imm64(imm)) => {
-                    Ok(select::sub_imm_inst(dst, map_gp(self.core.function, r)?, imm))
+                    Ok(select::sub_imm_inst(dst, map_gp(self.core.compiled.backend(), r)?, imm))
                 }
                 _ => Ok(None),
             },
@@ -305,11 +305,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Register fallback.
         let lhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, lhs,
         )?;
         let rhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
         )?;
         self.core.text.emit_u32(enc::cmp_reg_64(lhs.reg(), rhs.reg()));
@@ -353,7 +353,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Prepare the source value (may allocate one scratch).
         let src = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, src,
         )?;
 

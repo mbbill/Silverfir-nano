@@ -10,12 +10,53 @@ pub(crate) const MACHINE_MEM0_SIZE_REG: MachineReg = MachineReg(3);
 /// Number of fixed registers — one past the highest fixed ID.
 pub(crate) const MACHINE_FIXED_REG_COUNT: u16 = MACHINE_MEM0_SIZE_REG.0 + 1;
 
-/// MachineIR register layout: `[fixed | gp_cache | gp_trans | fp_trans | fp_cache]`.
-///
-/// This is the single source of truth for the partition order.
-/// `MachineRegFile::new()` allocates IDs in this order, and architecture
-/// backends use `classify_gp_reg` / `classify_fp_reg` to map IDs back to
-/// partition indices.
+// BackendConfig::FIXED must agree with the actual fixed-reg count here.
+const _: () = assert!(
+    BackendConfig::FIXED == MACHINE_FIXED_REG_COUNT,
+    "BackendConfig::FIXED must equal MACHINE_FIXED_REG_COUNT"
+);
+
+// ── Register layout: [fixed | gp_cache | gp_trans | fp_trans | fp_cache] ─────
+//
+// The helpers below are the single source of truth for the partition order.
+// `MachineRegFile::new()` allocates IDs in this order, and architecture
+// backends use these to map abstract IDs back to physical registers.
+
+/// Returns `true` if `reg` belongs to the FP bank.
+#[inline]
+pub(crate) fn is_fp_reg(reg: MachineReg, config: BackendConfig) -> bool {
+    reg.0 >= config.first_fp_reg() && reg.0 < config.total_reg_count()
+}
+
+/// Returns `true` if `reg` belongs to the GP bank (fixed or dynamic).
+#[inline]
+pub(crate) fn is_gp_reg(reg: MachineReg, config: BackendConfig) -> bool {
+    reg.0 < config.first_fp_reg()
+}
+
+/// Returns `true` if `reg` is a GP transient (not fixed, not cache).
+#[inline]
+pub(crate) fn is_gp_transient(reg: MachineReg, config: BackendConfig) -> bool {
+    reg.0 >= config.first_gp_transient() && reg.0 < config.first_fp_reg()
+}
+
+/// Returns `true` if both regs are in the same bank (both GP or both FP).
+#[inline]
+pub(crate) fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool {
+    let fp_start = config.first_fp_reg();
+    (lhs.0 < fp_start) == (rhs.0 < fp_start)
+}
+
+/// FP-bank index: `reg.0 - first_fp_reg`. Returns `None` if not an FP reg.
+#[inline]
+pub(crate) fn fp_reg_index(reg: MachineReg, config: BackendConfig) -> Option<usize> {
+    let fp_start = config.first_fp_reg();
+    if reg.0 >= fp_start && reg.0 < config.total_reg_count() {
+        Some((reg.0 - fp_start) as usize)
+    } else {
+        None
+    }
+}
 
 /// Classify a GP MachineReg into its partition index.
 ///

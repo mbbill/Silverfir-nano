@@ -2,10 +2,13 @@ use alloc::{format, string::String, vec, vec::Vec};
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{
-        MachineBlock, MachineBlockId, MachineFloatWidth, MachineFuncId, MachineFunctionRuntime,
-        MachineFunction, MachineReg, MachineTerminator, MachineTrapKind,
-        MachineValue, MACHINE_FIXED_REG_COUNT,
+    vm::{
+        backend::BackendConfig,
+        machine::machine_ir::{
+            fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
+            MachineFuncId, MachineFunctionRuntime, MachineFunction, MachineReg,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+        },
     },
 };
 
@@ -80,7 +83,7 @@ impl<'a> CompilerCore<'a> {
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
 
-        let fp_reg_widths = Self::init_fp_widths(function, fp_capacity);
+        let fp_reg_widths = Self::init_fp_widths(function, compiled.backend(), fp_capacity);
 
         Self {
             compiled,
@@ -107,15 +110,14 @@ impl<'a> CompilerCore<'a> {
 
     fn init_fp_widths(
         function: &MachineFunction,
+        config: BackendConfig,
         fp_capacity: usize,
     ) -> Vec<Option<MachineFloatWidth>> {
         let mut widths = vec![None; fp_capacity];
         if function.program.fp_reg_init_widths.is_empty() {
-            let fp_bank_count = function
-                .program
-                .reg_count
-                .saturating_sub(function.program.first_fp_reg) as usize;
-            let transient_count = defaulted_fp_transient_count(&function.program);
+            let fp_bank_count =
+                (config.total_reg_count() - config.first_fp_reg()) as usize;
+            let transient_count = defaulted_fp_transient_count(config);
             for i in transient_count..fp_bank_count.min(fp_capacity) {
                 widths[i] = Some(MachineFloatWidth::F64);
             }
@@ -190,7 +192,7 @@ impl<'a> CompilerCore<'a> {
 
     #[inline]
     pub(crate) fn is_fp_reg(&self, reg: MachineReg) -> bool {
-        self.function.program.is_fp_reg(reg)
+        is_fp_reg(reg, self.compiled.backend())
     }
 
     /// Validate that `reg` is a GP register (not FP). Returns the reg unchanged.
@@ -206,15 +208,12 @@ impl<'a> CompilerCore<'a> {
 
     /// Return the FP bank index for a machine register.
     pub(crate) fn fp_reg_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
-        reg.0
-            .checked_sub(self.function.program.first_fp_reg)
-            .map(|i| i as usize)
-            .ok_or_else(|| {
-                WasmError::invalid(format!(
-                    "expected FP register, got machine reg {}",
-                    reg.0
-                ))
-            })
+        fp_reg_index(reg, self.compiled.backend()).ok_or_else(|| {
+            WasmError::invalid(format!(
+                "expected FP register, got machine reg {}",
+                reg.0
+            ))
+        })
     }
 
     pub(crate) fn set_fp_reg_width(
@@ -249,7 +248,7 @@ impl<'a> CompilerCore<'a> {
     }
 
     pub(crate) fn reset_block_fp_state(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
-        let transient_count = defaulted_fp_transient_count(&self.function.program);
+        let transient_count = defaulted_fp_transient_count(self.compiled.backend());
         for i in 0..transient_count {
             if let Some(slot) = self.fp_reg_widths.get_mut(i) {
                 *slot = None;
@@ -426,34 +425,35 @@ impl<'a> CompilerCore<'a> {
     pub(crate) fn validate_function(
         arch_name: &str,
         function: &MachineFunction,
+        config: BackendConfig,
         max_total_regs: usize,
         max_fp_regs: usize,
     ) -> Result<(), WasmError> {
-        if function.program.reg_count as usize > max_total_regs {
+        let reg_count = config.total_reg_count();
+        let first_fp = config.first_fp_reg();
+        if reg_count as usize > max_total_regs {
             return Err(WasmError::invalid(format!(
                 "{} backend supports at most {} machine regs, got {} in function {}",
                 arch_name,
                 max_total_regs,
-                function.program.reg_count,
+                reg_count,
                 function.id.0
             )));
         }
-        if function.program.first_fp_reg < MACHINE_FIXED_REG_COUNT
-            || function.program.first_fp_reg > function.program.reg_count
-        {
+        if first_fp < MACHINE_FIXED_REG_COUNT || first_fp > reg_count {
             return Err(WasmError::invalid(format!(
                 "{} backend received invalid first_fp_reg {} for function {}",
                 arch_name,
-                function.program.first_fp_reg,
+                first_fp,
                 function.id.0,
             )));
         }
-        if (function.program.reg_count - function.program.first_fp_reg) as usize > max_fp_regs {
+        if (reg_count - first_fp) as usize > max_fp_regs {
             return Err(WasmError::invalid(format!(
                 "{} backend supports at most {} FP machine regs, got {} in function {}",
                 arch_name,
                 max_fp_regs,
-                function.program.reg_count - function.program.first_fp_reg,
+                reg_count - first_fp,
                 function.id.0,
             )));
         }

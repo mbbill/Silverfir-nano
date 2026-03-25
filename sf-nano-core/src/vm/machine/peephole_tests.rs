@@ -1,18 +1,38 @@
 use alloc::{vec, vec::Vec};
 
+use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
     MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
     MachineStorageType, MachineTerminator, MachineValue,
 };
 
+/// Build a BackendConfig matching old test parameters.
+///
+/// `first_transient` — old first GP transient register ID.
+/// `gp_reg_width` — GP register width in bytes (4 or 8).
+/// `first_fp_reg` — old first FP register ID.
+/// `reg_count` — old total register count.
+/// `fp_transient_count` — old FP transient count.
+fn test_config(
+    first_transient: u16,
+    gp_reg_width: u8,
+    first_fp_reg: u16,
+    reg_count: u16,
+    fp_transient_count: u16,
+) -> BackendConfig {
+    let gp_cache = (first_transient - BackendConfig::FIXED) as u8;
+    let gp_trans = (first_fp_reg - first_transient) as u8;
+    let fp_total = (reg_count - first_fp_reg) as u8;
+    let fp_trans = fp_transient_count as u8;
+    let fp_cache = fp_total - fp_trans;
+    BackendConfig::new_with_gp_unit_bytes(gp_cache, gp_trans, fp_cache, fp_trans, gp_reg_width)
+}
+
 #[test]
 fn copy_propagates_transient_moves_into_ops_and_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 9,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
@@ -49,7 +69,7 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -70,9 +90,6 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
 fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -113,7 +130,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -138,9 +155,6 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
 fn forwards_non_adjacent_u64_store_load_pairs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 9,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -205,7 +219,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 4);
@@ -226,9 +240,6 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
 fn forwards_fp_spill_reload_into_gp_move() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 11,
-        reg_count: 12,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -273,7 +284,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -290,9 +301,6 @@ fn forwards_fp_spill_reload_into_gp_move() {
 fn does_not_forward_when_stored_source_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -333,7 +341,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -353,9 +361,6 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
 fn does_not_forward_across_overlapping_store() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -400,7 +405,7 @@ fn does_not_forward_across_overlapping_store() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -420,9 +425,6 @@ fn does_not_forward_across_overlapping_store() {
 fn reuses_identical_loads_when_memory_stays_unchanged() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 10,
-        reg_count: 10,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -477,7 +479,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 10, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -498,9 +500,6 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
 fn does_not_reuse_identical_loads_across_distinct_storage_types() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 11,
-        reg_count: 12,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -535,7 +534,7 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -555,9 +554,6 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
 fn does_not_reuse_load_after_loaded_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 9,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -599,7 +595,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -619,9 +615,6 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
 fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -649,7 +642,7 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -667,12 +660,74 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
 }
 
 #[test]
+fn does_not_copy_propagate_gp_transient_moves_into_integer_uses_or_edges() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(7),
+                            src: MachineValue::Reg(MachineReg(4)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IntUnary {
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            dst: MachineReg(8),
+                            src: MachineValue::Reg(MachineReg(7)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: alloc::vec![MachineValue::Reg(MachineReg(7))],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))],
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
+}
+
+#[test]
 fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 10,
-        reg_count: 12,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -699,7 +754,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -715,9 +770,6 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
 fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 10,
-        reg_count: 11,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -746,7 +798,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 11, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -762,9 +814,6 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
 fn preserves_moves_into_fp_cached_locals() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 11,
-        reg_count: 15,
-        fp_transient_count: 2,
         fp_reg_init_widths: vec![
             None,
             None,
@@ -798,7 +847,7 @@ fn preserves_moves_into_fp_cached_locals() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 8);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 15, 2));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -823,9 +872,6 @@ fn preserves_moves_into_fp_cached_locals() {
 fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 9,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
@@ -870,7 +916,7 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 4);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -897,9 +943,6 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
 fn still_fuses_i32_compare_branch_on_32_bit_targets() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 9,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![
             MachineBlock {
@@ -944,7 +987,7 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 4);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert!(block.ops.is_empty());
@@ -965,9 +1008,6 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
 fn does_not_fold_constant_past_non_adjacent_instruction() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 9,
-        reg_count: 10,
-        fp_transient_count: 1,
         fp_reg_init_widths: vec![None],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -1003,7 +1043,7 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 4);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 10, 1));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1032,9 +1072,6 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
 fn does_not_fold_constant_used_as_non_replaceable_address_base() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        first_fp_reg: 8,
-        reg_count: 8,
-        fp_transient_count: 0,
         fp_reg_init_widths: vec![],
         blocks: alloc::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -1064,7 +1101,7 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, 7, 4);
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);

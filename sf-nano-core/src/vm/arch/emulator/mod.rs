@@ -107,13 +107,13 @@ pub(crate) fn eval_root_with_context(
         fp,
         regs: init_entry_regs(
             compiled,
-            program.program.reg_count,
+            compiled.backend().total_reg_count(),
             runtime_base,
             fp_base,
             mem0_base,
             mem0_size,
         ),
-        addr_kinds: init_entry_addr_kinds(program.program.reg_count),
+        addr_kinds: init_entry_addr_kinds(compiled.backend().total_reg_count()),
         call_stack: Vec::new(),
         address_space,
     }
@@ -755,13 +755,13 @@ impl<'a> Emulator<'a> {
         self.block_id = callee_function.program.entry;
         self.regs = init_entry_regs(
             self.compiled,
-            callee_function.program.reg_count,
+            self.compiled.backend().total_reg_count(),
             self.address_space.runtime_base_value(self.ctx),
             self.address_space.frame_base_value(callee_fp)?,
             self.address_space.mem0_base_value(self.ctx),
             self.ctx.mem0_size,
         );
-        self.addr_kinds = init_entry_addr_kinds(callee_function.program.reg_count);
+        self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
         #[cfg(feature = "function-trace")]
         function_trace::native_function_trace_enter_func_idx(self.ctx, callee.0);
         Ok(())
@@ -2307,13 +2307,11 @@ mod tests {
                 NativeBackend::Reference,
                 super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                 MachineModule {
+                    config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                     functions: vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
                             entry: MachineBlockId(0),
-                            first_fp_reg: MACHINE_FIXED_REG_COUNT + 1,
-                            reg_count: MACHINE_FIXED_REG_COUNT + 1,
-                            fp_transient_count: 0,
                             fp_reg_init_widths: Vec::new(),
                             blocks: vec![
                                 MachineBlock {
@@ -2389,13 +2387,11 @@ mod tests {
                 NativeBackend::Reference,
                 super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                 MachineModule {
+                    config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                     functions: vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
                             entry: MachineBlockId(0),
-                            first_fp_reg: MACHINE_FIXED_REG_COUNT + 2,
-                            reg_count: MACHINE_FIXED_REG_COUNT + 2,
-                            fp_transient_count: 0,
                             fp_reg_init_widths: Vec::new(),
                             blocks: vec![MachineBlock {
                                 id: MachineBlockId(0),
@@ -2461,17 +2457,11 @@ mod tests {
             NativeBackend::Reference,
             backend,
             MachineModule {
+                config: backend,
                 functions: vec![MachineFunction {
                     id: MachineFuncId(0),
                     program: MachineProgram {
                         entry: MachineBlockId(0),
-                        first_fp_reg: MACHINE_FIXED_REG_COUNT
-                            + backend.gp_local_cache_budget as u16
-                            + backend.gp_transient_budget as u16,
-                        reg_count: MACHINE_FIXED_REG_COUNT
-                            + backend.gp_local_cache_budget as u16
-                            + backend.gp_transient_budget as u16,
-                        fp_transient_count: 0,
                         fp_reg_init_widths: Vec::new(),
                         blocks: vec![MachineBlock {
                             id: MachineBlockId(0),
@@ -2503,23 +2493,20 @@ mod tests {
     #[test]
     fn compiled_emu32_rejects_wrong_gp_fp_boundary() {
         let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
+        // Create a module config with a mismatched GP/FP boundary by reducing
+        // the GP transient budget by 1, so module.config.first_fp_reg() differs
+        // from backend.first_fp_reg().
+        let mut wrong_config = backend;
+        wrong_config.gp_transient_budget = wrong_config.gp_transient_budget.saturating_sub(1);
         let err = CompiledNativeModule::new(
             NativeBackend::Reference,
             backend,
             MachineModule {
+                config: wrong_config,
                 functions: vec![MachineFunction {
                     id: MachineFuncId(0),
                     program: MachineProgram {
                         entry: MachineBlockId(0),
-                        first_fp_reg: MACHINE_FIXED_REG_COUNT
-                            + backend.gp_local_cache_budget as u16
-                            + backend.gp_transient_budget as u16
-                            - 1,
-                        reg_count: MACHINE_FIXED_REG_COUNT
-                            + backend.gp_local_cache_budget as u16
-                            + backend.gp_transient_budget as u16
-                            - 1,
-                        fp_transient_count: 0,
                         fp_reg_init_widths: Vec::new(),
                         blocks: vec![MachineBlock {
                             id: MachineBlockId(0),

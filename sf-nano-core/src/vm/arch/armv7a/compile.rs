@@ -216,13 +216,12 @@ impl<'a> FunctionCompiler<'a> {
 
     #[inline]
     pub(super) fn is_fp_machine_reg(&self, reg: MachineReg) -> bool {
-        self.function.program.is_fp_reg(reg)
+        crate::vm::machine::machine_ir::is_fp_reg(reg, self.compiled.backend())
     }
 
     #[inline]
     pub(super) fn map_fp_dreg(&self, reg: MachineReg) -> Result<u32, WasmError> {
-        let fp_idx = (reg.0 as usize)
-            .checked_sub(self.function.program.first_fp_reg as usize)
+        let fp_idx = crate::vm::machine::machine_ir::fp_reg_index(reg, self.compiled.backend())
             .ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
                     "armv7a: expected FP register, got GP machine reg {}",
@@ -936,11 +935,12 @@ fn compile_function(
     let program = &function.program;
 
     let max_total_reg = max_total_machine_regs();
-    if program.reg_count as usize > max_total_reg {
+    let reg_count = compiled.backend().total_reg_count();
+    if reg_count as usize > max_total_reg {
         return Err(WasmError::invalid(alloc::format!(
             "armv7a MachineIR backend supports at most {} machine regs, got {} in function {}",
             max_total_reg,
-            program.reg_count,
+            reg_count,
             function.id.0
         )));
     }

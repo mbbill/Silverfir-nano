@@ -27,6 +27,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     super::core::CompilerCore::validate_function(
         A::NAME,
         function,
+        compiled.backend(),
         A::max_total_regs(),
         A::max_fp_regs(),
     )?;

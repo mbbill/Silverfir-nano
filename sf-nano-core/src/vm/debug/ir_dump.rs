@@ -445,7 +445,7 @@ fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
 
 fn render_machine_function(out: &mut String, func: &MachineFunction) {
     let p = &func.program;
-    let _ = writeln!(out, "  entry=b{} reg_count={}", p.entry.0, p.reg_count);
+    let _ = writeln!(out, "  entry=b{}", p.entry.0);
     for block in &p.blocks {
         let _ = writeln!(
             out,

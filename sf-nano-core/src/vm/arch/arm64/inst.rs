@@ -20,7 +20,8 @@ use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_wid
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 use crate::vm::arch::common::text_emitter::TextEmitter;
 use crate::vm::arch::common::types::ParallelSource;
-use crate::vm::machine::machine_ir::MachineFunction;
+use crate::vm::backend::BackendConfig;
+use crate::vm::machine::machine_ir::{is_fp_reg, fp_reg_index};
 
 // ── Operand preparation (free functions) ─────────────────────────────────────
 //
@@ -40,8 +41,8 @@ use crate::vm::machine::machine_ir::MachineFunction;
 // materialize_u64_into is defined at the end of this file as a free function.
 
 /// Map a MachineReg to a physical GP register, rejecting FP regs.
-fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
-    if func.program.is_fp_reg(reg) {
+fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
+    if is_fp_reg(reg, config) {
         return Err(WasmError::invalid(alloc::format!(
             "expected GP register, got FP machine reg {}", reg.0
         )));
@@ -50,10 +51,8 @@ fn map_gp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64Reg, WasmError
 }
 
 /// Map a MachineReg to a physical FP register.
-fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
-    let index = reg.0
-        .checked_sub(func.program.first_fp_reg)
-        .map(|i| i as usize)
+fn map_fp(config: BackendConfig, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
+    let index = fp_reg_index(reg, config)
         .ok_or_else(|| WasmError::invalid(alloc::format!(
             "expected FP register, got machine reg {}", reg.0
         )))?;
@@ -70,17 +69,17 @@ fn map_fp(func: &MachineFunction, reg: MachineReg) -> Result<Arm64FpReg, WasmErr
 /// - `Reg(fp)` → scratch alloc + fmov.
 /// - `Imm64`   → scratch alloc + materialize.
 pub(super) fn prepare_gp<'p>(
-    func: &MachineFunction,
+    config: BackendConfig,
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     pool: &'p ScratchPool<Arm64Reg, 2>,
     value: MachineValue,
 ) -> Result<PreparedGp<'p>, WasmError> {
     match value {
-        MachineValue::Reg(reg) if func.program.is_fp_reg(reg) => {
+        MachineValue::Reg(reg) if is_fp_reg(reg, config) => {
             let scratch = pool.scoped_alloc();
-            let src_fp = map_fp(func, reg)?;
-            let index = (reg.0 - func.program.first_fp_reg) as usize;
+            let src_fp = map_fp(config, reg)?;
+            let index = fp_reg_index(reg, config).unwrap();
             let width = fp_widths.get(index).and_then(|w| *w).ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
                     "missing float-width for machine reg {}", reg.0
@@ -92,7 +91,7 @@ pub(super) fn prepare_gp<'p>(
             });
             Ok(PreparedGp::Scratch(scratch))
         }
-        MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(func, reg)?)),
+        MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(config, reg)?)),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             materialize_u64_into(text, *scratch, v);
@@ -107,7 +106,7 @@ pub(super) fn prepare_gp<'p>(
 /// - otherwise → GP scratch + materialize + fmov into FP scratch.
 ///   The GP scratch is released before returning.
 pub(super) fn prepare_fp<'p>(
-    func: &MachineFunction,
+    config: BackendConfig,
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     gp_pool: &ScratchPool<Arm64Reg, 2>,
@@ -116,11 +115,11 @@ pub(super) fn prepare_fp<'p>(
     value: MachineValue,
 ) -> Result<PreparedFp<'p>, WasmError> {
     if let MachineValue::Reg(reg) = value {
-        if func.program.is_fp_reg(reg) {
-            return Ok(PreparedFp::Mapped(map_fp(func, reg)?));
+        if is_fp_reg(reg, config) {
+            return Ok(PreparedFp::Mapped(map_fp(config, reg)?));
         }
     }
-    let gp = prepare_gp(func, fp_widths, text, gp_pool, value)?;
+    let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
     text.emit_u32(match width {
         MachineFloatWidth::F32 => enc::fmov_s_from_gp(*fp_scratch, gp.reg()),
@@ -189,18 +188,18 @@ impl<'a> super::backend::Arm64Backend<'a> {
         &mut self, width: MachineIntWidth, lhs: MachineValue, rhs: MachineValue,
     ) -> Result<(), WasmError> {
         if let (MachineValue::Reg(lhs_reg), MachineValue::Imm64(imm)) = (lhs, rhs) {
-            let lhs_phys = map_gp(self.core.function, lhs_reg)?;
+            let lhs_phys = map_gp(self.core.compiled.backend(), lhs_reg)?;
             if let Some(inst) = cmp_imm_inst(width, lhs_phys, imm) {
                 self.core.text.emit_u32(inst);
                 return Ok(());
             }
         }
         let lhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, lhs,
         )?.release();
         let rhs = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
         )?.release();
         match width {
@@ -713,7 +712,7 @@ addr: MachineAddr,
         let offset = addr.offset as i64;
         if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
             let src_reg = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             self.core
@@ -725,7 +724,7 @@ addr: MachineAddr,
     let addr_scratch = *self.gp_scratch.scoped_alloc();
     self.lower_addr_into(addr_scratch, addr)?;
     let src_reg = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
     )?.release();
     let inst = match width {
@@ -947,7 +946,7 @@ base_reg: MachineReg,
         }
     }
     let src_reg = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
     )?.release();
     let inst = match width {
@@ -1010,7 +1009,7 @@ base_reg: MachineReg,
         }
     }
     let src_arm = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
     )?.release();
     let inst = match width {
@@ -1033,7 +1032,7 @@ width: MachineIntWidth,
 ) -> Result<(), WasmError> {
     let dst = self.map_gp_reg(dst)?;
     let src = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
     )?.release();
     match (width, op) {
@@ -1112,7 +1111,7 @@ width: MachineIntWidth,
     // Try immediate form: check reg+imm and imm+reg (for commutative ops).
     if let MachineValue::Imm64(imm) = rhs {
         if let MachineValue::Reg(lhs_reg) = lhs {
-            let lhs_phys = map_gp(self.core.function, lhs_reg)?;
+            let lhs_phys = map_gp(self.core.compiled.backend(), lhs_reg)?;
             if let Some(inst) = int_binary_imm_inst(width, op, dst, lhs_phys, imm) {
                 self.core.text.emit_u32(inst);
                 return Ok(());
@@ -1121,7 +1120,7 @@ width: MachineIntWidth,
     }
     if let MachineValue::Imm64(imm) = lhs {
         if let MachineValue::Reg(rhs_reg) = rhs {
-            let rhs_phys = map_gp(self.core.function, rhs_reg)?;
+            let rhs_phys = map_gp(self.core.compiled.backend(), rhs_reg)?;
             // Commutative ops: swap operands for imm selection.
             match op {
                 MachineIntBinaryOp::Add | MachineIntBinaryOp::Mul
@@ -1137,11 +1136,11 @@ width: MachineIntWidth,
         }
     }
     let lhs = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, lhs,
     )?.release();
     let rhs = prepare_gp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, rhs,
     )?.release();
     match (width, op) {
@@ -1394,12 +1393,12 @@ ty: MachineStorageType,
             }
             MachineValue::Reg(reg) => {
                 let true_fp = prepare_fp(
-                    self.core.function, &self.core.fp_reg_widths,
+                    self.core.compiled.backend(), &self.core.fp_reg_widths,
                     &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                     width, on_true,
                 )?;
                 let false_fp = prepare_fp(
-                    self.core.function, &self.core.fp_reg_widths,
+                    self.core.compiled.backend(), &self.core.fp_reg_widths,
                     &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                     width, on_false,
                 )?;
@@ -1421,7 +1420,7 @@ ty: MachineStorageType,
             MachineValue::Imm64(value) => {
                 let selected = if value != 0 { on_true } else { on_false };
                 let src = prepare_gp(
-                    self.core.function, &self.core.fp_reg_widths,
+                    self.core.compiled.backend(), &self.core.fp_reg_widths,
                     &mut self.core.text, &self.gp_scratch, selected,
                 )?;
                 if dst != src.reg() {
@@ -1436,11 +1435,11 @@ ty: MachineStorageType,
             }
         }
         let true_reg = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, on_true,
         )?;
         let false_reg = prepare_gp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, on_false,
         )?;
         // Always use csel_64: GpWord covers both i32 and reference types,
@@ -1461,7 +1460,7 @@ width: MachineFloatWidth,
     src: MachineValue,
 ) -> Result<(), WasmError> {
     let src_fp = prepare_fp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, src,
     )?.release();
@@ -1539,12 +1538,12 @@ width: MachineFloatWidth,
     rhs: MachineValue,
 ) -> Result<(), WasmError> {
     let lhs_fp = prepare_fp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, lhs,
     )?.release();
     let rhs_fp = prepare_fp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, rhs,
     )?.release();
@@ -1620,7 +1619,7 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fabs_s(result_fp, lhs_fp)); // |lhs|
             self.core.text.emit_u32(enc::fneg_s(neg_fp, result_fp)); // -|lhs|
             let rhs_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, rhs,
             )?.release();
             let shift_reg = *self.gp_scratch.scoped_alloc();
@@ -1636,7 +1635,7 @@ width: MachineFloatWidth,
             self.core.text.emit_u32(enc::fabs_d(result_fp, lhs_fp));
             self.core.text.emit_u32(enc::fneg_d(neg_fp, result_fp));
             let rhs_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, rhs,
             )?.release();
             let shift_reg = *self.gp_scratch.scoped_alloc();
@@ -1671,7 +1670,7 @@ width: MachineFloatWidth,
 ) -> Result<(), WasmError> {
     let dst_gp = self.map_gp_reg(dst)?;
     let lhs_fp = prepare_fp(
-        self.core.function, &self.core.fp_reg_widths,
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, lhs,
     )?;
@@ -1682,7 +1681,7 @@ width: MachineFloatWidth,
         };
     } else {
         let rhs_fp = prepare_fp(
-            self.core.function, &self.core.fp_reg_widths,
+            self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
             width, rhs,
         )?;
@@ -1725,7 +1724,7 @@ op: MachineConvertOp,
         // Integer wrapping / extension (no FP involved)
         MachineConvertOp::I32WrapI64 => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
@@ -1733,7 +1732,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64ExtendI32S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
@@ -1741,7 +1740,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64ExtendI32U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_gp = self.map_gp_reg(dst)?;
@@ -1750,7 +1749,7 @@ op: MachineConvertOp,
         MachineConvertOp::I32ReinterpretF32 => {
             let dst_gp = self.map_gp_reg(dst)?;
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             if dst_gp != src_gp {
@@ -1760,7 +1759,7 @@ op: MachineConvertOp,
         MachineConvertOp::I64ReinterpretF64 => {
             let dst_gp = self.map_gp_reg(dst)?;
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             if dst_gp != src_gp {
@@ -1769,7 +1768,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let width = dst_float_width.expect("float reinterpret width");
@@ -1786,7 +1785,7 @@ op: MachineConvertOp,
         // Float promotion / demotion
         MachineConvertOp::F64PromoteF32 => {
             let src_fp = prepare_fp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 MachineFloatWidth::F32, src,
             )?.release();
@@ -1799,7 +1798,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F32DemoteF64 => {
             let src_fp = prepare_fp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 MachineFloatWidth::F64, src,
             )?.release();
@@ -1813,7 +1812,7 @@ op: MachineConvertOp,
         // Int -> Float conversions
         MachineConvertOp::F32ConvertI32S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
@@ -1825,7 +1824,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F32ConvertI32U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
@@ -1837,7 +1836,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F32ConvertI64S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
@@ -1849,7 +1848,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F32ConvertI64U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
@@ -1861,7 +1860,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F64ConvertI32S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
@@ -1873,7 +1872,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F64ConvertI32U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
@@ -1885,7 +1884,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F64ConvertI64S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
@@ -1897,7 +1896,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::F64ConvertI64U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
@@ -1918,7 +1917,7 @@ op: MachineConvertOp,
         | MachineConvertOp::I64TruncF64U => {
             let dst_gp = self.map_gp_reg(dst)?;
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             self.lower_trapping_trunc(op, dst_gp, src_gp)?;
@@ -1928,7 +1927,7 @@ op: MachineConvertOp,
         // NaN->0, overflow->clamp to min/max.
         MachineConvertOp::I32TruncSatF32S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1938,7 +1937,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I32TruncSatF32U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1948,7 +1947,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I32TruncSatF64S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1958,7 +1957,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I32TruncSatF64U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1968,7 +1967,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64TruncSatF32S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1978,7 +1977,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64TruncSatF32U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1988,7 +1987,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64TruncSatF64S => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
@@ -1998,7 +1997,7 @@ op: MachineConvertOp,
         }
         MachineConvertOp::I64TruncSatF64U => {
             let src_gp = prepare_gp(
-                self.core.function, &self.core.fp_reg_widths,
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
             )?.release();
             let fp_tmp = *self.fp_scratch.scoped_alloc();

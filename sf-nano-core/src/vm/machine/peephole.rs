@@ -25,6 +25,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::vm::backend::BackendConfig;
 use super::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp, MachineEdge,
     MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
@@ -49,38 +50,20 @@ struct TrackedLoad {
 
 /// Run peephole optimizations on all blocks in a program.
 ///
-/// `first_transient` is the first GP transient register. FP transients are the
-/// prefix of the FP bank with length `program.fp_transient_count`. Only
-/// transient registers are candidates for copy/constant rewriting; fixed and
-/// cached-local registers must not be disturbed.
-pub(crate) fn optimize(program: &mut MachineProgram, first_transient: u16, gp_reg_width: u8) {
-    let mut cp_scratch = CopyPropagateScratch::new(program.reg_count as usize);
+/// Register classification is derived from `config` — the single source of
+/// truth for the register layout.
+pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
+    let first_fp_reg = config.first_fp_reg();
+    let gp_reg_width = config.gp_unit_bytes;
+    let mut cp_scratch = CopyPropagateScratch::new(config.total_reg_count() as usize);
     for block in &mut program.blocks {
-        deduplicate_constants(block, program.first_fp_reg);
-        // Constant folding into operands is now handled at the SSA level
-        // (see middle/optimize.rs fold_constants_into_operands).
-        copy_propagate(
-            block,
-            first_transient,
-            program.first_fp_reg,
-            program.fp_transient_count,
-            gp_reg_width,
-            &mut cp_scratch,
-        );
-        forward_stored_values(block, program.first_fp_reg);
-        reuse_loaded_values(block, program.first_fp_reg);
+        deduplicate_constants(block, first_fp_reg);
+        copy_propagate(block, config, &mut cp_scratch);
+        forward_stored_values(block, config);
+        reuse_loaded_values(block, config);
         fuse_indexed_memory(block);
-        copy_propagate(
-            block,
-            first_transient,
-            program.first_fp_reg,
-            program.fp_transient_count,
-            gp_reg_width,
-            &mut cp_scratch,
-        );
+        copy_propagate(block, config, &mut cp_scratch);
     }
-    // Compare-and-branch fusion needs cross-block liveness, so it runs after
-    // the per-block passes when the instruction stream is stable.
     fuse_compare_branch(&mut program.blocks, gp_reg_width);
 }
 
@@ -169,7 +152,7 @@ fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
 /// Forward exact `store.u64` values into later exact `load.u64` instructions
 /// within a block when no intervening instruction can change the address or
 /// the stored source value.
-fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
+fn forward_stored_values(block: &mut MachineBlock, config: BackendConfig) {
     let mut tracked = Vec::<TrackedStore>::new();
     let mut rewritten = Vec::with_capacity(block.ops.len());
 
@@ -193,7 +176,7 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
                     if matches!(src, MachineValue::Reg(src_reg) if src_reg == *dst) {
                         keep_inst = false;
                     } else if let Some(move_ty) =
-                        rewrite_move_storage_type(*dst, src, *ty, first_fp_reg)
+                        rewrite_move_storage_type(*dst, src, *ty, config)
                     {
                         inst.kind = MachineInstKind::Move {
                             ty: move_ty,
@@ -235,7 +218,7 @@ fn forward_stored_values(block: &mut MachineBlock, first_fp_reg: u16) {
 
 /// Reuse an earlier exact load result for a later identical load when no
 /// intervening store, helper call, or register redefinition can invalidate it.
-fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
+fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
     let mut tracked = Vec::<TrackedLoad>::new();
     let mut rewritten = Vec::with_capacity(block.ops.len());
 
@@ -269,7 +252,7 @@ fn reuse_loaded_values(block: &mut MachineBlock, first_fp_reg: u16) {
                         *dst,
                         MachineValue::Reg(src_reg),
                         *ty,
-                        first_fp_reg,
+                        config,
                     ) {
                         rewrite_load = Some((*dst, src_reg, move_ty));
                         produced_load = Some(TrackedLoad {
@@ -350,12 +333,42 @@ impl CopyPropagateScratch {
     }
 }
 
+trait PeepholeRegView {
+    fn program_is_fp_reg(&self, reg: MachineReg, config: BackendConfig) -> bool;
+    fn program_same_reg_bank(&self, lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool;
+    fn program_is_transient_reg(&self, reg: MachineReg, config: BackendConfig) -> bool;
+}
+
+impl PeepholeRegView for MachineBlock {
+    #[inline]
+    fn program_is_fp_reg(&self, reg: MachineReg, config: BackendConfig) -> bool {
+        super::machine_ir::is_fp_reg(reg, config)
+    }
+
+    #[inline]
+    fn program_same_reg_bank(&self, lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool {
+        super::machine_ir::same_reg_bank(lhs, rhs, config)
+    }
+
+    #[inline]
+    fn program_is_transient_reg(&self, reg: MachineReg, config: BackendConfig) -> bool {
+        // GP transient check
+        if super::machine_ir::is_gp_transient(reg, config) {
+            return true;
+        }
+        // FP transient check
+        if super::machine_ir::is_fp_reg(reg, config) {
+            if let Some(i) = super::machine_ir::fp_reg_index(reg, config) {
+                return i < config.fp_transient_budget as usize;
+            }
+        }
+        false
+    }
+}
+
 fn copy_propagate(
     block: &mut MachineBlock,
-    first_transient: u16,
-    first_fp_reg: u16,
-    fp_transient_count: u16,
-    gp_reg_width: u8,
+    config: BackendConfig,
     scratch: &mut CopyPropagateScratch,
 ) {
     scratch.clear();
@@ -394,15 +407,18 @@ fn copy_propagate(
                 if *dst == *src {
                     continue;
                 }
-                if is_transient_reg(*dst, first_transient, first_fp_reg, fp_transient_count)
-                    && (gp_reg_width != 4 || ty.is_fp())
-                    && same_reg_bank(*dst, *src, first_fp_reg)
+                // Only FP-to-FP transient copies are safe to elide here.
+                // GP moves can still carry observable value-shaping or lifetime
+                // separation semantics for later integer users.
+                if ty.is_fp()
+                    && block.program_is_transient_reg(*dst, config)
+                    && block.program_same_reg_bank(*dst, *src, config)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
                     aliases[dst.0 as usize] = Some(*src);
                     continue;
                 }
-                if dst.0 < first_fp_reg && src.0 >= first_fp_reg {
+                if !block.program_is_fp_reg(*dst, config) && block.program_is_fp_reg(*src, config) {
                     float_aliases[dst.0 as usize] = Some(*src);
                 }
             }
@@ -1177,32 +1193,16 @@ fn clear_aliases(aliases: &mut [Option<MachineReg>]) {
     }
 }
 
-fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, first_fp_reg: u16) -> bool {
-    (lhs.0 >= first_fp_reg) == (rhs.0 >= first_fp_reg)
-}
-
-fn is_transient_reg(
-    reg: MachineReg,
-    first_gp_transient: u16,
-    first_fp_reg: u16,
-    fp_transient_count: u16,
-) -> bool {
-    if reg.0 < first_fp_reg {
-        return reg.0 >= first_gp_transient;
-    }
-    reg.0 < first_fp_reg.saturating_add(fp_transient_count)
-}
-
-fn reg_move_rewrite_supported(dst: MachineReg, src: MachineReg, first_fp_reg: u16) -> bool {
-    let dst_is_fp = dst.0 >= first_fp_reg;
-    let src_is_fp = src.0 >= first_fp_reg;
+fn reg_move_rewrite_supported(dst: MachineReg, src: MachineReg, config: BackendConfig) -> bool {
+    let dst_is_fp = super::machine_ir::is_fp_reg(dst, config);
+    let src_is_fp = super::machine_ir::is_fp_reg(src, config);
     !dst_is_fp || src_is_fp
 }
 
-fn move_rewrite_supported(dst: MachineReg, src: MachineValue, first_fp_reg: u16) -> bool {
+fn move_rewrite_supported(dst: MachineReg, src: MachineValue, config: BackendConfig) -> bool {
     match src {
-        MachineValue::Reg(src_reg) => reg_move_rewrite_supported(dst, src_reg, first_fp_reg),
-        MachineValue::Imm64(_) => dst.0 < first_fp_reg,
+        MachineValue::Reg(src_reg) => reg_move_rewrite_supported(dst, src_reg, config),
+        MachineValue::Imm64(_) => super::machine_ir::is_gp_reg(dst, config),
     }
 }
 
@@ -1210,12 +1210,12 @@ fn rewrite_move_storage_type(
     dst: MachineReg,
     src: MachineValue,
     ty: MachineStorageType,
-    first_fp_reg: u16,
+    config: BackendConfig,
 ) -> Option<MachineStorageType> {
-    if (dst.0 >= first_fp_reg) != ty.is_fp() {
+    if super::machine_ir::is_fp_reg(dst, config) != ty.is_fp() {
         return None;
     }
-    move_rewrite_supported(dst, src, first_fp_reg).then_some(ty)
+    move_rewrite_supported(dst, src, config).then_some(ty)
 }
 
 fn can_elide_reg_move(

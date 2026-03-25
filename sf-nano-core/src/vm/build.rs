@@ -57,7 +57,7 @@ use crate::{
         debug::ir_dump,
         machine::{
             {lower_module, LowerFunctionInput, LowerModuleInput},
-            machine_ir::{MachineFuncId, MACHINE_FIXED_REG_COUNT},
+            machine_ir::MachineFuncId,
         },
         middle::{config::PlanConfig, PrepareInput, prepare_function},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
@@ -203,16 +203,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         #[cfg(has_guard_pages)]
         use_guard_pages,
     })?;
-    let first_transient = MACHINE_FIXED_REG_COUNT
-        + backend.gp_local_cache_budget as u16;
-    lowered
-        .module
-        .optimize(first_transient, backend.gp_unit_bytes);
+    lowered.module.optimize();
     if backend.is_32bit_gp_target() {
-        let max_gp_regs = MACHINE_FIXED_REG_COUNT
-            + backend.gp_local_cache_budget as u16
-            + backend.gp_transient_budget as u16;
-        lowered.module.validate_32bit_gp_target(max_gp_regs)?;
+        lowered.module.validate_32bit_gp_target(backend.first_fp_reg())?;
     }
 
     // Collect SSA-IR for dump before moving lowered data
