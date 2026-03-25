@@ -25,7 +25,7 @@ TESTS = [
         "name": "coremark/coremark.wasm",
         "cwd": os.path.join(SCRIPT_DIR, "coremark"),
         "args": ["coremark.wasm"],
-        "pattern": r"CoreMark 1\.0 :\s*(\S+)",
+        "pattern": r"Iterations/Sec\s*:\s*(\S+)",
         "source": "stdout",
     },
     {
