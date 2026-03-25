@@ -870,13 +870,10 @@ dst: MachineReg,
     uxtw: bool,
 ) -> Result<(), WasmError> {
     let index_arm = self.map_gp_reg(index_reg)?;
-    // For GP loads, use dst as the scratch to avoid false dependency chains
-    // between consecutive loads. For FP loads, fall back to a pool scratch.
-    let scratch = if self.core.is_fp_reg(dst) {
-        *self.gp_scratch.scoped_alloc()
-    } else {
-        self.map_gp_reg(dst)?
-    };
+    // Keep the base and destination mappings intact while materializing the
+    // adjusted index. Reusing the GP destination register here is unsafe when
+    // the load writes back into the same machine reg as the base.
+    let scratch = *self.gp_scratch.scoped_alloc();
     if uxtw {
         self.core.text.emit_u32(enc::mov_reg_32(scratch, index_arm));
     } else {
