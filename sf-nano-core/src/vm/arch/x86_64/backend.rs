@@ -27,7 +27,7 @@ use super::{
     abi::{
         self, fp_machine_reg, map_fixed_reg, map_reg,
         max_fp_machine_regs, max_total_machine_regs, FP_MACHINE_REG_COUNT,
-        CALLEE_SAVED_GP, C_ARG0, C_ARG1, C_RET0,
+        C_ARG0, C_ARG1, C_RET0,
     },
     enc::{self, Cc},
     helpers::x86_64_raise_trap,
@@ -45,7 +45,7 @@ use crate::vm::arch::common::{
 
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 
-/// After pushing CALLEE_SAVED_GP (6 regs = 48 bytes) + return address
+/// After pushing abi::REG_PLAN.callee_saved_gp (6 regs = 48 bytes) + return address
 /// (8 bytes) = 56 bytes. To maintain 16-byte alignment we need 8 more bytes
 /// of padding (56 + 8 = 64 = 16*4).
 const STACK_PADDING: u32 = 8;
@@ -108,7 +108,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
 
     fn lower_prologue(&mut self) {
         // Push callee-saved GP regs
-        for &reg in &CALLEE_SAVED_GP {
+        for &reg in &abi::REG_PLAN.callee_saved_gp {
             enc::push(&mut self.core.text, reg);
         }
         // Align stack to 16 bytes
@@ -139,7 +139,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             enc::add_rsp_imm8(&mut self.core.text, STACK_PADDING as u8);
         }
         // Pop callee-saved GP regs in reverse order
-        for &reg in CALLEE_SAVED_GP.iter().rev() {
+        for &reg in abi::REG_PLAN.callee_saved_gp.iter().rev() {
             enc::pop(&mut self.core.text, reg);
         }
         enc::ret(&mut self.core.text);

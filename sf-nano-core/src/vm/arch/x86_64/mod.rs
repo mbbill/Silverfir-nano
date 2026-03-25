@@ -1,6 +1,5 @@
-mod abi;
+pub(super) mod abi;
 pub(crate) mod backend;
-pub mod config;
 mod control;
 pub(crate) mod enc;
 mod fusion;

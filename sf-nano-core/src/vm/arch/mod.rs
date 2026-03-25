@@ -92,11 +92,11 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         // mapping and ABI constraints stay in the backend-specific ABI/layout
         // code; this function selects policy, not hardware facts.
         #[cfg(target_arch = "aarch64")]
-        NativeBackend::Arm64 => arm64::config::compile_backend_config(),
+        NativeBackend::Arm64 => arm64::abi::compile_backend_config(),
         #[cfg(target_arch = "arm")]
-        NativeBackend::Armv7a => armv7a::config::compile_backend_config(),
+        NativeBackend::Armv7a => armv7a::abi::compile_backend_config(),
         #[cfg(target_arch = "x86_64")]
-        NativeBackend::X86_64 => x86_64::config::compile_backend_config(),
+        NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
         #[cfg(any(
             debug_assertions,
             not(any(target_arch = "aarch64", target_arch = "x86_64"))

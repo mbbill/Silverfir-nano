@@ -1,104 +1,124 @@
-//! ABI register plan for the x86_64 backend.
+//! x86_64 register plan — single source of truth for register allocation.
 //!
-//! This file defines:
-//! - the mapping from MachineIR registers to physical registers
-//! - scratch register arrays (private — only the pool sees them)
-//! - C ABI boundary registers (entry args, return values)
-//! - dynamic and callee-saved register sets
-//!
-//! It does NOT emit code and does NOT define role structs.
+//! `REG_PLAN` declares every register role in one place.  `BackendConfig` is
+//! derived from the array lengths, so budgets can never drift out of sync with
+//! the physical register tables.
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{
-        MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-        MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+    vm::{
+        backend::BackendConfig,
+        machine::machine_ir::{
+            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            classify_gp_reg, classify_fp_reg,
+        },
     },
 };
 
 use super::reg::X86Reg;
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 
+// ── Register plan ────────────────────────────────────────────────────────────
+
+pub(super) struct RegPlan {
+    pub ctx: X86Reg,
+    pub fp: X86Reg,
+    pub mem0_base: X86Reg,
+    pub mem0_size: X86Reg,
+    pub gp_unit_bytes: u8,
+    pub gp_local_cache: &'static [X86Reg],
+    pub gp_transient: &'static [X86Reg],
+    pub gp_scratch: &'static [X86Reg],
+    pub fp_transient: &'static [u32],
+    pub fp_local_cache: &'static [u32],
+    pub fp_scratch: &'static [u32],
+    pub callee_saved_gp: &'static [X86Reg],
+    pub stack_alignment_bytes: u32,
+}
+
+pub(super) const REG_PLAN: RegPlan = RegPlan {
+    ctx: X86Reg::RBX,
+    fp: X86Reg::RBP,
+    mem0_base: X86Reg::R12,
+    mem0_size: X86Reg::R13,
+
+    gp_unit_bytes: 8,
+
+    // GP local cache: callee-saved — free at helper calls
+    gp_local_cache: &[X86Reg::R14, X86Reg::R15],
+    // GP transient: caller-saved — dead at call boundaries
+    gp_transient: &[
+        X86Reg::RCX, X86Reg::RDX, X86Reg::RSI, X86Reg::RDI,
+        X86Reg::R8, X86Reg::R9, X86Reg::R10,
+    ],
+    gp_scratch: &[X86Reg::RAX, X86Reg::R11],
+
+    // FP transient XMM registers: XMM0-XMM5
+    fp_transient: &[0, 1, 2, 3, 4, 5],
+    // FP cached local XMM registers: XMM6-XMM15
+    // All caller-saved on System V — must be spilled around helper calls.
+    fp_local_cache: &[6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    fp_scratch: &[0, 1, 2], // XMM0, XMM1, XMM2
+
+    // Callee-saved GP registers (fixed + cached locals).
+    // No callee-saved FP regs on System V AMD64.
+    callee_saved_gp: &[
+        X86Reg::RBX,  // ctx
+        X86Reg::RBP,  // fp
+        X86Reg::R12,  // mem0_base
+        X86Reg::R13,  // mem0_size
+        X86Reg::R14,  // GP local cache
+        X86Reg::R15,  // GP local cache
+    ],
+
+    stack_alignment_bytes: 16,
+};
+
+// Compile-time check: transients + cache = 16 XMM regs.
+const _: () = assert!(
+    REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len() == 16,
+    "FP register plan must account for all 16 XMM registers"
+);
+
 // ── C ABI boundary registers ─────────────────────────────────────────────────
-// These are platform calling-convention facts, used only at the C↔JIT boundary
-// (prologue, epilogue, helper calls). Not part of the JIT register plan.
 
 pub(super) const C_ARG0: X86Reg = X86Reg::RDI;
 pub(super) const C_ARG1: X86Reg = X86Reg::RSI;
 pub(super) const C_ARG2: X86Reg = X86Reg::RDX;
 pub(super) const C_RET0: X86Reg = X86Reg::RAX;
 
-// ── Scratch pool construction ────────────────────────────────────────────────
-// The arrays are private. The only way to get a scratch register is through
-// the ScratchPool allocated in X86_64Backend::new().
+// ── Derived config ───────────────────────────────────────────────────────────
 
-const GP_SCRATCHES: [X86Reg; 2] = [X86Reg::RAX, X86Reg::R11];
-const FP_SCRATCHES: [u32; 3] = [0, 1, 2]; // XMM0, XMM1, XMM2
+#[inline]
+pub(crate) const fn compile_backend_config() -> BackendConfig {
+    BackendConfig::new_with_gp_unit_bytes(
+        REG_PLAN.gp_local_cache.len() as u8,
+        REG_PLAN.gp_transient.len() as u8,
+        REG_PLAN.fp_local_cache.len() as u8,
+        REG_PLAN.fp_transient.len() as u8,
+        REG_PLAN.gp_unit_bytes,
+    )
+}
+
+// ── Scratch pool construction ────────────────────────────────────────────────
 
 pub(super) fn new_gp_scratch_pool() -> ScratchPool<X86Reg, 2> {
-    ScratchPool::new(GP_SCRATCHES)
+    ScratchPool::new([REG_PLAN.gp_scratch[0], REG_PLAN.gp_scratch[1]])
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
-    ScratchPool::new(FP_SCRATCHES)
+    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1], REG_PLAN.fp_scratch[2]])
 }
-
-// ── Dynamic register arrays (MachineIR allocation) ───────────────────────────
-
-/// GP registers available to the machine-reg file, ordered: local cache first,
-/// then transients.
-const DYNAMIC_GP: [X86Reg; 9] = [
-    // GP local cache: callee-saved — free at helper calls
-    X86Reg::R14,
-    X86Reg::R15,
-    // GP transient: caller-saved — dead at call boundaries
-    X86Reg::RCX,
-    X86Reg::RDX,
-    X86Reg::RSI,
-    X86Reg::RDI,
-    X86Reg::R8,
-    X86Reg::R9,
-    X86Reg::R10,
-];
-
-/// FP transient XMM registers: XMM0-XMM5.
-const DYNAMIC_FP_TRANSIENT: [u32; 6] = [0, 1, 2, 3, 4, 5];
-
-/// FP cached local XMM registers: XMM6-XMM15.
-/// All caller-saved on System V — must be spilled around helper calls.
-const DYNAMIC_FP_LOCAL_CACHE: [u32; 10] = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-pub(super) const FP_MACHINE_REG_COUNT: usize =
-    DYNAMIC_FP_TRANSIENT.len() + DYNAMIC_FP_LOCAL_CACHE.len();
-
-// Compile-time check: transients + cache = 16 XMM regs.
-const _: () = assert!(
-    DYNAMIC_FP_TRANSIENT.len() + DYNAMIC_FP_LOCAL_CACHE.len() == 16,
-    "FP register plan must account for all 16 XMM registers"
-);
-
-// ── Callee-saved sets ────────────────────────────────────────────────────────
-
-/// Callee-saved GP registers we must push/pop in prologue/epilogue.
-/// These are all the callee-saved regs we use: fixed + cached locals.
-pub(super) const CALLEE_SAVED_GP: [X86Reg; 6] = [
-    X86Reg::RBX, // MACHINE_CTX_REG
-    X86Reg::RBP, // MACHINE_FP_REG
-    X86Reg::R12, // MACHINE_MEM0_BASE_REG
-    X86Reg::R13, // MACHINE_MEM0_SIZE_REG
-    X86Reg::R14, // GP local cache
-    X86Reg::R15, // GP local cache
-];
-
-// No callee-saved FP regs on System V AMD64.
-
-pub(super) const STACK_ALIGNMENT_BYTES: u32 = 16;
 
 // ── Capacity queries ─────────────────────────────────────────────────────────
 
+pub(super) const FP_MACHINE_REG_COUNT: usize =
+    REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len();
+
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
-    MACHINE_FIXED_REG_COUNT as usize + DYNAMIC_GP.len()
+    MACHINE_FIXED_REG_COUNT as usize + REG_PLAN.gp_local_cache.len() + REG_PLAN.gp_transient.len()
 }
 
 #[inline]
@@ -116,10 +136,10 @@ pub(super) const fn max_total_machine_regs() -> usize {
 #[inline]
 pub(super) fn map_fixed_reg(reg: MachineReg) -> X86Reg {
     match reg {
-        MACHINE_CTX_REG => X86Reg::RBX,
-        MACHINE_FP_REG => X86Reg::RBP,
-        MACHINE_MEM0_BASE_REG => X86Reg::R12,
-        MACHINE_MEM0_SIZE_REG => X86Reg::R13,
+        MACHINE_CTX_REG => REG_PLAN.ctx,
+        MACHINE_FP_REG => REG_PLAN.fp,
+        MACHINE_MEM0_BASE_REG => REG_PLAN.mem0_base,
+        MACHINE_MEM0_SIZE_REG => REG_PLAN.mem0_size,
         _ => unreachable!("not a fixed machine reg"),
     }
 }
@@ -129,25 +149,27 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<X86Reg, WasmError> {
     if reg.0 < MACHINE_FIXED_REG_COUNT {
         return Ok(map_fixed_reg(reg));
     }
-    DYNAMIC_GP
-        .get((reg.0 - MACHINE_FIXED_REG_COUNT) as usize)
-        .copied()
-        .ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "x86_64 has no GP mapping for machine reg {}",
-                reg.0
-            ))
-        })
+    let config = compile_backend_config();
+    match classify_gp_reg(reg, config) {
+        Some((index, true)) => REG_PLAN.gp_local_cache.get(index).copied(),
+        Some((index, false)) => REG_PLAN.gp_transient.get(index).copied(),
+        None => return Ok(map_fixed_reg(reg)),
+    }
+    .ok_or_else(|| {
+        WasmError::invalid(alloc::format!(
+            "x86_64 has no GP mapping for machine reg {}",
+            reg.0
+        ))
+    })
 }
 
 #[inline]
 pub(super) fn fp_machine_reg(index: usize) -> Option<u32> {
-    if index < DYNAMIC_FP_TRANSIENT.len() {
-        return Some(DYNAMIC_FP_TRANSIENT[index]);
+    let config = compile_backend_config();
+    let (i, is_cache) = classify_fp_reg(index, config);
+    if is_cache {
+        REG_PLAN.fp_local_cache.get(i).copied()
+    } else {
+        REG_PLAN.fp_transient.get(i).copied()
     }
-    let local_index = index - DYNAMIC_FP_TRANSIENT.len();
-    if local_index < DYNAMIC_FP_LOCAL_CACHE.len() {
-        return Some(DYNAMIC_FP_LOCAL_CACHE[local_index]);
-    }
-    None
 }

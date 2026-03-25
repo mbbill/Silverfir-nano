@@ -6,7 +6,6 @@
 
 mod abi;
 mod backend;
-mod config;
 mod control;
 mod enc;
 mod inst;

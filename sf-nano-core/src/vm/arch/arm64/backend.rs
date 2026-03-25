@@ -37,12 +37,12 @@ use crate::vm::arch::common::{
 // ── Frame layout constants ───────────────────────────────────────────────────
 
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
-const CALLEE_SAVED_GP_FRAME_SIZE: u32 = abi::CALLEE_SAVED_GP_PAIRS.len() as u32 * (2 * STACK_SLOT_BYTES);
+const CALLEE_SAVED_GP_FRAME_SIZE: u32 = abi::REG_PLAN.callee_saved_gp_pairs.len() as u32 * (2 * STACK_SLOT_BYTES);
 const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
-const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::CALLEE_SAVED_FP.len() as u32 * STACK_SLOT_BYTES;
+const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::REG_PLAN.callee_saved_fp.len() as u32 * STACK_SLOT_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: u32 = {
     let total = CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE;
-    total.div_ceil(abi::STACK_ALIGNMENT_BYTES) * abi::STACK_ALIGNMENT_BYTES
+    total.div_ceil(abi::REG_PLAN.stack_alignment_bytes) * abi::REG_PLAN.stack_alignment_bytes
 };
 
 const fn stack_u64_slot(offset_bytes: u32) -> u32 {
@@ -116,13 +116,13 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.text.emit_u32(enc::sub_imm_64(
             Arm64Reg::SP, Arm64Reg::SP, CALLEE_SAVED_FRAME_SIZE,
         ));
-        for (index, (lhs, rhs)) in abi::CALLEE_SAVED_GP_PAIRS.iter().copied().enumerate() {
+        for (index, (lhs, rhs)) in abi::REG_PLAN.callee_saved_gp_pairs.iter().copied().enumerate() {
             self.core.text.emit_u32(enc::stp_64(
                 lhs, rhs, Arm64Reg::SP,
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
-        for (index, reg) in abi::CALLEE_SAVED_FP.iter().copied().enumerate() {
+        for (index, reg) in abi::REG_PLAN.callee_saved_fp.iter().copied().enumerate() {
             self.core.text.emit_u32(enc::str_d(
                 reg, Arm64Reg::SP,
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
@@ -148,14 +148,14 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn lower_epilogue(&mut self) {
         // Restore callee-saved FP registers.
-        for (index, reg) in abi::CALLEE_SAVED_FP.iter().copied().enumerate() {
+        for (index, reg) in abi::REG_PLAN.callee_saved_fp.iter().copied().enumerate() {
             self.core.text.emit_u32(enc::ldr_d(
                 reg, Arm64Reg::SP,
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
             ));
         }
         // Restore callee-saved GP registers and deallocate frame.
-        for (index, (lhs, rhs)) in abi::CALLEE_SAVED_GP_PAIRS.iter().copied().enumerate() {
+        for (index, (lhs, rhs)) in abi::REG_PLAN.callee_saved_gp_pairs.iter().copied().enumerate() {
             self.core.text.emit_u32(enc::ldp_64(
                 lhs, rhs, Arm64Reg::SP,
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
