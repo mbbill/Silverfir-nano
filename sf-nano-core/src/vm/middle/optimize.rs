@@ -6,6 +6,7 @@ use crate::vm::middle::{
     frame::FrameLayoutPlan,
 };
 
+
 pub(super) fn optimize_ssa(program: &mut SsaProgram, frame: FrameLayoutPlan) {
     for block in &mut program.blocks {
         forward_slot_values(block, frame, &program.value_types);
@@ -314,14 +315,14 @@ fn try_eval(
         P::F32Floor   => soft_f32_floor(args[0] as u32) as u64,
         P::F32Trunc   => soft_f32_trunc(args[0] as u32) as u64,
         P::F32Nearest => soft_f32_nearest(args[0] as u32) as u64,
-        P::F32Sqrt    => canon_f32(f32::from_bits(args[0] as u32).sqrt()) as u64,
+        P::F32Sqrt    => return None, // no software sqrt in no_std
         P::F64Abs     => f64::from_bits(args[0]).abs().to_bits(),
         P::F64Neg     => (-f64::from_bits(args[0])).to_bits(),
         P::F64Ceil    => soft_f64_ceil(args[0]),
         P::F64Floor   => soft_f64_floor(args[0]),
         P::F64Trunc   => soft_f64_trunc(args[0]),
         P::F64Nearest => soft_f64_nearest(args[0]),
-        P::F64Sqrt    => canon_f64(f64::from_bits(args[0]).sqrt()),
+        P::F64Sqrt    => return None, // no software sqrt in no_std
         // --- extensions ---
         P::I32Extend8S  => ((args[0] as u32 as i8)  as i32 as u32) as u64,
         P::I32Extend16S => ((args[0] as u32 as i16) as i32 as u32) as u64,
