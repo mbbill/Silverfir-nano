@@ -30,7 +30,7 @@ fn test_config(
 }
 
 #[test]
-fn copy_propagates_transient_moves_into_ops_and_edges() {
+fn copy_propagates_transient_to_transient_moves_into_ops_and_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: vec![],
@@ -43,14 +43,14 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
                         kind: MachineInstKind::Move {
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
-                            src: MachineValue::Reg(MachineReg(4)),
+                            src: MachineValue::Reg(MachineReg(8)),
                         },
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                             op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
-                            dst: MachineReg(8),
+                            dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(7)),
                         },
                     },
@@ -76,14 +76,14 @@ fn copy_propagates_transient_moves_into_ops_and_edges() {
     assert!(matches!(
         block.ops[0].kind,
         MachineInstKind::IntUnary {
-            src: MachineValue::Reg(MachineReg(4)),
+            src: MachineValue::Reg(MachineReg(8)),
             ..
         }
     ));
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(4))]);
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
 }
 
 #[test]
@@ -612,7 +612,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
 }
 
 #[test]
-fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use() {
+fn preserves_transient_move_when_transient_source_reg_is_redefined_before_terminator_use() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: vec![],
@@ -624,13 +624,13 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
                     kind: MachineInstKind::Move {
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
-                        src: MachineValue::Reg(MachineReg(5)),
+                        src: MachineValue::Reg(MachineReg(8)),
                     },
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
                         ty: MachineStorageType::GpWord,
-                        dst: MachineReg(5),
+                        dst: MachineReg(8),
                         src: MachineValue::Imm64(0),
                     },
                 },
@@ -642,14 +642,14 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 10, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
         block.ops[0].kind,
         MachineInstKind::Move {
             dst: MachineReg(7),
-            src: MachineValue::Reg(MachineReg(5)),
+            src: MachineValue::Reg(MachineReg(8)),
             ..
         }
     ));
@@ -660,7 +660,138 @@ fn preserves_transient_move_when_source_reg_is_redefined_before_terminator_use()
 }
 
 #[test]
-fn does_not_copy_propagate_gp_transient_moves_into_integer_uses_or_edges() {
+fn copy_propagates_transient_copies_of_cached_local_snapshots() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(7),
+                            src: MachineValue::Reg(MachineReg(4)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(8),
+                            src: MachineValue::Reg(MachineReg(7)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IntUnary {
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            dst: MachineReg(6),
+                            src: MachineValue::Reg(MachineReg(8)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
+}
+
+#[test]
+fn preserves_transient_move_live_across_helper_barrier() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(8)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::CallHelper(
+                        crate::vm::machine::machine_ir::MachineHelperCall {
+                            target: crate::vm::machine::machine_ir::MachineExternId(0),
+                            metadata: crate::vm::machine::machine_ir::MachineConstId(0),
+                        },
+                    ),
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntUnary {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                        dst: MachineReg(6),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 3);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(8)),
+            ..
+        }
+    ));
+    assert!(matches!(block.ops[1].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: vec![],

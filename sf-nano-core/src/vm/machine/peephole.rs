@@ -333,39 +333,6 @@ impl CopyPropagateScratch {
     }
 }
 
-trait PeepholeRegView {
-    fn program_is_fp_reg(&self, reg: MachineReg, config: BackendConfig) -> bool;
-    fn program_same_reg_bank(&self, lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool;
-    fn program_is_transient_reg(&self, reg: MachineReg, config: BackendConfig) -> bool;
-}
-
-impl PeepholeRegView for MachineBlock {
-    #[inline]
-    fn program_is_fp_reg(&self, reg: MachineReg, config: BackendConfig) -> bool {
-        super::machine_ir::is_fp_reg(reg, config)
-    }
-
-    #[inline]
-    fn program_same_reg_bank(&self, lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool {
-        super::machine_ir::same_reg_bank(lhs, rhs, config)
-    }
-
-    #[inline]
-    fn program_is_transient_reg(&self, reg: MachineReg, config: BackendConfig) -> bool {
-        // GP transient check
-        if super::machine_ir::is_gp_transient(reg, config) {
-            return true;
-        }
-        // FP transient check
-        if super::machine_ir::is_fp_reg(reg, config) {
-            if let Some(i) = super::machine_ir::fp_reg_index(reg, config) {
-                return i < config.fp_transient_budget as usize;
-            }
-        }
-        false
-    }
-}
-
 fn copy_propagate(
     block: &mut MachineBlock,
     config: BackendConfig,
@@ -400,25 +367,27 @@ fn copy_propagate(
 
         match &inst.kind {
             MachineInstKind::Move {
-                ty,
+                ty: _,
                 dst,
                 src: MachineValue::Reg(src),
             } => {
                 if *dst == *src {
                     continue;
                 }
-                // Only FP-to-FP transient copies are safe to elide here.
-                // GP moves can still carry observable value-shaping or lifetime
-                // separation semantics for later integer users.
-                if ty.is_fp()
-                    && block.program_is_transient_reg(*dst, config)
-                    && block.program_same_reg_bank(*dst, *src, config)
+                // Only transient-to-transient copies are safe to elide here.
+                // Moves from fixed or cached-local registers into a transient
+                // often act as snapshots, not just aliases.
+                if super::machine_ir::is_transient_reg(*dst, config)
+                    && super::machine_ir::is_transient_reg(*src, config)
+                    && super::machine_ir::same_reg_bank(*dst, *src, config)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
                     aliases[dst.0 as usize] = Some(*src);
                     continue;
                 }
-                if !block.program_is_fp_reg(*dst, config) && block.program_is_fp_reg(*src, config) {
+                if !super::machine_ir::is_fp_reg(*dst, config)
+                    && super::machine_ir::is_fp_reg(*src, config)
+                {
                     float_aliases[dst.0 as usize] = Some(*src);
                 }
             }
@@ -1227,12 +1196,18 @@ fn can_elide_reg_move(
 ) -> bool {
     let mut source_stable = true;
 
-    for inst in &ops[start_idx + 1..] {
+    for (later_index, inst) in ops[start_idx + 1..].iter().enumerate() {
         if count_value_uses(&inst.kind, dst) > 0 && !source_stable {
             return false;
         }
         if inst_defines(&inst.kind, dst) {
             return true;
+        }
+        if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
+            // copy_propagate clears aliases at helper calls, so a move can only
+            // disappear here if its destination is dead after the barrier.
+            let remaining = &ops[start_idx + 1 + later_index + 1..];
+            return !reg_live_after(remaining, terminator, dst);
         }
         if inst_defines(&inst.kind, src) {
             source_stable = false;

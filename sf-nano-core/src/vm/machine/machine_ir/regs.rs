@@ -40,6 +40,20 @@ pub(crate) fn is_gp_transient(reg: MachineReg, config: BackendConfig) -> bool {
     reg.0 >= config.first_gp_transient() && reg.0 < config.first_fp_reg()
 }
 
+/// Returns `true` if `reg` is an FP transient (not cache).
+#[inline]
+pub(crate) fn is_fp_transient(reg: MachineReg, config: BackendConfig) -> bool {
+    fp_reg_index(reg, config)
+        .map(|index| index < config.fp_transient_budget as usize)
+        .unwrap_or(false)
+}
+
+/// Returns `true` if `reg` is any transient register.
+#[inline]
+pub(crate) fn is_transient_reg(reg: MachineReg, config: BackendConfig) -> bool {
+    is_gp_transient(reg, config) || is_fp_transient(reg, config)
+}
+
 /// Returns `true` if both regs are in the same bank (both GP or both FP).
 #[inline]
 pub(crate) fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool {
