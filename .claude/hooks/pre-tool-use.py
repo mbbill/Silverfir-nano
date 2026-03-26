@@ -5,7 +5,7 @@ Single source of truth for all permissions — never falls through to allow/deny
 
 Rules:
   1. ALLOW read-only git commands (status, log, diff, show, branch --list, etc.)
-  2. DENY  mutating git commands (commit, push, rebase, reset, stash, etc.)
+  2. DENY  mutating git commands (commit, push, rebase, reset, etc.) unless targeting /tmp
   3. ASK   for gh (GitHub CLI) invocations
   4. DENY  file operations outside workspace and /tmp
   5. ALLOW everything else
@@ -138,9 +138,6 @@ _GIT_SAFE_SUBCMDS = frozenset({
     "help", "version", "whatchanged", "cherry",
 })
 
-# Stash sub-subcommands that are safe (read-only)
-_GIT_STASH_SAFE = frozenset({"list", "show"})
-
 
 def _check_git_command(tokens, start_idx):
     """Classify a git invocation as allow/deny.
@@ -166,14 +163,28 @@ def _check_git_command(tokens, start_idx):
         # Extra guard: 'git stash' without list/show is mutating
         if subcmd == "stash":
             rest = tokens[tokens.index(subcmd) + 1:]
-            # strip flags
             rest = [t for t in rest if not t.startswith("-")]
             sub_sub = rest[0] if rest else None
-            if sub_sub is None or sub_sub not in _GIT_STASH_SAFE:
+            if sub_sub is None or sub_sub not in {"list", "show"}:
                 return ("deny", f"git stash (mutating) blocked: {' '.join(tokens)[:80]}")
         return ("allow", f"git {subcmd} (read-only)")
 
+    # Allow any git command if a positional argument is an absolute /tmp path
+    for tok in tokens[start_idx:]:
+        if tok.startswith("/") and _is_tmp_path(tok):
+            return ("allow", f"git {subcmd} targeting /tmp")
+
     return ("deny", f"git {subcmd} blocked: {' '.join(tokens)[:80]}")
+
+
+def _command_is_tmp_scoped(command):
+    """Check if a command is entirely scoped to /tmp (cd /tmp/... && ...)."""
+    # Fast check: starts with 'cd /tmp' or 'cd /private/tmp'
+    stripped = command.lstrip()
+    for prefix in _TMP_PREFIXES:
+        if stripped.startswith(f"cd {prefix}"):
+            return True
+    return False
 
 
 def find_blocked_command(command):
@@ -185,14 +196,32 @@ def find_blocked_command(command):
         ("allow", reason) — explicitly allowed (e.g. read-only git)
         None              — command is clean
     """
+    # Fast path: commands scoped to /tmp are always allowed
+    if _command_is_tmp_scoped(command):
+        return ("allow", "command scoped to /tmp")
+
     ASK_CMDS = {"gh"}
 
     # ── Command substitutions: $(cmd ...) or `cmd ...` ────────────────────
-    # Git inside substitutions — deny all (too hard to parse subcommand reliably)
-    if re.search(r'\$\([^)]*\bgit\b', command):
-        return ("deny", f"git in substitution blocked: {command[:80]}")
-    if re.search(r'`[^`]*\bgit\b', command):
-        return ("deny", f"git in substitution blocked: {command[:80]}")
+    # Parse git commands inside substitutions and apply the same safe-subcmd rules
+    for m in re.finditer(r'\$\(([^)]*?\bgit\b[^)]*)', command):
+        inner_tokens = m.group(1).split()
+        try:
+            git_idx = next(i for i, t in enumerate(inner_tokens) if t.rsplit("/", 1)[-1] == "git")
+            result = _check_git_command(inner_tokens, git_idx + 1)
+            if result[0] != "allow":
+                return result
+        except StopIteration:
+            pass
+    for m in re.finditer(r'`([^`]*?\bgit\b[^`]*)`', command):
+        inner_tokens = m.group(1).split()
+        try:
+            git_idx = next(i for i, t in enumerate(inner_tokens) if t.rsplit("/", 1)[-1] == "git")
+            result = _check_git_command(inner_tokens, git_idx + 1)
+            if result[0] != "allow":
+                return result
+        except StopIteration:
+            pass
     for name in ASK_CMDS:
         if re.search(rf'\$\([^)]*\b{name}\b', command):
             return ("ask", f"{name} requires approval: {command[:80]}")
