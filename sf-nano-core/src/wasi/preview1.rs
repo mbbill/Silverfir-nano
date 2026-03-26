@@ -960,9 +960,19 @@ pub(crate) fn clock_time_get(
             Err(_) => 0,
         }
     } else {
-        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        let start = START.get_or_init(std::time::Instant::now);
-        start.elapsed().as_nanos() as u64
+        #[cfg(windows)]
+        {
+            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let start = START.get_or_init(std::time::Instant::now);
+            start.elapsed().as_nanos() as u64
+        }
+        #[cfg(not(windows))]
+        {
+            match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
+                Err(_) => 0,
+            }
+        }
     };
 
     let mem = get_mem(caller)?;
