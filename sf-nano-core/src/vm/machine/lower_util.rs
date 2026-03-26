@@ -23,10 +23,10 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                     count_operand_use(operand, &mut uses);
                 }
             }
-            SsaInstKind::StoreSlot { src, .. } => {
+            SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                 *uses.entry(*src).or_insert(0) += 1;
             }
-            SsaInstKind::LoadSlot { .. } => {}
+            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } => {}
             SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow { .. })
             | SsaInstKind::Boundary(SsaBoundaryOp::MemoryFill { .. })
             | SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy { .. })
@@ -79,7 +79,7 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                         }
                     }
                 }
-                SsaInstKind::StoreSlot { src, .. } => {
+                SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                     *op_uses.entry(*src).or_insert(0) += 1;
                 }
                 _ => {}

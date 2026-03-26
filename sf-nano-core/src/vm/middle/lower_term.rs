@@ -50,6 +50,7 @@ pub(super) fn lower_block_terminator(
     result_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
     skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
+    local_versions: &mut [u32],
 ) -> Result<LoweredTerminator, WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -84,7 +85,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalGet { idx } => {
-            lower_local_get(*idx, state, frame, values, local_types)?;
+            lower_local_get(*idx, state, frame, values, local_types, local_versions)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -101,7 +102,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalSet { idx } => {
-            lower_local_set(*idx, state, frame)?;
+            lower_local_set(*idx, state, frame, local_versions)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -118,7 +119,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalTee { idx } => {
-            lower_local_tee(*idx, state, frame, values, local_types)?;
+            lower_local_tee(*idx, state, frame, values, local_types, local_versions)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -277,7 +278,7 @@ pub(super) fn lower_block_terminator(
                 let mut then_ops = Vec::with_capacity(*arity as usize);
                 for (offset, param) in then_params.iter().copied().enumerate() {
                     then_ops.push(SsaInst {
-                        kind: SsaInstKind::StoreSlot {
+                        kind: SsaInstKind::Spill {
                             slot: payload_span.start.advance(offset as u16),
                             src: param,
                         },
@@ -513,7 +514,7 @@ pub(super) fn maybe_publish_live_window_for_targets(
     let prefix_values = state.live()[..publish_count].to_vec();
     for (offset, value) in prefix_values.into_iter().enumerate() {
         state.ops.push(SsaInst {
-            kind: SsaInstKind::StoreSlot {
+            kind: SsaInstKind::Spill {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -541,7 +542,7 @@ pub(super) fn canonicalize_live_window_for_target(
     let spilled = state.spill_prefix(publish_count)?;
     for (offset, value) in spilled.into_iter().enumerate() {
         state.ops.push(SsaInst {
-            kind: SsaInstKind::StoreSlot {
+            kind: SsaInstKind::Spill {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -589,7 +590,7 @@ fn publish_taken_branch_payload_at(
     );
     for (offset, value) in payload.into_iter().enumerate() {
         state.ops.push(SsaInst {
-            kind: SsaInstKind::StoreSlot {
+            kind: SsaInstKind::Spill {
                 slot: base_slot.advance(offset as u16),
                 src: value,
             },
@@ -641,13 +642,13 @@ fn canonicalize_return_results(
     for offset in 0..arity as usize {
         let value = values.fresh_typed(result_types.get(offset).copied().unwrap_or(ValueType::I64));
         state.ops.push(SsaInst {
-            kind: SsaInstKind::LoadSlot {
+            kind: SsaInstKind::Fill {
                 slot: src.advance(offset as u16),
                 dst: value,
             },
         });
         state.ops.push(SsaInst {
-            kind: SsaInstKind::StoreSlot {
+            kind: SsaInstKind::Spill {
                 slot: dst.advance(offset as u16),
                 src: value,
             },

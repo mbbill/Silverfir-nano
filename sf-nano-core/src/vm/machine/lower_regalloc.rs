@@ -152,7 +152,7 @@ impl<'a> BlockLowerContext<'a> {
         self.alloc_value_in_bank(value, lir_value_storage_type(self.program(), value))
     }
 
-    /// Allocate a LoadSlot destination in the correct bank based on the type table.
+    /// Allocate a Fill/LocalGet destination in the correct bank based on the type table.
     pub(super) fn alloc_slot_load_value(
         &mut self,
         value: SsaValue,
@@ -305,7 +305,13 @@ impl<'a> BlockLowerContext<'a> {
         if self.remaining_use_count(value) != 0 {
             return None;
         }
-        self.try_value_reg(value)
+        let reg = self.try_value_reg(value)?;
+        // Cache registers belong to cached locals and must not be reused as
+        // scratch — they may still be needed by later source-alias lookups.
+        if !self.is_transient_reg(reg) {
+            return None;
+        }
+        Some(reg)
     }
 
     pub(super) fn try_value_regs(
@@ -557,56 +563,6 @@ impl<'a> BlockLowerContext<'a> {
         Err(WasmError::internal(alloc::format!(
             "native lowering requires {count} free transient registers"
         )))
-    }
-
-    /// Try to coalesce a transient-to-cache-local move by patching the previous
-    /// instruction's destination register directly. Returns true if successful.
-    ///
-    /// This eliminates patterns like `load r_transient <- [addr]; move r_cache <- r_transient`
-    /// by rewriting to `load r_cache <- [addr]`.
-    ///
-    /// Only safe when:
-    /// - src is a transient defined by the immediately preceding instruction
-    /// - src and target are in the same register bank
-    /// - src and target use the same machine storage type
-    /// - the last instruction doesn't also read target_reg (would clobber input)
-    pub(super) fn try_coalesce_last_dst(
-        &mut self,
-        src_value: SsaValue,
-        src_reg: MachineReg,
-        target_reg: MachineReg,
-    ) -> bool {
-        if src_reg == target_reg {
-            return true;
-        }
-        if self.is_fp_reg(src_reg) != self.is_fp_reg(target_reg) {
-            return false;
-        }
-        if !self.is_transient_reg(src_reg) {
-            return false;
-        }
-        if self.storage_type_for_reg(src_reg) != self.storage_type_for_reg(target_reg) {
-            return false;
-        }
-        // The value must have 0 remaining uses after this store consumes it.
-        // This ensures no other instruction between the def and store reads it.
-        let remaining = self.remaining_use_count(src_value);
-        if remaining != 0 {
-            return false;
-        }
-        let Some(last) = self.ops_last_mut() else {
-            return false;
-        };
-        if !machine_inst_dst_eq(&last.kind, src_reg) {
-            return false;
-        }
-        // Make sure the last instruction doesn't read target_reg as an input
-        // (that would mean we'd clobber an input by redirecting the output).
-        if machine_inst_uses_reg(&last.kind, target_reg) {
-            return false;
-        }
-        patch_machine_inst_dst(&mut last.kind, target_reg);
-        true
     }
 
     /// Try to fold a dead constant-producing instruction directly into an
@@ -932,145 +888,6 @@ pub(super) fn convert_result_float_width(op: MachineConvertOp) -> Option<Machine
     })
 }
 
-/// Check if the instruction defines (writes to) the given register.
-fn machine_inst_dst_eq(kind: &MachineInstKind, reg: MachineReg) -> bool {
-    match kind {
-        MachineInstKind::Move { dst, .. }
-        | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Load { dst, .. }
-        | MachineInstKind::IntUnary { dst, .. }
-        | MachineInstKind::IntBinary { dst, .. }
-        | MachineInstKind::IntCompare { dst, .. }
-        | MachineInstKind::FloatUnary { dst, .. }
-        | MachineInstKind::FloatBinary { dst, .. }
-        | MachineInstKind::FloatCompare { dst, .. }
-        | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. } => *dst == reg,
-        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
-        MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
-        MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
-        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
-        MachineInstKind::Int64PairCompare { dst, .. } => *dst == reg,
-        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
-            *dst_lo == reg || *dst_hi == reg
-        }
-        MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
-            *dst_lo == reg || *dst_hi == reg
-        }
-        MachineInstKind::ConvertI64PairToFloat { dst, .. }
-        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst == reg,
-        MachineInstKind::Store { .. }
-        | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallHelper(_) => false,
-    }
-}
-
-/// Check if the instruction reads the given register as an input.
-fn machine_inst_uses_reg(kind: &MachineInstKind, reg: MachineReg) -> bool {
-    let is = |v: &MachineValue| matches!(v, MachineValue::Reg(r) if *r == reg);
-    match kind {
-        MachineInstKind::Move { src, .. } => is(src),
-        MachineInstKind::FloatConst { .. } => false,
-        MachineInstKind::Load { addr, .. } => addr.base == reg,
-        MachineInstKind::Store { addr, src, .. } => addr.base == reg || is(src),
-        MachineInstKind::IndexedLoad { base, index, .. } => *base == reg || *index == reg,
-        MachineInstKind::IndexedStore { base, index, src, .. } => {
-            *base == reg || *index == reg || is(src)
-        }
-        MachineInstKind::IntUnary { src, .. }
-        | MachineInstKind::FloatUnary { src, .. }
-        | MachineInstKind::Convert { src, .. } => is(src),
-        MachineInstKind::IntBinary { lhs, rhs, .. }
-        | MachineInstKind::IntCompare { lhs, rhs, .. }
-        | MachineInstKind::FloatBinary { lhs, rhs, .. }
-        | MachineInstKind::FloatCompare { lhs, rhs, .. } => is(lhs) || is(rhs),
-        MachineInstKind::Int64PairBinary {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
-        MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
-        MachineInstKind::Int64PairDivRem {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
-        MachineInstKind::Int64PairShift {
-            lhs_lo,
-            lhs_hi,
-            rhs,
-            ..
-        } => is(lhs_lo) || is(lhs_hi) || is(rhs),
-        MachineInstKind::Int64PairCompare {
-            lhs_lo,
-            lhs_hi,
-            rhs_lo,
-            rhs_hi,
-            ..
-        } => is(lhs_lo) || is(lhs_hi) || is(rhs_lo) || is(rhs_hi),
-        MachineInstKind::ConvertI64PairToFloat { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
-        MachineInstKind::ConvertFloatToI64Pair { src, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => is(src),
-        MachineInstKind::ReinterpretI64PairToF64 { src_lo, src_hi, .. } => is(src_lo) || is(src_hi),
-        MachineInstKind::Select {
-            on_true,
-            on_false,
-            cond,
-            ..
-        } => is(on_true) || is(on_false) || is(cond),
-        MachineInstKind::TrapIf { .. } | MachineInstKind::CallHelper(_) => false,
-    }
-}
-
-/// Patch the destination register of an instruction in place.
-fn patch_machine_inst_dst(kind: &mut MachineInstKind, new_dst: MachineReg) {
-    match kind {
-        MachineInstKind::Move { dst, .. }
-        | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Load { dst, .. }
-        | MachineInstKind::IntUnary { dst, .. }
-        | MachineInstKind::IntBinary { dst, .. }
-        | MachineInstKind::IntCompare { dst, .. }
-        | MachineInstKind::FloatUnary { dst, .. }
-        | MachineInstKind::FloatBinary { dst, .. }
-        | MachineInstKind::FloatCompare { dst, .. }
-        | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. } => *dst = new_dst,
-        MachineInstKind::ConvertI64PairToFloat { dst, .. }
-        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => *dst = new_dst,
-        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => {
-            if *dst_lo == new_dst || *dst_hi == new_dst {
-                *dst_lo = new_dst;
-            }
-        }
-        MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
-            if *dst_lo == new_dst || *dst_hi == new_dst {
-                *dst_lo = new_dst;
-            }
-        }
-        MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => {
-            if *dst_lo == new_dst || *dst_hi == new_dst {
-                *dst_lo = new_dst;
-            }
-        }
-        MachineInstKind::Int64PairCompare { dst, .. } => *dst = new_dst,
-        MachineInstKind::Store { .. }
-        | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallHelper(_) => {}
-    }
-}
-
 fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockParam {
     match ty {
         MachineStorageType::GpWord => MachineBlockParam::gp_word(reg),
@@ -1142,6 +959,8 @@ mod tests {
                 terminator: SsaTerminator::Return { results: None },
             }],
             value_types,
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
             MachineRegFile::new(BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 0, 4))

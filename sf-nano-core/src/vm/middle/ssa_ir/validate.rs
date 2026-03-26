@@ -153,11 +153,11 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                         check(*r, &alloc::format!("{bctx} Value result"))?;
                     }
                 }
-                SsaInstKind::LoadSlot { dst, .. } => {
-                    check(*dst, &alloc::format!("{bctx} LoadSlot dst"))?;
+                SsaInstKind::LocalGet { dst, .. } | SsaInstKind::Fill { dst, .. } => {
+                    check(*dst, &alloc::format!("{bctx} LocalGet/Fill dst"))?;
                 }
-                SsaInstKind::StoreSlot { src, .. } => {
-                    check(*src, &alloc::format!("{bctx} StoreSlot src"))?;
+                SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+                    check(*src, &alloc::format!("{bctx} LocalSet/Spill src"))?;
                 }
                 SsaInstKind::Boundary(_) => {}
             }
@@ -228,7 +228,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
             match inst.kind {
-                SsaInstKind::LoadSlot { slot, dst } => {
+                SsaInstKind::LocalGet { slot, dst } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -236,10 +236,10 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         dst,
                         block_idx,
                         op_idx,
-                        "LoadSlot dst",
+                        "LocalGet dst",
                     )?;
                 }
-                SsaInstKind::StoreSlot { slot, src } => {
+                SsaInstKind::LocalSet { slot, src, .. } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -247,10 +247,13 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         src,
                         block_idx,
                         op_idx,
-                        "StoreSlot src",
+                        "LocalSet src",
                     )?;
                 }
-                SsaInstKind::Value { .. } | SsaInstKind::Boundary(_) => {}
+                SsaInstKind::Fill { .. }
+                | SsaInstKind::Spill { .. }
+                | SsaInstKind::Value { .. }
+                | SsaInstKind::Boundary(_) => {}
             }
         }
     }
@@ -292,8 +295,8 @@ fn validate_cached_slot_value_type(
 #[cfg(any(debug_assertions, test))]
 fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: ValueType) -> bool {
     match role {
-        "StoreSlot src" => value_ty.is_compatible_with(&cached_ty),
-        "LoadSlot dst" => cached_ty.is_compatible_with(&value_ty),
+        "LocalSet src" => value_ty.is_compatible_with(&cached_ty),
+        "LocalGet dst" => cached_ty.is_compatible_with(&value_ty),
         _ => value_ty == cached_ty,
     }
 }
@@ -457,6 +460,8 @@ mod tests {
                 },
             ],
             value_types: alloc::vec![],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -500,6 +505,8 @@ mod tests {
                 },
             ],
             value_types: alloc::vec![],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -539,6 +546,8 @@ mod tests {
                 ValueType::I64,
                 ValueType::I32,
             ],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -564,7 +573,7 @@ mod tests {
                 id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LoadSlot {
+                    kind: SsaInstKind::LocalGet {
                         slot: FrameSlot(0),
                         dst: value0,
                     },
@@ -572,12 +581,14 @@ mod tests {
                 terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::I64],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error
             .message()
-            .contains("LoadSlot dst for cached local slot FrameSlot(0) uses value SsaValue(0) (I64), but cache metadata says I32"));
+            .contains("LocalGet dst for cached local slot FrameSlot(0) uses value SsaValue(0) (I64), but cache metadata says I32"));
     }
 
     #[test]
@@ -597,9 +608,10 @@ mod tests {
                 id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::StoreSlot {
+                    kind: SsaInstKind::LocalSet {
                         slot: FrameSlot(0),
                         src: value0,
+                        version: 0,
                     },
                 }],
                 terminator: SsaTerminator::Return { results: None },
@@ -607,6 +619,8 @@ mod tests {
             value_types: alloc::vec![ValueType::Ref(
                 crate::value_type::RefType::non_nullable_concrete(1),
             )],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         validate_program(&program).expect("ref subtypes share the same GP-word cached-local class");
@@ -629,19 +643,22 @@ mod tests {
                 id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::StoreSlot {
+                    kind: SsaInstKind::LocalSet {
                         slot: FrameSlot(0),
                         src: value0,
+                        version: 0,
                     },
                 }],
                 terminator: SsaTerminator::Return { results: None },
             }],
             value_types: alloc::vec![ValueType::I32],
+            value_homes: alloc::vec![],
+            value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error.message().contains(
-            "StoreSlot src for cached local slot FrameSlot(0) uses value SsaValue(0) (I32), but cache metadata says Ref"
+            "LocalSet src for cached local slot FrameSlot(0) uses value SsaValue(0) (I32), but cache metadata says Ref"
         ));
     }
 }

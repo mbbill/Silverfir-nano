@@ -24,6 +24,7 @@ mod lower_edge;
 mod lower_ops;
 mod lower_term;
 mod optimize;
+mod sink_plan;
 mod spill_plan;
 mod state;
 
@@ -98,6 +99,8 @@ pub(crate) fn prepare_function(
                 local_cache,
                 blocks: Vec::new(),
                 value_types: Vec::new(),
+                value_homes: Vec::new(),
+                value_sink_local: Vec::new(),
             },
         });
     }
@@ -116,6 +119,7 @@ pub(crate) fn prepare_function(
     let mut blocks = Vec::with_capacity(block_ranges.len());
     let mut extra_blocks = Vec::new();
     let mut skip_reload_iter = continuation_skip_reload.into_iter();
+    let mut local_versions = alloc::vec![0u32; local_types.len()];
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
@@ -140,6 +144,7 @@ pub(crate) fn prepare_function(
             &semantic.result_types,
             op_result_types,
             &mut skip_reload_iter,
+            &mut local_versions,
         )?;
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
@@ -156,9 +161,12 @@ pub(crate) fn prepare_function(
         local_cache,
         blocks,
         value_types: values.take_types(),
+        value_homes: values.take_homes(),
+        value_sink_local: Vec::new(),
     };
     let mut ssa = ssa;
     optimize::optimize_ssa(&mut ssa, frame);
+    sink_plan::plan_sinks(&mut ssa);
     validate_program(&ssa)?;
 
     Ok(PreparedFunction { frame, ssa })

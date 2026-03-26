@@ -81,15 +81,13 @@ impl I64Lowering for Gp64Lowering {
                 )));
             }
             let cache_reg = cached.reg;
-            if !ctx.try_coalesce_last_dst(src, src_reg, cache_reg) {
-                ctx.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Move {
-                        ty: cached.ty,
-                        dst: cache_reg,
-                        src: MachineValue::Reg(src_reg),
-                    },
-                });
-            }
+            ctx.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: cached.ty,
+                    dst: cache_reg,
+                    src: MachineValue::Reg(src_reg),
+                },
+            });
         } else {
             let addr = ctx.frame_addr(slot)?;
             if !ctx.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {

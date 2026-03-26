@@ -19,7 +19,7 @@ use super::lower_inst::LeafLowering;
 /// Operations that differ between 32-bit and 64-bit GP targets for i64 values.
 /// Implemented by `Gp64Lowering` (scalar) and `Gp32Lowering` (pair).
 pub(super) trait I64Lowering {
-    /// Load an i64 value from a frame slot (LoadSlot).
+    /// Load an i64 value from a frame slot (LocalGet / Fill).
     fn emit_load_slot_i64(
         &self,
         ctx: &mut BlockLowerContext,
@@ -27,7 +27,7 @@ pub(super) trait I64Lowering {
         dst: SsaValue,
     ) -> Result<(), WasmError>;
 
-    /// Store an i64 value to a frame slot (StoreSlot).
+    /// Store an i64 value to a frame slot (LocalSet / Spill).
     fn emit_store_slot_i64(
         &self,
         ctx: &mut BlockLowerContext,

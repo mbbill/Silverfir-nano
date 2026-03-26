@@ -8,9 +8,9 @@ use crate::{
             machine_ir::{
                 MachineAddr, MachineCallLinkLayout,
                 MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
-                MachineInst,
+                MachineInst, MachineInstKind,
                 MachineIntWidth, MachineMemWidth, MachineReg,
-                MachineStorageType,
+                MachineStorageType, MachineValue,
             },
         },
         middle::{
@@ -485,6 +485,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// Free transient registers for values with no remaining uses.
+    /// Values in non-transient registers (e.g. cache registers from source
+    /// aliasing or sink allocation) are removed from the value list but their
+    /// registers are not cleared — they belong to the cached local.
     pub(super) fn release_dead_values(&mut self) -> Result<(), WasmError> {
         let mut index = 0;
         while index < self.values.len() {
@@ -494,13 +497,54 @@ impl<'a> BlockLowerContext<'a> {
                 let reg = self.values[index].reg;
                 let hi_reg = self.values[index].hi_reg;
                 self.values.swap_remove(index);
-                self.clear_transient(reg)?;
+                if self.is_transient_reg(reg) {
+                    self.clear_transient(reg)?;
+                }
                 if let Some(hi_reg) = hi_reg {
-                    self.clear_transient(hi_reg)?;
+                    if self.is_transient_reg(hi_reg) {
+                        self.clear_transient(hi_reg)?;
+                    }
                 }
             } else {
                 index += 1;
             }
+        }
+        Ok(())
+    }
+
+    /// Materialize all live values aliased to `cache_reg` into transient
+    /// registers. Values in `except` are skipped — they are instruction args
+    /// that will be consumed (read) before the cache register is overwritten.
+    pub(super) fn materialize_cache_aliases(
+        &mut self,
+        cache_reg: MachineReg,
+        except: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let ty = self
+            .cached_local_storage_type_for_reg(cache_reg)
+            .unwrap_or(MachineStorageType::GpWord);
+        let mut i = 0;
+        while i < self.values.len() {
+            let vr = self.values[i].reg;
+            let vv = self.values[i].value;
+            if vr == cache_reg && !except.contains(&vv) {
+                let Some(t) = self.first_free_transient(ty) else {
+                    return Err(WasmError::internal(
+                        "transient budget exhausted during cache alias materialization"
+                            .into(),
+                    ));
+                };
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty,
+                        dst: t,
+                        src: MachineValue::Reg(cache_reg),
+                    },
+                });
+                self.set_transient(t, Some(vv), Some(ty))?;
+                self.values[i].reg = t;
+            }
+            i += 1;
         }
         Ok(())
     }
@@ -534,6 +578,9 @@ impl<'a> BlockLowerContext<'a> {
             .position(|entry| entry.value == candidate && entry.hi_reg.is_some())
         {
             let lo = self.values[index].reg;
+            if !self.is_transient_reg(lo) {
+                return Ok(None);
+            }
             let hi = self.values[index]
                 .hi_reg
                 .expect("pair candidate must have hi reg");
@@ -557,7 +604,7 @@ impl<'a> BlockLowerContext<'a> {
             .position(|entry| entry.value == candidate && entry.hi_reg.is_none())
         {
             let lo = self.values[index].reg;
-            if self.is_fp_reg(lo) {
+            if self.is_fp_reg(lo) || !self.is_transient_reg(lo) {
                 return Ok(None);
             }
             let Some(hi) = self.first_free_transient(MachineStorageType::GpWord) else {
@@ -587,6 +634,11 @@ impl<'a> BlockLowerContext<'a> {
             entry.value == candidate && self.is_fp_reg(entry.reg) == ty.is_fp()
         }) {
             let reg = self.values[index].reg;
+            // Cannot reuse non-transient registers (e.g. cache registers from
+            // source aliasing) — they belong to cached locals.
+            if !self.is_transient_reg(reg) {
+                return Ok(None);
+            }
             if let Some(hi_reg) = self.values[index].hi_reg {
                 if ty.is_fp() {
                     return Ok(None);
@@ -599,10 +651,6 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(Some(reg));
         }
         Ok(None)
-    }
-
-    pub(super) fn ops_last_mut(&mut self) -> Option<&mut MachineInst> {
-        self.ops.last_mut()
     }
 
     pub(super) fn ops_last(&self) -> Option<&MachineInst> {

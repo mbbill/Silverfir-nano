@@ -4,13 +4,15 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaValue};
+use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaValue, ValueHome};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
     next: u32,
     /// Per-value type table indexed by `SsaValue.0`.
     types: Vec<ValueType>,
+    /// Per-value local-home metadata indexed by `SsaValue.0`.
+    homes: Vec<ValueHome>,
 }
 
 impl ValueAlloc {
@@ -19,6 +21,7 @@ impl ValueAlloc {
         let value = SsaValue(self.next);
         self.next += 1;
         self.types.push(ty);
+        self.homes.push(ValueHome::None);
         value
     }
 
@@ -36,8 +39,31 @@ impl ValueAlloc {
         ty.unwrap_or(ValueType::I64)
     }
 
+    pub(super) fn set_value_home(&mut self, value: SsaValue, home: ValueHome) {
+        let slot = self.homes.get_mut(value.0 as usize);
+        debug_assert!(
+            slot.is_some(),
+            "SsaValue({}) has no entry in the value-home table",
+            value.0,
+        );
+        if let Some(slot) = slot {
+            *slot = home;
+        }
+    }
+
+    pub(super) fn value_home(&self, value: SsaValue) -> ValueHome {
+        self.homes
+            .get(value.0 as usize)
+            .copied()
+            .unwrap_or(ValueHome::None)
+    }
+
     pub(super) fn take_types(&mut self) -> Vec<ValueType> {
         core::mem::take(&mut self.types)
+    }
+
+    pub(super) fn take_homes(&mut self) -> Vec<ValueHome> {
+        core::mem::take(&mut self.homes)
     }
 }
 

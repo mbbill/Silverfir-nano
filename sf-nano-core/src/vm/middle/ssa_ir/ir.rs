@@ -75,6 +75,14 @@ pub(crate) struct SsaLocalCachePrefs {
 }
 
 /// Full prepared SSA-IR program for one function.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ValueHome {
+    #[default]
+    None,
+    /// This value is the current version of a canonical local slot.
+    LocalVersion { slot: FrameSlot, version: u32 },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
@@ -86,6 +94,30 @@ pub(crate) struct SsaProgram {
     /// Float values (F32, F64) should be placed in FP transients; all others
     /// in GP transients.
     pub value_types: Vec<ValueType>,
+    /// Per-value local-home metadata indexed by `SsaValue.0`.
+    pub value_homes: Vec<ValueHome>,
+    /// Per-value optional sink-local annotation indexed by `SsaValue.0`.
+    /// When `Some(slot)`, the producer of this value may write directly to
+    /// that local's home, and the subsequent `LocalSet` is elidable.
+    pub value_sink_local: Vec<Option<FrameSlot>>,
+}
+
+impl SsaProgram {
+    #[inline]
+    pub(crate) fn value_home(&self, value: SsaValue) -> ValueHome {
+        self.value_homes
+            .get(value.0 as usize)
+            .copied()
+            .unwrap_or(ValueHome::None)
+    }
+
+    #[inline]
+    pub(crate) fn value_sink(&self, value: SsaValue) -> Option<FrameSlot> {
+        self.value_sink_local
+            .get(value.0 as usize)
+            .copied()
+            .flatten()
+    }
 }
 
 /// One SSA-IR basic block.
@@ -127,10 +159,20 @@ pub(crate) enum SsaInstKind {
         args: Vec<SsaOperand>,
         results: Vec<SsaValue>,
     },
-    /// Read a canonical frame slot, usually a local slot.
-    LoadSlot { slot: FrameSlot, dst: SsaValue },
-    /// Write a canonical frame slot, usually a local slot.
-    StoreSlot { slot: FrameSlot, src: SsaValue },
+    /// Reload a spilled stack/TOS value from an operand slot.
+    Fill { slot: FrameSlot, dst: SsaValue },
+    /// Publish a live stack/TOS value into an operand slot.
+    Spill { slot: FrameSlot, src: SsaValue },
+    /// Read a canonical local slot.
+    LocalGet { slot: FrameSlot, dst: SsaValue },
+    /// Write a canonical local slot.
+    ///
+    /// `version` is the semantic local version created by this write.
+    LocalSet {
+        slot: FrameSlot,
+        src: SsaValue,
+        version: u32,
+    },
     /// Slot-based call or runtime boundary.
     Boundary(SsaBoundaryOp),
 }

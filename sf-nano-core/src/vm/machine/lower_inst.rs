@@ -91,35 +91,26 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_inst(&mut self, inst: &SsaInst) -> Result<(), WasmError> {
         match &inst.kind {
-            SsaInstKind::LoadSlot { slot, dst } => {
+            SsaInstKind::LocalGet { slot, dst } => {
                 let ty = lir_value_storage_type(self.program(), *dst);
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
                     ops.emit_load_slot_i64(self, *slot, *dst)?;
                     return Ok(());
                 }
-
-                let dst_reg = self.alloc_slot_load_value(*dst)?;
-                let width = canonical_value_mem_width_for_value(self.program(), *dst);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     let cached = self.cached_locals()[cached_index];
                     if cached.ty != ty {
                         return Err(WasmError::internal(alloc::format!(
                             "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
-                            slot,
-                            ty,
-                            dst,
-                            cached.ty,
+                            slot, ty, dst, cached.ty,
                         )));
                     }
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Move {
-                            ty: cached.ty,
-                            dst: dst_reg,
-                            src: MachineValue::Reg(cached.reg),
-                        },
-                    });
+                    // Source-alias: map value to cache register, no emit.
+                    self.push_value_location(*dst, cached.reg, None);
                 } else {
+                    let dst_reg = self.alloc_slot_load_value(*dst)?;
+                    let width = canonical_value_mem_width_for_value(self.program(), *dst);
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Load {
                             ty,
@@ -131,38 +122,62 @@ impl<'a> BlockLowerContext<'a> {
                     });
                 }
             }
-            SsaInstKind::StoreSlot { slot, src } => {
+            SsaInstKind::Fill { slot, dst } => {
+                let ty = lir_value_storage_type(self.program(), *dst);
+                if matches!(ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_load_slot_i64(self, *slot, *dst)?;
+                    return Ok(());
+                }
+                let dst_reg = self.alloc_slot_load_value(*dst)?;
+                let width = canonical_value_mem_width_for_value(self.program(), *dst);
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty,
+                        dst: dst_reg,
+                        addr: self.frame_addr(*slot)?,
+                        width,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            }
+            SsaInstKind::LocalSet { slot, src, .. } => {
                 let ty = lir_value_storage_type(self.program(), *src);
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
                     ops.emit_store_slot_i64(self, *slot, *src)?;
                     return Ok(());
                 }
-
-                let src_reg = self.use_value(*src)?;
-                let width = canonical_value_mem_width_for_value(self.program(), *src);
                 if let Some(cached_index) = self.cached_local_index(*slot) {
                     let cached = self.cached_locals()[cached_index];
                     if cached.ty != ty {
                         return Err(WasmError::internal(alloc::format!(
                             "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                            slot,
-                            ty,
-                            src,
-                            cached.ty,
+                            slot, ty, src, cached.ty,
                         )));
                     }
                     let cache_reg = cached.reg;
-                    if !self.try_coalesce_last_dst(*src, src_reg, cache_reg) {
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Move {
-                                ty: cached.ty,
-                                dst: cache_reg,
-                                src: MachineValue::Reg(src_reg),
-                            },
-                        });
+                    // If src is already in cache_reg (sink or same-local tee),
+                    // just consume the value — no emit needed.
+                    if self.try_value_reg(*src) == Some(cache_reg) {
+                        let _ = self.use_value(*src)?;
+                        self.release_dead_values()?;
+                        return Ok(());
                     }
+                    // Materialize any other values aliased to this cache reg
+                    // before overwriting it.
+                    self.materialize_cache_aliases(cache_reg, &[])?;
+                    let src_reg = self.use_value(*src)?;
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Move {
+                            ty: cached.ty,
+                            dst: cache_reg,
+                            src: MachineValue::Reg(src_reg),
+                        },
+                    });
                 } else {
+                    let src_reg = self.use_value(*src)?;
+                    let width = canonical_value_mem_width_for_value(self.program(), *src);
                     let addr = self.frame_addr(*slot)?;
                     if !self.try_coalesce_last_store_immediate(*src, src_reg, ty, addr, width) {
                         self.emit_machine_inst(MachineInst {
@@ -177,7 +192,51 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 self.release_dead_values()?;
             }
+            SsaInstKind::Spill { slot, src } => {
+                let ty = lir_value_storage_type(self.program(), *src);
+                if matches!(ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_store_slot_i64(self, *slot, *src)?;
+                    return Ok(());
+                }
+                let src_reg = self.use_value(*src)?;
+                let width = canonical_value_mem_width_for_value(self.program(), *src);
+                let addr = self.frame_addr(*slot)?;
+                if !self.try_coalesce_last_store_immediate(*src, src_reg, ty, addr, width) {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty,
+                            addr,
+                            width,
+                            src: MachineValue::Reg(src_reg),
+                        },
+                    });
+                }
+                self.release_dead_values()?;
+            }
             SsaInstKind::Value { op, args, results } => {
+                // Check for sink-local annotations: pre-map sunk results to
+                // cache registers so the instruction writes directly there.
+                if results.len() == 1 {
+                    let result = results[0];
+                    if let Some(sink_slot) = self.program().value_sink(result) {
+                        if let Some(cached_index) = self.cached_local_index(sink_slot) {
+                            let cache_reg = self.cached_locals()[cached_index].reg;
+                            let mut arg_vals = [SsaValue(u32::MAX); 4];
+                            let mut n = 0;
+                            for a in args.iter() {
+                                if let SsaOperand::Value(v) = a {
+                                    if n < arg_vals.len() {
+                                        arg_vals[n] = *v;
+                                        n += 1;
+                                    }
+                                }
+                            }
+                            self.materialize_cache_aliases(cache_reg, &arg_vals[..n])?;
+                            self.push_value_location(result, cache_reg, None);
+                        }
+                    }
+                }
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }

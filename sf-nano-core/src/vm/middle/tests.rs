@@ -582,7 +582,7 @@ fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
     let store_count = if_block
         .ops
         .iter()
-        .filter(|inst| matches!(inst.kind, SsaInstKind::StoreSlot { .. }))
+        .filter(|inst| matches!(inst.kind, SsaInstKind::Spill { .. }))
         .count();
 
     assert!(
@@ -724,7 +724,7 @@ fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
             block.ops.iter().any(|inst| {
                 matches!(
                     inst.kind,
-                    SsaInstKind::StoreSlot { slot, .. }
+                    SsaInstKind::Spill { slot, .. }
                         if slot == prepared.frame.operand_slot(0)
                 )
             })
@@ -1085,10 +1085,10 @@ fn typed_pipeline_assigns_float_types_to_float_values() {
         "value_types side table must be populated"
     );
 
-    // Find LoadSlot results (from local.get) — they should be F64.
+    // Find LocalGet results (from local.get) — they should be F64.
     for block in &prepared.ssa.blocks {
         for inst in &block.ops {
-            if let SsaInstKind::LoadSlot { dst, .. } = &inst.kind {
+            if let SsaInstKind::LocalGet { dst, .. } = &inst.kind {
                 let ty = prepared.ssa.value_types.get(dst.0 as usize);
                 assert_eq!(
                     ty.copied(),
@@ -1205,7 +1205,7 @@ fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
             .blocks
             .iter()
             .flat_map(|block| block.ops.iter())
-            .filter(|inst| matches!(inst.kind, SsaInstKind::LoadSlot { .. }))
+            .filter(|inst| matches!(inst.kind, SsaInstKind::Fill { .. }))
             .count()
     };
 
@@ -1521,7 +1521,7 @@ fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
                 .flatten()
         })
         .expect("ref.is_null instruction must exist");
-    let arg_ty = prepared.ssa.value_types[ref_is_null_arg.0 as usize];
+    let arg_ty = prepared.ssa.value_types[ref_is_null_arg.unwrap_value().0 as usize];
     assert_eq!(
         arg_ty,
         ValueType::funcref(),
