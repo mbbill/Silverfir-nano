@@ -213,33 +213,5 @@ pub(super) fn compile_branch_condition(
             })
         }
 
-        MachineBranchCond::FloatCompare {
-            width,
-            kind,
-            lhs,
-            rhs,
-        } => {
-            let lhs_d = materialize_float_value_dreg(fc, *width, lhs, FP_SCRATCH1)?;
-            let rhs_d = materialize_float_value_dreg(fc, *width, rhs, FP_SCRATCH2)?;
-
-            match width {
-                MachineFloatWidth::F64 => {
-                    fc.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d));
-                }
-                MachineFloatWidth::F32 => {
-                    fc.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2));
-                }
-            }
-            fc.text.emit_u32(enc::vmrs_apsr());
-
-            Ok(match kind {
-                MachineCompareKind::Eq => Cond::Eq,
-                MachineCompareKind::Ne => Cond::Ne,
-                MachineCompareKind::Lt => Cond::Mi,
-                MachineCompareKind::Gt => Cond::Gt,
-                MachineCompareKind::Le => Cond::Ls,
-                MachineCompareKind::Ge => Cond::Ge,
-            })
-        }
     }
 }

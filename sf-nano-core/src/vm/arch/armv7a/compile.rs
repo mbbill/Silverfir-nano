@@ -12,7 +12,7 @@ use crate::{
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{Armv7aCodePtr, Armv7aRootEntry, CompiledNativeModule},
+            code::{NativeCodePtr, NativeRootEntry, CompiledNativeModule},
             context::ctx_offset,
         },
     },
@@ -153,12 +153,12 @@ struct FunctionArtifact {
 /// Result of compiling one function to ARM32 machine code.
 #[derive(Clone, Debug)]
 pub struct CompiledArm32Entry {
-    pub entry: Armv7aRootEntry,
+    pub entry: NativeRootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
-    pub root_return: Armv7aCodePtr,
+    pub root_return: NativeCodePtr,
     #[cfg(has_guard_pages)]
-    pub return_error: Armv7aCodePtr,
+    pub return_error: NativeCodePtr,
 }
 
 // ─── FunctionCompiler ───────────────────────────────────────────────────────
@@ -873,7 +873,7 @@ pub fn compile_module(
         let text_len = text_bytes.len();
         let debug_regions = artifact.debug_regions;
         let offset = executable.emit_bytes(&text_bytes);
-        let entry = unsafe { executable.fn_ptr::<Armv7aRootEntry>(offset) };
+        let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
         #[cfg(has_guard_pages)]
         let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };

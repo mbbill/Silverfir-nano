@@ -17,8 +17,8 @@ use crate::{
 
 use super::{
     abi::{
-        emit_shared_epilogue, map_fixed_reg, map_reg, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2,
-        SCRATCH0, SCRATCH1,
+        emit_shared_epilogue, inv_map_reg, map_fixed_reg, map_reg, FP_SCRATCH0, FP_SCRATCH1,
+        FP_SCRATCH2, SCRATCH0, SCRATCH1,
     },
     armv7a_f32_ceil, armv7a_f32_floor, armv7a_f32_nearest_bits, armv7a_f32_trunc,
     armv7a_f64_ceil, armv7a_f64_floor, armv7a_f64_nearest_bits, armv7a_f64_trunc,
@@ -136,21 +136,6 @@ pub(super) fn compile_inst(
             }
         }
 
-        MachineInstKind::Lea { dst, addr } => {
-            let dst_hw = map_reg(*dst)?;
-            let base_hw = map_reg(addr.base)?;
-            if addr.offset == 0 {
-                if dst_hw != base_hw {
-                    fc.text.emit_u32(enc::mov_reg(dst_hw, base_hw));
-                }
-            } else if let Some((imm8, rot)) = enc::encode_arm_imm(addr.offset as u32) {
-                fc.text.emit_u32(enc::add_imm(dst_hw, base_hw, imm8, rot));
-            } else {
-                fc.emit_load_u32(SCRATCH0, addr.offset as u32);
-                fc.text.emit_u32(enc::add_reg(dst_hw, base_hw, SCRATCH0));
-            }
-        }
-
         MachineInstKind::Load {
             ty: _,
             dst,
@@ -178,16 +163,6 @@ pub(super) fn compile_inst(
             rhs,
         } => {
             compile_int_binary(fc, *width, *op, *dst, lhs, rhs)?;
-        }
-
-        MachineInstKind::IntMulWide {
-            sign,
-            dst_lo,
-            dst_hi,
-            lhs,
-            rhs,
-        } => {
-            compile_int_mul_wide(fc, *sign, *dst_lo, *dst_hi, lhs, rhs)?;
         }
 
         MachineInstKind::Int64PairBinary {
@@ -373,7 +348,7 @@ pub(super) fn compile_inst(
             let index_hw = map_reg(*index)?;
             fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
             let scratch_mr = inv_map_reg(SCRATCH0);
-            compile_store(fc, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *src)?;
+            compile_store(fc, MachineStorageType::GpWord, &MachineAddr { base: scratch_mr, offset: *offset }, *width, src)?;
         }
     }
     Ok(())
