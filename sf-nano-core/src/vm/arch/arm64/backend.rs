@@ -182,6 +182,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
         let fused_fcmp_cond = super::fusion::float_compare_branch_fusion(
             block, &self.core.function.program.blocks,
+            self.core.compiled.backend(),
         );
 
         let mut index = 0;

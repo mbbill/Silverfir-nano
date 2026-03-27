@@ -4,8 +4,9 @@
 //! These are pure functions — they inspect MachineIR and return optional
 //! instruction encodings. No compiler state is accessed.
 
+use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBranchCond, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+    self, MachineBlock, MachineBranchCond, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
     MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
 
@@ -195,6 +196,7 @@ pub(super) fn try_imm12_u64(value: u64) -> Option<u32> {
 pub(super) fn float_compare_branch_fusion(
     block: &MachineBlock,
     all_blocks: &[MachineBlock],
+    config: BackendConfig,
 ) -> Option<Cond> {
     let last = block.ops.last()?;
     let MachineTerminator::Branch {
@@ -209,6 +211,12 @@ pub(super) fn float_compare_branch_fusion(
         return None;
     };
     if dst != cond_reg {
+        return None;
+    }
+    // Only fuse when the compare-result register is transient.
+    // Cached-local and fixed registers are implicitly live across block
+    // boundaries, so the single-successor liveness check is not sufficient.
+    if !machine_ir::is_transient_reg(*dst, config) {
         return None;
     }
     if crate::vm::machine::peephole::reg_dead_at_block_entry(
