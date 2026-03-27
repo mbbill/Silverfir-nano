@@ -27,10 +27,10 @@ use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
 use super::machine_ir::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp, MachineEdge,
-    MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
-    MachineIntWidth, MachineProgram, MachineReg, MachineStorageType, MachineTerminator,
-    MachineValue,
+    self, MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineConvertOp,
+    MachineEdge, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
+    MachineIntBinaryOp, MachineIntWidth, MachineProgram, MachineReg, MachineStorageType,
+    MachineTerminator, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -62,7 +62,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         reuse_loaded_values(block, config);
         fuse_indexed_memory(block);
     }
-    fuse_compare_branch(&mut program.blocks, gp_reg_width);
+    fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
 }
 
 /// Replace duplicate constant materializations with register copies.
@@ -1260,7 +1260,7 @@ fn mem_width_bytes(width: super::machine_ir::MachineMemWidth) -> i64 {
 ///
 /// This is a cross-block pass: it reads successor blocks to check liveness,
 /// so it must run after the per-block optimizations are done.
-fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8) {
+fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8, config: BackendConfig) {
     for idx in 0..blocks.len() {
         // Check the last op and the terminator of this block.
         let last_op = match blocks[idx].ops.last() {
@@ -1277,6 +1277,14 @@ fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8) {
             } => (*r, then_edge.target, else_edge.target),
             _ => continue,
         };
+
+        // Only fuse when the compare-result register is transient.
+        // Cached-local and fixed registers are implicitly live across block
+        // boundaries, so the single-successor liveness check below is not
+        // sufficient to prove the register is dead.
+        if !machine_ir::is_transient_reg(cond_reg, config) {
+            continue;
+        }
 
         // Build the fused branch condition, or skip.
         //
