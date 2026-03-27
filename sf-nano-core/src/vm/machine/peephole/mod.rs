@@ -61,7 +61,6 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let mut cp_scratch = copy_propagate::CopyPropagateScratch::new(config.total_reg_count() as usize);
     for block in &mut program.blocks {
         deduplicate_constants::deduplicate_constants(block, first_fp_reg);
-        copy_propagate::copy_propagate(block, config, &mut cp_scratch);
         forward_stored_values::forward_stored_values(block, config);
         reuse_loaded_values::reuse_loaded_values(block, config);
         fuse_indexed_memory::fuse_indexed_memory(block);
