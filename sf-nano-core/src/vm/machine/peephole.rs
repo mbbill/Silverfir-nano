@@ -58,9 +58,11 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let mut cp_scratch = CopyPropagateScratch::new(config.total_reg_count() as usize);
     for block in &mut program.blocks {
         deduplicate_constants(block, first_fp_reg);
+        copy_propagate(block, config, &mut cp_scratch);
         forward_stored_values(block, config);
         reuse_loaded_values(block, config);
         fuse_indexed_memory(block);
+        copy_propagate(block, config, &mut cp_scratch);
     }
     fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
 }
