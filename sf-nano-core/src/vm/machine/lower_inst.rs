@@ -160,6 +160,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             SsaInstKind::Fill { slot, dst } => {
                 let ty = lir_value_storage_type(self.program(), *dst);
+                self.apply_sink_premap(&[], &[*dst])?;
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
                     ops.emit_load_slot_i64(self, *slot, *dst)?;

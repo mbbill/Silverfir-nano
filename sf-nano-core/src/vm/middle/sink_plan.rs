@@ -77,13 +77,15 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     let mut is_single_result = vec![false; max_val as usize];
 
     for (pos, inst) in ops.iter().enumerate() {
-        if let SsaInstKind::Value { results, .. } = &inst.kind {
-            if results.len() == 1 {
-                let r = results[0];
-                if (r.0 as usize) < producer_pos.len() {
-                    producer_pos[r.0 as usize] = Some(pos as u32);
-                    is_single_result[r.0 as usize] = true;
-                }
+        let produced = match &inst.kind {
+            SsaInstKind::Value { results, .. } if results.len() == 1 => Some(results[0]),
+            SsaInstKind::Fill { dst, .. } => Some(*dst),
+            _ => None,
+        };
+        if let Some(r) = produced {
+            if (r.0 as usize) < producer_pos.len() {
+                producer_pos[r.0 as usize] = Some(pos as u32);
+                is_single_result[r.0 as usize] = true;
             }
         }
     }
