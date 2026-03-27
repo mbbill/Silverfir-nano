@@ -922,21 +922,21 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             ..
         }
     ));
-    // ops[1]: LocalGet reads cached local → move from cache reg
+    // ops[1]: I32Const(7) into transient reg (dead LocalGet eliminated)
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
             dst: MachineReg(5),
-            src: MachineValue::Reg(MachineReg(4)),
+            src: MachineValue::Imm64(7),
             ..
         }
     ));
-    // ops[2]: I32Const(7) coalesced directly into cache reg via LocalSet
+    // ops[2]: LocalSet — copy transient into cache reg
     assert!(matches!(
         ops[2].kind,
         MachineInstKind::Move {
             dst: MachineReg(4),
-            src: MachineValue::Imm64(7),
+            src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
@@ -1002,12 +1002,22 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
     assert_valid_32bit_gp_target(&lowered.module, backend);
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 1);
+    assert_eq!(ops.len(), 2);
+    // ops[0]: I32Const(9) into transient reg
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
-            dst: MachineReg(4),
+            dst: MachineReg(5),
             src: MachineValue::Imm64(9),
+            ..
+        }
+    ));
+    // ops[1]: LocalSet — copy transient into cache reg
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
@@ -1334,10 +1344,10 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     .expect("external helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 7);
+    assert_eq!(ops.len(), 8);
     // ops[0]: entry cache init — load param from frame
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
-    // ops[1]: I64Const(9) coalesced directly into cache reg via LocalSet
+    // ops[1]: I64Const(9) into transient reg
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -1345,15 +1355,24 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             ..
         }
     ));
-    // ops[2]: flush cache to frame before external call
-    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
-    // ops[3]: external call
-    assert!(matches!(ops[3].kind, MachineInstKind::CallHelper(_)));
-    // ops[4-5]: reload mem0 cache regs
-    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
+    // ops[2]: LocalSet — copy transient into cache reg
+    assert!(matches!(
+        ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
+            ..
+        }
+    ));
+    // ops[3]: flush cache to frame before external call
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    // ops[4]: external call
+    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    // ops[5-6]: reload mem0 cache regs
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    // ops[6]: reload cached local after call
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
+    // ops[7]: reload cached local after call
+    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1419,10 +1438,10 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     .expect("runtime helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 7);
+    assert_eq!(ops.len(), 8);
     // ops[0]: entry cache init — load param from frame
     assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
-    // ops[1]: I64Const(5) coalesced directly into cache reg via LocalSet
+    // ops[1]: I64Const(5) into transient reg
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Move {
@@ -1430,15 +1449,24 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ..
         }
     ));
-    // ops[2]: flush cache to frame before runtime helper
-    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
-    // ops[3]: runtime helper call (memory grow)
-    assert!(matches!(ops[3].kind, MachineInstKind::CallHelper(_)));
-    // ops[4-5]: reload mem0 cache regs
-    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
+    // ops[2]: LocalSet — copy transient into cache reg
+    assert!(matches!(
+        ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
+            ..
+        }
+    ));
+    // ops[3]: flush cache to frame before runtime helper
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    // ops[4]: runtime helper call (memory grow)
+    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    // ops[5-6]: reload mem0 cache regs
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    // ops[6]: reload cached local after call
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
+    // ops[7]: reload cached local after call
+    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1721,17 +1749,26 @@ fn flushes_cached_local_before_second_direct_call() {
             ..
         }
     ));
-    // ops[1]: Fill coalesced with LocalSet directly into cache reg
+    // ops[1]: Fill from frame into transient
     assert!(matches!(
         second_call_block.ops[1].kind,
         MachineInstKind::Load {
-            dst: MachineReg(4),
+            dst: MachineReg(5),
             ..
         }
     ));
-    // ops[2]: flush cache to frame before second call
+    // ops[2]: LocalSet — copy transient into cache reg
     assert!(matches!(
         second_call_block.ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
+            ..
+        }
+    ));
+    // ops[3]: flush cache to frame before second call
+    assert!(matches!(
+        second_call_block.ops[3].kind,
         MachineInstKind::Store {
             addr: crate::vm::machine::machine_ir::MachineAddr {
                 base: MachineReg(1),
@@ -1841,12 +1878,21 @@ fn preserves_cached_locals_across_block_edges() {
             ..
         }
     ));
-    // I64Const(9) coalesced directly into cache reg via LocalSet
+    // I64Const(9) into transient reg
     assert!(matches!(
         program.blocks[0].ops[1].kind,
         MachineInstKind::Move {
-            dst: MachineReg(4),
+            dst: MachineReg(5),
             src: MachineValue::Imm64(9),
+            ..
+        }
+    ));
+    // LocalSet — copy transient into cache reg
+    assert!(matches!(
+        program.blocks[0].ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(4),
+            src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
@@ -1854,23 +1900,9 @@ fn preserves_cached_locals_across_block_edges() {
         program.blocks[0].terminator,
         MachineTerminator::Jump(_)
     ));
-    // Block 1: cached local preserved across edge — no reload needed
-    assert!(matches!(
-        program.blocks[1].ops[0].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(5),
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        program.blocks[1].ops[1].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
+    // Block 1: cached local preserved — LocalGet/LocalSet pair is
+    // a no-op since value already lives in cache reg
+    assert_eq!(program.blocks[1].ops.len(), 0);
 }
 
 #[test]

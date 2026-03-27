@@ -222,15 +222,24 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
     crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 4);
+    assert_eq!(block.ops.len(), 5);
+    // Store-load forwarding turns the Load into a Move from original source
     assert!(matches!(
         block.ops[3].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[4].kind,
         MachineInstKind::Store {
             addr: MachineAddr {
                 base: MachineReg(8),
                 offset: 0,
             },
-            src: MachineValue::Reg(MachineReg(4)),
+            src: MachineValue::Reg(MachineReg(7)),
             ..
         }
     ));

@@ -52,7 +52,7 @@ fn rejects_out_of_range_register() {
             ops: alloc::vec![MachineInst {
                 kind: MachineInstKind::Move {
                     ty: MachineStorageType::GpWord,
-                    dst: MachineReg(1),
+                    dst: MachineReg(99),
                     src: MachineValue::Imm64(0),
                 },
             }],
