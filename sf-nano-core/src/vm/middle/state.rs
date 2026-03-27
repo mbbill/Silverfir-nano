@@ -51,13 +51,6 @@ impl ValueAlloc {
         }
     }
 
-    pub(super) fn value_home(&self, value: SsaValue) -> ValueHome {
-        self.homes
-            .get(value.0 as usize)
-            .copied()
-            .unwrap_or(ValueHome::None)
-    }
-
     pub(super) fn take_types(&mut self) -> Vec<ValueType> {
         core::mem::take(&mut self.types)
     }

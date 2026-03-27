@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use crate::vm::middle::{
     frame::FrameSlot,
-    ssa_ir::ir::{SsaBlock, SsaInstKind, SsaOperand, SsaProgram},
+    ssa_ir::ir::{SsaBlock, SsaInstKind, SsaProgram},
 };
 
 /// Run the sink planner over all blocks in the program.

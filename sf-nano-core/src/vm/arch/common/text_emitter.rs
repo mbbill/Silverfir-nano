@@ -8,6 +8,7 @@ pub(crate) struct TextEmitter {
     text: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {

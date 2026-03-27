@@ -104,14 +104,6 @@ pub(crate) struct SsaProgram {
 
 impl SsaProgram {
     #[inline]
-    pub(crate) fn value_home(&self, value: SsaValue) -> ValueHome {
-        self.value_homes
-            .get(value.0 as usize)
-            .copied()
-            .unwrap_or(ValueHome::None)
-    }
-
-    #[inline]
     pub(crate) fn value_sink(&self, value: SsaValue) -> Option<FrameSlot> {
         self.value_sink_local
             .get(value.0 as usize)
