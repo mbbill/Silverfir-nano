@@ -706,8 +706,17 @@ impl<'a> BlockLowerContext<'a> {
             });
             return Ok(0);
         }
-        if let Ok(scratch) = self.borrow_free_transients(1) {
-            let check_reg = scratch[0];
+        // Try to use a separate scratch register for the bounds-check
+        // addition so that addr32 stays unmodified (residual = 0).
+        //
+        // Guard: the borrowed register must differ from addr32.  When
+        // addr32 came from dead_value_reg it is back in the free pool,
+        // so borrow_free_transients can hand it out again.  If that
+        // happens, `check_reg = addr32 + access_bytes` silently corrupts
+        // addr32 while the caller believes residual is 0 (untouched).
+        // Filtering it out forces the in-place fallback path below,
+        // which correctly reports the residual for later subtraction.
+        if let Some(check_reg) = self.borrow_free_transients(1).ok().map(|s| s[0]).filter(|r| *r != addr32) {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
                     width: self.gp_word_int_width(),
