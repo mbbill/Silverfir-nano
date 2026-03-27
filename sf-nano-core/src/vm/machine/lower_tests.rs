@@ -2225,16 +2225,28 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         }
     ));
     let type_check_ops = &program.blocks[3].ops;
+    assert!(!type_check_ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Move {
+            dst,
+            src: MachineValue::Reg(src),
+            ..
+        } if dst == src
+    )));
     let type_check_scaled = match &type_check_ops[1].kind {
-        MachineInstKind::Move { dst, .. } => *dst,
-        other => panic!("expected scaled-index move in type-check block, got {other:?}"),
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Mul,
+            dst,
+            ..
+        } => *dst,
+        other => panic!("expected scaled-index multiply in type-check block, got {other:?}"),
     };
-    let type_check_base = match &type_check_ops[3].kind {
+    let type_check_base = match &type_check_ops[2].kind {
         MachineInstKind::Load { dst, .. } => *dst,
         other => panic!("expected function-view base load in type-check block, got {other:?}"),
     };
     assert_ne!(type_check_scaled, type_check_base);
-    let type_canon_offset = match &type_check_ops[6].kind {
+    let type_canon_offset = match &type_check_ops[5].kind {
         MachineInstKind::Load { addr, .. } => addr.offset,
         other => panic!("expected type-canon base load in type-check block, got {other:?}"),
     };
@@ -2243,7 +2255,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         crate::vm::runtime::context::ctx_offset::TYPE_CANON_BASE as i32
     );
     assert!(matches!(
-        type_check_ops[5].kind,
+        type_check_ops[4].kind,
         MachineInstKind::Load {
             width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
             extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
@@ -2262,17 +2274,29 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
 
     let dispatch_ops = &program.blocks[5].ops;
+    assert!(!dispatch_ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Move {
+            dst,
+            src: MachineValue::Reg(src),
+            ..
+        } if dst == src
+    )));
     let dispatch_scaled = match &dispatch_ops[1].kind {
-        MachineInstKind::Move { dst, .. } => *dst,
-        other => panic!("expected scaled-index move in dispatch block, got {other:?}"),
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Mul,
+            dst,
+            ..
+        } => *dst,
+        other => panic!("expected scaled-index multiply in dispatch block, got {other:?}"),
     };
-    let dispatch_base = match &dispatch_ops[3].kind {
+    let dispatch_base = match &dispatch_ops[2].kind {
         MachineInstKind::Load { dst, .. } => *dst,
         other => panic!("expected function-view base load in dispatch block, got {other:?}"),
     };
     assert_ne!(dispatch_scaled, dispatch_base);
     assert!(matches!(
-        dispatch_ops[5].kind,
+        dispatch_ops[4].kind,
         MachineInstKind::Load {
             width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
             extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
@@ -2280,7 +2304,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        dispatch_ops[6].kind,
+        dispatch_ops[5].kind,
         MachineInstKind::Load {
             width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
             extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,

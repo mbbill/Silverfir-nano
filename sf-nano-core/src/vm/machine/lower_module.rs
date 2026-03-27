@@ -1077,23 +1077,25 @@ fn dynamic_function_view_load(
     dst: MachineReg,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let runtime_layout = native_runtime_abi_layout(lower.gp_reg_width());
-    Ok(vec![
-        MachineInst {
-            kind: MachineInstKind::Load {
-                ty: MachineStorageType::GpWord,
-                dst: func_idx_dst,
-                addr: lower.frame_addr(index_slot)?,
-                width: lower.canonical_gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
+    let mut ops = vec![MachineInst {
+        kind: MachineInstKind::Load {
+            ty: MachineStorageType::GpWord,
+            dst: func_idx_dst,
+            addr: lower.frame_addr(index_slot)?,
+            width: lower.canonical_gp_word_mem_width(),
+            extension: MachineLoadExtension::None,
         },
-        MachineInst {
+    }];
+    if scaled_index_reg != func_idx_dst {
+        ops.push(MachineInst {
             kind: MachineInstKind::Move {
                 ty: MachineStorageType::GpWord,
                 dst: scaled_index_reg,
                 src: MachineValue::Reg(func_idx_dst),
             },
-        },
+        });
+    }
+    ops.extend([
         MachineInst {
             kind: MachineInstKind::IntBinary {
                 width: lower.gp_word_int_width(),
@@ -1133,7 +1135,8 @@ fn dynamic_function_view_load(
                 extension: field_extension,
             },
         },
-    ])
+    ]);
+    Ok(ops)
 }
 
 fn indexed_const_addr(
