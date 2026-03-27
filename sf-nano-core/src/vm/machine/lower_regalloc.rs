@@ -209,6 +209,37 @@ impl<'a> BlockLowerContext<'a> {
         Ok(reg)
     }
 
+    /// Resolve an operand to a machine register.
+    ///
+    /// - `SsaOperand::Value(v)` → `use_value(v)`
+    /// - `SsaOperand::Const(bits)` → allocate a transient, emit a Move with
+    ///   the constant, and return the register.
+    pub(super) fn use_operand(
+        &mut self,
+        operand: crate::vm::middle::ssa_ir::ir::SsaOperand,
+    ) -> Result<MachineReg, WasmError> {
+        match operand {
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => self.use_value(v),
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => {
+                let ty = crate::vm::machine::machine_ir::MachineStorageType::GpWord;
+                let Some(reg) = self.first_free_transient(ty) else {
+                    return Err(crate::error::WasmError::internal(
+                        "transient budget exhausted while materializing constant operand".into(),
+                    ));
+                };
+                self.set_transient(reg, None, Some(ty))?;
+                self.emit_machine_inst(crate::vm::machine::machine_ir::MachineInst {
+                    kind: crate::vm::machine::machine_ir::MachineInstKind::Move {
+                        ty,
+                        dst: reg,
+                        src: crate::vm::machine::machine_ir::MachineValue::Imm64(bits),
+                    },
+                });
+                Ok(reg)
+            }
+        }
+    }
+
     pub(super) fn use_value_regs(
         &mut self,
         value: SsaValue,
@@ -231,6 +262,28 @@ impl<'a> BlockLowerContext<'a> {
                 value
             ))
         })
+    }
+
+    /// Resolve an operand into an i64 (lo, hi) machine-value pair.
+    ///
+    /// - `Value(v)` → call `use_i64_value_pair` → two register values
+    /// - `Const(bits)` → split into lo/hi immediates
+    pub(super) fn use_i64_operand_pair(
+        &mut self,
+        operand: &crate::vm::middle::ssa_ir::ir::SsaOperand,
+    ) -> Result<(MachineValue, MachineValue), WasmError> {
+        match operand {
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => {
+                let (lo, hi) = self.use_i64_value_pair(*v)?;
+                Ok((MachineValue::Reg(lo), MachineValue::Reg(hi)))
+            }
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => {
+                Ok((
+                    MachineValue::Imm64(*bits as u32 as u64),
+                    MachineValue::Imm64((*bits >> 32) as u64),
+                ))
+            }
+        }
     }
 
     pub(super) fn split_continuation_params(

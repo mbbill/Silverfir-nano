@@ -109,7 +109,9 @@ impl<'a> BlockLowerContext<'a> {
         let Some(cached_index) = self.cached_local_index(sink_slot) else {
             return Ok(());
         };
-        let cache_reg = self.cached_locals()[cached_index].reg;
+        let cached = self.cached_locals()[cached_index];
+        let cache_reg = cached.reg;
+        let cache_hi_reg = cached.hi_reg;
         let mut arg_vals = [SsaValue(u32::MAX); 4];
         let mut n = 0;
         for a in args.iter() {
@@ -121,7 +123,10 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
         self.materialize_cache_aliases(cache_reg, &arg_vals[..n])?;
-        self.push_value_location(result, cache_reg, None);
+        if let Some(hi) = cache_hi_reg {
+            self.materialize_cache_aliases(hi, &arg_vals[..n])?;
+        }
+        self.push_value_location(result, cache_reg, cache_hi_reg);
         Ok(())
     }
 
