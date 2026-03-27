@@ -129,7 +129,7 @@ impl<'a> BlockLowerContext<'a> {
         match &inst.kind {
             SsaInstKind::LocalGet { slot, dst } => {
                 let ty = lir_value_storage_type(self.program(), *dst);
-                if matches!(ty, MachineStorageType::GpI64) {
+                if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
                     let ops = self.i64_ops();
                     ops.emit_load_slot_i64(self, *slot, *dst)?;
                     return Ok(());
@@ -179,7 +179,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             SsaInstKind::LocalSet { slot, src, .. } => {
                 let ty = lir_value_storage_type(self.program(), *src);
-                if matches!(ty, MachineStorageType::GpI64) {
+                if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
                     let ops = self.i64_ops();
                     ops.emit_store_slot_i64(self, *slot, *src)?;
                     return Ok(());
