@@ -227,6 +227,7 @@ fn lower_function(
         for inst in &block.ops {
             match &inst.kind {
                 SsaInstKind::Value { op, args, results } => {
+                    lower.apply_sink_premap(args, results)?;
                     if let Some(lowered) = lower.lower_leaf_special(
                         op,
                         args,

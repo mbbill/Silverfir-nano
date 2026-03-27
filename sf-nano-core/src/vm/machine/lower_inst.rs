@@ -89,6 +89,42 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_reload_cached_locals_selective(skip_reload)
     }
 
+    /// Pre-map a sunk result to its cache register so the lowering
+    /// writes directly there instead of allocating a transient.
+    ///
+    /// Must be called before any register allocation for the result
+    /// (i.e. before both `lower_leaf_special` and `lower_inst`).
+    pub(super) fn apply_sink_premap(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        if results.len() != 1 {
+            return Ok(());
+        }
+        let result = results[0];
+        let Some(sink_slot) = self.program().value_sink(result) else {
+            return Ok(());
+        };
+        let Some(cached_index) = self.cached_local_index(sink_slot) else {
+            return Ok(());
+        };
+        let cache_reg = self.cached_locals()[cached_index].reg;
+        let mut arg_vals = [SsaValue(u32::MAX); 4];
+        let mut n = 0;
+        for a in args.iter() {
+            if let SsaOperand::Value(v) = a {
+                if n < arg_vals.len() {
+                    arg_vals[n] = *v;
+                    n += 1;
+                }
+            }
+        }
+        self.materialize_cache_aliases(cache_reg, &arg_vals[..n])?;
+        self.push_value_location(result, cache_reg, None);
+        Ok(())
+    }
+
     pub(super) fn lower_inst(&mut self, inst: &SsaInst) -> Result<(), WasmError> {
         match &inst.kind {
             SsaInstKind::LocalGet { slot, dst } => {
@@ -215,28 +251,8 @@ impl<'a> BlockLowerContext<'a> {
                 self.release_dead_values()?;
             }
             SsaInstKind::Value { op, args, results } => {
-                // Check for sink-local annotations: pre-map sunk results to
-                // cache registers so the instruction writes directly there.
-                if results.len() == 1 {
-                    let result = results[0];
-                    if let Some(sink_slot) = self.program().value_sink(result) {
-                        if let Some(cached_index) = self.cached_local_index(sink_slot) {
-                            let cache_reg = self.cached_locals()[cached_index].reg;
-                            let mut arg_vals = [SsaValue(u32::MAX); 4];
-                            let mut n = 0;
-                            for a in args.iter() {
-                                if let SsaOperand::Value(v) = a {
-                                    if n < arg_vals.len() {
-                                        arg_vals[n] = *v;
-                                        n += 1;
-                                    }
-                                }
-                            }
-                            self.materialize_cache_aliases(cache_reg, &arg_vals[..n])?;
-                            self.push_value_location(result, cache_reg, None);
-                        }
-                    }
-                }
+                // Sink pre-mapping is now applied by the caller
+                // (lower_module.rs) before dispatching to lower_inst.
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }
