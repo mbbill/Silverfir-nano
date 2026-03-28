@@ -1,11 +1,12 @@
 pub(super) mod abi;
+pub(crate) mod backend;
 pub mod compile;
-mod compile_control;
-mod compile_helpers;
-mod compile_inst;
-mod emit;
+mod control;
 mod enc;
+mod inst;
+mod operands;
 mod reg;
+mod select;
 
 use alloc::vec;
 

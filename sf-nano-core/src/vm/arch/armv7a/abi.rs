@@ -48,7 +48,8 @@ use crate::{
     },
 };
 
-use super::{emit::Arm32TextEmitter, enc, reg::Arm32Reg};
+use crate::vm::arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter};
+use super::{enc, reg::Arm32Reg};
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
 /// Call-local scratch. LR is saved in the shared prologue and only used as a
@@ -59,6 +60,19 @@ pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
 pub(super) const FP_SCRATCH0: u32 = 0; // D0
 pub(super) const FP_SCRATCH1: u32 = 1; // D1
 pub(super) const FP_SCRATCH2: u32 = 2; // D2
+
+// ── Scratch pool construction ────────────────────────────────────────────────
+
+const GP_SCRATCHES: [Arm32Reg; 2] = [SCRATCH0, SCRATCH1];
+const FP_SCRATCHES: [u32; 3] = [FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2];
+
+pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm32Reg, 2> {
+    ScratchPool::new(GP_SCRATCHES)
+}
+
+pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
+    ScratchPool::new(FP_SCRATCHES)
+}
 
 // ── Dynamic register arrays (MachineIR allocation) ───────────────────────────
 //
@@ -233,7 +247,7 @@ fn callee_saved_gp_mask() -> u16 {
     mask
 }
 
-pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
+pub(super) fn emit_shared_prologue(text: &mut TextEmitter) {
     // Preserve 8-byte stack alignment across all helper and runtime calls.
     // The GP save set has an odd number of words, so reserve one extra word
     // before the push/vpush sequence.
@@ -251,7 +265,7 @@ pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
     text.emit_u32(enc::vpush_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
 }
 
-pub(super) fn emit_shared_epilogue(text: &mut Arm32TextEmitter) {
+pub(super) fn emit_shared_epilogue(text: &mut TextEmitter) {
     // VPOP {D8-D15}
     text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
     // Restore the GP save set, then drop the alignment pad and return via LR.

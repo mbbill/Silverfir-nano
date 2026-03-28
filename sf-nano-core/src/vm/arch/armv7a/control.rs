@@ -3,39 +3,36 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBranchCond, MachineCompareKind, MachineFloatWidth, MachineSign, MachineTerminator,
-        MachineValue,
+        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineFloatWidth, MachineSign,
+        MachineTerminator, MachineValue, MACHINE_CTX_REG,
     },
 };
 
 use super::{
-    abi::{emit_shared_epilogue, map_fixed_reg, map_reg, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1},
-    armv7a_raise_trap,
+    abi::{map_fixed_reg, map_reg, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1},
+    backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     reg::Arm32Reg,
-};
-
-use crate::vm::machine::machine_ir::MACHINE_CTX_REG;
-use super::compile::{BranchFixupKind, FunctionCompiler, LabelKind};
-
-use super::compile_helpers::{
-    emit_host_call, materialize_float_value_dreg, trap_kind_to_u32,
+    select,
 };
 
 // ─── Terminator compilation ─────────────────────────────────────────────────
 
-pub(super) fn compile_terminator(
-    fc: &mut FunctionCompiler<'_>,
+impl<'a> Arm32Backend<'a> {
+
+pub(super) fn lower_terminator_dispatch(
+    &mut self,
     terminator: &MachineTerminator,
+    _fallthrough: Option<MachineBlockId>,
 ) -> Result<(), WasmError> {
     match terminator {
         MachineTerminator::Return => {
-            fc.emit_return_sequence()?;
+            self.emit_return_sequence()?;
         }
 
         MachineTerminator::Jump(edge) => {
-            let label = fc.emit_edge(edge.target, &edge.args)?;
-            fc.emit_branch(BranchFixupKind::B, label);
+            let label = self.core.emit_edge(edge.target, &edge.args)?;
+            self.emit_branch(BranchFixupKind::B, label);
         }
 
         MachineTerminator::Branch {
@@ -43,23 +40,17 @@ pub(super) fn compile_terminator(
             then_edge,
             else_edge,
         } => {
-            let then_label = fc.emit_edge(then_edge.target, &then_edge.args)?;
-            let else_label = fc.emit_edge(else_edge.target, &else_edge.args)?;
+            let then_label = self.core.emit_edge(then_edge.target, &then_edge.args)?;
+            let else_label = self.core.emit_edge(else_edge.target, &else_edge.args)?;
 
-            let arm_cond = compile_branch_condition(fc, cond)?;
-            fc.emit_branch(BranchFixupKind::BCond(arm_cond), then_label);
-            fc.emit_branch(BranchFixupKind::B, else_label);
+            let arm_cond = self.compile_branch_condition(cond)?;
+            self.emit_branch(BranchFixupKind::BCond(arm_cond), then_label);
+            self.emit_branch(BranchFixupKind::B, else_label);
         }
 
         MachineTerminator::Trap { kind } => {
-            let return_error_label = fc.return_error_label;
-            fc.text
-                .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
-            let trap_code = trap_kind_to_u32(*kind);
-            fc.emit_load_u32(Arm32Reg::R1, trap_code);
-            fc.emit_load_u32(Arm32Reg::R2, fc.current_trap_site());
-            emit_host_call(fc, armv7a_raise_trap as usize);
-            fc.emit_branch(BranchFixupKind::B, return_error_label);
+            let trap_label = self.core.ensure_trap_label(*kind);
+            self.emit_branch(BranchFixupKind::B, trap_label);
         }
 
         MachineTerminator::CallDirect {
@@ -67,7 +58,7 @@ pub(super) fn compile_terminator(
             callee_frame_base,
             continuation,
         } => {
-            fc.emit_call_direct(*callee, *callee_frame_base, *continuation)?;
+            self.emit_call_direct(*callee, *callee_frame_base, *continuation)?;
         }
 
         MachineTerminator::CallIndirect {
@@ -77,7 +68,7 @@ pub(super) fn compile_terminator(
             caller_result_base,
             continuation,
         } => {
-            fc.emit_call_indirect(
+            self.emit_call_indirect(
                 *callee_target,
                 *callee_frame_base,
                 *arg_slots,
@@ -93,8 +84,8 @@ pub(super) fn compile_terminator(
                 ));
             }
             if entries.len() == 1 {
-                let label = fc.emit_edge(entries[0].target, &entries[0].args)?;
-                fc.emit_branch(BranchFixupKind::B, label);
+                let label = self.core.emit_edge(entries[0].target, &entries[0].args)?;
+                self.emit_branch(BranchFixupKind::B, label);
                 return Ok(());
             }
 
@@ -102,7 +93,7 @@ pub(super) fn compile_terminator(
             let index_hw = match index {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
+                    self.emit_load_u32(SCRATCH0, *v as u32);
                     SCRATCH0
                 }
             };
@@ -112,33 +103,34 @@ pub(super) fn compile_terminator(
             } else {
                 SCRATCH0
             };
-            fc.emit_load_u32(clamp_hw, max_idx);
-            fc.text.emit_u32(enc::cmp_reg(index_hw, clamp_hw));
+            self.emit_load_u32(clamp_hw, max_idx);
+            self.core.text.emit_u32(enc::cmp_reg(index_hw, clamp_hw));
             // If index > max, use max (conditional move)
-            fc.text
+            self.core
+                .text
                 .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, clamp_hw));
 
             // Emit edge stubs and collect their labels
             let mut edge_label_ids = alloc::vec::Vec::with_capacity(entries.len());
             for entry in entries {
-                let label = fc.emit_edge(entry.target, &entry.args)?;
+                let label = self.core.emit_edge(entry.target, &entry.args)?;
                 edge_label_ids.push(label);
             }
 
             // ARM reads PC as current+8 for data-processing instructions, so
             // keep one 4-byte padding slot between the dispatch ADD and the
             // first branch-table entry.
-            fc.text.emit_u32(enc::add_reg_lsl_imm(
+            self.core.text.emit_u32(enc::add_reg_lsl_imm(
                 Arm32Reg::R15,
                 Arm32Reg::R15,
                 index_hw,
                 2,
             ));
-            fc.text.emit_u32(enc::nop());
+            self.core.text.emit_u32(enc::nop());
 
             // Emit branch table entries (will be patched by resolve_fixups)
             for &label_id in &edge_label_ids {
-                fc.emit_branch(BranchFixupKind::B, label_id);
+                self.emit_branch(BranchFixupKind::B, label_id);
             }
         }
     }
@@ -148,7 +140,7 @@ pub(super) fn compile_terminator(
 // ─── Branch condition compilation ───────────────────────────────────────────
 
 pub(super) fn compile_branch_condition(
-    fc: &mut FunctionCompiler<'_>,
+    &mut self,
     cond: &MachineBranchCond,
 ) -> Result<Cond, WasmError> {
     match cond {
@@ -157,11 +149,11 @@ pub(super) fn compile_branch_condition(
             let hw = match value {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
+                    self.emit_load_u32(SCRATCH0, *v as u32);
                     SCRATCH0
                 }
             };
-            fc.text.emit_u32(enc::cmp_imm(hw, 0, 0));
+            self.core.text.emit_u32(enc::cmp_imm(hw, 0, 0));
             Ok(Cond::Ne)
         }
 
@@ -175,26 +167,26 @@ pub(super) fn compile_branch_condition(
             let lhs_hw = match lhs {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
+                    self.emit_load_u32(SCRATCH0, *v as u32);
                     SCRATCH0
                 }
             };
 
             match rhs {
                 MachineValue::Reg(r) => {
-                    fc.text.emit_u32(enc::cmp_reg(lhs_hw, map_reg(*r)?));
+                    self.core.text.emit_u32(enc::cmp_reg(lhs_hw, map_reg(*r)?));
                 }
                 MachineValue::Imm64(v) => {
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
-                        fc.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
+                        self.core.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
                     } else {
                         let tmp = if lhs_hw == SCRATCH0 {
                             Arm32Reg::R3
                         } else {
                             SCRATCH0
                         };
-                        fc.emit_load_u32(tmp, *v as u32);
-                        fc.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
+                        self.emit_load_u32(tmp, *v as u32);
+                        self.core.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
                     }
                 }
             }
@@ -214,4 +206,6 @@ pub(super) fn compile_branch_condition(
         }
 
     }
+}
+
 }
