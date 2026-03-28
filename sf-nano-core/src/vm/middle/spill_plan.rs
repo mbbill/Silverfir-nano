@@ -280,7 +280,7 @@ fn plan_prefix(
             fill_for_operands(&mut prefix, state, frame, keep_live);
             spill_all_except_top(&mut prefix, state, frame, keep_live);
         }
-        SemanticOpKind::Else { .. } | SemanticOpKind::End => {
+        SemanticOpKind::Else { .. } => {
             if let Some(frame_state) = state.control.last() {
                 if frame_state.entered_unreachable {
                     return prefix;
@@ -289,6 +289,22 @@ fn plan_prefix(
                     return prefix;
                 }
                 fill_for_operands_inner(&mut prefix, state, frame, frame_state.results, false);
+            }
+        }
+        SemanticOpKind::End => {
+            if let Some(frame_state) = state.control.last() {
+                if frame_state.entered_unreachable {
+                    return prefix;
+                }
+                if matches!(frame_state.kind, ControlFrameKind::Function) {
+                    return prefix;
+                }
+                // Don't eagerly fill block results here.  The results
+                // are on the operand stack (possibly in frame slots)
+                // and the next instruction's fill_for_operands will
+                // reload exactly what it needs.  Filling all results
+                // at End can exceed the transient budget when blocks
+                // produce multiple i64 values on 32-bit targets.
             }
         }
         SemanticOpKind::Br { arity, .. } => {
@@ -464,7 +480,13 @@ fn apply_semantic_effect(
                     state.height = end_height;
                     state.spill_depth = match frame.kind {
                         ControlFrameKind::Function => end_height,
-                        ControlFrameKind::Structured => frame.start_height,
+                        // Preserve spill state: block results may still
+                        // be in frame slots if the End prefix didn't
+                        // fill them.  Don't drop below the current
+                        // spill depth (capped to the new height).
+                        ControlFrameKind::Structured => {
+                            state.spill_depth.min(end_height).max(frame.start_height)
+                        }
                     };
                     state.type_stack.truncate(frame.start_height as usize);
                     state.type_stack.extend_from_slice(&frame.result_types);
