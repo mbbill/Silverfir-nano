@@ -27,6 +27,7 @@ mod optimize;
 mod sink_plan;
 mod spill_plan;
 mod state;
+mod thread_jumps;
 
 #[cfg(test)]
 mod tests;
@@ -165,6 +166,7 @@ pub(crate) fn prepare_function(
         value_sink_local: Vec::new(),
     };
     let mut ssa = ssa;
+    thread_jumps::simplify_cfg(&mut ssa);
     optimize::optimize_ssa(&mut ssa, frame);
     sink_plan::plan_sinks(&mut ssa);
     validate_program(&ssa)?;
