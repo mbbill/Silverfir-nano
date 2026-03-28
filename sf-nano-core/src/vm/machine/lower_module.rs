@@ -38,6 +38,7 @@ use crate::{
 
 use super::{
     gp32::Gp32Lowering,
+    lower_cache_select::compute_all_block_prefs,
     lower_context::{BlockLowerContext, ValueRegs},
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
@@ -194,6 +195,24 @@ fn lower_function(
     } else {
         &Gp64Lowering
     };
+
+    // Compute per-block cache preferences when demand analysis is available.
+    // These are stored for future use by remap trampolines and call-boundary
+    // cache switching. For now, all blocks use the global prefs until the
+    // remap infrastructure (Steps 3+4) is in place.
+    let _per_block_prefs: Option<Vec<SsaLocalCachePrefs>> =
+        input.ssa.block_local_demand.as_ref().map(|demand| {
+            compute_all_block_prefs(
+                demand,
+                &demand.local_types,
+                demand.param_count,
+                input.frame,
+                config.gp_unit_bytes,
+                config.gp_local_cache_budget,
+                config.fp_local_cache_budget,
+                input.ssa.entry.as_usize(),
+            )
+        });
 
     for block in &input.ssa.blocks {
         let target = block.id;

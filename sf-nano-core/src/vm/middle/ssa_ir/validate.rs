@@ -462,6 +462,7 @@ mod tests {
             value_types: alloc::vec![],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -507,6 +508,7 @@ mod tests {
             value_types: alloc::vec![],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -548,6 +550,7 @@ mod tests {
             ],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -583,6 +586,7 @@ mod tests {
             value_types: alloc::vec![ValueType::I64],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
@@ -621,6 +625,7 @@ mod tests {
             )],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         validate_program(&program).expect("ref subtypes share the same GP-word cached-local class");
@@ -654,6 +659,7 @@ mod tests {
             value_types: alloc::vec![ValueType::I32],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         let error = validate_program(&program).expect_err("validation should fail");

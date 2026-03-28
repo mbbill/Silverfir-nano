@@ -4,6 +4,7 @@
 //! registers. GP cache holds i32/i64/ref locals; FP cache holds f32/f64 locals.
 
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use crate::value_type::ValueType;
 use crate::vm::{
@@ -580,6 +581,225 @@ fn loop_weight(depth: u32) -> u64 {
     WEIGHTS[depth.min(6) as usize]
 }
 
+// ---------------------------------------------------------------------------
+// Per-block local demand analysis (register-agnostic)
+// ---------------------------------------------------------------------------
+
+/// Per-block local access demand. Register-agnostic — just weight vectors.
+/// The machine lowering layer applies budget-aware selection per block.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockLocalDemand {
+    /// One weight vector per SSA block (indexed by block position in
+    /// `block_ranges`). Each inner Vec has length == `local_count`.
+    pub block_weights: Vec<Vec<u64>>,
+    /// Loop depth at each block's entry point.
+    pub block_loop_depth: Vec<u32>,
+    /// Per-local: can the initial zero be observed? Whole-function analysis,
+    /// used only by the entry block for cached-local initialization.
+    pub reads_before_write: Vec<bool>,
+    /// Per-call-site: local indices that are written-before-read after the
+    /// call. One `Vec<u32>` per call site (in semantic op order). Machine
+    /// lowering maps these to the continuation block's cache indices.
+    pub continuation_skip_locals: Vec<Vec<u32>>,
+    /// Local types from the semantic program, needed for GP/FP bank selection.
+    pub local_types: Vec<ValueType>,
+    /// Number of function parameters (locals with index < param_count).
+    pub param_count: u16,
+}
+
+/// Compute per-block local demand from a semantic program and its block ranges.
+///
+/// `block_ranges` are the contiguous semantic-op ranges produced by
+/// `build_block_ranges()` + `retain_reachable_blocks()`.
+pub(super) fn analyze_per_block_demand(
+    semantic: &SemanticProgram,
+    block_ranges: &[Range<usize>],
+) -> BlockLocalDemand {
+    let n = semantic.local_count as usize;
+    if n == 0 || block_ranges.is_empty() {
+        return BlockLocalDemand {
+            block_weights: alloc::vec![Vec::new(); block_ranges.len()],
+            block_loop_depth: alloc::vec![0; block_ranges.len()],
+            reads_before_write: Vec::new(),
+            continuation_skip_locals: Vec::new(),
+            local_types: semantic.local_types.clone(),
+            param_count: semantic.params,
+        };
+    }
+
+    let (block_weights, block_loop_depth) =
+        per_block_local_weights(semantic, block_ranges);
+    let reads_before_write = entry_scope_reads_before_write(semantic);
+    let continuation_skip_locals = compute_continuation_skip_locals(semantic);
+
+    BlockLocalDemand {
+        block_weights,
+        block_loop_depth,
+        reads_before_write,
+        continuation_skip_locals,
+        local_types: semantic.local_types.clone(),
+        param_count: semantic.params,
+    }
+}
+
+/// Compute per-block local access weight vectors and loop depths.
+///
+/// Walks all semantic ops sequentially (tracking loop depth via a control
+/// stack), accumulating weights into the current block's weight vector.
+fn per_block_local_weights(
+    semantic: &SemanticProgram,
+    block_ranges: &[Range<usize>],
+) -> (Vec<Vec<u64>>, Vec<u32>) {
+    let n = semantic.local_count as usize;
+    let block_count = block_ranges.len();
+    let mut weights = Vec::with_capacity(block_count);
+    for _ in 0..block_count {
+        weights.push(alloc::vec![0u64; n]);
+    }
+    let mut depths = alloc::vec![0u32; block_count];
+
+    // Build a reverse map: semantic_op_index → block index.
+    // For ops outside any block range, block_of[i] = usize::MAX.
+    let op_count = semantic.ops.len();
+    let mut block_of = alloc::vec![usize::MAX; op_count];
+    for (bi, range) in block_ranges.iter().enumerate() {
+        for idx in range.clone() {
+            if idx < op_count {
+                block_of[idx] = bi;
+            }
+        }
+    }
+
+    let mut loop_depth = 0u32;
+    let mut control_stack: Vec<bool> = Vec::new();
+
+    for (op_index, op) in semantic.ops.iter().enumerate() {
+        // Record loop depth at block start.
+        let bi = block_of[op_index];
+        if bi != usize::MAX {
+            let range = &block_ranges[bi];
+            if op_index == range.start {
+                depths[bi] = loop_depth;
+            }
+        }
+
+        match op.kind {
+            SemanticOpKind::Block { .. } | SemanticOpKind::If { .. } => {
+                control_stack.push(false);
+            }
+            SemanticOpKind::Loop { .. } => {
+                loop_depth = loop_depth.saturating_add(1);
+                control_stack.push(true);
+            }
+            SemanticOpKind::Else { .. } => {}
+            SemanticOpKind::End => {
+                if control_stack.pop().unwrap_or(false) {
+                    loop_depth = loop_depth.saturating_sub(1);
+                }
+            }
+            SemanticOpKind::LocalGet { idx }
+            | SemanticOpKind::LocalSet { idx }
+            | SemanticOpKind::LocalTee { idx } => {
+                if bi != usize::MAX {
+                    if let Some(w) = weights[bi].get_mut(idx as usize) {
+                        *w = w.saturating_add(loop_weight(loop_depth));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (weights, depths)
+}
+
+/// For each call site, compute the set of local indices that are
+/// written-before-read on the straight-line path immediately after the call.
+///
+/// Returns one `Vec<u32>` per call site (in semantic op order), containing
+/// the local indices that can skip reload. This is register-agnostic — the
+/// machine lowering maps these indices to the continuation block's cache.
+fn compute_continuation_skip_locals(semantic: &SemanticProgram) -> Vec<Vec<u32>> {
+    let mut results = Vec::new();
+
+    for (op_index, op) in semantic.ops.iter().enumerate() {
+        let is_call = matches!(
+            op.kind,
+            SemanticOpKind::CallInternal { .. }
+                | SemanticOpKind::CallExternal { .. }
+                | SemanticOpKind::CallIndirect { .. }
+        );
+        if !is_call {
+            continue;
+        }
+
+        let mut written = Vec::new();
+        let mut read = Vec::new();
+
+        for subsequent in &semantic.ops[op_index + 1..] {
+            match subsequent.kind {
+                // Stop at control flow or another call.
+                SemanticOpKind::Block { .. }
+                | SemanticOpKind::Loop { .. }
+                | SemanticOpKind::If { .. }
+                | SemanticOpKind::Else { .. }
+                | SemanticOpKind::End
+                | SemanticOpKind::Br { .. }
+                | SemanticOpKind::BrIf { .. }
+                | SemanticOpKind::BrTable { .. }
+                | SemanticOpKind::CallInternal { .. }
+                | SemanticOpKind::CallExternal { .. }
+                | SemanticOpKind::CallIndirect { .. }
+                | SemanticOpKind::ReturnVoid
+                | SemanticOpKind::ReturnOne
+                | SemanticOpKind::Return { .. }
+                | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => break,
+
+                SemanticOpKind::LocalGet { idx } => {
+                    let i = idx as u32;
+                    if !written.contains(&i) {
+                        if !read.contains(&i) {
+                            read.push(i);
+                        }
+                    }
+                }
+                SemanticOpKind::LocalSet { idx } | SemanticOpKind::LocalTee { idx } => {
+                    let i = idx as u32;
+                    if !read.contains(&i) {
+                        if !written.contains(&i) {
+                            written.push(i);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        results.push(written);
+    }
+
+    results
+}
+
+/// Make `select_with_budget` available to the machine lowering layer.
+pub(crate) fn select_locals_with_budget(
+    weights: &[u64],
+    budget: usize,
+    eligible: impl Fn(usize) -> bool,
+    cost: impl Fn(usize) -> usize,
+) -> Vec<u32> {
+    select_with_budget(weights, budget, eligible, cost)
+}
+
+/// Make `select_top_n` available to the machine lowering layer.
+pub(crate) fn select_locals_top_n(
+    weights: &[u64],
+    count: usize,
+    eligible: impl Fn(usize) -> bool,
+) -> Vec<u32> {
+    select_top_n(weights, count, eligible)
+}
+
 #[cfg(test)]
 mod tests {
     use super::analyze_local_cache_prefs;
@@ -655,5 +875,91 @@ mod tests {
             prefs_32.gp_preferred_slots,
             alloc::vec![frame.local_slot(1)]
         );
+    }
+
+    #[test]
+    fn per_block_weights_splits_by_range() {
+        // Two blocks: ops 0..2 and 2..4.
+        // Block 0 accesses local 0 twice, block 1 accesses local 1 twice.
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 2,
+            max_stack_height: 0,
+            ops: alloc::vec![
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 0 } },
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 0 } },
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 1 } },
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 1 } },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+        let ranges = alloc::vec![0..2, 2..4];
+        let demand = super::analyze_per_block_demand(&semantic, &ranges);
+        // Block 0: local 0 has weight 2, local 1 has weight 0
+        assert_eq!(demand.block_weights[0], alloc::vec![2, 0]);
+        // Block 1: local 0 has weight 0, local 1 has weight 2
+        assert_eq!(demand.block_weights[1], alloc::vec![0, 2]);
+        assert_eq!(demand.block_loop_depth, alloc::vec![0, 0]);
+    }
+
+    #[test]
+    fn per_block_weights_respects_loop_depth() {
+        // Block 0 (ops 0..1): outside loop
+        // Block 1 (ops 1..3): inside loop (loop header + local access)
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 1,
+            max_stack_height: 0,
+            ops: alloc::vec![
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 0 } },
+                SemanticOp { kind: SemanticOpKind::Loop { params: 0, results: 0 } },
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 0 } },
+                SemanticOp { kind: SemanticOpKind::End },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+        let ranges = alloc::vec![0..1, 1..4];
+        let demand = super::analyze_per_block_demand(&semantic, &ranges);
+        // Block 0: depth 0, weight = 1
+        assert_eq!(demand.block_weights[0], alloc::vec![1]);
+        // Block 1: loop starts at op 1, local.get at op 2 is at depth 1 (weight 10)
+        assert_eq!(demand.block_weights[1], alloc::vec![10]);
+        assert_eq!(demand.block_loop_depth[0], 0);
+        assert_eq!(demand.block_loop_depth[1], 0); // loop op itself is still at depth 0 entry
+    }
+
+    #[test]
+    fn continuation_skip_locals_basic() {
+        // call; local.set 2; local.get 0; local.set 1
+        // local 2 is written before read → skip
+        // local 0 is read first → no skip
+        // local 1 is written but after read of 0 → skip (it's not read before written)
+        let semantic = SemanticProgram {
+            params: 0,
+            results: 0,
+            local_count: 3,
+            max_stack_height: 0,
+            ops: alloc::vec![
+                SemanticOp { kind: SemanticOpKind::CallExternal { func_idx: 0, params: 0, results: 0 } },
+                SemanticOp { kind: SemanticOpKind::LocalSet { idx: 2 } },
+                SemanticOp { kind: SemanticOpKind::LocalGet { idx: 0 } },
+                SemanticOp { kind: SemanticOpKind::LocalSet { idx: 1 } },
+            ],
+            local_types: alloc::vec![],
+            result_types: alloc::vec![],
+            op_result_types: alloc::collections::BTreeMap::new(),
+        };
+        let skip = super::compute_continuation_skip_locals(&semantic);
+        assert_eq!(skip.len(), 1);
+        // Locals 2 and 1 are written before read
+        let mut skip_sorted = skip[0].clone();
+        skip_sorted.sort();
+        assert_eq!(skip_sorted, alloc::vec![1, 2]);
     }
 }

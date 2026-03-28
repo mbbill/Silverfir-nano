@@ -819,6 +819,7 @@ mod tests {
             value_types: alloc::vec![],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
@@ -876,6 +877,7 @@ mod tests {
             value_types: alloc::vec![],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
@@ -932,6 +934,7 @@ mod tests {
             value_types: alloc::vec![],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
@@ -990,6 +993,7 @@ mod tests {
             value_types: alloc::vec![ValueType::I32, ValueType::I64],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));

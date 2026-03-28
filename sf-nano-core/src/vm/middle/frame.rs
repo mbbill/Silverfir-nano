@@ -65,6 +65,18 @@ impl FrameLayoutPlan {
     pub(crate) const fn return_results(self, count: u16) -> FrameSpan {
         FrameSpan::new(self.operand_slot(0), count)
     }
+
+    /// Map a frame slot back to a local index, if the slot falls in the locals
+    /// range. Returns `None` if the slot is outside `[locals.start, locals.start + local_count)`.
+    #[inline]
+    pub(crate) const fn slot_to_local(self, slot: FrameSlot, local_count: u16) -> Option<u16> {
+        let base = self.locals.start.0;
+        if slot.0 >= base && slot.0 < base + local_count {
+            Some(slot.0 - base)
+        } else {
+            None
+        }
+    }
 }
 
 #[inline]

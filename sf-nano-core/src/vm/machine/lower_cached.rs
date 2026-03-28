@@ -1,16 +1,21 @@
 //! Cached local management -- reload / save / entry initialization.
 
+use alloc::vec::Vec;
+
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{
-        MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType,
-        MachineValue,
+    vm::{
+        machine::machine_ir::{
+            MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType,
+            MachineValue,
+        },
+        middle::ssa_ir::ir::SsaLocalCachePrefs,
     },
 };
 
 use super::{
-    lower_context::BlockLowerContext,
-    lower_regalloc::canonical_cached_local_mem_width,
+    lower_context::{BlockLowerContext, CachedLocal},
+    lower_regalloc::{canonical_cached_local_mem_width, value_type_storage_type},
 };
 
 impl<'a> BlockLowerContext<'a> {
@@ -128,6 +133,148 @@ impl<'a> BlockLowerContext<'a> {
                 });
             }
         }
+        Ok(())
+    }
+
+    /// Switch the cached-local set to new preferences. Used at call
+    /// continuation points where the post-call block may benefit from
+    /// caching different locals. Must be called AFTER `emit_save_all_cached_locals()`
+    /// (the old set is already saved to frame) and BEFORE
+    /// `emit_reload_cached_locals_selective()` (which reloads the new set).
+    pub(super) fn switch_cache_prefs(
+        &mut self,
+        new_prefs: &SsaLocalCachePrefs,
+    ) -> Result<(), WasmError> {
+        let regfile = self.regfile();
+        let gp_reg_width = self.gp_reg_width();
+        let mut cached_locals = Vec::new();
+        let mut gp_cache_index = 0usize;
+
+        for (index, slot) in new_prefs.gp_preferred_slots.iter().copied().enumerate() {
+            let Some(reg) = regfile.gp_local_cache(gp_cache_index) else {
+                break;
+            };
+            let ty = new_prefs
+                .gp_preferred_types
+                .get(index)
+                .copied()
+                .map(value_type_storage_type)
+                .ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "switch_cache_prefs: GP cached local {:?} is missing a type entry",
+                        slot
+                    ))
+                })?;
+            let info = new_prefs
+                .gp_local_info
+                .get(index)
+                .copied()
+                .unwrap_or_default();
+            let hi_reg = if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                Some(regfile.gp_local_cache(gp_cache_index + 1).ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "switch_cache_prefs: GP cached local {:?} needs second register on 32-bit",
+                        slot
+                    ))
+                })?)
+            } else {
+                None
+            };
+            cached_locals.push(CachedLocal {
+                slot,
+                reg,
+                hi_reg,
+                ty,
+                info,
+            });
+            gp_cache_index += if hi_reg.is_some() { 2 } else { 1 };
+        }
+
+        for (index, slot) in new_prefs.fp_preferred_slots.iter().copied().enumerate() {
+            let Some(reg) = regfile.fp_local_cache(index) else {
+                break;
+            };
+            let ty = new_prefs
+                .fp_preferred_types
+                .get(index)
+                .copied()
+                .map(value_type_storage_type)
+                .ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "switch_cache_prefs: FP cached local {:?} is missing a type entry",
+                        slot
+                    ))
+                })?;
+            let info = new_prefs
+                .fp_local_info
+                .get(index)
+                .copied()
+                .unwrap_or_default();
+            cached_locals.push(CachedLocal {
+                slot,
+                reg,
+                hi_reg: None,
+                ty,
+                info,
+            });
+        }
+
+        self.replace_cached_locals(cached_locals);
+        Ok(())
+    }
+
+    /// Emit remap instructions to transition from `old_set` to `new_set`.
+    /// Stores evicted locals to frame, loads promoted locals from frame.
+    /// Used in remap trampoline blocks.
+    ///
+    /// Precondition: both sets use the same register file layout (same
+    /// indices map to same physical registers).
+    pub(super) fn emit_cache_remap(
+        &mut self,
+        old_set: &[CachedLocal],
+        new_set: &[CachedLocal],
+    ) -> Result<(), WasmError> {
+        // Phase 1: Store evicted locals (in old, not in new) to frame.
+        for old in old_set {
+            let still_cached = new_set.iter().any(|n| n.slot == old.slot);
+            if !still_cached {
+                if matches!(old.ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_save_cached_i64(self, old)?;
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: old.ty,
+                            addr: self.frame_addr(old.slot)?,
+                            width: canonical_cached_local_mem_width(old.ty),
+                            src: MachineValue::Reg(old.reg),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Phase 2: Load promoted locals (in new, not in old) from frame.
+        for new in new_set {
+            let was_cached = old_set.iter().any(|o| o.slot == new.slot);
+            if !was_cached {
+                if matches!(new.ty, MachineStorageType::GpI64) {
+                    let ops = self.i64_ops();
+                    ops.emit_reload_cached_i64(self, new)?;
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            ty: new.ty,
+                            dst: new.reg,
+                            addr: self.frame_addr(new.slot)?,
+                            width: canonical_cached_local_mem_width(new.ty),
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 

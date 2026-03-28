@@ -977,6 +977,7 @@ mod tests {
             value_types,
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
+            block_local_demand: None,
         }));
         let regfile = Box::leak(Box::new(
             MachineRegFile::new(BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 0, 4))

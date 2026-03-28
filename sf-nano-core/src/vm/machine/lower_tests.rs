@@ -80,6 +80,7 @@ fn lowers_simple_slot_and_add_block() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -191,6 +192,7 @@ fn lowers_select_with_wasm_operand_order() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -240,6 +242,7 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let err = lower_module(LowerModuleInput {
@@ -276,6 +279,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -342,6 +346,7 @@ fn rejects_inconsistent_return_result_spans() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let err = lower_module(LowerModuleInput {
@@ -388,6 +393,7 @@ fn rejects_mixed_void_and_value_returns() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let err = lower_module(LowerModuleInput {
@@ -440,6 +446,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -493,6 +500,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -604,6 +612,7 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         ],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -673,6 +682,7 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -761,6 +771,7 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
         ],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -807,6 +818,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -825,6 +837,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -898,6 +911,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -984,6 +998,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
         value_types: alloc::vec![ValueType::I32],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1043,6 +1058,7 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1092,6 +1108,7 @@ fn lowers_memory_copy_through_frame_metadata() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1140,6 +1157,7 @@ fn lowers_table_fill_through_frame_metadata() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1190,6 +1208,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1252,6 +1271,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         value_types: alloc::vec![ValueType::I64],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1328,6 +1348,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1422,6 +1443,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1496,6 +1518,7 @@ fn lowers_direct_local_call_with_continuation_block() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -1514,6 +1537,7 @@ fn lowers_direct_local_call_with_continuation_block() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1696,6 +1720,7 @@ fn flushes_cached_local_before_second_direct_call() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -1714,6 +1739,7 @@ fn flushes_cached_local_before_second_direct_call() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1854,6 +1880,7 @@ fn preserves_cached_locals_across_block_edges() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1948,6 +1975,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         value_types: alloc::vec![ValueType::I64],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let err = lower_module(LowerModuleInput {
@@ -1998,6 +2026,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -2016,6 +2045,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2078,6 +2108,7 @@ fn lowers_memory_size_without_helper_boundary() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2129,6 +2160,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2196,6 +2228,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2389,6 +2422,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2485,6 +2519,7 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
         value_types: alloc::vec![ValueType::I32, ValueType::I32],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2544,6 +2579,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -2562,6 +2598,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2645,6 +2682,7 @@ fn lowers_global_get_and_set_without_helpers() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2707,6 +2745,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2779,6 +2818,7 @@ fn lowers_i32_load_with_inline_trap_if() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2867,6 +2907,7 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2945,6 +2986,7 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3034,6 +3076,7 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3116,6 +3159,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3185,6 +3229,7 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3267,6 +3312,7 @@ fn threads_live_transients_through_split_continuation_params() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3360,6 +3406,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3440,6 +3487,7 @@ fn lowers_f32_const_to_fp_machine_const() {
         value_types: alloc::vec![ValueType::F32],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3511,6 +3559,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         value_types: alloc::vec![ValueType::F64],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3576,6 +3625,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
         value_types: alloc::vec![],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3643,6 +3693,7 @@ fn f32_block_params_keep_f32_width() {
         value_types: alloc::vec![ValueType::F32, ValueType::F32],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3704,6 +3755,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
         value_types: alloc::vec![ValueType::F32],
         value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+            block_local_demand: None,
     };
 
     let lowered = lower_module(LowerModuleInput {

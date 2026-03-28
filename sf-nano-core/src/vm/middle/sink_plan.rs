@@ -228,6 +228,7 @@ mod tests {
             value_types: vec![crate::value_type::ValueType::I32; n],
             value_homes: vec![Default::default(); n],
             value_sink_local: vec![None; n],
+            block_local_demand: None,
         }
     }
 

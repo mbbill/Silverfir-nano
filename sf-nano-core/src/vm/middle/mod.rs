@@ -17,7 +17,7 @@ pub(crate) mod config;
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;
 
-mod local_cache;
+pub(crate) mod local_cache;
 mod lower_block;
 mod lower_cfg;
 mod lower_edge;
@@ -26,7 +26,7 @@ mod lower_term;
 mod optimize;
 mod sink_plan;
 mod spill_plan;
-mod state;
+pub(crate) mod state;
 mod thread_jumps;
 
 #[cfg(test)]
@@ -57,7 +57,7 @@ use self::{
     frame::{plan_frame_layout, FrameLayoutPlan},
 };
 
-use local_cache::analyze_local_cache_prefs;
+use local_cache::{analyze_local_cache_prefs, analyze_per_block_demand};
 
 /// Preparation input bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,11 +102,13 @@ pub(crate) fn prepare_function(
                 value_types: Vec::new(),
                 value_homes: Vec::new(),
                 value_sink_local: Vec::new(),
+                block_local_demand: None,
             },
         });
     }
 
     let block_ranges = retain_reachable_blocks(semantic, build_block_ranges(semantic));
+    let block_local_demand = analyze_per_block_demand(semantic, &block_ranges);
     let semantic_to_block = build_semantic_to_block_map(semantic.ops.len(), &block_ranges);
     let mut values = ValueAlloc::default();
     let local_types = &semantic.local_types;
@@ -164,6 +166,7 @@ pub(crate) fn prepare_function(
         value_types: values.take_types(),
         value_homes: values.take_homes(),
         value_sink_local: Vec::new(),
+        block_local_demand: Some(block_local_demand),
     };
     let mut ssa = ssa;
     thread_jumps::simplify_cfg(&mut ssa);

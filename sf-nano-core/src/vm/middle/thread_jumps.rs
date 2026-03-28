@@ -498,6 +498,7 @@ mod tests {
             value_types: Vec::new(),
             value_homes: Vec::new(),
             value_sink_local: Vec::new(),
+            block_local_demand: None,
         }
     }
 

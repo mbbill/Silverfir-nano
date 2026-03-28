@@ -433,6 +433,10 @@ impl<'a> BlockLowerContext<'a> {
         &self.cached_locals
     }
 
+    pub(super) fn replace_cached_locals(&mut self, cached_locals: Vec<CachedLocal>) {
+        self.cached_locals = cached_locals;
+    }
+
     pub(super) fn values_iter(&self) -> core::slice::Iter<'_, ValueLocation> {
         self.values.iter()
     }

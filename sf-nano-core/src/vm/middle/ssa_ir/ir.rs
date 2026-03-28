@@ -13,6 +13,7 @@ use crate::value_type::ValueType;
 
 use super::{leaf::SsaLeafOp, target::SsaTarget};
 use crate::vm::middle::frame::{FrameSlot, FrameSpan};
+use crate::vm::middle::local_cache::BlockLocalDemand;
 
 /// One SSA value in prepared SSA-IR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -100,6 +101,9 @@ pub(crate) struct SsaProgram {
     /// When `Some(slot)`, the producer of this value may write directly to
     /// that local's home, and the subsequent `LocalSet` is elidable.
     pub value_sink_local: Vec<Option<FrameSlot>>,
+    /// Per-block local demand analysis for per-block cache selection.
+    /// `None` when the function has no locals or no blocks.
+    pub block_local_demand: Option<BlockLocalDemand>,
 }
 
 impl SsaProgram {

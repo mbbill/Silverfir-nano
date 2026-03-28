@@ -9,6 +9,7 @@
 mod gp32;
 mod lower_boundary;
 mod lower_cached;
+mod lower_cache_select;
 mod lower_context;
 mod lower_i64;
 mod lower_i64_gp64;
