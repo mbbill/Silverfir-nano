@@ -428,6 +428,54 @@ pub fn tst_imm(src: Arm32Reg, imm8: u32, rotate: u32) -> u32 {
     dp_imm(Cond::Al, 0b1000, true, Arm32Reg::R0, src, imm8, rotate)
 }
 
+// ─── Bitfield extract ──────────────────────────────────────────────────────
+
+/// UBFX Rd, Rn, #lsb, #width (unsigned bitfield extract, ARMv6T2+)
+#[inline]
+pub fn ubfx(dst: Arm32Reg, src: Arm32Reg, lsb: u32, width: u32) -> u32 {
+    debug_assert!(width > 0 && lsb + width <= 32);
+    let widthm1 = width - 1;
+    cond_bits(Cond::Al)
+        | (0b0111_111 << 21)
+        | (widthm1 << 16)
+        | rd(dst)
+        | ((lsb & 0x1F) << 7)
+        | (0b101 << 4)
+        | rm(src)
+}
+
+// ─── Shifted-register data processing ──────────────────────────────────────
+
+/// ADD Rd, Rn, Rm, <shift> #imm5
+#[inline]
+pub fn add_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b0100, false, dst, lhs, rhs, shift_type, shift_imm)
+}
+
+/// SUB Rd, Rn, Rm, <shift> #imm5
+#[inline]
+pub fn sub_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b0010, false, dst, lhs, rhs, shift_type, shift_imm)
+}
+
+/// AND Rd, Rn, Rm, <shift> #imm5
+#[inline]
+pub fn and_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b0000, false, dst, lhs, rhs, shift_type, shift_imm)
+}
+
+/// ORR Rd, Rn, Rm, <shift> #imm5
+#[inline]
+pub fn orr_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b1100, false, dst, lhs, rhs, shift_type, shift_imm)
+}
+
+/// EOR Rd, Rn, Rm, <shift> #imm5
+#[inline]
+pub fn eor_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
+    dp_imm_shift(Cond::Al, 0b0001, false, dst, lhs, rhs, shift_type, shift_imm)
+}
+
 // ─── Multiply ───────────────────────────────────────────────────────────────
 
 /// MUL Rd, Rm, Rs (Rd = Rm * Rs, low 32 bits)

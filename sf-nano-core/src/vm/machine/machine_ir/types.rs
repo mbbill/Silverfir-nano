@@ -177,6 +177,14 @@ pub(crate) enum MachineIntBinaryOp {
     Rotr,
 }
 
+/// Shift type for shifted-register operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MachineShiftOp {
+    Lsl,
+    Lsr,
+    Asr,
+}
+
 /// Float unary ALU op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineFloatUnaryOp {

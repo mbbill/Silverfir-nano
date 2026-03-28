@@ -363,6 +363,18 @@ pub fn test_rr_32(e: &mut TextEmitter, lhs: X86Reg, rhs: X86Reg) {
     e.emit_u8(0x85);
     emit_modrm_rr(e, rhs, lhs);
 }
+pub fn test_ri_64(e: &mut TextEmitter, dst: X86Reg, imm: i32) {
+    emit_rex_b(e, true, dst);
+    e.emit_u8(0xF7);
+    e.emit_u8(modrm(0b11, 0, dst.idx3()));
+    emit_i32(e, imm);
+}
+pub fn test_ri_32(e: &mut TextEmitter, dst: X86Reg, imm: i32) {
+    emit_rex_b(e, false, dst);
+    e.emit_u8(0xF7);
+    e.emit_u8(modrm(0b11, 0, dst.idx3()));
+    emit_i32(e, imm);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MOV

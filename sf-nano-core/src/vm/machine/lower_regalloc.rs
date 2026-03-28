@@ -742,7 +742,10 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. } => Some(*dst),
+        | MachineInstKind::IndexedLoad { dst, .. }
+        | MachineInstKind::BitfieldExtractU { dst, .. }
+        | MachineInstKind::IntBinaryShifted { dst, .. }
+        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -859,6 +862,15 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(on_false, &mut visit);
             visit_value_reg(cond, &mut visit);
         }
+        MachineInstKind::BitfieldExtractU { src, .. } => visit(*src),
+        MachineInstKind::IntBinaryShifted { lhs, rhs, .. } => {
+            visit(*lhs);
+            visit(*rhs);
+        }
+        MachineInstKind::TestBits { src, mask, .. } => {
+            visit(*src);
+            visit_value_reg(mask, &mut visit);
+        }
         MachineInstKind::TrapIf { cond, .. } => {
             visit_branch_cond_regs(cond, &mut visit);
         }
@@ -872,6 +884,10 @@ fn visit_branch_cond_regs(cond: &MachineBranchCond, visit: &mut impl FnMut(Machi
         MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             visit_value_reg(lhs, visit);
             visit_value_reg(rhs, visit);
+        }
+        MachineBranchCond::TestBits { src, mask, .. } => {
+            visit_value_reg(src, visit);
+            visit_value_reg(mask, visit);
         }
     }
 }

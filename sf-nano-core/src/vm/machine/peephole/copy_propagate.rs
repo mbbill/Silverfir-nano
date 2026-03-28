@@ -241,6 +241,17 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(on_false, aliases);
             rewrite_value(cond, aliases);
         }
+        MachineInstKind::BitfieldExtractU { src, .. } => {
+            *src = resolve_alias(*src, aliases);
+        }
+        MachineInstKind::IntBinaryShifted { lhs, rhs, .. } => {
+            *lhs = resolve_alias(*lhs, aliases);
+            *rhs = resolve_alias(*rhs, aliases);
+        }
+        MachineInstKind::TestBits { src, mask, .. } => {
+            *src = resolve_alias(*src, aliases);
+            rewrite_value(mask, aliases);
+        }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallHelper(_) => {}
     }
@@ -326,6 +337,10 @@ fn rewrite_branch_cond(cond: &mut MachineBranchCond, aliases: &[Option<MachineRe
         MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
+        }
+        MachineBranchCond::TestBits { src, mask, .. } => {
+            rewrite_value(src, aliases);
+            rewrite_value(mask, aliases);
         }
     }
 }

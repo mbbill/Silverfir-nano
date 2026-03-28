@@ -18,7 +18,7 @@ use crate::{
             MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
             MachineHelperCall, MachineIndexExtend, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineShiftOp,
             MachineMemWidth, MachineProgram, MachineReg, MachineSign, MachineTerminator,
             MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
@@ -630,6 +630,68 @@ impl<'a> Emulator<'a> {
                 let value = self.read_value(*src)?;
                 self.store_at(addr_value, base_kind, *width, value)?;
             }
+            MachineInstKind::BitfieldExtractU {
+                width,
+                dst,
+                src,
+                lsb,
+                bits,
+            } => {
+                let src_val = self.read_reg(*src)?;
+                let result = match width {
+                    MachineIntWidth::I32 => {
+                        let v = src_val as u32;
+                        let extracted = (v >> *lsb) & ((1u32 << *bits) - 1);
+                        u64::from(extracted)
+                    }
+                    MachineIntWidth::I64 => {
+                        (src_val >> *lsb) & ((1u64 << *bits) - 1)
+                    }
+                };
+                self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
+            }
+            MachineInstKind::IntBinaryShifted {
+                width,
+                op,
+                dst,
+                lhs,
+                rhs,
+                shift,
+                amount,
+            } => {
+                let lhs_val = self.read_reg(*lhs)?;
+                let rhs_val = self.read_reg(*rhs)?;
+                let shifted = apply_shift(*width, *shift, rhs_val, *amount);
+                self.write_reg_with_kind(
+                    *dst,
+                    eval_int_binary(*width, *op, lhs_val, shifted)?,
+                    fixed_reg_addr_kind(*dst),
+                )?;
+            }
+            MachineInstKind::TestBits {
+                width,
+                kind,
+                dst,
+                src,
+                mask,
+            } => {
+                let src_val = self.read_reg(*src)?;
+                let mask_val = self.read_value(*mask)?;
+                let anded = match width {
+                    MachineIntWidth::I32 => u64::from((src_val as u32) & (mask_val as u32)),
+                    MachineIntWidth::I64 => src_val & mask_val,
+                };
+                let result = match kind {
+                    MachineCompareKind::Eq => u64::from(anded == 0),
+                    MachineCompareKind::Ne => u64::from(anded != 0),
+                    _ => {
+                        return Err(WasmError::internal(
+                            "TestBits only supports Eq/Ne compare kinds".into(),
+                        ));
+                    }
+                };
+                self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
+            }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
         }
         Ok(())
@@ -853,6 +915,28 @@ impl<'a> Emulator<'a> {
                 self.read_value(lhs)?,
                 self.read_value(rhs)?,
             ) != 0),
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                let src_val = self.read_value(src)?;
+                let mask_val = self.read_value(mask)?;
+                let anded = match width {
+                    MachineIntWidth::I32 => u64::from((src_val as u32) & (mask_val as u32)),
+                    MachineIntWidth::I64 => src_val & mask_val,
+                };
+                Ok(match kind {
+                    MachineCompareKind::Eq => anded == 0,
+                    MachineCompareKind::Ne => anded != 0,
+                    _ => {
+                        return Err(WasmError::internal(
+                            "TestBits branch only supports Eq/Ne compare kinds".into(),
+                        ));
+                    }
+                })
+            }
         }
     }
 
@@ -1373,6 +1457,25 @@ fn eval_int_unary(
             ))
         }
     })
+}
+
+fn apply_shift(width: MachineIntWidth, shift: MachineShiftOp, value: u64, amount: u8) -> u64 {
+    match width {
+        MachineIntWidth::I32 => {
+            let v = value as u32;
+            let r = match shift {
+                MachineShiftOp::Lsl => v.wrapping_shl(amount as u32),
+                MachineShiftOp::Lsr => v.wrapping_shr(amount as u32),
+                MachineShiftOp::Asr => (v as i32).wrapping_shr(amount as u32) as u32,
+            };
+            u64::from(r)
+        }
+        MachineIntWidth::I64 => match shift {
+            MachineShiftOp::Lsl => value.wrapping_shl(amount as u32),
+            MachineShiftOp::Lsr => value.wrapping_shr(amount as u32),
+            MachineShiftOp::Asr => (value as i64).wrapping_shr(amount as u32) as u64,
+        },
+    }
 }
 
 fn eval_int_binary(

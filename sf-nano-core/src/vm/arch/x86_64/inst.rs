@@ -9,7 +9,7 @@ use crate::{
         MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst,
         MachineInstKind, MachineIntBinaryOp,
         MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-        MachineReg, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+        MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
     },
 };
 
@@ -156,6 +156,15 @@ impl<'a> X86_64Backend<'a> {
                 src,
             } => {
                 self.lower_indexed_store_decomposed(*base, *index, *index_extend, *offset, *width, *src)
+            }
+            MachineInstKind::BitfieldExtractU { width, dst, src, lsb, bits } => {
+                self.lower_bitfield_extract_u(*width, *dst, *src, *lsb, *bits)
+            }
+            MachineInstKind::IntBinaryShifted { width, op, dst, lhs, rhs, shift, amount } => {
+                self.lower_int_binary_shifted(*width, *op, *dst, *lhs, *rhs, *shift, *amount)
+            }
+            MachineInstKind::TestBits { width, kind, dst, src, mask } => {
+                self.lower_test_bits(*width, *kind, *dst, *src, *mask)
             }
         }
     }
@@ -997,6 +1006,180 @@ impl<'a> X86_64Backend<'a> {
             MachineIntWidth::I64 => enc::cmp_rr_64(&mut self.core.text, lhs_gp, rhs_gp),
             MachineIntWidth::I32 => enc::cmp_rr_32(&mut self.core.text, lhs_gp, rhs_gp),
         };
+        Ok(())
+    }
+
+    /// Emit TEST (bitwise AND setting flags, discarding result).
+    pub(super) fn lower_tst_values(
+        &mut self,
+        width: MachineIntWidth,
+        src: MachineValue,
+        mask: MachineValue,
+    ) -> Result<(), WasmError> {
+        let src_gp = self.materialize_value(self.gp_scratch.reg(0), src)?;
+        match mask {
+            MachineValue::Imm64(imm_val) => {
+                let imm = imm_val as i64 as i32;
+                if imm as i64 == imm_val as i64
+                    || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
+                {
+                    match width {
+                        MachineIntWidth::I64 => enc::test_ri_64(&mut self.core.text, src_gp, imm),
+                        MachineIntWidth::I32 => enc::test_ri_32(&mut self.core.text, src_gp, imm),
+                    }
+                } else {
+                    let mask_gp = self.materialize_value(self.gp_scratch.reg(1), MachineValue::Imm64(imm_val))?;
+                    match width {
+                        MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src_gp, mask_gp),
+                        MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
+                    }
+                }
+            }
+            MachineValue::Reg(_) => {
+                let mask_gp = self.materialize_value(self.gp_scratch.reg(1), mask)?;
+                match width {
+                    MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src_gp, mask_gp),
+                    MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── Bitfield extract (decomposed to SHR + AND) ────────────────────────────
+
+    fn lower_bitfield_extract_u(
+        &mut self,
+        width: MachineIntWidth,
+        dst: MachineReg,
+        src: MachineReg,
+        lsb: u8,
+        bits: u8,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(dst)?;
+        let src = self.map_gp_reg(src)?;
+        // dst = (src >> lsb) & ((1 << bits) - 1)
+        if dst != src {
+            enc::mov_rr_64(&mut self.core.text, dst, src);
+        }
+        if lsb > 0 {
+            match width {
+                MachineIntWidth::I64 => enc::shr_imm_64(&mut self.core.text, dst, lsb),
+                MachineIntWidth::I32 => enc::shr_imm_32(&mut self.core.text, dst, lsb),
+            }
+        }
+        let mask = (1u64 << bits) - 1;
+        let imm = mask as i64 as i32;
+        // Mask always fits i32 since bits <= 32 for I32 and bits <= 63 for I64.
+        match width {
+            MachineIntWidth::I64 => enc::and_ri_64(&mut self.core.text, dst, imm),
+            MachineIntWidth::I32 => enc::and_ri_32(&mut self.core.text, dst, imm),
+        }
+        Ok(())
+    }
+
+    // ── Shifted-register binary (decomposed to shift + op) ──────────────────
+
+    fn lower_int_binary_shifted(
+        &mut self,
+        width: MachineIntWidth,
+        op: MachineIntBinaryOp,
+        dst: MachineReg,
+        lhs: MachineReg,
+        rhs: MachineReg,
+        shift: MachineShiftOp,
+        amount: u8,
+    ) -> Result<(), WasmError> {
+        // Decompose: dst = lhs OP (rhs SHIFT amount)
+        // Step 1: shift rhs into scratch
+        let dst = self.map_gp_reg(dst)?;
+        let lhs = self.map_gp_reg(lhs)?;
+        let rhs = self.map_gp_reg(rhs)?;
+        let scratch = self.gp_scratch.reg(0);
+        if scratch != rhs {
+            enc::mov_rr_64(&mut self.core.text, scratch, rhs);
+        }
+        match (width, shift) {
+            (MachineIntWidth::I64, MachineShiftOp::Lsl) => enc::shl_imm_64(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I32, MachineShiftOp::Lsl) => enc::shl_imm_32(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I64, MachineShiftOp::Lsr) => enc::shr_imm_64(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I32, MachineShiftOp::Lsr) => enc::shr_imm_32(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I64, MachineShiftOp::Asr) => enc::sar_imm_64(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I32, MachineShiftOp::Asr) => enc::sar_imm_32(&mut self.core.text, scratch, amount),
+        }
+        // Step 2: dst = lhs OP scratch
+        if dst != lhs {
+            enc::mov_rr_64(&mut self.core.text, dst, lhs);
+        }
+        match (width, op) {
+            (MachineIntWidth::I64, MachineIntBinaryOp::Add) => enc::add_rr_64(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I32, MachineIntBinaryOp::Add) => enc::add_rr_32(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => enc::sub_rr_64(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => enc::sub_rr_32(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I64, MachineIntBinaryOp::And) => enc::and_rr_64(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I32, MachineIntBinaryOp::And) => enc::and_rr_32(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I64, MachineIntBinaryOp::Or) => enc::or_rr_64(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I32, MachineIntBinaryOp::Or) => enc::or_rr_32(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => enc::xor_rr_64(&mut self.core.text, dst, scratch),
+            (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => enc::xor_rr_32(&mut self.core.text, dst, scratch),
+            _ => return Err(WasmError::internal(
+                alloc::format!("IntBinaryShifted: unsupported op {:?}", op),
+            )),
+        }
+        Ok(())
+    }
+
+    // ── Test bits (TEST + SETCC) ────────────────────────────────────────────
+
+    fn lower_test_bits(
+        &mut self,
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        dst: MachineReg,
+        src: MachineReg,
+        mask: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(dst)?;
+        let src = self.map_gp_reg(src)?;
+        // Emit TEST to set flags.
+        match mask {
+            MachineValue::Imm64(imm_val) => {
+                let imm = imm_val as i64 as i32;
+                if imm as i64 == imm_val as i64
+                    || (width == MachineIntWidth::I32 && imm_val as u32 as i32 == imm)
+                {
+                    match width {
+                        MachineIntWidth::I64 => enc::test_ri_64(&mut self.core.text, src, imm),
+                        MachineIntWidth::I32 => enc::test_ri_32(&mut self.core.text, src, imm),
+                    }
+                } else {
+                    // Doesn't fit i32 — materialize and use register form.
+                    let scratch = self.gp_scratch.reg(0);
+                    self.materialize_u64(scratch, imm_val);
+                    match width {
+                        MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src, scratch),
+                        MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src, scratch),
+                    }
+                }
+            }
+            MachineValue::Reg(mask_reg) => {
+                let mask_gp = self.map_gp_reg(mask_reg)?;
+                match width {
+                    MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src, mask_gp),
+                    MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src, mask_gp),
+                }
+            }
+        }
+        // TST sets Z flag: Eq → ZF=1 (test was zero), Ne → ZF=0 (test was nonzero).
+        let cc = match kind {
+            MachineCompareKind::Eq => Cc::E,
+            MachineCompareKind::Ne => Cc::Ne,
+            _ => return Err(WasmError::internal(
+                alloc::format!("TestBits: unsupported compare kind {:?}", kind),
+            )),
+        };
+        enc::setcc(&mut self.core.text, cc, dst);
+        enc::movzx_r32_r8(&mut self.core.text, dst, dst);
         Ok(())
     }
 

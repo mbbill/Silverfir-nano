@@ -571,6 +571,58 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(rhs)
             )
         }
+        MachineInstKind::BitfieldExtractU {
+            width,
+            dst,
+            src,
+            lsb,
+            bits,
+        } => {
+            format!(
+                "ubfx.{} r{} <- r{}, #{}, #{}",
+                iw(width),
+                dst.0,
+                src.0,
+                lsb,
+                bits
+            )
+        }
+        MachineInstKind::IntBinaryShifted {
+            width,
+            op,
+            dst,
+            lhs,
+            rhs,
+            shift,
+            amount,
+        } => {
+            format!(
+                "{}.{:?} r{} <- r{}, r{} {:?} #{}",
+                iw(width),
+                op,
+                dst.0,
+                lhs.0,
+                rhs.0,
+                shift,
+                amount
+            )
+        }
+        MachineInstKind::TestBits {
+            width,
+            kind,
+            dst,
+            src,
+            mask,
+        } => {
+            format!(
+                "tst.{:?}.{} r{} <- r{}, {}",
+                kind,
+                iw(width),
+                dst.0,
+                src.0,
+                mval(mask)
+            )
+        }
         MachineInstKind::Int64PairBinary {
             op,
             dst_lo,
@@ -875,6 +927,18 @@ fn render_branch_cond(cond: &MachineBranchCond) -> String {
             sign,
             mval(lhs),
             mval(rhs)
+        ),
+        MachineBranchCond::TestBits {
+            width,
+            kind,
+            src,
+            mask,
+        } => format!(
+            "tst.{:?}.{} {}, {}",
+            kind,
+            iw(width),
+            mval(src),
+            mval(mask)
         ),
     }
 }

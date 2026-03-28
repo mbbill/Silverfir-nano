@@ -1,5 +1,14 @@
 use super::reg::{Arm64FpReg, Arm64Reg};
 
+/// ARM64 shift type for shifted-register operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum ShiftType {
+    Lsl = 0,
+    Lsr = 1,
+    Asr = 2,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Cond {
@@ -51,12 +60,38 @@ fn add_sub_shifted_reg(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, rm:
         | rd.index()
 }
 
+fn add_sub_shifted_reg_ext(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    debug_assert!(amount < if sf == 0 { 32 } else { 64 });
+    (sf << 31)
+        | (op << 30)
+        | (s << 29)
+        | (0b01011 << 24)
+        | ((shift as u32) << 22)
+        | (rm.index() << 16)
+        | (amount << 10)
+        | (rn.index() << 5)
+        | rd.index()
+}
+
 fn logical_shifted_reg(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     (sf << 31)
         | (opc << 29)
         | (0b01010 << 24)
         | (n << 21)
         | (rm.index() << 16)
+        | (rn.index() << 5)
+        | rd.index()
+}
+
+fn logical_shifted_reg_ext(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    debug_assert!(amount < if sf == 0 { 32 } else { 64 });
+    (sf << 31)
+        | (opc << 29)
+        | (0b01010 << 24)
+        | ((shift as u32) << 22)
+        | (n << 21)
+        | (rm.index() << 16)
+        | (amount << 10)
         | (rn.index() << 5)
         | rd.index()
 }
@@ -206,6 +241,80 @@ pub(crate) fn eor_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 
 pub(crate) fn eor_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     logical_shifted_reg(1, 0b10, 0, rd, rn, rm)
+}
+
+// --- Shifted-register binary operations ---
+
+pub(crate) fn add_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    add_sub_shifted_reg_ext(0, 0, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn add_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    add_sub_shifted_reg_ext(1, 0, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn sub_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    add_sub_shifted_reg_ext(0, 1, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn sub_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    add_sub_shifted_reg_ext(1, 1, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn and_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(0, 0b00, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn and_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(1, 0b00, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn orr_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(0, 0b01, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn orr_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(1, 0b01, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn eor_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(0, 0b10, 0, rd, rn, rm, shift, amount)
+}
+
+pub(crate) fn eor_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+    logical_shifted_reg_ext(1, 0b10, 0, rd, rn, rm, shift, amount)
+}
+
+// --- TST (ANDS with Rd=XZR, sets flags, discards result) ---
+
+pub(crate) fn tst_imm_32(rn: Arm64Reg, imm: u32) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
+    Some(logical_imm(0, 0b11, n, Arm64Reg::Xzr, rn, immr, imms))
+}
+
+pub(crate) fn tst_imm_64(rn: Arm64Reg, imm: u64) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
+    Some(logical_imm(1, 0b11, n, Arm64Reg::Xzr, rn, immr, imms))
+}
+
+pub(crate) fn tst_reg_32(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(0, 0b11, 0, Arm64Reg::Xzr, rn, rm)
+}
+
+pub(crate) fn tst_reg_64(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(1, 0b11, 0, Arm64Reg::Xzr, rn, rm)
+}
+
+// --- UBFX (unsigned bitfield extract) ---
+
+pub(crate) fn ubfx_32(rd: Arm64Reg, rn: Arm64Reg, lsb: u32, width: u32) -> u32 {
+    debug_assert!(lsb + width <= 32 && width > 0);
+    ubfm(0, 0, rd, rn, lsb, lsb + width - 1)
+}
+
+pub(crate) fn ubfx_64(rd: Arm64Reg, rn: Arm64Reg, lsb: u32, width: u32) -> u32 {
+    debug_assert!(lsb + width <= 64 && width > 0);
+    ubfm(1, 1, rd, rn, lsb, lsb + width - 1)
 }
 
 pub(crate) fn orn_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {

@@ -2,7 +2,7 @@
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBranchCond, MachineBlockId, MachineConstId,
+    MachineBranchCond, MachineBlockId, MachineCompareKind, MachineConstId,
     MachineEdge, MachineFloatWidth, MachineFuncId, MachineReg,
     MachineTerminator, MachineTrapKind, MachineValue,
     MACHINE_CTX_REG, MACHINE_FP_REG,
@@ -144,6 +144,33 @@ fn lower_branch(&mut self,
                 self.lower_b(else_label);
             }
         }
+        MachineBranchCond::TestBits {
+            width,
+            kind,
+            src,
+            mask,
+        } => {
+            self.lower_tst_values(width, src, mask)?;
+            let cond = match kind {
+                MachineCompareKind::Eq => enc::Cond::Eq,
+                MachineCompareKind::Ne => enc::Cond::Ne,
+                _ => return Err(WasmError::internal(
+                    alloc::format!("TestBits branch: unsupported compare kind {:?}", kind),
+                )),
+            };
+            if else_fallthrough {
+                if let Some(label) = then_label {
+                    self.lower_b_cond(cond, label);
+                }
+            } else if then_fallthrough {
+                if let Some(label) = else_label {
+                    self.lower_b_cond(cond.invert(), label);
+                }
+            } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+                self.lower_b_cond(cond, then_label);
+                self.lower_b(else_label);
+            }
+        }
     }
     Ok(())
 }
@@ -250,6 +277,22 @@ pub(super) fn lower_branch_if(&mut self,
         } => {
             self.lower_cmp_values(width, lhs, rhs)?;
             self.lower_b_cond(map_int_cond(kind, sign), trap_label);
+        }
+        MachineBranchCond::TestBits {
+            width,
+            kind,
+            src,
+            mask,
+        } => {
+            self.lower_tst_values(width, src, mask)?;
+            let cond = match kind {
+                MachineCompareKind::Eq => enc::Cond::Eq,
+                MachineCompareKind::Ne => enc::Cond::Ne,
+                _ => return Err(WasmError::internal(
+                    alloc::format!("TestBits branch_if: unsupported compare kind {:?}", kind),
+                )),
+            };
+            self.lower_b_cond(cond, trap_label);
         }
     }
     Ok(())

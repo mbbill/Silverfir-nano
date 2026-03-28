@@ -25,7 +25,10 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. } => Some(*dst),
+        | MachineInstKind::IndexedLoad { dst, .. }
+        | MachineInstKind::BitfieldExtractU { dst, .. }
+        | MachineInstKind::IntBinaryShifted { dst, .. }
+        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -56,7 +59,10 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatCompare { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. } => *dst == reg,
+        | MachineInstKind::IndexedLoad { dst, .. }
+        | MachineInstKind::BitfieldExtractU { dst, .. }
+        | MachineInstKind::IntBinaryShifted { dst, .. }
+        | MachineInstKind::TestBits { dst, .. } => *dst == reg,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -209,6 +215,17 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(on_false);
             f(cond);
         }
+        MachineInstKind::BitfieldExtractU { src, .. } => {
+            f(&MachineValue::Reg(*src));
+        }
+        MachineInstKind::IntBinaryShifted { lhs, rhs, .. } => {
+            f(&MachineValue::Reg(*lhs));
+            f(&MachineValue::Reg(*rhs));
+        }
+        MachineInstKind::TestBits { src, mask, .. } => {
+            f(&MachineValue::Reg(*src));
+            f(mask);
+        }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
         MachineInstKind::CallHelper(_) => {}
     }
@@ -220,6 +237,10 @@ pub(super) fn visit_branch_cond_values(cond: &MachineBranchCond, mut f: impl FnM
         MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
+        }
+        MachineBranchCond::TestBits { src, mask, .. } => {
+            f(src);
+            f(mask);
         }
     }
 }
@@ -281,6 +302,9 @@ fn branch_cond_uses_reg(cond: &MachineBranchCond, reg: MachineReg) -> bool {
         MachineBranchCond::Value(v) => value_is_reg(v, reg),
         MachineBranchCond::IntCompare { lhs, rhs, .. } => {
             value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
+        }
+        MachineBranchCond::TestBits { src, mask, .. } => {
+            value_is_reg(src, reg) || value_is_reg(mask, reg)
         }
     }
 }

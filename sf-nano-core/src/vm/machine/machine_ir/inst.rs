@@ -4,7 +4,7 @@ use super::types::{
     MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-    MachineReg, MachineSign, MachineStorageType, MachineValue,
+    MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineValue,
 };
 
 /// Helper call that falls through in the same function.
@@ -166,6 +166,43 @@ pub(crate) enum MachineInstKind {
         dst: MachineReg,
         lhs: MachineValue,
         rhs: MachineValue,
+    },
+    /// Unsigned bitfield extract: `dst = (src >> lsb) & ((1 << bits) - 1)`.
+    ///
+    /// Fused from `ShrU(imm) + And(mask)` where mask is a contiguous low-bit
+    /// pattern. On ARM64 this maps to `UBFX`.
+    BitfieldExtractU {
+        width: MachineIntWidth,
+        dst: MachineReg,
+        src: MachineReg,
+        lsb: u8,
+        bits: u8,
+    },
+    /// Binary op with shifted second operand:
+    /// `dst = lhs OP (rhs SHIFT amount)`.
+    ///
+    /// Fused from `shift(rhs, imm) + binary_op(lhs, shifted)`. Covers
+    /// Add, Sub, And, Or, Xor with LSL/LSR/ASR shifted register.
+    IntBinaryShifted {
+        width: MachineIntWidth,
+        op: MachineIntBinaryOp,
+        dst: MachineReg,
+        lhs: MachineReg,
+        rhs: MachineReg,
+        shift: MachineShiftOp,
+        amount: u8,
+    },
+    /// Test bits: `dst = ((src & mask) CMP 0)`.
+    ///
+    /// Fused from `And(src, mask) + IntCompare(result, 0, Eq/Ne)`. On ARM64
+    /// this maps to `TST + CSET`, or `TST + B.cond` when further fused into a
+    /// branch condition.
+    TestBits {
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        dst: MachineReg,
+        src: MachineReg,
+        mask: MachineValue,
     },
     /// Compare two legalized 64-bit GP-word pairs and materialize a GP-word
     /// boolean result.

@@ -184,6 +184,48 @@ pub(super) fn compile_branch_condition(
             })
         }
 
+        MachineBranchCond::TestBits {
+            kind,
+            src,
+            mask,
+            ..
+        } => {
+            let src_hw = match src {
+                MachineValue::Reg(r) => map_reg(*r)?,
+                MachineValue::Imm64(v) => {
+                    let s = self.gp_scratch.scoped_alloc();
+                    emit_load_u32_into(&mut self.core.text, *s, *v as u32);
+                    let hw = *s;
+                    drop(s);
+                    hw
+                }
+            };
+            match mask {
+                MachineValue::Reg(r) => {
+                    self.core.text.emit_u32(enc::tst_reg(src_hw, map_reg(*r)?));
+                }
+                MachineValue::Imm64(v) => {
+                    if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
+                        self.core.text.emit_u32(enc::tst_imm(src_hw, imm8, rot));
+                    } else {
+                        let s = self.gp_scratch.scoped_alloc();
+                        let tmp = *s;
+                        emit_load_u32_into(&mut self.core.text, tmp, *v as u32);
+                        self.core.text.emit_u32(enc::tst_reg(src_hw, tmp));
+                    }
+                }
+            }
+            Ok(match kind {
+                MachineCompareKind::Eq => Cond::Eq,
+                MachineCompareKind::Ne => Cond::Ne,
+                _ => {
+                    return Err(WasmError::internal(
+                        alloc::format!("TestBits branch: unsupported compare kind {:?}", kind),
+                    ));
+                }
+            })
+        }
+
     }
 }
 
