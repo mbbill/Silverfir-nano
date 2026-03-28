@@ -1184,7 +1184,6 @@ fn compile_int64_pair_compare(
     rhs_hi: &MachineValue,
 ) -> Result<(), WasmError> {
     let dst_hw = map_reg(dst)?;
-    spill_caller_saved_gp_regs(fc);
     let set_true = fc.alloc_label(LabelKind::Block);
     let set_false = fc.alloc_label(LabelKind::Block);
     let done = fc.alloc_label(LabelKind::Block);
@@ -1198,47 +1197,44 @@ fn compile_int64_pair_compare(
         MachineSign::Unsigned => Cond::Hi,
     };
 
+    // Inline CMP without spill/restore.  We use only SCRATCH0 (R12) and
+    // SCRATCH1 (R14/LR, saved in prologue) as temporaries, so no GP
+    // transient registers are clobbered.
+    //
+    // Compare hi words: materialize into SCRATCH0/SCRATCH1 and CMP.
+    let lhs_hi_hw = materialize_gp_value(fc, lhs_hi, SCRATCH0)?;
+    let rhs_hi_hw = materialize_gp_value(fc, rhs_hi, SCRATCH1)?;
+    fc.text.emit_u32(enc::cmp_reg(lhs_hi_hw, rhs_hi_hw));
+
     match kind {
         MachineCompareKind::Eq => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
             fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), set_false);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Eq), set_true);
         }
         MachineCompareKind::Ne => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), set_true);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
             fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), set_true);
         }
-        MachineCompareKind::Lt => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
+        MachineCompareKind::Lt | MachineCompareKind::Le => {
             fc.emit_branch(BranchFixupKind::BCond(hi_lt), set_true);
             fc.emit_branch(BranchFixupKind::BCond(hi_gt), set_false);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Cc), set_true);
         }
-        MachineCompareKind::Le => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
-            fc.emit_branch(BranchFixupKind::BCond(hi_lt), set_true);
-            fc.emit_branch(BranchFixupKind::BCond(hi_gt), set_false);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Ls), set_true);
-        }
-        MachineCompareKind::Gt => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
+        MachineCompareKind::Gt | MachineCompareKind::Ge => {
             fc.emit_branch(BranchFixupKind::BCond(hi_gt), set_true);
             fc.emit_branch(BranchFixupKind::BCond(hi_lt), set_false);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Hi), set_true);
         }
-        MachineCompareKind::Ge => {
-            emit_cmp_gp_values(fc, lhs_hi, rhs_hi)?;
-            fc.emit_branch(BranchFixupKind::BCond(hi_gt), set_true);
-            fc.emit_branch(BranchFixupKind::BCond(hi_lt), set_false);
-            emit_cmp_gp_values(fc, lhs_lo, rhs_lo)?;
-            fc.emit_branch(BranchFixupKind::BCond(Cond::Cs), set_true);
-        }
+    }
+
+    // Hi words equal — compare lo words.
+    let lhs_lo_hw = materialize_gp_value(fc, lhs_lo, SCRATCH0)?;
+    let rhs_lo_hw = materialize_gp_value(fc, rhs_lo, SCRATCH1)?;
+    fc.text.emit_u32(enc::cmp_reg(lhs_lo_hw, rhs_lo_hw));
+
+    match kind {
+        MachineCompareKind::Eq => fc.emit_branch(BranchFixupKind::BCond(Cond::Eq), set_true),
+        MachineCompareKind::Ne => fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), set_true),
+        MachineCompareKind::Lt => fc.emit_branch(BranchFixupKind::BCond(Cond::Cc), set_true),
+        MachineCompareKind::Le => fc.emit_branch(BranchFixupKind::BCond(Cond::Ls), set_true),
+        MachineCompareKind::Gt => fc.emit_branch(BranchFixupKind::BCond(Cond::Hi), set_true),
+        MachineCompareKind::Ge => fc.emit_branch(BranchFixupKind::BCond(Cond::Cs), set_true),
     }
 
     fc.emit_branch(BranchFixupKind::B, set_false);
@@ -1248,7 +1244,6 @@ fn compile_int64_pair_compare(
     fc.bind_label(set_false);
     emit_set_bool_immediate(fc, dst_hw, false);
     fc.bind_label(done);
-    restore_caller_saved_gp_regs(fc, &[dst_hw]);
     Ok(())
 }
 
