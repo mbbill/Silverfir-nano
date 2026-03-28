@@ -21,7 +21,7 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!(
-            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu|--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
+            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
         );
         #[cfg(all(feature = "profile", feature = "interp"))]
         {
@@ -71,15 +71,15 @@ fn main() {
                     );
                     process::exit(1);
                 });
-            } else if args[i] == "--emu" || args[i] == "--emu64" {
+            } else if args[i] == "--emu64" {
                 if reference_mode == ReferenceBackendMode::Emu32 {
-                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+                    eprintln!("Error: --emu32 conflicts with --emu64");
                     process::exit(1);
                 }
                 reference_mode = ReferenceBackendMode::Emu64;
             } else if args[i] == "--emu32" {
                 if reference_mode == ReferenceBackendMode::Emu64 {
-                    eprintln!("Error: --emu32 conflicts with --emu/--emu64");
+                    eprintln!("Error: --emu32 conflicts with --emu64");
                     process::exit(1);
                 }
                 reference_mode = ReferenceBackendMode::Emu32;
