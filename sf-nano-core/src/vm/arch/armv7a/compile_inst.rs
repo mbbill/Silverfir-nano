@@ -528,8 +528,12 @@ fn compile_int_binary(
     let lhs_hw = match lhs {
         MachineValue::Reg(r) => map_reg(*r)?,
         MachineValue::Imm64(v) => {
-            fc.emit_load_u32(dst_hw, *v as u32);
-            dst_hw
+            // Materialize into SCRATCH0 if rhs is a register that could
+            // alias dst_hw.  Writing dst_hw first would clobber rhs.
+            let rhs_aliases_dst = matches!(rhs, MachineValue::Reg(r) if map_reg(*r).ok() == Some(dst_hw));
+            let tmp = if rhs_aliases_dst { SCRATCH0 } else { dst_hw };
+            fc.emit_load_u32(tmp, *v as u32);
+            tmp
         }
     };
 
