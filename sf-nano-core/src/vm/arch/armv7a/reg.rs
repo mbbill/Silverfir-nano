@@ -53,3 +53,20 @@ impl Arm32Reg {
         }
     }
 }
+
+/// VFPv3-D16 double-precision register (D0–D15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arm32FpReg(u32);
+
+impl Arm32FpReg {
+    #[inline]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// D-register index (0–15).
+    #[inline]
+    pub const fn idx(self) -> u32 {
+        self.0
+    }
+}

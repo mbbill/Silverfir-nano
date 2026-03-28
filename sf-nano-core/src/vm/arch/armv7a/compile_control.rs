@@ -9,7 +9,8 @@ use crate::{
 };
 
 use super::{
-    abi::{emit_shared_epilogue, map_fixed_reg, map_reg, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1},
+    abi::{map_fixed_reg, map_reg},
+    compile_helpers::emit_shared_epilogue,
     armv7a_raise_trap,
     enc::{self, Cond},
     reg::Arm32Reg,
@@ -99,18 +100,19 @@ pub(super) fn compile_terminator(
             }
 
             // Clamp index to entries.len()-1
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let index_hw = match index {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             let max_idx = (entries.len() - 1) as u32;
-            let clamp_hw = if index_hw == SCRATCH0 {
-                SCRATCH1
+            let clamp_hw = if index_hw == s0 {
+                *fc.gp_scratch.scoped_alloc()
             } else {
-                SCRATCH0
+                s0
             };
             fc.emit_load_u32(clamp_hw, max_idx);
             fc.text.emit_u32(enc::cmp_reg(index_hw, clamp_hw));
@@ -157,8 +159,9 @@ pub(super) fn compile_branch_condition(
             let hw = match value {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    let s = *fc.gp_scratch.scoped_alloc();
+                    fc.emit_load_u32(s, *v as u32);
+                    s
                 }
             };
             fc.text.emit_u32(enc::cmp_imm(hw, 0, 0));
@@ -172,11 +175,12 @@ pub(super) fn compile_branch_condition(
             lhs,
             rhs,
         } => {
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let lhs_hw = match lhs {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
 
@@ -188,10 +192,10 @@ pub(super) fn compile_branch_condition(
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                         fc.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
                     } else {
-                        let tmp = if lhs_hw == SCRATCH0 {
-                            Arm32Reg::R3
+                        let tmp = if lhs_hw == s0 {
+                            *fc.gp_scratch.scoped_alloc()
                         } else {
-                            SCRATCH0
+                            s0
                         };
                         fc.emit_load_u32(tmp, *v as u32);
                         fc.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
@@ -219,11 +223,12 @@ pub(super) fn compile_branch_condition(
             mask,
             ..
         } => {
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             match mask {
@@ -234,7 +239,11 @@ pub(super) fn compile_branch_condition(
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                         fc.text.emit_u32(enc::tst_imm(src_hw, imm8, rot));
                     } else {
-                        let tmp = if src_hw == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+                        let tmp = if src_hw == s0 {
+                            *fc.gp_scratch.scoped_alloc()
+                        } else {
+                            s0
+                        };
                         fc.emit_load_u32(tmp, *v as u32);
                         fc.text.emit_u32(enc::tst_reg(src_hw, tmp));
                     }
@@ -257,8 +266,10 @@ pub(super) fn compile_branch_condition(
             lhs,
             rhs,
         } => {
-            let lhs_d = materialize_float_value_dreg(fc, *width, lhs, FP_SCRATCH1)?;
-            let rhs_d = materialize_float_value_dreg(fc, *width, rhs, FP_SCRATCH2)?;
+            let fp1 = *fc.fp_scratch.scoped_alloc();
+            let fp2 = *fc.fp_scratch.scoped_alloc();
+            let lhs_d = materialize_float_value_dreg(fc, *width, lhs, fp1.idx())?;
+            let rhs_d = materialize_float_value_dreg(fc, *width, rhs, fp2.idx())?;
 
             match width {
                 MachineFloatWidth::F64 => {

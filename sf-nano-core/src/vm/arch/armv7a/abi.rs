@@ -1,4 +1,14 @@
-//! ARMv7-A physical register mapping and EABI-derived layout.
+//! ABI register plan for the ARMv7-A backend.
+//!
+//! This file defines:
+//! - the mapping from MachineIR registers to physical registers
+//! - scratch register arrays (private — only the pool sees them)
+//! - C ABI boundary registers (entry args, return values)
+//! - dynamic and callee-saved register sets
+//!
+//! It does NOT emit code and does NOT define role structs.
+//! The register layout follows:
+//!   [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache] + scratches
 //!
 //! # GP register plan (R0-R15)
 //!
@@ -15,7 +25,7 @@
 //! R11    callee-saved     fixed: MEM0_BASE            1
 //! R12    caller-saved     scratch (IP)                1
 //! R13    —                SP (reserved)               1
-//! R14    —                LR (reserved)               1
+//! R14    —                LR (scratch)                1
 //! R15    —                PC (reserved)               1
 //! ─────────────────────────────────────────────────────
 //!                         GP transient                4
@@ -47,17 +57,38 @@ use crate::{
     },
 };
 
-use super::{emit::Arm32TextEmitter, enc, reg::Arm32Reg};
+use super::reg::{Arm32FpReg, Arm32Reg};
+use crate::vm::arch::common::scratch_pool::ScratchPool;
 
-pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
-/// Call-local scratch. LR is saved in the shared prologue and only used as a
-/// transient scratch within straight-line sequences that do not issue calls.
-pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
+// ── C ABI boundary registers ─────────────────────────────────────────────────
+// These are platform calling-convention facts, used only at the C↔JIT boundary
+// (prologue, epilogue, helper calls). Not part of the JIT register plan.
 
-/// FP scratch registers (caller-saved, not used for values or parameters).
-pub(super) const FP_SCRATCH0: u32 = 0; // D0
-pub(super) const FP_SCRATCH1: u32 = 1; // D1
-pub(super) const FP_SCRATCH2: u32 = 2; // D2
+pub(super) const C_ARG0: Arm32Reg = Arm32Reg::R0;
+pub(super) const C_ARG1: Arm32Reg = Arm32Reg::R1;
+pub(super) const C_ARG2: Arm32Reg = Arm32Reg::R2;
+pub(super) const C_ARG3: Arm32Reg = Arm32Reg::R3;
+pub(super) const C_RET0: Arm32Reg = Arm32Reg::R0;
+pub(super) const C_RET1: Arm32Reg = Arm32Reg::R1;
+
+// ── Scratch pool construction ────────────────────────────────────────────────
+// The arrays are private. The only way to get a scratch register is through
+// the ScratchPool allocated in the backend.
+
+const GP_SCRATCHES: [Arm32Reg; 2] = [Arm32Reg::R12, Arm32Reg::R14];
+const FP_SCRATCHES: [Arm32FpReg; 3] = [
+    Arm32FpReg::new(0), // D0
+    Arm32FpReg::new(1), // D1
+    Arm32FpReg::new(2), // D2
+];
+
+pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm32Reg, 2> {
+    ScratchPool::new(GP_SCRATCHES)
+}
+
+pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm32FpReg, 3> {
+    ScratchPool::new(FP_SCRATCHES)
+}
 
 // ── Dynamic register arrays (MachineIR allocation) ───────────────────────────
 //
@@ -91,13 +122,25 @@ pub(super) const GP_TRANSIENT: [Arm32Reg; 4] = [
 ];
 
 /// Caller-saved FP registers reserved for transient SSA values (TOS lanes).
-pub(super) const FP_TRANSIENT: [u32; 5] = [3, 4, 5, 6, 7];
+pub(super) const FP_TRANSIENT: [Arm32FpReg; 5] = [
+    Arm32FpReg::new(3),
+    Arm32FpReg::new(4),
+    Arm32FpReg::new(5),
+    Arm32FpReg::new(6),
+    Arm32FpReg::new(7),
+];
 
 /// FP registers reserved for cached locals (D8-D15, callee-saved).
-pub(super) const FP_LOCAL_CACHE: [u32; 8] = [8, 9, 10, 11, 12, 13, 14, 15];
-
-/// Total FP machine-register capacity: transients first, then cached locals.
-pub(super) const FP_MACHINE_REG_COUNT: usize = FP_TRANSIENT.len() + FP_LOCAL_CACHE.len();
+pub(super) const FP_LOCAL_CACHE: [Arm32FpReg; 8] = [
+    Arm32FpReg::new(8),
+    Arm32FpReg::new(9),
+    Arm32FpReg::new(10),
+    Arm32FpReg::new(11),
+    Arm32FpReg::new(12),
+    Arm32FpReg::new(13),
+    Arm32FpReg::new(14),
+    Arm32FpReg::new(15),
+];
 
 // Compile-time check: transients + cache + scratch must cover all 16 D-regs.
 const _: () = assert!(
@@ -118,11 +161,11 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     )
 }
 
-// ── Callee-saved sets (ARMv7-specific encoding) ─────────────────────────────
+// ── Callee-saved sets ────────────────────────────────────────────────────────
 
 /// Callee-saved GP registers to save/restore in prologue/epilogue.
 /// R4-R11 are callee-saved in EABI; R14(LR) must also be saved since we call helpers.
-const CALLEE_SAVED_GP_REGS: [Arm32Reg; 9] = [
+pub(super) const CALLEE_SAVED_GP: [Arm32Reg; 9] = [
     Arm32Reg::R4,
     Arm32Reg::R5,
     Arm32Reg::R6,
@@ -135,15 +178,12 @@ const CALLEE_SAVED_GP_REGS: [Arm32Reg; 9] = [
 ];
 
 /// EABI callee-saved FP regs (D8-D15).
-const CALLEE_SAVED_FP_FIRST: u32 = 8;
-const CALLEE_SAVED_FP_COUNT: u32 = 8;
+pub(super) const CALLEE_SAVED_FP_FIRST: u32 = 8;
+pub(super) const CALLEE_SAVED_FP_COUNT: u32 = 8;
 
-const STACK_ALIGNMENT_BYTES: u32 = 8; // EABI requires 8-byte stack alignment
-const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 == 1 {
-    4
-} else {
-    0
-};
+pub(super) const STACK_ALIGNMENT_BYTES: u32 = 8; // EABI requires 8-byte stack alignment
+
+// ── Capacity queries ─────────────────────────────────────────────────────────
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
@@ -152,7 +192,7 @@ pub(super) const fn max_gp_mapped_regs() -> usize {
 
 #[inline]
 pub(super) const fn max_fp_machine_regs() -> usize {
-    FP_MACHINE_REG_COUNT
+    FP_TRANSIENT.len() + FP_LOCAL_CACHE.len()
 }
 
 #[inline]
@@ -160,16 +200,7 @@ pub(super) const fn max_total_machine_regs() -> usize {
     max_gp_mapped_regs() + max_fp_machine_regs()
 }
 
-#[inline]
-pub(super) fn fp_machine_reg(index: usize) -> Option<u32> {
-    let config = compile_backend_config();
-    let (i, is_cache) = classify_fp_reg(index, config);
-    if is_cache {
-        FP_LOCAL_CACHE.get(i).copied()
-    } else {
-        FP_TRANSIENT.get(i).copied()
-    }
-}
+// ── Mapping: MachineReg → physical register ──────────────────────────────────
 
 #[inline]
 pub(super) fn map_fixed_reg(reg: MachineReg) -> Arm32Reg {
@@ -202,6 +233,17 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
 }
 
 #[inline]
+pub(super) fn fp_machine_reg(index: usize) -> Option<Arm32FpReg> {
+    let config = compile_backend_config();
+    let (i, is_cache) = classify_fp_reg(index, config);
+    if is_cache {
+        FP_LOCAL_CACHE.get(i).copied()
+    } else {
+        FP_TRANSIENT.get(i).copied()
+    }
+}
+
+#[inline]
 pub(super) fn inv_map_reg(reg: Arm32Reg) -> MachineReg {
     match reg {
         Arm32Reg::R8 => MACHINE_CTX_REG,
@@ -219,50 +261,4 @@ pub(super) fn inv_map_reg(reg: Arm32Reg) -> MachineReg {
             MachineReg(MACHINE_FIXED_REG_COUNT + GP_LOCAL_CACHE.len() as u16 + i as u16)
         }
     }
-}
-
-/// Build the register mask for PUSH/POP from the callee-saved list.
-fn callee_saved_gp_mask() -> u16 {
-    let mut mask = 0u16;
-    let mut i = 0;
-    while i < CALLEE_SAVED_GP_REGS.len() {
-        mask |= 1 << CALLEE_SAVED_GP_REGS[i].idx();
-        i += 1;
-    }
-    mask
-}
-
-pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
-    // Preserve 8-byte stack alignment across all helper and runtime calls.
-    // The GP save set has an odd number of words, so reserve one extra word
-    // before the push/vpush sequence.
-    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
-        text.emit_u32(enc::sub_imm(
-            Arm32Reg::SP,
-            Arm32Reg::SP,
-            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
-            0,
-        ));
-    }
-    // PUSH {R4-R11, LR}
-    text.emit_u32(enc::push(callee_saved_gp_mask()));
-    // VPUSH {D8-D15}
-    text.emit_u32(enc::vpush_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
-}
-
-pub(super) fn emit_shared_epilogue(text: &mut Arm32TextEmitter) {
-    // VPOP {D8-D15}
-    text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
-    // Restore the GP save set, then drop the alignment pad and return via LR.
-    let pop_mask = callee_saved_gp_mask();
-    text.emit_u32(enc::pop(pop_mask));
-    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
-        text.emit_u32(enc::add_imm(
-            Arm32Reg::SP,
-            Arm32Reg::SP,
-            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
-            0,
-        ));
-    }
-    text.emit_u32(enc::bx(Arm32Reg::R14));
 }

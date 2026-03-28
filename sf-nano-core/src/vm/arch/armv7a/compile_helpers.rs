@@ -12,10 +12,11 @@ use crate::{
 
 use super::{
     abi::{
-        emit_shared_epilogue, fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0, FP_SCRATCH1,
-        FP_SCRATCH2, SCRATCH0, SCRATCH1,
+        map_fixed_reg, map_reg,
+        CALLEE_SAVED_FP_COUNT, CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_GP,
     },
     armv7a_raise_trap,
+    emit::Arm32TextEmitter,
     enc::{self, Cond},
     reg::Arm32Reg,
 };
@@ -41,8 +42,9 @@ pub(super) fn encode_trap_site(func_idx: u32, block_idx: Option<u32>) -> u32 {
 
 #[inline]
 pub(super) fn emit_host_call(fc: &mut FunctionCompiler<'_>, target: usize) {
-    fc.emit_load_addr(SCRATCH0, target);
-    fc.text.emit_u32(enc::blx_reg(SCRATCH0));
+    let s = *fc.gp_scratch.scoped_alloc();
+    fc.emit_load_addr(s, target);
+    fc.text.emit_u32(enc::blx_reg(s));
 }
 
 // ─── GP value materialization ───────────────────────────────────────────────
@@ -116,8 +118,9 @@ pub(super) fn materialize_float_value_dreg(
                         .emit_u32(enc::vmov_d_rr(scratch_d, Arm32Reg::R0, Arm32Reg::R1));
                 }
                 MachineFloatWidth::F32 => {
-                    fc.emit_load_u32(SCRATCH0, *bits as u32);
-                    fc.text.emit_u32(enc::vmov_s_r(scratch_d * 2, SCRATCH0));
+                    let s = *fc.gp_scratch.scoped_alloc();
+                    fc.emit_load_u32(s, *bits as u32);
+                    fc.text.emit_u32(enc::vmov_s_r(scratch_d * 2, s));
                 }
             }
             Ok(scratch_d)
@@ -142,9 +145,10 @@ pub(super) fn emit_pair_args_to_r0_r1(
     };
 
     if matches!(src_lo_reg, Some(Arm32Reg::R1)) && matches!(src_hi_reg, Some(Arm32Reg::R0)) {
-        fc.text.emit_u32(enc::mov_reg(SCRATCH0, Arm32Reg::R0));
+        let s = *fc.gp_scratch.scoped_alloc();
+        fc.text.emit_u32(enc::mov_reg(s, Arm32Reg::R0));
         fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
-        fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, SCRATCH0));
+        fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, s));
         return Ok(());
     }
 
@@ -172,9 +176,10 @@ pub(super) fn emit_pair_results_from_r0_r1(
     let dst_hi_hw = map_reg(dst_hi)?;
 
     if dst_lo_hw == Arm32Reg::R1 && dst_hi_hw == Arm32Reg::R0 {
-        fc.text.emit_u32(enc::mov_reg(SCRATCH0, Arm32Reg::R0));
+        let s = *fc.gp_scratch.scoped_alloc();
+        fc.text.emit_u32(enc::mov_reg(s, Arm32Reg::R0));
         fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
-        fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, SCRATCH0));
+        fc.text.emit_u32(enc::mov_reg(Arm32Reg::R1, s));
         return Ok(());
     }
 
@@ -249,9 +254,10 @@ pub(super) fn emit_values_to_regs_via_stack(
             "armv7a stack-staged value move requires matching regs and values".into(),
         ));
     }
-    let scratch_mask = 1 << SCRATCH0.idx();
+    let s = *fc.gp_scratch.scoped_alloc();
+    let scratch_mask = 1 << s.idx();
     for value in values {
-        emit_move_gp_value(fc, SCRATCH0, value)?;
+        emit_move_gp_value(fc, s, value)?;
         fc.text.emit_u32(enc::push(scratch_mask));
     }
     for reg in regs.iter().rev() {
@@ -321,9 +327,10 @@ pub(super) fn emit_load_word_from_addr(
     if (-4095..=4095).contains(&offset) {
         fc.text.emit_u32(enc::ldr_imm(dst, base, offset));
     } else {
-        fc.emit_load_u32(SCRATCH0, offset as u32);
-        fc.text.emit_u32(enc::add_reg(SCRATCH0, base, SCRATCH0));
-        fc.text.emit_u32(enc::ldr_imm(dst, SCRATCH0, 0));
+        let s = *fc.gp_scratch.scoped_alloc();
+        fc.emit_load_u32(s, offset as u32);
+        fc.text.emit_u32(enc::add_reg(s, base, s));
+        fc.text.emit_u32(enc::ldr_imm(dst, s, 0));
     }
 }
 
@@ -336,7 +343,13 @@ pub(super) fn emit_store_word_to_addr(
     if (-4095..=4095).contains(&offset) {
         fc.text.emit_u32(enc::str_imm(src, base, offset));
     } else {
-        let addr_tmp = if src == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+        let addr_tmp = *fc.gp_scratch.scoped_alloc();
+        // If the pool gave us the same register as src, get another one.
+        let addr_tmp = if addr_tmp == src {
+            *fc.gp_scratch.scoped_alloc()
+        } else {
+            addr_tmp
+        };
         fc.emit_load_u32(addr_tmp, offset as u32);
         fc.text.emit_u32(enc::add_reg(addr_tmp, base, addr_tmp));
         fc.text.emit_u32(enc::str_imm(src, addr_tmp, 0));
@@ -406,4 +419,58 @@ pub(super) fn rbit(dst: Arm32Reg, src: Arm32Reg) -> u32 {
         | ((dst.idx()) << 12)
         | (0b11110011 << 4)
         | src.idx()
+}
+
+// ── Shared prologue / epilogue ──────────────────────────────────────────────
+
+const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP.len() % 2 == 1 {
+    4
+} else {
+    0
+};
+
+/// Build the register mask for PUSH/POP from the callee-saved list.
+fn callee_saved_gp_mask() -> u16 {
+    let mut mask = 0u16;
+    let mut i = 0;
+    while i < CALLEE_SAVED_GP.len() {
+        mask |= 1 << CALLEE_SAVED_GP[i].idx();
+        i += 1;
+    }
+    mask
+}
+
+pub(super) fn emit_shared_prologue(text: &mut Arm32TextEmitter) {
+    // Preserve 8-byte stack alignment across all helper and runtime calls.
+    // The GP save set has an odd number of words, so reserve one extra word
+    // before the push/vpush sequence.
+    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
+        text.emit_u32(enc::sub_imm(
+            Arm32Reg::SP,
+            Arm32Reg::SP,
+            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
+            0,
+        ));
+    }
+    // PUSH {R4-R11, LR}
+    text.emit_u32(enc::push(callee_saved_gp_mask()));
+    // VPUSH {D8-D15}
+    text.emit_u32(enc::vpush_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+}
+
+pub(super) fn emit_shared_epilogue(text: &mut Arm32TextEmitter) {
+    // VPOP {D8-D15}
+    text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+    // Restore the GP save set, then drop the alignment pad and return via LR.
+    let pop_mask = callee_saved_gp_mask();
+    text.emit_u32(enc::pop(pop_mask));
+    if SHARED_PROLOGUE_ALIGN_PAD_BYTES != 0 {
+        text.emit_u32(enc::add_imm(
+            Arm32Reg::SP,
+            Arm32Reg::SP,
+            SHARED_PROLOGUE_ALIGN_PAD_BYTES,
+            0,
+        ));
+    }
+    text.emit_u32(enc::bx(Arm32Reg::R14));
 }

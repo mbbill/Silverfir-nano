@@ -17,9 +17,9 @@ use crate::{
 
 use super::{
     abi::{
-        emit_shared_epilogue, map_fixed_reg, map_reg, FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2,
-        SCRATCH0, SCRATCH1,
+        inv_map_reg, map_fixed_reg, map_reg,
     },
+    compile_helpers::emit_shared_epilogue,
     armv7a_f32_ceil, armv7a_f32_floor, armv7a_f32_nearest_bits, armv7a_f32_trunc,
     armv7a_f64_ceil, armv7a_f64_floor, armv7a_f64_nearest_bits, armv7a_f64_trunc,
     armv7a_i64_clz, armv7a_i64_ctz, armv7a_i64_div_s, armv7a_i64_div_u, armv7a_i64_mul,
@@ -28,7 +28,7 @@ use super::{
     armv7a_i64u_to_f32, armv7a_i64u_to_f64, armv7a_raise_trap, armv7a_saturating_trunc,
     armv7a_sdiv, armv7a_smul_wide, armv7a_trapping_trunc, armv7a_udiv, armv7a_umul_wide,
     enc::{self, Cond},
-    reg::Arm32Reg,
+    reg::{Arm32FpReg, Arm32Reg},
 };
 
 use crate::vm::machine::machine_ir::{MACHINE_CTX_REG, MACHINE_FP_REG};
@@ -118,12 +118,13 @@ pub(super) fn compile_inst(
 
         MachineInstKind::FloatConst { width, dst, bits } => {
             // Load FP constant: put bits in GP scratch, then VMOV to FP reg
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let dd = fc.map_fp_dreg(*dst)?;
             match width {
                 MachineFloatWidth::F32 => {
                     let lo = *bits as u32;
-                    fc.emit_load_u32(SCRATCH0, lo);
-                    fc.text.emit_u32(enc::vmov_s_r(dd * 2, SCRATCH0));
+                    fc.emit_load_u32(s0, lo);
+                    fc.text.emit_u32(enc::vmov_s_r(dd * 2, s0));
                 }
                 MachineFloatWidth::F64 => {
                     let lo = *bits as u32;
@@ -146,8 +147,9 @@ pub(super) fn compile_inst(
             } else if let Some((imm8, rot)) = enc::encode_arm_imm(addr.offset as u32) {
                 fc.text.emit_u32(enc::add_imm(dst_hw, base_hw, imm8, rot));
             } else {
-                fc.emit_load_u32(SCRATCH0, addr.offset as u32);
-                fc.text.emit_u32(enc::add_reg(dst_hw, base_hw, SCRATCH0));
+                let s0 = *fc.gp_scratch.scoped_alloc();
+                fc.emit_load_u32(s0, addr.offset as u32);
+                fc.text.emit_u32(enc::add_reg(dst_hw, base_hw, s0));
             }
         }
 
@@ -358,21 +360,23 @@ pub(super) fn compile_inst(
         MachineInstKind::IndexedLoad {
             dst, base, index, offset, width, extension, ..
         } => {
-            // Decompose: base + index + offset → SCRATCH0, then load from [SCRATCH0].
+            // Decompose: base + index + offset → scratch, then load from [scratch].
             // ARMv7 is 32-bit — no UXTW needed (index_extend is ignored).
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let base_hw = map_reg(*base)?;
             let index_hw = map_reg(*index)?;
-            fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
-            let scratch_mr = inv_map_reg(SCRATCH0);
+            fc.text.emit_u32(enc::add_reg(s0, base_hw, index_hw));
+            let scratch_mr = inv_map_reg(s0);
             compile_load(fc, *dst, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *extension)?;
         }
         MachineInstKind::IndexedStore {
             base, index, offset, width, src, ..
         } => {
+            let s0 = *fc.gp_scratch.scoped_alloc();
             let base_hw = map_reg(*base)?;
             let index_hw = map_reg(*index)?;
-            fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
-            let scratch_mr = inv_map_reg(SCRATCH0);
+            fc.text.emit_u32(enc::add_reg(s0, base_hw, index_hw));
+            let scratch_mr = inv_map_reg(s0);
             compile_store(fc, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *src)?;
         }
         MachineInstKind::BitfieldExtractU { width, dst, src, lsb, bits } => {
@@ -406,16 +410,18 @@ fn compile_load(
     // unaligned Wasm memory address", so use a GP-word bridge here for
     // correctness.
     if fc.is_fp_machine_reg(dst) {
+        let s0 = *fc.gp_scratch.scoped_alloc();
+        let s1 = *fc.gp_scratch.scoped_alloc();
         let dd = fc.map_fp_dreg(dst)?;
         match width {
             MachineMemWidth::U64 => {
-                emit_load_word_from_addr(fc, SCRATCH0, base_hw, offset);
-                emit_load_word_from_addr(fc, SCRATCH1, base_hw, offset + 4);
-                fc.text.emit_u32(enc::vmov_d_rr(dd, SCRATCH0, SCRATCH1));
+                emit_load_word_from_addr(fc, s0, base_hw, offset);
+                emit_load_word_from_addr(fc, s1, base_hw, offset + 4);
+                fc.text.emit_u32(enc::vmov_d_rr(dd, s0, s1));
             }
             MachineMemWidth::U32 => {
-                emit_load_word_from_addr(fc, SCRATCH0, base_hw, offset);
-                fc.text.emit_u32(enc::vmov_s_r(dd * 2, SCRATCH0));
+                emit_load_word_from_addr(fc, s0, base_hw, offset);
+                fc.text.emit_u32(enc::vmov_s_r(dd * 2, s0));
             }
             _ => {
                 return Err(WasmError::invalid(alloc::format!(
@@ -464,6 +470,8 @@ fn compile_store(
     width: MachineMemWidth,
     src: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
+    let s1 = *fc.gp_scratch.scoped_alloc();
     let base_hw = map_reg(addr.base)?;
     let offset = addr.offset;
 
@@ -473,13 +481,13 @@ fn compile_store(
                 let dd = fc.map_fp_dreg(*r)?;
                 match width {
                     MachineMemWidth::U64 => {
-                        fc.text.emit_u32(enc::vmov_rr_d(SCRATCH0, SCRATCH1, dd));
-                        emit_store_word_to_addr(fc, SCRATCH0, base_hw, offset);
-                        emit_store_word_to_addr(fc, SCRATCH1, base_hw, offset + 4);
+                        fc.text.emit_u32(enc::vmov_rr_d(s0, s1, dd));
+                        emit_store_word_to_addr(fc, s0, base_hw, offset);
+                        emit_store_word_to_addr(fc, s1, base_hw, offset + 4);
                     }
                     MachineMemWidth::U32 => {
-                        fc.text.emit_u32(enc::vmov_r_s(SCRATCH0, dd * 2));
-                        emit_store_word_to_addr(fc, SCRATCH0, base_hw, offset);
+                        fc.text.emit_u32(enc::vmov_r_s(s0, dd * 2));
+                        emit_store_word_to_addr(fc, s0, base_hw, offset);
                     }
                     _ => {
                         return Err(WasmError::invalid(alloc::format!(
@@ -491,14 +499,14 @@ fn compile_store(
             }
             MachineValue::Imm64(bits) => match width {
                 MachineMemWidth::U64 => {
-                    fc.emit_load_u32(SCRATCH0, *bits as u32);
-                    fc.emit_load_u32(SCRATCH1, (*bits >> 32) as u32);
-                    emit_store_word_to_addr(fc, SCRATCH0, base_hw, offset);
-                    emit_store_word_to_addr(fc, SCRATCH1, base_hw, offset + 4);
+                    fc.emit_load_u32(s0, *bits as u32);
+                    fc.emit_load_u32(s1, (*bits >> 32) as u32);
+                    emit_store_word_to_addr(fc, s0, base_hw, offset);
+                    emit_store_word_to_addr(fc, s1, base_hw, offset + 4);
                 }
                 MachineMemWidth::U32 => {
-                    fc.emit_load_u32(SCRATCH0, *bits as u32);
-                    emit_store_word_to_addr(fc, SCRATCH0, base_hw, offset);
+                    fc.emit_load_u32(s0, *bits as u32);
+                    emit_store_word_to_addr(fc, s0, base_hw, offset);
                 }
                 _ => {
                     return Err(WasmError::invalid(alloc::format!(
@@ -521,8 +529,8 @@ fn compile_store(
     let src_hw = match src {
         MachineValue::Reg(r) => map_reg(*r)?,
         MachineValue::Imm64(imm) => {
-            fc.emit_load_u32(SCRATCH0, *imm as u32);
-            SCRATCH0
+            fc.emit_load_u32(s0, *imm as u32);
+            s0
         }
     };
 
@@ -539,9 +547,9 @@ fn compile_store(
         MachineMemWidth::U64 => {
             // Store low word, then zero high word
             fc.text.emit_u32(enc::str_imm(src_hw, base_hw, offset));
-            fc.emit_load_u32(SCRATCH0, 0);
+            fc.emit_load_u32(s0, 0);
             fc.text
-                .emit_u32(enc::str_imm(SCRATCH0, base_hw, offset + 4));
+                .emit_u32(enc::str_imm(s0, base_hw, offset + 4));
         }
     }
     Ok(())
@@ -557,6 +565,7 @@ fn compile_int_binary(
     lhs: &MachineValue,
     rhs: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
     let dst_hw = map_reg(dst)?;
 
     let lhs_hw = match lhs {
@@ -573,8 +582,8 @@ fn compile_int_binary(
                 if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
                     fc.text.emit_u32(enc::add_imm(dst_hw, lhs_hw, imm8, rot));
                 } else {
-                    fc.emit_load_u32(SCRATCH0, *imm as u32);
-                    fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, SCRATCH0));
+                    fc.emit_load_u32(s0, *imm as u32);
+                    fc.text.emit_u32(enc::add_reg(dst_hw, lhs_hw, s0));
                 }
             }
             MachineValue::Reg(r) => {
@@ -586,8 +595,8 @@ fn compile_int_binary(
                 if let Some((imm8, rot)) = enc::encode_arm_imm(*imm as u32) {
                     fc.text.emit_u32(enc::sub_imm(dst_hw, lhs_hw, imm8, rot));
                 } else {
-                    fc.emit_load_u32(SCRATCH0, *imm as u32);
-                    fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, SCRATCH0));
+                    fc.emit_load_u32(s0, *imm as u32);
+                    fc.text.emit_u32(enc::sub_reg(dst_hw, lhs_hw, s0));
                 }
             }
             MachineValue::Reg(r) => {
@@ -598,8 +607,8 @@ fn compile_int_binary(
             let rhs_hw = match rhs {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::mul(dst_hw, lhs_hw, rhs_hw));
@@ -612,8 +621,8 @@ fn compile_int_binary(
                         fc.text.emit_u32(enc::and_imm(dst_hw, lhs_hw, imm8, rot));
                         return Ok(());
                     }
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::and_reg(dst_hw, lhs_hw, rhs_hw));
@@ -626,8 +635,8 @@ fn compile_int_binary(
                         fc.text.emit_u32(enc::orr_imm(dst_hw, lhs_hw, imm8, rot));
                         return Ok(());
                     }
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::orr_reg(dst_hw, lhs_hw, rhs_hw));
@@ -640,8 +649,8 @@ fn compile_int_binary(
                         fc.text.emit_u32(enc::eor_imm(dst_hw, lhs_hw, imm8, rot));
                         return Ok(());
                     }
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::eor_reg(dst_hw, lhs_hw, rhs_hw));
@@ -656,8 +665,8 @@ fn compile_int_binary(
                 MachineValue::Reg(r) => map_reg(*r)?,
             };
             // Mask shift amount to 5 bits (wasm i32 semantics)
-            fc.text.emit_u32(enc::and_imm(SCRATCH0, rhs_hw, 31, 0));
-            fc.text.emit_u32(enc::lsl_reg(dst_hw, lhs_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_imm(s0, rhs_hw, 31, 0));
+            fc.text.emit_u32(enc::lsl_reg(dst_hw, lhs_hw, s0));
         }
         MachineIntBinaryOp::ShrU => {
             let rhs_hw = match rhs {
@@ -668,8 +677,8 @@ fn compile_int_binary(
                 }
                 MachineValue::Reg(r) => map_reg(*r)?,
             };
-            fc.text.emit_u32(enc::and_imm(SCRATCH0, rhs_hw, 31, 0));
-            fc.text.emit_u32(enc::lsr_reg(dst_hw, lhs_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_imm(s0, rhs_hw, 31, 0));
+            fc.text.emit_u32(enc::lsr_reg(dst_hw, lhs_hw, s0));
         }
         MachineIntBinaryOp::ShrS => {
             let rhs_hw = match rhs {
@@ -680,8 +689,8 @@ fn compile_int_binary(
                 }
                 MachineValue::Reg(r) => map_reg(*r)?,
             };
-            fc.text.emit_u32(enc::and_imm(SCRATCH0, rhs_hw, 31, 0));
-            fc.text.emit_u32(enc::asr_reg(dst_hw, lhs_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_imm(s0, rhs_hw, 31, 0));
+            fc.text.emit_u32(enc::asr_reg(dst_hw, lhs_hw, s0));
         }
         MachineIntBinaryOp::Rotl => {
             // rotl(x, k) = rotr(x, 32-k)
@@ -693,9 +702,9 @@ fn compile_int_binary(
                 }
                 MachineValue::Reg(r) => map_reg(*r)?,
             };
-            fc.text.emit_u32(enc::and_imm(SCRATCH0, rhs_hw, 31, 0));
-            fc.text.emit_u32(enc::rsb_imm(SCRATCH0, SCRATCH0, 32, 0));
-            fc.text.emit_u32(enc::ror_reg(dst_hw, lhs_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_imm(s0, rhs_hw, 31, 0));
+            fc.text.emit_u32(enc::rsb_imm(s0, s0, 32, 0));
+            fc.text.emit_u32(enc::ror_reg(dst_hw, lhs_hw, s0));
         }
         MachineIntBinaryOp::Rotr => {
             let rhs_hw = match rhs {
@@ -706,8 +715,8 @@ fn compile_int_binary(
                 }
                 MachineValue::Reg(r) => map_reg(*r)?,
             };
-            fc.text.emit_u32(enc::and_imm(SCRATCH0, rhs_hw, 31, 0));
-            fc.text.emit_u32(enc::ror_reg(dst_hw, lhs_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_imm(s0, rhs_hw, 31, 0));
+            fc.text.emit_u32(enc::ror_reg(dst_hw, lhs_hw, s0));
         }
         MachineIntBinaryOp::DivU => {
             spill_caller_saved_gp_regs(fc);
@@ -744,8 +753,8 @@ fn compile_int_binary(
             fc.emit_branch(BranchFixupKind::B, trap_div_zero);
             fc.bind_label(not_zero);
             // Trap on INT_MIN / -1 (integer overflow)
-            fc.emit_load_u32(SCRATCH0, 0x80000000u32);
-            fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R0, SCRATCH0));
+            fc.emit_load_u32(s0, 0x80000000u32);
+            fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R0, s0));
             let not_overflow = fc.alloc_label(LabelKind::Block);
             fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_overflow);
             fc.text.emit_u32(enc::cmn_imm(Arm32Reg::R1, 1, 0)); // CMN rhs, #1 == CMP rhs, #-1
@@ -794,9 +803,9 @@ fn compile_int_binary(
                 .emit_u32(enc::ldr_imm(Arm32Reg::R3, Arm32Reg::SP, 4));
             emit_stack_temp_free(fc, 8);
             fc.text
-                .emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
+                .emit_u32(enc::mul(s0, Arm32Reg::R0, Arm32Reg::R3));
             fc.text
-                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
+                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, s0));
             restore_caller_saved_gp_regs(fc, &[dst_hw]);
             fc.emit_branch(BranchFixupKind::B, done);
             fc.bind_label(trap_div_zero);
@@ -832,9 +841,9 @@ fn compile_int_binary(
             emit_stack_temp_free(fc, 8);
             // rem = lhs - quotient * rhs: MLS dst, R0, R3, R2
             fc.text
-                .emit_u32(enc::mul(SCRATCH0, Arm32Reg::R0, Arm32Reg::R3));
+                .emit_u32(enc::mul(s0, Arm32Reg::R0, Arm32Reg::R3));
             fc.text
-                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, SCRATCH0));
+                .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, s0));
             restore_caller_saved_gp_regs(fc, &[dst_hw]);
             fc.emit_branch(BranchFixupKind::B, done);
             fc.bind_label(trap_div_zero);
@@ -894,22 +903,24 @@ fn compile_int_unary(
             fc.text.emit_u32(enc::clz(dst_hw, dst_hw));
         }
         MachineIntUnaryOp::Popcnt => {
-            let mask_tmp = SCRATCH1;
+            let s0 = *fc.gp_scratch.scoped_alloc();
+            let s1 = *fc.gp_scratch.scoped_alloc();
+            let mask_tmp = s1;
             // Hamming weight using parallel bit counting
             // x = x - ((x >> 1) & 0x55555555)
-            fc.text.emit_u32(enc::lsr_imm(SCRATCH0, src_hw, 1));
+            fc.text.emit_u32(enc::lsr_imm(s0, src_hw, 1));
             fc.emit_load_u32(mask_tmp, 0x55555555);
-            fc.text.emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, mask_tmp));
-            fc.text.emit_u32(enc::sub_reg(dst_hw, src_hw, SCRATCH0));
+            fc.text.emit_u32(enc::and_reg(s0, s0, mask_tmp));
+            fc.text.emit_u32(enc::sub_reg(dst_hw, src_hw, s0));
             // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
             fc.emit_load_u32(mask_tmp, 0x33333333);
-            fc.text.emit_u32(enc::lsr_imm(SCRATCH0, dst_hw, 2));
-            fc.text.emit_u32(enc::and_reg(SCRATCH0, SCRATCH0, mask_tmp));
+            fc.text.emit_u32(enc::lsr_imm(s0, dst_hw, 2));
+            fc.text.emit_u32(enc::and_reg(s0, s0, mask_tmp));
             fc.text.emit_u32(enc::and_reg(dst_hw, dst_hw, mask_tmp));
-            fc.text.emit_u32(enc::add_reg(dst_hw, dst_hw, SCRATCH0));
+            fc.text.emit_u32(enc::add_reg(dst_hw, dst_hw, s0));
             // x = (x + (x >> 4)) & 0x0F0F0F0F
-            fc.text.emit_u32(enc::lsr_imm(SCRATCH0, dst_hw, 4));
-            fc.text.emit_u32(enc::add_reg(dst_hw, dst_hw, SCRATCH0));
+            fc.text.emit_u32(enc::lsr_imm(s0, dst_hw, 4));
+            fc.text.emit_u32(enc::add_reg(dst_hw, dst_hw, s0));
             fc.emit_load_u32(mask_tmp, 0x0F0F0F0F);
             fc.text.emit_u32(enc::and_reg(dst_hw, dst_hw, mask_tmp));
             // x = x * 0x01010101 >> 24
@@ -1010,12 +1021,14 @@ fn compile_int64_pair_binary(
             Ok(())
         }
         MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
+            let s0 = *fc.gp_scratch.scoped_alloc();
+            let s1 = *fc.gp_scratch.scoped_alloc();
             let dst_lo_hw = map_reg(dst_lo)?;
             let dst_hi_hw = map_reg(dst_hi)?;
             materialize_gp_into(fc, dst_lo_hw, lhs_lo)?;
             materialize_gp_into(fc, dst_hi_hw, lhs_hi)?;
-            let rhs_lo_hw = materialize_gp_value(fc, rhs_lo, SCRATCH0)?;
-            let rhs_hi_hw = materialize_gp_value(fc, rhs_hi, SCRATCH1)?;
+            let rhs_lo_hw = materialize_gp_value(fc, rhs_lo, s0)?;
+            let rhs_hi_hw = materialize_gp_value(fc, rhs_hi, s1)?;
             let emit = match op {
                 MachineIntBinaryOp::And => enc::and_reg,
                 MachineIntBinaryOp::Or => enc::orr_reg,
@@ -1043,6 +1056,7 @@ fn compile_int64_pair_unary(
     src_lo: &MachineValue,
     src_hi: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
     let dst_lo_hw = map_reg(dst_lo)?;
     let dst_hi_hw = map_reg(dst_hi)?;
     spill_caller_saved_gp_regs(fc);
@@ -1063,21 +1077,21 @@ fn compile_int64_pair_unary(
             Ok(())
         }
         MachineIntUnaryOp::Extend8S => {
-            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            let src_lo_hw = materialize_gp_value(fc, src_lo, s0)?;
             fc.text.emit_u32(enc::sxtb(dst_lo_hw, src_lo_hw));
             fc.text.emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
             restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
             Ok(())
         }
         MachineIntUnaryOp::Extend16S => {
-            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            let src_lo_hw = materialize_gp_value(fc, src_lo, s0)?;
             fc.text.emit_u32(enc::sxth(dst_lo_hw, src_lo_hw));
             fc.text.emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
             restore_caller_saved_gp_regs(fc, &[dst_lo_hw, dst_hi_hw]);
             Ok(())
         }
         MachineIntUnaryOp::Extend32S => {
-            let src_lo_hw = materialize_gp_value(fc, src_lo, SCRATCH0)?;
+            let src_lo_hw = materialize_gp_value(fc, src_lo, s0)?;
             if dst_lo_hw != src_lo_hw {
                 fc.text.emit_u32(enc::mov_reg(dst_lo_hw, src_lo_hw));
             }
@@ -1105,6 +1119,7 @@ fn compile_int64_pair_div_rem(
     rhs_lo: &MachineValue,
     rhs_hi: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
     let dst_lo_hw = map_reg(dst_lo)?;
     let dst_hi_hw = map_reg(dst_hi)?;
     spill_caller_saved_gp_regs(fc);
@@ -1114,26 +1129,26 @@ fn compile_int64_pair_div_rem(
     emit_quad_args_to_r0_r3(fc, lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
 
     fc.text
-        .emit_u32(enc::orr_reg(SCRATCH0, Arm32Reg::R2, Arm32Reg::R3));
-    fc.text.emit_u32(enc::cmp_imm(SCRATCH0, 0, 0));
+        .emit_u32(enc::orr_reg(s0, Arm32Reg::R2, Arm32Reg::R3));
+    fc.text.emit_u32(enc::cmp_imm(s0, 0, 0));
     let non_zero = fc.alloc_label(LabelKind::Block);
     fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), non_zero);
     fc.emit_branch(BranchFixupKind::B, trap_div_zero);
     fc.bind_label(non_zero);
 
     if matches!(sign, MachineSign::Signed) && !rem {
-        fc.emit_load_u32(SCRATCH0, 0x8000_0000);
-        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R1, SCRATCH0));
+        fc.emit_load_u32(s0, 0x8000_0000);
+        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R1, s0));
         let no_overflow = fc.alloc_label(LabelKind::Block);
         fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), no_overflow);
         fc.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         let no_overflow_lo = fc.alloc_label(LabelKind::Block);
         fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), no_overflow_lo);
-        fc.emit_load_u32(SCRATCH0, u32::MAX);
-        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R2, SCRATCH0));
+        fc.emit_load_u32(s0, u32::MAX);
+        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R2, s0));
         let no_overflow_rhs_lo = fc.alloc_label(LabelKind::Block);
         fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), no_overflow_rhs_lo);
-        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R3, SCRATCH0));
+        fc.text.emit_u32(enc::cmp_reg(Arm32Reg::R3, s0));
         let no_overflow_rhs_hi = fc.alloc_label(LabelKind::Block);
         fc.emit_branch(BranchFixupKind::BCond(Cond::Ne), no_overflow_rhs_hi);
         fc.emit_branch(BranchFixupKind::B, trap_overflow);
@@ -1296,6 +1311,7 @@ fn compile_convert_i64_pair_to_float(
     src_lo: &MachineValue,
     src_hi: &MachineValue,
 ) -> Result<(), WasmError> {
+    let fp0 = *fc.fp_scratch.scoped_alloc();
     spill_caller_saved_gp_regs(fc);
     emit_pair_args_to_r0_r1(fc, src_lo, src_hi)?;
     emit_host_call(
@@ -1311,15 +1327,15 @@ fn compile_convert_i64_pair_to_float(
     match width {
         MachineFloatWidth::F32 => {
             let dst_s = fc.map_fp_dreg(dst)? * 2;
-            let s0 = FP_SCRATCH0 * 2;
+            let s0 = fp0.idx() * 2;
             if dst_s != s0 {
                 fc.text.emit_u32(enc::vmov_s(dst_s, s0));
             }
         }
         MachineFloatWidth::F64 => {
             let dst_d = fc.map_fp_dreg(dst)?;
-            if dst_d != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dst_d, FP_SCRATCH0));
+            if dst_d != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dst_d, fp0.idx()));
             }
         }
     }
@@ -1336,6 +1352,9 @@ fn compile_convert_float_to_i64_pair(
     dst_hi: MachineReg,
     src: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
+    let fp0 = *fc.fp_scratch.scoped_alloc();
+    let fp1 = *fc.fp_scratch.scoped_alloc();
     let src_is_f32 = matches!(
         op,
         MachineConvertOp::I64TruncF32S
@@ -1351,23 +1370,23 @@ fn compile_convert_float_to_i64_pair(
             MachineFloatWidth::F64
         },
         src,
-        FP_SCRATCH1,
+        fp1.idx(),
     )?;
 
     if src_is_f32 {
         let src_s = src_d * 2;
-        let s0 = FP_SCRATCH0 * 2;
-        if src_s != s0 {
-            fc.text.emit_u32(enc::vmov_s(s0, src_s));
+        let fp0_s = fp0.idx() * 2;
+        if src_s != fp0_s {
+            fc.text.emit_u32(enc::vmov_s(fp0_s, src_s));
         }
-        fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
+        fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, fp0_s));
         fc.emit_load_u32(Arm32Reg::R1, 0);
     } else {
-        if src_d != FP_SCRATCH0 {
-            fc.text.emit_u32(enc::vmov_d(FP_SCRATCH0, src_d));
+        if src_d != fp0.idx() {
+            fc.text.emit_u32(enc::vmov_d(fp0.idx(), src_d));
         }
         fc.text
-            .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, FP_SCRATCH0));
+            .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, fp0.idx()));
     }
     fc.emit_load_u32(Arm32Reg::R2, convert_op_code(op));
 
@@ -1385,8 +1404,8 @@ fn compile_convert_float_to_i64_pair(
     emit_trunc_result_buffer_alloc(fc);
     fc.text
         .emit_u32(enc::mov_reg(Arm32Reg::R3, map_fixed_reg(MACHINE_CTX_REG)));
-    fc.text.emit_u32(enc::add_imm(SCRATCH0, Arm32Reg::SP, 8, 0));
-    fc.text.emit_u32(enc::str_imm(SCRATCH0, Arm32Reg::SP, 0));
+    fc.text.emit_u32(enc::add_imm(s0, Arm32Reg::SP, 8, 0));
+    fc.text.emit_u32(enc::str_imm(s0, Arm32Reg::SP, 0));
     emit_host_call(fc, armv7a_trapping_trunc as usize);
     fc.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
     let ok = fc.alloc_label(LabelKind::Block);
@@ -1411,6 +1430,9 @@ fn compile_convert_float_to_i32(
     dst: MachineReg,
     src: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
+    let fp0 = *fc.fp_scratch.scoped_alloc();
+    let fp1 = *fc.fp_scratch.scoped_alloc();
     let src_is_f32 = matches!(
         op,
         MachineConvertOp::I32TruncF32S
@@ -1426,24 +1448,24 @@ fn compile_convert_float_to_i32(
             MachineFloatWidth::F64
         },
         src,
-        FP_SCRATCH1,
+        fp1.idx(),
     )?;
     let dst_hw = map_reg(dst)?;
 
     if src_is_f32 {
         let src_s = src_d * 2;
-        let s0 = FP_SCRATCH0 * 2;
-        if src_s != s0 {
-            fc.text.emit_u32(enc::vmov_s(s0, src_s));
+        let fp0_s = fp0.idx() * 2;
+        if src_s != fp0_s {
+            fc.text.emit_u32(enc::vmov_s(fp0_s, src_s));
         }
-        fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
+        fc.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, fp0_s));
         fc.emit_load_u32(Arm32Reg::R1, 0);
     } else {
-        if src_d != FP_SCRATCH0 {
-            fc.text.emit_u32(enc::vmov_d(FP_SCRATCH0, src_d));
+        if src_d != fp0.idx() {
+            fc.text.emit_u32(enc::vmov_d(fp0.idx(), src_d));
         }
         fc.text
-            .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, FP_SCRATCH0));
+            .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, fp0.idx()));
     }
     fc.emit_load_u32(Arm32Reg::R2, convert_op_code(op));
 
@@ -1464,8 +1486,8 @@ fn compile_convert_float_to_i32(
     emit_trunc_result_buffer_alloc(fc);
     fc.text
         .emit_u32(enc::mov_reg(Arm32Reg::R3, map_fixed_reg(MACHINE_CTX_REG)));
-    fc.text.emit_u32(enc::add_imm(SCRATCH0, Arm32Reg::SP, 8, 0));
-    fc.text.emit_u32(enc::str_imm(SCRATCH0, Arm32Reg::SP, 0));
+    fc.text.emit_u32(enc::add_imm(s0, Arm32Reg::SP, 8, 0));
+    fc.text.emit_u32(enc::str_imm(s0, Arm32Reg::SP, 0));
     emit_host_call(fc, armv7a_trapping_trunc as usize);
     fc.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
     let ok = fc.alloc_label(LabelKind::Block);
@@ -1539,8 +1561,10 @@ fn compile_float_binary(
     lhs: &MachineValue,
     rhs: &MachineValue,
 ) -> Result<(), WasmError> {
-    let dn = materialize_float_value_dreg(fc, width, lhs, FP_SCRATCH1)?;
-    let dm = materialize_float_value_dreg(fc, width, rhs, FP_SCRATCH2)?;
+    let fp1 = *fc.fp_scratch.scoped_alloc();
+    let fp2 = *fc.fp_scratch.scoped_alloc();
+    let dn = materialize_float_value_dreg(fc, width, lhs, fp1.idx())?;
+    let dm = materialize_float_value_dreg(fc, width, rhs, fp2.idx())?;
 
     let dd = fc.map_fp_dreg(dst)?;
 
@@ -1728,7 +1752,9 @@ fn compile_float_unary(
     dst: MachineReg,
     src: &MachineValue,
 ) -> Result<(), WasmError> {
-    let dm = materialize_float_value_dreg(fc, width, src, FP_SCRATCH1)?;
+    let fp0 = *fc.fp_scratch.scoped_alloc();
+    let fp1 = *fc.fp_scratch.scoped_alloc();
+    let dm = materialize_float_value_dreg(fc, width, src, fp1.idx())?;
     let dd = fc.map_fp_dreg(dst)?;
 
     match (width, op) {
@@ -1739,30 +1765,30 @@ fn compile_float_unary(
             fc.text.emit_u32(enc::vneg_d(dd, dm));
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Ceil) => {
-            if dm != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(FP_SCRATCH0, dm));
+            if dm != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(fp0.idx(), dm));
             }
             emit_host_call(fc, armv7a_f64_ceil as usize);
-            if dd != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+            if dd != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dd, fp0.idx()));
             }
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Floor) => {
-            if dm != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(FP_SCRATCH0, dm));
+            if dm != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(fp0.idx(), dm));
             }
             emit_host_call(fc, armv7a_f64_floor as usize);
-            if dd != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+            if dd != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dd, fp0.idx()));
             }
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Trunc) => {
-            if dm != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(FP_SCRATCH0, dm));
+            if dm != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(fp0.idx(), dm));
             }
             emit_host_call(fc, armv7a_f64_trunc as usize);
-            if dd != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+            if dd != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dd, fp0.idx()));
             }
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Nearest) => {
@@ -1784,37 +1810,37 @@ fn compile_float_unary(
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Ceil) => {
             let src_s = dm * 2;
             let dst_s = dd * 2;
-            let s0 = FP_SCRATCH0 * 2;
-            if src_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(s0, src_s));
+            let fp0_s = fp0.idx() * 2;
+            if src_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(fp0_s, src_s));
             }
             emit_host_call(fc, armv7a_f32_ceil as usize);
-            if dst_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(dst_s, s0));
+            if dst_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(dst_s, fp0_s));
             }
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Floor) => {
             let src_s = dm * 2;
             let dst_s = dd * 2;
-            let s0 = FP_SCRATCH0 * 2;
-            if src_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(s0, src_s));
+            let fp0_s = fp0.idx() * 2;
+            if src_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(fp0_s, src_s));
             }
             emit_host_call(fc, armv7a_f32_floor as usize);
-            if dst_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(dst_s, s0));
+            if dst_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(dst_s, fp0_s));
             }
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Trunc) => {
             let src_s = dm * 2;
             let dst_s = dd * 2;
-            let s0 = FP_SCRATCH0 * 2;
-            if src_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(s0, src_s));
+            let fp0_s = fp0.idx() * 2;
+            if src_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(fp0_s, src_s));
             }
             emit_host_call(fc, armv7a_f32_trunc as usize);
-            if dst_s != s0 {
-                fc.text.emit_u32(enc::vmov_s(dst_s, s0));
+            if dst_s != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(dst_s, fp0_s));
             }
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Nearest) => {
@@ -1848,8 +1874,10 @@ fn compile_float_compare(
     lhs: &MachineValue,
     rhs: &MachineValue,
 ) -> Result<(), WasmError> {
-    let lhs_d = materialize_float_value_dreg(fc, width, lhs, FP_SCRATCH1)?;
-    let rhs_d = materialize_float_value_dreg(fc, width, rhs, FP_SCRATCH2)?;
+    let fp1 = *fc.fp_scratch.scoped_alloc();
+    let fp2 = *fc.fp_scratch.scoped_alloc();
+    let lhs_d = materialize_float_value_dreg(fc, width, lhs, fp1.idx())?;
+    let rhs_d = materialize_float_value_dreg(fc, width, rhs, fp2.idx())?;
     let dst_hw = map_reg(dst)?;
 
     match width {
@@ -1893,6 +1921,9 @@ fn compile_convert(
     dst: MachineReg,
     src: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
+    let fp0 = *fc.fp_scratch.scoped_alloc();
+    let fp1 = *fc.fp_scratch.scoped_alloc();
     match op {
         // ─── Integer wrapping/extending (GP → GP) ────────────────────────
         MachineConvertOp::I32WrapI64 => {
@@ -1953,11 +1984,11 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
-            let sd_tmp = FP_SCRATCH0 * 2;
+            let sd_tmp = fp0.idx() * 2;
             fc.text.emit_u32(enc::vmov_s_r(sd_tmp, src_hw));
             fc.text.emit_u32(enc::vcvt_d_s32(dd, sd_tmp));
         }
@@ -1966,11 +1997,11 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
-            let sd_tmp = FP_SCRATCH0 * 2;
+            let sd_tmp = fp0.idx() * 2;
             fc.text.emit_u32(enc::vmov_s_r(sd_tmp, src_hw));
             fc.text.emit_u32(enc::vcvt_d_u32(dd, sd_tmp));
         }
@@ -1981,11 +2012,11 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
-            let sd_tmp = FP_SCRATCH0 * 2;
+            let sd_tmp = fp0.idx() * 2;
             fc.text.emit_u32(enc::vmov_s_r(sd_tmp, src_hw));
             fc.text.emit_u32(enc::vcvt_s_s32(sd, sd_tmp));
         }
@@ -1994,11 +2025,11 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
-            let sd_tmp = FP_SCRATCH0 * 2;
+            let sd_tmp = fp0.idx() * 2;
             fc.text.emit_u32(enc::vmov_s_r(sd_tmp, src_hw));
             fc.text.emit_u32(enc::vcvt_s_u32(sd, sd_tmp));
         }
@@ -2007,12 +2038,12 @@ fn compile_convert(
         MachineConvertOp::F64PromoteF32 => {
             let dd = fc.map_fp_dreg(dst)?;
             let sm =
-                materialize_float_value_dreg(fc, MachineFloatWidth::F32, src, FP_SCRATCH1)? * 2;
+                materialize_float_value_dreg(fc, MachineFloatWidth::F32, src, fp1.idx())? * 2;
             fc.text.emit_u32(enc::vcvt_d_s(dd, sm));
         }
         MachineConvertOp::F32DemoteF64 => {
             let sd = fc.map_fp_dreg(dst)? * 2;
-            let dm = materialize_float_value_dreg(fc, MachineFloatWidth::F64, src, FP_SCRATCH1)?;
+            let dm = materialize_float_value_dreg(fc, MachineFloatWidth::F64, src, fp1.idx())?;
             fc.text.emit_u32(enc::vcvt_s_d(sd, dm));
         }
 
@@ -2025,8 +2056,8 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             // R0 = lo, R1 = hi (sign-extend: hi = lo >> 31, arithmetic shift)
@@ -2034,8 +2065,8 @@ fn compile_convert(
             fc.text.emit_u32(enc::asr_imm(Arm32Reg::R1, src_hw, 31));
             emit_host_call(fc, armv7a_i64s_to_f64 as usize);
             // Result is in D0 (EABI: f64 returned in D0)
-            if dd != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+            if dd != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dd, fp0.idx()));
             }
         }
         MachineConvertOp::F64ConvertI64U => {
@@ -2043,16 +2074,16 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             // R0 = lo, R1 = 0 (zero-extend)
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
             fc.emit_load_u32(Arm32Reg::R1, 0);
             emit_host_call(fc, armv7a_i64u_to_f64 as usize);
-            if dd != FP_SCRATCH0 {
-                fc.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+            if dd != fp0.idx() {
+                fc.text.emit_u32(enc::vmov_d(dd, fp0.idx()));
             }
         }
         MachineConvertOp::F32ConvertI64S => {
@@ -2060,17 +2091,17 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
             fc.text.emit_u32(enc::asr_imm(Arm32Reg::R1, src_hw, 31));
             emit_host_call(fc, armv7a_i64s_to_f32 as usize);
             // Result in S0 (EABI: f32 returned in S0)
-            let s0 = FP_SCRATCH0 * 2;
-            if sd != s0 {
-                fc.text.emit_u32(enc::vmov_s(sd, s0));
+            let fp0_s = fp0.idx() * 2;
+            if sd != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(sd, fp0_s));
             }
         }
         MachineConvertOp::F32ConvertI64U => {
@@ -2078,16 +2109,16 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
             fc.emit_load_u32(Arm32Reg::R1, 0);
             emit_host_call(fc, armv7a_i64u_to_f32 as usize);
-            let s0 = FP_SCRATCH0 * 2;
-            if sd != s0 {
-                fc.text.emit_u32(enc::vmov_s(sd, s0));
+            let fp0_s = fp0.idx() * 2;
+            if sd != fp0_s {
+                fc.text.emit_u32(enc::vmov_s(sd, fp0_s));
             }
         }
 
@@ -2095,7 +2126,7 @@ fn compile_convert(
         MachineConvertOp::I32ReinterpretF32 => {
             let dst_hw = map_reg(dst)?;
             let sm =
-                materialize_float_value_dreg(fc, MachineFloatWidth::F32, src, FP_SCRATCH1)? * 2;
+                materialize_float_value_dreg(fc, MachineFloatWidth::F32, src, fp1.idx())? * 2;
             fc.text.emit_u32(enc::vmov_r_s(dst_hw, sm));
         }
         MachineConvertOp::F32ReinterpretI32 => {
@@ -2103,8 +2134,8 @@ fn compile_convert(
             let src_hw = match src {
                 MachineValue::Reg(r) => map_reg(*r)?,
                 MachineValue::Imm64(v) => {
-                    fc.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
+                    fc.emit_load_u32(s0, *v as u32);
+                    s0
                 }
             };
             fc.text.emit_u32(enc::vmov_s_r(sd, src_hw));
@@ -2112,7 +2143,7 @@ fn compile_convert(
         MachineConvertOp::I64ReinterpretF64 => {
             // F64 (D-reg) → I64 (GP low 32 bits on ARM32)
             let dst_hw = map_reg(dst)?;
-            let dm = materialize_float_value_dreg(fc, MachineFloatWidth::F64, src, FP_SCRATCH1)?;
+            let dm = materialize_float_value_dreg(fc, MachineFloatWidth::F64, src, fp1.idx())?;
             // VMOV Rlo, Rhi, Dm — extract low 32 bits to dst
             fc.text.emit_u32(enc::vmov_rr_d(dst_hw, Arm32Reg::R1, dm));
         }
@@ -2206,8 +2237,9 @@ fn compile_select(
                 fc.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, src));
             }
             MachineValue::Imm64(v) => {
-                fc.emit_load_u32(SCRATCH0, *v as u32);
-                fc.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, SCRATCH0));
+                let tmp = *fc.gp_scratch.scoped_alloc();
+                fc.emit_load_u32(tmp, *v as u32);
+                fc.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, tmp));
             }
         }
         Ok(())
@@ -2215,14 +2247,15 @@ fn compile_select(
 
     if fc.is_fp_machine_reg(dst) {
         // FP select: use branch-based approach since ARM32 has no conditional VMOV
+        let s0 = *fc.gp_scratch.scoped_alloc();
         let dd = fc.map_fp_dreg(dst)?;
 
         // Test condition first
         let cond_hw = match condition {
             MachineValue::Reg(r) => map_reg(*r)?,
             MachineValue::Imm64(v) => {
-                fc.emit_load_u32(SCRATCH0, *v as u32);
-                SCRATCH0
+                fc.emit_load_u32(s0, *v as u32);
+                s0
             }
         };
         fc.text.emit_u32(enc::cmp_imm(cond_hw, 0, 0));
@@ -2279,14 +2312,15 @@ fn compile_select(
     }
 
     // GP select
+    let s0 = *fc.gp_scratch.scoped_alloc();
     let dst_hw = map_reg(dst)?;
 
     // Test condition before touching dst so dst == cond is safe.
     let cond_hw = match condition {
         MachineValue::Reg(r) => map_reg(*r)?,
         MachineValue::Imm64(v) => {
-            fc.emit_load_u32(SCRATCH0, *v as u32);
-            SCRATCH0
+            fc.emit_load_u32(s0, *v as u32);
+            s0
         }
     };
     fc.text.emit_u32(enc::cmp_imm(cond_hw, 0, 0));
@@ -2316,12 +2350,14 @@ fn compile_int_compare(
     lhs: &MachineValue,
     rhs: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
+    let s1 = *fc.gp_scratch.scoped_alloc();
     let dst_hw = map_reg(dst)?;
     let lhs_hw = match lhs {
         MachineValue::Reg(r) => map_reg(*r)?,
         MachineValue::Imm64(v) => {
-            fc.emit_load_u32(SCRATCH0, *v as u32);
-            SCRATCH0
+            fc.emit_load_u32(s0, *v as u32);
+            s0
         }
     };
 
@@ -2333,11 +2369,7 @@ fn compile_int_compare(
             if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                 fc.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
             } else {
-                let tmp = if lhs_hw == SCRATCH0 {
-                    Arm32Reg::R3
-                } else {
-                    SCRATCH0
-                };
+                let tmp = if lhs_hw == s0 { s1 } else { s0 };
                 fc.emit_load_u32(tmp, *v as u32);
                 fc.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
             }
@@ -2437,6 +2469,7 @@ fn compile_test_bits(
     src: MachineReg,
     mask: &MachineValue,
 ) -> Result<(), WasmError> {
+    let s0 = *fc.gp_scratch.scoped_alloc();
     let dst_hw = map_reg(dst)?;
     let src_hw = map_reg(src)?;
 
@@ -2449,9 +2482,8 @@ fn compile_test_bits(
             if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                 fc.text.emit_u32(enc::tst_imm(src_hw, imm8, rot));
             } else {
-                let tmp = if src_hw == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
-                fc.emit_load_u32(tmp, *v as u32);
-                fc.text.emit_u32(enc::tst_reg(src_hw, tmp));
+                fc.emit_load_u32(s0, *v as u32);
+                fc.text.emit_u32(enc::tst_reg(src_hw, s0));
             }
         }
     }

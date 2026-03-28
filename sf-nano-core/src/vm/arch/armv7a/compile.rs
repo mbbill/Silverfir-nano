@@ -20,14 +20,17 @@ use crate::{
 
 use super::{
     abi::{
-        emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg, map_reg,
-        max_total_machine_regs, FP_SCRATCH0, SCRATCH0, SCRATCH1,
+        fp_machine_reg, map_fixed_reg, map_reg,
+        max_total_machine_regs, new_fp_scratch_pool, new_gp_scratch_pool,
     },
+    compile_helpers::{emit_shared_epilogue, emit_shared_prologue},
     armv7a_raise_trap,
     emit::Arm32TextEmitter,
     enc::{self, Cond},
-    reg::Arm32Reg,
+    reg::{Arm32FpReg, Arm32Reg},
 };
+
+use crate::vm::arch::common::scratch_pool::ScratchPool;
 
 pub(crate) use crate::vm::debug::ir_dump::DebugRegion;
 
@@ -168,6 +171,8 @@ pub(super) struct FunctionCompiler<'a> {
     pub(super) text: Arm32TextEmitter,
     pub(super) compiled: &'a CompiledNativeModule,
     pub(super) function: &'a MachineFunction,
+    pub(super) gp_scratch: ScratchPool<Arm32Reg, 2>,
+    pub(super) fp_scratch: ScratchPool<Arm32FpReg, 3>,
     labels: Vec<Label>,
     fixups: Vec<BranchFixup>,
     block_labels: Vec<usize>,
@@ -189,6 +194,8 @@ impl<'a> FunctionCompiler<'a> {
             text: Arm32TextEmitter::new(),
             compiled,
             function,
+            gp_scratch: new_gp_scratch_pool(),
+            fp_scratch: new_fp_scratch_pool(),
             labels: Vec::new(),
             fixups: Vec::new(),
             block_labels: Vec::new(),
@@ -228,7 +235,7 @@ impl<'a> FunctionCompiler<'a> {
                     reg.0
                 ))
             })?;
-        fp_machine_reg(fp_idx).ok_or_else(|| {
+        fp_machine_reg(fp_idx).map(|r| r.idx()).ok_or_else(|| {
             WasmError::invalid(alloc::format!(
                 "armv7a: FP machine reg index {} out of range",
                 fp_idx
@@ -389,6 +396,12 @@ impl<'a> FunctionCompiler<'a> {
             pending.push((dst, src));
         }
 
+        // Allocate cycle-break temp registers for the lifetime of the
+        // parallel move resolution.  The registers are only written/read
+        // when a cycle is detected (GpTemp/FpTemp variants).
+        let gp_temp = *self.gp_scratch.scoped_alloc();
+        let fp_temp = *self.fp_scratch.scoped_alloc();
+
         while !pending.is_empty() {
             // Find a ready move (destination not used as source by others)
             let mut ready = None;
@@ -405,22 +418,22 @@ impl<'a> FunctionCompiler<'a> {
 
             if let Some(index) = ready {
                 let (dst, src) = pending.remove(index);
-                self.emit_source_move(dst, src)?;
+                self.emit_source_move(dst, src, gp_temp, fp_temp)?;
                 continue;
             }
 
             // Cycle: save first destination to temp, break the cycle
             let (dst, src) = pending.remove(0);
             let ParallelSource::Reg(src_reg) = src else {
-                self.emit_source_move(dst, src)?;
+                self.emit_source_move(dst, src, gp_temp, fp_temp)?;
                 continue;
             };
 
             if self.is_fp_machine_reg(dst.reg) {
-                // FP cycle: save dst D-reg to FP_SCRATCH0
+                // FP cycle: save dst D-reg to fp_temp
                 let dd = self.map_fp_dreg(dst.reg)?;
                 let sd = self.map_fp_dreg(src_reg)?;
-                self.text.emit_u32(enc::vmov_d(FP_SCRATCH0, dd));
+                self.text.emit_u32(enc::vmov_d(fp_temp.idx(), dd));
                 self.text.emit_u32(enc::vmov_d(dd, sd));
                 for (_, source) in pending.iter_mut() {
                     if matches!(*source, ParallelSource::Reg(r) if r == dst.reg) {
@@ -428,10 +441,10 @@ impl<'a> FunctionCompiler<'a> {
                     }
                 }
             } else {
-                // GP cycle: save dst to SCRATCH0 (R12)
+                // GP cycle: save dst to gp_temp
                 let dst_gp = map_reg(dst.reg)?;
                 let src_gp = map_reg(src_reg)?;
-                self.text.emit_u32(enc::mov_reg(SCRATCH0, dst_gp));
+                self.text.emit_u32(enc::mov_reg(gp_temp, dst_gp));
                 self.text.emit_u32(enc::mov_reg(dst_gp, src_gp));
                 for (_, source) in pending.iter_mut() {
                     if matches!(*source, ParallelSource::Reg(r) if r == dst.reg) {
@@ -447,6 +460,8 @@ impl<'a> FunctionCompiler<'a> {
         &mut self,
         dst: MachineBlockParam,
         src: ParallelSource,
+        gp_temp: Arm32Reg,
+        fp_temp: Arm32FpReg,
     ) -> Result<(), WasmError> {
         if self.is_fp_machine_reg(dst.reg) {
             let dd = self.map_fp_dreg(dst.reg)?;
@@ -473,13 +488,13 @@ impl<'a> FunctionCompiler<'a> {
                         .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                 }
                 ParallelSource::GpTemp => {
-                    // SCRATCH0 (GP) → FP D-reg
+                    // gp_temp (GP) → FP D-reg
                     self.emit_load_u32(Arm32Reg::R1, 0);
                     self.text
-                        .emit_u32(enc::vmov_d_rr(dd, SCRATCH0, Arm32Reg::R1));
+                        .emit_u32(enc::vmov_d_rr(dd, gp_temp, Arm32Reg::R1));
                 }
                 ParallelSource::FpTemp => {
-                    self.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                    self.text.emit_u32(enc::vmov_d(dd, fp_temp.idx()));
                 }
             }
         } else {
@@ -501,12 +516,12 @@ impl<'a> FunctionCompiler<'a> {
                     self.emit_load_u32(dst_gp, value as u32);
                 }
                 ParallelSource::GpTemp => {
-                    self.text.emit_u32(enc::mov_reg(dst_gp, SCRATCH0));
+                    self.text.emit_u32(enc::mov_reg(dst_gp, gp_temp));
                 }
                 ParallelSource::FpTemp => {
-                    // FP temp → GP: extract low 32 bits from FP_SCRATCH0
+                    // FP temp → GP: extract low 32 bits
                     self.text
-                        .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, FP_SCRATCH0));
+                        .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, fp_temp.idx()));
                 }
             }
         }
@@ -535,27 +550,28 @@ impl<'a> FunctionCompiler<'a> {
         let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
 
         let callee_fp_orig = map_reg(callee_frame_base)?;
+        let s0 = *self.gp_scratch.scoped_alloc();
+        let callee_fp = *self.gp_scratch.scoped_alloc();
         // Direct local calls need the callee frame base to survive stack checks
         // and call-link materialization, both of which freely clobber caller-
         // saved GP regs. Preserve it in our call-local scratch register.
-        let callee_fp = SCRATCH1;
         self.text.emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
 
         // Store continuation address (patchable) into callee frame
-        let cont_patch = self.emit_patchable_addr(SCRATCH0);
+        let cont_patch = self.emit_patchable_addr(s0);
         let cont_byte_offset = (continuation_slot as i32) * 8;
         self.text
-            .emit_u32(enc::str_imm(SCRATCH0, callee_fp, cont_byte_offset));
+            .emit_u32(enc::str_imm(s0, callee_fp, cont_byte_offset));
         // Also store high word as zero (continuation is a 32-bit ptr in a 64-bit slot)
         self.emit_load_u32(Arm32Reg::R3, 0);
         self.text
             .emit_u32(enc::str_imm(Arm32Reg::R3, callee_fp, cont_byte_offset + 4));
 
         // Load callee entry (patchable) and jump
-        let callee_patch = self.emit_patchable_addr(SCRATCH0);
+        let callee_patch = self.emit_patchable_addr(s0);
         self.text
             .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
-        self.text.emit_u32(enc::bx(SCRATCH0));
+        self.text.emit_u32(enc::bx(s0));
 
         // Record patches
         let continuation_label = self.block_label(continuation)?;
@@ -583,9 +599,11 @@ impl<'a> FunctionCompiler<'a> {
 
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
 
+        let s0 = *self.gp_scratch.scoped_alloc();
+
         // Load continuation address
         self.text.emit_u32(enc::ldr_imm(
-            SCRATCH0,
+            s0,
             fp_reg,
             (continuation_slot as i32) * 8,
         ));
@@ -631,7 +649,7 @@ impl<'a> FunctionCompiler<'a> {
         // stay live across local calls; helper-time refresh is modeled by
         // shared MachineIR loads after `CallHelper`, not by return fixups here.
         self.text.emit_u32(enc::mov_reg(fp_reg, Arm32Reg::R3));
-        self.text.emit_u32(enc::bx(SCRATCH0));
+        self.text.emit_u32(enc::bx(s0));
         Ok(())
     }
 
@@ -644,11 +662,12 @@ impl<'a> FunctionCompiler<'a> {
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
         let callee_fp_orig = map_reg(callee_frame_base)?;
+        let s0 = *self.gp_scratch.scoped_alloc();
+        let callee_fp = *self.gp_scratch.scoped_alloc();
         // The dynamic dispatch sequence freely reuses caller-saved GP regs
         // while resolving the table entry, so preserve the precomputed callee
         // frame base before materializing the callee id or reading the
         // function-info record.
-        let callee_fp = SCRATCH1;
         self.text.emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
 
         // Materialize callee ID into R3
@@ -665,7 +684,7 @@ impl<'a> FunctionCompiler<'a> {
         }
 
         // Load function info table base (patchable)
-        let table_patch = self.emit_patchable_addr(SCRATCH0);
+        let table_patch = self.emit_patchable_addr(s0);
         self.function_table_patches.push(table_patch);
 
         // Each Arm32FunctionInfo is 16 bytes (4 x u32).
@@ -673,15 +692,15 @@ impl<'a> FunctionCompiler<'a> {
         self.text
             .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
         self.text
-            .emit_u32(enc::add_reg(SCRATCH0, SCRATCH0, Arm32Reg::R3));
+            .emit_u32(enc::add_reg(s0, s0, Arm32Reg::R3));
 
         // Load function info fields:
         // [+0] entry (u32), [+4] total_frame_bytes (u32),
         // [+8] frame_prefix_slots (u32), [+12] call_scratch_base_slot (u32)
-        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, SCRATCH0, 0)); // entry
-        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, SCRATCH0, 4)); // total_frame_bytes
-                                                                     // R2 = frame_prefix_slots (not needed for zero-out in current impl)
-        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, SCRATCH0, 12)); // call_scratch_base_slot
+        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, s0, 0)); // entry
+        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, s0, 4)); // total_frame_bytes
+                                                                 // R2 = frame_prefix_slots (not needed for zero-out in current impl)
+        self.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, s0, 12)); // call_scratch_base_slot
 
         // Keep the callee frame base in the call-local scratch register for
         // the whole sequence, and preserve the resolved entry address in R0
@@ -689,13 +708,13 @@ impl<'a> FunctionCompiler<'a> {
 
         // Stack overflow check: callee_fp + total_frame_bytes > stack_end?
         self.text
-            .emit_u32(enc::add_reg(SCRATCH0, callee_fp, Arm32Reg::R1));
+            .emit_u32(enc::add_reg(s0, callee_fp, Arm32Reg::R1));
         self.text.emit_u32(enc::ldr_imm(
             Arm32Reg::R3,
             map_fixed_reg(MACHINE_CTX_REG),
             ctx_offset::STACK_END as i32,
         ));
-        self.text.emit_u32(enc::cmp_reg(SCRATCH0, Arm32Reg::R3));
+        self.text.emit_u32(enc::cmp_reg(s0, Arm32Reg::R3));
         self.emit_branch(BranchFixupKind::BCond(Cond::Hi), self.stack_overflow_label);
 
         // Compute call_scratch absolute byte offset: call_scratch_base_slot * 8
@@ -706,9 +725,9 @@ impl<'a> FunctionCompiler<'a> {
 
         // Store continuation address (patchable)
         let call_link = self.compiled.runtime().call_link;
-        let cont_patch = self.emit_patchable_addr(SCRATCH0);
+        let cont_patch = self.emit_patchable_addr(s0);
         self.text.emit_u32(enc::str_imm(
-            SCRATCH0,
+            s0,
             Arm32Reg::R2,
             call_link.continuation_offset,
         ));
@@ -733,9 +752,9 @@ impl<'a> FunctionCompiler<'a> {
         ));
 
         // Store caller result base (byte offset)
-        self.emit_load_u32(SCRATCH0, u32::from(caller_result_base) * 8);
+        self.emit_load_u32(s0, u32::from(caller_result_base) * 8);
         self.text.emit_u32(enc::str_imm(
-            SCRATCH0,
+            s0,
             Arm32Reg::R2,
             call_link.caller_result_base_offset,
         ));
