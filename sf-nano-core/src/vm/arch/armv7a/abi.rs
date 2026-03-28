@@ -10,16 +10,17 @@
 //! R4     callee-saved     fixed: MEM0_SIZE            1
 //! R5-R7  callee-saved     GP local cache              3
 //! R8     callee-saved     fixed: CTX                  1
-//! R9     platform         GP local cache              1
+//! R9     platform         GP transient                1
 //! R10    callee-saved     fixed: FP                   1
 //! R11    callee-saved     fixed: MEM0_BASE            1
-//! R12    caller-saved     scratch (IP)                1
+//! R12    caller-saved     scratch: SCRATCH0 (IP)      1
 //! R13    —                SP (reserved)               1
-//! R14    —                LR (reserved)               1
+//! R14    caller-saved     scratch: SCRATCH1 (LR)      1
 //! R15    —                PC (reserved)               1
 //! ─────────────────────────────────────────────────────
-//!                         GP transient                4
-//!                         GP local cache              4
+//!                         GP transient                5
+//!                         GP local cache              3
+//!                         GP scratch                  2
 //! ```
 //!
 //! # FP register plan (D0-D15, VFPv3-D16)
@@ -75,16 +76,16 @@ pub(super) const GP_UNIT_BYTES: u8 = 4;
 /// R9 is never used for fixed MachineIR state. It stays in the dynamic bank
 /// only, so the fixed roles remain pinned to unquestionably preserved
 /// registers.
-pub(super) const GP_LOCAL_CACHE: [Arm32Reg; 4] = [
+pub(super) const GP_LOCAL_CACHE: [Arm32Reg; 3] = [
     Arm32Reg::R5,
     Arm32Reg::R6,
     Arm32Reg::R7,
-    Arm32Reg::R9,
 ];
 
 /// GP transient: dead at call boundaries.
-pub(super) const GP_TRANSIENT: [Arm32Reg; 4] = [
+pub(super) const GP_TRANSIENT: [Arm32Reg; 5] = [
     Arm32Reg::R3,
+    Arm32Reg::R9,
     Arm32Reg::R0,
     Arm32Reg::R1,
     Arm32Reg::R2,
