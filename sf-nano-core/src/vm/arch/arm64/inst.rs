@@ -6,7 +6,7 @@ use crate::vm::machine::machine_ir::{
     MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionRuntime,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
     MachineInstKind, MachineInst, MachineIndexExtend, MachineLoadExtension, MachineMemWidth,
-    MachineReg, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+    MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
     MACHINE_CTX_REG,
 };
 
@@ -209,6 +209,49 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
+    /// Emit a TST (AND-then-set-flags) for src and mask operands.
+    pub(super) fn lower_tst_values(
+        &mut self, width: MachineIntWidth, src: MachineValue, mask: MachineValue,
+    ) -> Result<(), WasmError> {
+        let src_phys = match src {
+            MachineValue::Reg(r) => map_gp(self.core.compiled.backend(), r)?,
+            MachineValue::Imm64(imm) => {
+                prepare_gp(
+                    self.core.compiled.backend(), &self.core.fp_reg_widths,
+                    &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
+                )?.release()
+            }
+        };
+        match mask {
+            MachineValue::Imm64(imm) => {
+                let inst = match width {
+                    MachineIntWidth::I32 => enc::tst_imm_32(src_phys, imm as u32),
+                    MachineIntWidth::I64 => enc::tst_imm_64(src_phys, imm),
+                };
+                if let Some(i) = inst {
+                    self.core.text.emit_u32(i);
+                } else {
+                    let scratch = prepare_gp(
+                        self.core.compiled.backend(), &self.core.fp_reg_widths,
+                        &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
+                    )?.release();
+                    match width {
+                        MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, scratch)); }
+                        MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, scratch)); }
+                    }
+                }
+            }
+            MachineValue::Reg(mask_reg) => {
+                let mask_phys = map_gp(self.core.compiled.backend(), mask_reg)?;
+                match width {
+                    MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, mask_phys)); }
+                    MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, mask_phys)); }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Look up runtime metadata for a machine function.
     pub(super) fn runtime_for(
         &self, func_id: MachineFuncId,
@@ -268,6 +311,15 @@ inst: &MachineInst) -> Result<(), WasmError> {
             } else {
                 self.lower_indexed_store_with_offset(*base, *index, *offset, *width, *src, uxtw)
             }
+        }
+        MachineInstKind::BitfieldExtractU { width, dst, src, lsb, bits } => {
+            self.lower_bitfield_extract_u(*width, *dst, *src, *lsb, *bits)
+        }
+        MachineInstKind::IntBinaryShifted { width, op, dst, lhs, rhs, shift, amount } => {
+            self.lower_int_binary_shifted(*width, *op, *dst, *lhs, *rhs, *shift, *amount)
+        }
+        MachineInstKind::TestBits { width, kind, dst, src, mask } => {
+            self.lower_test_bits(*width, *kind, *dst, *src, *mask)
         }
         // 32-bit legalized instructions -- should not reach arm64 codegen.
         MachineInstKind::Int64PairBinary { .. }
@@ -1373,6 +1425,124 @@ width: MachineIntWidth,
             self.core.text.emit_u32(enc::cset_64(dst, cond));
         }
     };
+    Ok(())
+}
+
+// ── Bitfield extract (UBFX) ─────────────────────────────────────────────────
+
+fn lower_bitfield_extract_u(&mut self,
+width: MachineIntWidth,
+    dst: MachineReg,
+    src: MachineReg,
+    lsb: u8,
+    bits: u8,
+) -> Result<(), WasmError> {
+    let dst = self.map_gp_reg(dst)?;
+    let src = self.map_gp_reg(src)?;
+    match width {
+        MachineIntWidth::I32 => {
+            self.core.text.emit_u32(enc::ubfx_32(dst, src, lsb as u32, bits as u32));
+        }
+        MachineIntWidth::I64 => {
+            self.core.text.emit_u32(enc::ubfx_64(dst, src, lsb as u32, bits as u32));
+        }
+    }
+    Ok(())
+}
+
+// ── Shifted-register binary ─────────────────────────────────────────────────
+
+fn lower_int_binary_shifted(&mut self,
+width: MachineIntWidth,
+    op: MachineIntBinaryOp,
+    dst: MachineReg,
+    lhs: MachineReg,
+    rhs: MachineReg,
+    shift: MachineShiftOp,
+    amount: u8,
+) -> Result<(), WasmError> {
+    let dst = self.map_gp_reg(dst)?;
+    let lhs = self.map_gp_reg(lhs)?;
+    let rhs = self.map_gp_reg(rhs)?;
+    let st = match shift {
+        MachineShiftOp::Lsl => enc::ShiftType::Lsl,
+        MachineShiftOp::Lsr => enc::ShiftType::Lsr,
+        MachineShiftOp::Asr => enc::ShiftType::Asr,
+    };
+    let amt = amount as u32;
+    let inst = match (width, op) {
+        (MachineIntWidth::I32, MachineIntBinaryOp::Add) => enc::add_reg_shifted_32(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Add) => enc::add_reg_shifted_64(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => enc::sub_reg_shifted_32(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => enc::sub_reg_shifted_64(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I32, MachineIntBinaryOp::And) => enc::and_reg_shifted_32(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I64, MachineIntBinaryOp::And) => enc::and_reg_shifted_64(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Or) => enc::orr_reg_shifted_32(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Or) => enc::orr_reg_shifted_64(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => enc::eor_reg_shifted_32(dst, lhs, rhs, st, amt),
+        (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => enc::eor_reg_shifted_64(dst, lhs, rhs, st, amt),
+        _ => return Err(WasmError::internal(
+            alloc::format!("IntBinaryShifted: unsupported op {:?}", op),
+        )),
+    };
+    self.core.text.emit_u32(inst);
+    Ok(())
+}
+
+// ── Test bits (TST + CSET) ──────────────────────────────────────────────────
+
+fn lower_test_bits(&mut self,
+width: MachineIntWidth,
+    kind: MachineCompareKind,
+    dst: MachineReg,
+    src: MachineReg,
+    mask: MachineValue,
+) -> Result<(), WasmError> {
+    let dst_phys = self.map_gp_reg(dst)?;
+    let src_phys = self.map_gp_reg(src)?;
+
+    // Emit TST (ANDS with XZR destination, sets flags).
+    match mask {
+        MachineValue::Imm64(imm) => {
+            let inst = match width {
+                MachineIntWidth::I32 => enc::tst_imm_32(src_phys, imm as u32),
+                MachineIntWidth::I64 => enc::tst_imm_64(src_phys, imm),
+            };
+            if let Some(i) = inst {
+                self.core.text.emit_u32(i);
+            } else {
+                // Mask doesn't fit logical immediate — materialize into scratch.
+                let scratch = prepare_gp(
+                    self.core.compiled.backend(), &self.core.fp_reg_widths,
+                    &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
+                )?.release();
+                match width {
+                    MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, scratch)); }
+                    MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, scratch)); }
+                }
+            }
+        }
+        MachineValue::Reg(mask_reg) => {
+            let mask_phys = map_gp(self.core.compiled.backend(), mask_reg)?;
+            match width {
+                MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, mask_phys)); }
+                MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, mask_phys)); }
+            }
+        }
+    }
+
+    // TST sets Z flag. Eq → Z=1, Ne → Z=0.
+    let cond = match kind {
+        MachineCompareKind::Eq => enc::Cond::Eq,
+        MachineCompareKind::Ne => enc::Cond::Ne,
+        _ => return Err(WasmError::internal(
+            alloc::format!("TestBits: unsupported compare kind {:?}", kind),
+        )),
+    };
+    match width {
+        MachineIntWidth::I32 => { self.core.text.emit_u32(enc::cset_32(dst_phys, cond)); }
+        MachineIntWidth::I64 => { self.core.text.emit_u32(enc::cset_64(dst_phys, cond)); }
+    }
     Ok(())
 }
 

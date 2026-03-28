@@ -4,8 +4,8 @@ use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCompareKind, MachineEdge, MachineFloatWidth,
-        MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
-        MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineFuncId, MachineIntWidth, MachineReg, MachineTerminator, MachineTrapKind,
+        MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
@@ -148,7 +148,33 @@ impl<'a> X86_64Backend<'a> {
                     self.emit_jmp(else_label);
                 }
             }
-
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                self.lower_tst_values(width, src, mask)?;
+                let cc = match kind {
+                    MachineCompareKind::Eq => Cc::E,
+                    MachineCompareKind::Ne => Cc::NE,
+                    _ => return Err(WasmError::internal(
+                        alloc::format!("TestBits branch: unsupported compare kind {:?}", kind),
+                    )),
+                };
+                if else_fallthrough {
+                    if let Some(label) = then_label {
+                        self.emit_jcc(cc, label);
+                    }
+                } else if then_fallthrough {
+                    if let Some(label) = else_label {
+                        self.emit_jcc(cc.invert(), label);
+                    }
+                } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
+                    self.emit_jcc(cc, then_label);
+                    self.emit_jmp(else_label);
+                }
+            }
         }
         Ok(())
     }
@@ -178,7 +204,22 @@ impl<'a> X86_64Backend<'a> {
                 self.lower_cmp_values(width, lhs, rhs)?;
                 self.emit_jcc(map_int_cond(kind, sign), trap_label);
             }
-
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                self.lower_tst_values(width, src, mask)?;
+                let cc = match kind {
+                    MachineCompareKind::Eq => Cc::E,
+                    MachineCompareKind::Ne => Cc::NE,
+                    _ => return Err(WasmError::internal(
+                        alloc::format!("TestBits branch_if: unsupported compare kind {:?}", kind),
+                    )),
+                };
+                self.emit_jcc(cc, trap_label);
+            }
         }
         Ok(())
     }

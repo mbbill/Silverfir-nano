@@ -25,6 +25,7 @@ mod deduplicate_constants;
 mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
+mod fuse_isel;
 mod helpers;
 mod reuse_loaded_values;
 
@@ -65,6 +66,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         reuse_loaded_values::reuse_loaded_values(block, config);
         fuse_indexed_memory::fuse_indexed_memory(block);
         copy_propagate::copy_propagate(block, config, &mut cp_scratch);
+        fuse_isel::fuse_isel(block, config);
     }
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
 }

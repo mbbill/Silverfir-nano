@@ -9,8 +9,8 @@ use crate::{
         MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp,
         MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineHelperCall,
         MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-        MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
-        MachineTrapKind, MachineValue,
+        MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
+        MachineStorageType, MachineTrapKind, MachineValue,
     },
     vm::runtime::helpers::resolve_helper_entry,
 };
@@ -374,6 +374,15 @@ pub(super) fn compile_inst(
             fc.text.emit_u32(enc::add_reg(SCRATCH0, base_hw, index_hw));
             let scratch_mr = inv_map_reg(SCRATCH0);
             compile_store(fc, &MachineAddr { base: scratch_mr, offset: *offset }, *width, *src)?;
+        }
+        MachineInstKind::BitfieldExtractU { width, dst, src, lsb, bits } => {
+            compile_bitfield_extract_u(fc, *width, *dst, *src, *lsb, *bits)?;
+        }
+        MachineInstKind::IntBinaryShifted { width, op, dst, lhs, rhs, shift, amount } => {
+            compile_int_binary_shifted(fc, *width, *op, *dst, *lhs, *rhs, *shift, *amount)?;
+        }
+        MachineInstKind::TestBits { width, kind, dst, src, mask } => {
+            compile_test_bits(fc, *width, *kind, *dst, *src, mask)?;
         }
     }
     Ok(())
@@ -2353,6 +2362,116 @@ fn compile_int_compare(
     fc.text.emit_u32(enc::dp_imm_cond(
         cond,
         0b1101,
+        false,
+        dst_hw,
+        Arm32Reg::R0,
+        imm8,
+        rot,
+    ));
+    Ok(())
+}
+
+// ─── TrapIf ─────────────────────────────────────────────────────────────
+
+// ─── Bitfield extract (UBFX) ───────────────────────────────────────────
+
+fn compile_bitfield_extract_u(
+    fc: &mut FunctionCompiler<'_>,
+    _width: MachineIntWidth,
+    dst: MachineReg,
+    src: MachineReg,
+    lsb: u8,
+    bits: u8,
+) -> Result<(), WasmError> {
+    let dst_hw = map_reg(dst)?;
+    let src_hw = map_reg(src)?;
+    fc.text.emit_u32(enc::ubfx(dst_hw, src_hw, lsb as u32, bits as u32));
+    Ok(())
+}
+
+// ─── Shifted-register binary ───────────────────────────────────────────
+
+fn compile_int_binary_shifted(
+    fc: &mut FunctionCompiler<'_>,
+    _width: MachineIntWidth,
+    op: MachineIntBinaryOp,
+    dst: MachineReg,
+    lhs: MachineReg,
+    rhs: MachineReg,
+    shift: MachineShiftOp,
+    amount: u8,
+) -> Result<(), WasmError> {
+    let dst_hw = map_reg(dst)?;
+    let lhs_hw = map_reg(lhs)?;
+    let rhs_hw = map_reg(rhs)?;
+    let shift_type: u32 = match shift {
+        MachineShiftOp::Lsl => 0b00,
+        MachineShiftOp::Lsr => 0b01,
+        MachineShiftOp::Asr => 0b10,
+    };
+    let amt = amount as u32;
+    let inst = match op {
+        MachineIntBinaryOp::Add => enc::add_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt),
+        MachineIntBinaryOp::Sub => enc::sub_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt),
+        MachineIntBinaryOp::And => enc::and_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt),
+        MachineIntBinaryOp::Or => enc::orr_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt),
+        MachineIntBinaryOp::Xor => enc::eor_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt),
+        _ => {
+            return Err(WasmError::internal(alloc::format!(
+                "IntBinaryShifted: unsupported op {:?}",
+                op
+            )));
+        }
+    };
+    fc.text.emit_u32(inst);
+    Ok(())
+}
+
+// ─── Test bits (TST + conditional MOV) ─────────────────────────────────
+
+fn compile_test_bits(
+    fc: &mut FunctionCompiler<'_>,
+    _width: MachineIntWidth,
+    kind: MachineCompareKind,
+    dst: MachineReg,
+    src: MachineReg,
+    mask: &MachineValue,
+) -> Result<(), WasmError> {
+    let dst_hw = map_reg(dst)?;
+    let src_hw = map_reg(src)?;
+
+    // Emit TST to set flags.
+    match mask {
+        MachineValue::Reg(r) => {
+            fc.text.emit_u32(enc::tst_reg(src_hw, map_reg(*r)?));
+        }
+        MachineValue::Imm64(v) => {
+            if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
+                fc.text.emit_u32(enc::tst_imm(src_hw, imm8, rot));
+            } else {
+                let tmp = if src_hw == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+                fc.emit_load_u32(tmp, *v as u32);
+                fc.text.emit_u32(enc::tst_reg(src_hw, tmp));
+            }
+        }
+    }
+
+    // Materialize boolean: load 0, then conditionally set to 1.
+    let cond = match kind {
+        MachineCompareKind::Eq => Cond::Eq,
+        MachineCompareKind::Ne => Cond::Ne,
+        _ => {
+            return Err(WasmError::internal(alloc::format!(
+                "TestBits: unsupported compare kind {:?}",
+                kind
+            )));
+        }
+    };
+    fc.emit_load_u32(dst_hw, 0);
+    let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
+    fc.text.emit_u32(enc::dp_imm_cond(
+        cond,
+        0b1101, // MOV
         false,
         dst_hw,
         Arm32Reg::R0,

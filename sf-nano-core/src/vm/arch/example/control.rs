@@ -106,6 +106,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 self.lower_b_cond(select::map_int_cond(kind, sign), then_label);
                 self.lower_b(else_label);
             }
+            MachineBranchCond::TestBits { .. } => {
+                return Err(WasmError::internal(
+                    "TestBits branch not supported on example backend".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -130,6 +135,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
             MachineBranchCond::IntCompare { width, kind, sign, lhs, rhs } => {
                 self.lower_cmp(width, lhs, rhs)?;
                 self.lower_b_cond(select::map_int_cond(kind, sign), trap_label);
+            }
+            MachineBranchCond::TestBits { .. } => {
+                return Err(WasmError::internal(
+                    "TestBits branch not supported on example backend".into(),
+                ));
             }
         }
         Ok(())

@@ -43,9 +43,9 @@ pub(super) fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8,
 
         // Build the fused branch condition, or skip.
         //
-        // Only IntCompare is fused here. FloatCompare is NOT fused because
-        // on x86_64 Wasm float comparisons require multi-instruction NaN
-        // handling (SETCC+SETNP+AND) that cannot be expressed as a single
+        // IntCompare and TestBits are fused here. FloatCompare is NOT fused
+        // because on x86_64 Wasm float comparisons require multi-instruction
+        // NaN handling (SETCC+SETNP+AND) that cannot be expressed as a single
         // conditional branch. ARM64's FCMP condition codes handle NaN
         // correctly with a single B.cond, but since this is a shared pass
         // it must be safe for all backends.
@@ -67,6 +67,22 @@ pub(super) fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8,
                 sign: *sign,
                 lhs: *lhs,
                 rhs: *rhs,
+            },
+            MachineInstKind::TestBits {
+                width,
+                ..
+            } if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
+            MachineInstKind::TestBits {
+                width,
+                kind,
+                dst,
+                src,
+                mask,
+            } if *dst == cond_reg => MachineBranchCond::TestBits {
+                width: *width,
+                kind: *kind,
+                src: MachineValue::Reg(*src),
+                mask: *mask,
             },
             _ => continue,
         };

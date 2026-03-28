@@ -60,6 +60,13 @@ pub(crate) enum MachineBranchCond {
         lhs: MachineValue,
         rhs: MachineValue,
     },
+    /// Test bits: branch on `(src & mask) == 0` or `!= 0`.
+    TestBits {
+        width: MachineIntWidth,
+        kind: MachineCompareKind,
+        src: MachineValue,
+        mask: MachineValue,
+    },
 }
 
 /// One machine terminator.

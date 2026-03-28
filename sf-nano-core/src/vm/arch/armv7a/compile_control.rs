@@ -213,6 +213,44 @@ pub(super) fn compile_branch_condition(
             })
         }
 
+        MachineBranchCond::TestBits {
+            kind,
+            src,
+            mask,
+            ..
+        } => {
+            let src_hw = match src {
+                MachineValue::Reg(r) => map_reg(*r)?,
+                MachineValue::Imm64(v) => {
+                    fc.emit_load_u32(SCRATCH0, *v as u32);
+                    SCRATCH0
+                }
+            };
+            match mask {
+                MachineValue::Reg(r) => {
+                    fc.text.emit_u32(enc::tst_reg(src_hw, map_reg(*r)?));
+                }
+                MachineValue::Imm64(v) => {
+                    if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
+                        fc.text.emit_u32(enc::tst_imm(src_hw, imm8, rot));
+                    } else {
+                        let tmp = if src_hw == SCRATCH0 { SCRATCH1 } else { SCRATCH0 };
+                        fc.emit_load_u32(tmp, *v as u32);
+                        fc.text.emit_u32(enc::tst_reg(src_hw, tmp));
+                    }
+                }
+            }
+            Ok(match kind {
+                MachineCompareKind::Eq => Cond::Eq,
+                MachineCompareKind::Ne => Cond::Ne,
+                _ => {
+                    return Err(WasmError::internal(
+                        alloc::format!("TestBits branch: unsupported compare kind {:?}", kind),
+                    ));
+                }
+            })
+        }
+
         MachineBranchCond::FloatCompare {
             width,
             kind,

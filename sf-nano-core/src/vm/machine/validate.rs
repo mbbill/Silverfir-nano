@@ -172,6 +172,20 @@ impl MachineProgram {
                 self.validate_value(*lhs, config)?;
                 self.validate_value(*rhs, config)?;
             }
+            MachineInstKind::BitfieldExtractU { dst, src, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(MachineValue::Reg(*src), config)?;
+            }
+            MachineInstKind::IntBinaryShifted { dst, lhs, rhs, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(MachineValue::Reg(*lhs), config)?;
+                self.validate_value(MachineValue::Reg(*rhs), config)?;
+            }
+            MachineInstKind::TestBits { dst, src, mask, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(MachineValue::Reg(*src), config)?;
+                self.validate_value(*mask, config)?;
+            }
             MachineInstKind::Int64PairBinary {
                 op,
                 dst_lo,
@@ -511,6 +525,10 @@ impl MachineProgram {
                 self.validate_value(lhs, config)?;
                 self.validate_value(rhs, config)
             }
+            MachineBranchCond::TestBits { src, mask, .. } => {
+                self.validate_value(src, config)?;
+                self.validate_value(mask, config)
+            }
         }
     }
 
@@ -754,6 +772,9 @@ fn validate_32bit_gp_target_inst(
         MachineInstKind::IntUnary { width, .. }
         | MachineInstKind::IntBinary { width, .. }
         | MachineInstKind::IntCompare { width, .. }
+        | MachineInstKind::BitfieldExtractU { width, .. }
+        | MachineInstKind::IntBinaryShifted { width, .. }
+        | MachineInstKind::TestBits { width, .. }
             if matches!(width, MachineIntWidth::I64) =>
         {
             Some("still uses scalar i64 integer width")
@@ -802,6 +823,9 @@ fn branch_cond_requires_32bit_finalization(cond: MachineBranchCond) -> bool {
     matches!(
         cond,
         MachineBranchCond::IntCompare {
+            width: MachineIntWidth::I64,
+            ..
+        } | MachineBranchCond::TestBits {
             width: MachineIntWidth::I64,
             ..
         }

@@ -1264,3 +1264,52 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
         }
     ));
 }
+
+#[test]
+fn fuses_shru_and_into_bitfield_extract() {
+    // ShrU(r4, #1) + And(result, #32767) → BitfieldExtractU(r4, lsb=1, bits=15)
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::ShrU,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(1),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::And,
+                        dst: MachineReg(8),
+                        lhs: MachineValue::Reg(MachineReg(7)),
+                        rhs: MachineValue::Imm64(32767),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1, "should fuse ShrU+And into 1 instruction, got: {:?}", block.ops);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::BitfieldExtractU {
+            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            dst: MachineReg(8),
+            src: MachineReg(4),
+            lsb: 1,
+            bits: 15,
+        }
+    ), "expected BitfieldExtractU, got: {:?}", block.ops[0].kind);
+}
