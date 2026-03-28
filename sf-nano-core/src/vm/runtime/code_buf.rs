@@ -126,9 +126,6 @@ impl core::fmt::Debug for CodeBuffer {
 }
 
 impl CodeBuffer {
-    #[cfg(target_pointer_width = "32")]
-    const DEFAULT_CAPACITY: usize = 4 * 1024 * 1024;
-    #[cfg(not(target_pointer_width = "32"))]
     const DEFAULT_CAPACITY: usize = 16 * 1024 * 1024;
 
     #[inline]
