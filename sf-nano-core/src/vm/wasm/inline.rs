@@ -17,16 +17,16 @@ use super::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram};
 /// Maximum number of semantic ops in a callee for it to be inlined.
 const MAX_INLINE_OPS: usize = 200;
 
+/// Multiplier applied to `MAX_INLINE_OPS` when the call site is inside a loop.
+const LOOP_INLINE_MULTIPLIER: usize = 1; // disabled for now.
+
 /// Maximum number of parameters for an inline candidate.
 const MAX_INLINE_PARAMS: usize = 8;
 
-/// Analyse a callee's `SemanticProgram` and decide whether it is eligible for
-/// inlining. Returns `true` when the function is small and is a leaf (no
-/// calls).
-fn is_inline_candidate(callee: &SemanticProgram) -> bool {
-    if callee.ops.len() > MAX_INLINE_OPS {
-        return false;
-    }
+/// Check whether a callee is structurally eligible for inlining: must be a leaf
+/// (no calls) with few enough parameters.  Size is checked separately per call
+/// site so that loop context can raise the budget.
+fn is_leaf_inline_candidate(callee: &SemanticProgram) -> bool {
     if callee.params as usize > MAX_INLINE_PARAMS {
         return false;
     }
@@ -41,6 +41,18 @@ fn is_inline_candidate(callee: &SemanticProgram) -> bool {
         }
     }
     true
+}
+
+/// Return the inline ops budget for a call site.  Sites inside loops get a
+/// much larger budget because eliminating call overhead in a hot loop is
+/// disproportionately valuable.
+#[inline]
+fn inline_ops_limit(in_loop: bool) -> usize {
+    if in_loop {
+        MAX_INLINE_OPS * LOOP_INLINE_MULTIPLIER
+    } else {
+        MAX_INLINE_OPS
+    }
 }
 
 // ── Stack-depth tracking for Return → Br conversion ─────────────────────────
@@ -185,17 +197,38 @@ pub(crate) fn inline_calls_in_function(
     semantics: &[Option<SemanticProgram>],
 ) -> bool {
     // Collect inline sites (process back-to-front so earlier indices stay valid).
+    // Track loop depth so that call sites inside loops get a larger inline budget.
     let mut sites: Vec<(usize, u32)> = Vec::new(); // (op_index, callee_func_idx)
+    let mut loop_depth: u32 = 0;
+    let mut control_is_loop: Vec<bool> = Vec::new();
     for (i, op) in caller.ops.iter().enumerate() {
-        if let SemanticOpKind::CallInternal { callee, .. } = &op.kind {
-            if *callee == caller_func_idx {
-                continue; // skip direct recursion
+        match &op.kind {
+            SemanticOpKind::Loop { .. } => {
+                control_is_loop.push(true);
+                loop_depth += 1;
             }
-            if let Some(Some(callee_prog)) = semantics.get(*callee as usize) {
-                if is_inline_candidate(callee_prog) {
-                    sites.push((i, *callee));
+            SemanticOpKind::Block { .. } | SemanticOpKind::If { .. } => {
+                control_is_loop.push(false);
+            }
+            SemanticOpKind::End => {
+                if let Some(true) = control_is_loop.pop() {
+                    loop_depth -= 1;
                 }
             }
+            SemanticOpKind::CallInternal { callee, .. } => {
+                if *callee == caller_func_idx {
+                    continue; // skip direct recursion
+                }
+                if let Some(Some(callee_prog)) = semantics.get(*callee as usize) {
+                    let in_loop = loop_depth > 0;
+                    if is_leaf_inline_candidate(callee_prog)
+                        && callee_prog.ops.len() <= inline_ops_limit(in_loop)
+                    {
+                        sites.push((i, *callee));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     if sites.is_empty() {
