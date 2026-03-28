@@ -10,6 +10,7 @@ import argparse
 import os
 import re
 import subprocess
+import shutil
 import sys
 import time
 
@@ -205,15 +206,17 @@ def main():
                         help="Extra args for the runtime (e.g. '--dir .' for wasmtime)")
     args = parser.parse_args()
 
-    cli = args.cli
-    cli_extra = args.cli_args.split() if args.cli_args else []
-    if not os.path.exists(cli):
-        print(f"ERROR: runtime not found at {cli}", file=sys.stderr)
+    cli_parts = args.cli.split()
+    cli_parts[0] = os.path.expanduser(cli_parts[0])
+    cli = cli_parts[0]
+    cli_extra = cli_parts[1:] + (args.cli_args.split() if args.cli_args else [])
+    if not os.path.exists(cli) and not shutil.which(cli):
+        print(f"ERROR: runtime not found: {cli}", file=sys.stderr)
         if cli == DEFAULT_CLI:
             print("Run: cargo build --release --bin sf-nano-cli", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Runtime: {cli}")
+    print(f"Runtime: {' '.join(cli_parts)}")
     print()
 
     results = []
