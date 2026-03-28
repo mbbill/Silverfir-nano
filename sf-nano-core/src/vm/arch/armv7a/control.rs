@@ -9,9 +9,10 @@ use crate::{
 };
 
 use super::{
-    abi::{map_fixed_reg, map_reg, FP_SCRATCH1, FP_SCRATCH2, SCRATCH0, SCRATCH1},
+    abi::{map_fixed_reg, map_reg},
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
+    inst::{emit_load_u32_into, prepare_gp},
     reg::Arm32Reg,
     select,
 };
@@ -90,25 +91,17 @@ pub(super) fn lower_terminator_dispatch(
             }
 
             // Clamp index to entries.len()-1
-            let index_hw = match index {
-                MachineValue::Reg(r) => map_reg(*r)?,
-                MachineValue::Imm64(v) => {
-                    self.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
-                }
-            };
+            let index_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *index)?.release();
             let max_idx = (entries.len() - 1) as u32;
-            let clamp_hw = if index_hw == SCRATCH0 {
-                SCRATCH1
-            } else {
-                SCRATCH0
-            };
-            self.emit_load_u32(clamp_hw, max_idx);
-            self.core.text.emit_u32(enc::cmp_reg(index_hw, clamp_hw));
-            // If index > max, use max (conditional move)
-            self.core
-                .text
-                .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, clamp_hw));
+            {
+                let clamp = self.gp_scratch.scoped_alloc();
+                emit_load_u32_into(&mut self.core.text, *clamp, max_idx);
+                self.core.text.emit_u32(enc::cmp_reg(index_hw, *clamp));
+                // If index > max, use max (conditional move)
+                self.core
+                    .text
+                    .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, *clamp));
+            }
 
             // Emit edge stubs and collect their labels
             let mut edge_label_ids = alloc::vec::Vec::with_capacity(entries.len());
@@ -146,13 +139,7 @@ pub(super) fn compile_branch_condition(
     match cond {
         MachineBranchCond::Value(value) => {
             // Branch taken if value != 0
-            let hw = match value {
-                MachineValue::Reg(r) => map_reg(*r)?,
-                MachineValue::Imm64(v) => {
-                    self.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
-                }
-            };
+            let hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *value)?.release();
             self.core.text.emit_u32(enc::cmp_imm(hw, 0, 0));
             Ok(Cond::Ne)
         }
@@ -164,13 +151,8 @@ pub(super) fn compile_branch_condition(
             lhs,
             rhs,
         } => {
-            let lhs_hw = match lhs {
-                MachineValue::Reg(r) => map_reg(*r)?,
-                MachineValue::Imm64(v) => {
-                    self.emit_load_u32(SCRATCH0, *v as u32);
-                    SCRATCH0
-                }
-            };
+            let lhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs)?;
+            let lhs_hw = lhs_gp.reg();
 
             match rhs {
                 MachineValue::Reg(r) => {
@@ -180,16 +162,13 @@ pub(super) fn compile_branch_condition(
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
                         self.core.text.emit_u32(enc::cmp_imm(lhs_hw, imm8, rot));
                     } else {
-                        let tmp = if lhs_hw == SCRATCH0 {
-                            Arm32Reg::R3
-                        } else {
-                            SCRATCH0
-                        };
-                        self.emit_load_u32(tmp, *v as u32);
-                        self.core.text.emit_u32(enc::cmp_reg(lhs_hw, tmp));
+                        let s = self.gp_scratch.scoped_alloc();
+                        emit_load_u32_into(&mut self.core.text, *s, *v as u32);
+                        self.core.text.emit_u32(enc::cmp_reg(lhs_hw, *s));
                     }
                 }
             }
+            drop(lhs_gp);
 
             Ok(match (kind, sign) {
                 (MachineCompareKind::Eq, _) => Cond::Eq,

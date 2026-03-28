@@ -46,7 +46,6 @@ impl PreparedFp<'_> {
         }
     }
 
-    #[allow(dead_code)]
     #[inline]
     pub(super) fn release(self) -> u32 {
         match self {
