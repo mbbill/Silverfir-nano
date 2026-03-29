@@ -81,10 +81,6 @@ pub(super) fn eval(
                 arch::NativeBackend::X86_64 => {
                     arch::common::eval::eval(spec, code, store, args, arch::NativeBackend::X86_64.as_str())
                 }
-                #[cfg(any(
-                    debug_assertions,
-                    not(any(target_arch = "aarch64", target_arch = "x86_64"))
-                ))]
                 arch::NativeBackend::Reference => {
                     arch::emulator::eval(spec, code, store, args, backend_name)
                 }

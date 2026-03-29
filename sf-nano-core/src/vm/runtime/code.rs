@@ -102,10 +102,6 @@ impl CompiledNativeModule {
         &self.runtime
     }
 
-    #[cfg(any(
-        debug_assertions,
-        not(any(target_arch = "aarch64", target_arch = "x86_64"))
-    ))]
     #[inline]
     pub(crate) fn function(&self, id: MachineFuncId) -> Option<&super::super::machine::machine_ir::MachineFunction> {
         self.module.functions.get(id.0 as usize)

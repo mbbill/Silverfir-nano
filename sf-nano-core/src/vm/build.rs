@@ -228,10 +228,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         arch::NativeBackend::Arm64 => {
             Some(arch::common::pipeline::compile_module::<arch::arm64::backend::Arm64Backend>(module, &compiled)?)
         }
-        #[cfg(any(
-            debug_assertions,
-            not(any(target_arch = "aarch64", target_arch = "x86_64"))
-        ))]
         _ => None,
     };
     #[cfg(target_arch = "arm")]
