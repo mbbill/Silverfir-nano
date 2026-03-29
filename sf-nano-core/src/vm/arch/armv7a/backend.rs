@@ -59,7 +59,7 @@ struct BranchFixup {
 
 /// Result of compiling one function to ARM32 machine code.
 #[derive(Clone, Debug)]
-pub struct CompiledArm32Entry {
+pub(crate) struct CompiledArm32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
@@ -293,16 +293,6 @@ impl<'a> Arm32Backend<'a> {
         })
     }
 
-    // ── Trap site encoding ───────────────────────────────────────────────
-
-    #[inline]
-    pub(super) fn current_trap_site(&self) -> u32 {
-        select::encode_trap_site(
-            self.core.function.id.0,
-            self.core.current_block.map(|b| b.0),
-        )
-    }
-
     // ── Branch emission ──────────────────────────────────────────────────
 
     pub(super) fn emit_branch(&mut self, kind: BranchFixupKind, target: usize) {
@@ -335,15 +325,6 @@ impl<'a> Arm32Backend<'a> {
         self.emit_load_u32(dst, addr as u32);
     }
 
-    /// Emit a MOVW/MOVT pair with placeholder zeros. Returns the offset of the
-    /// MOVW instruction — used later for patching the actual address.
-    pub(super) fn emit_patchable_addr(&mut self, dst: Arm32Reg) -> usize {
-        let offset = self.core.text.len();
-        self.core.text.emit_u32(enc::movw(dst, 0));
-        self.core.text.emit_u32(enc::movt(dst, 0));
-        offset
-    }
-
     // ── Host call ────────────────────────────────────────────────────────
 
     #[inline]
@@ -372,20 +353,6 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
-    pub(super) fn materialize_gp_value(
-        &mut self,
-        value: &MachineValue,
-        scratch: Arm32Reg,
-    ) -> Result<Arm32Reg, WasmError> {
-        match value {
-            MachineValue::Reg(r) => map_reg(*r),
-            MachineValue::Imm64(v) => {
-                self.emit_load_u32(scratch, *v as u32);
-                Ok(scratch)
-            }
-        }
-    }
-
     pub(super) fn materialize_gp_into(
         &mut self,
         dst: Arm32Reg,
@@ -403,34 +370,6 @@ impl<'a> Arm32Backend<'a> {
             }
         }
         Ok(())
-    }
-
-    // ── FP value materialization ─────────────────────────────────────────
-
-    pub(super) fn materialize_float_value_dreg(
-        &mut self,
-        width: MachineFloatWidth,
-        val: &MachineValue,
-        scratch_d: u32,
-    ) -> Result<u32, WasmError> {
-        match val {
-            MachineValue::Reg(r) => self.map_fp_dreg(*r),
-            MachineValue::Imm64(bits) => {
-                match width {
-                    MachineFloatWidth::F64 => {
-                        self.emit_load_u32(Arm32Reg::R0, *bits as u32);
-                        self.emit_load_u32(Arm32Reg::R1, (*bits >> 32) as u32);
-                        self.core.text.emit_u32(enc::vmov_d_rr(scratch_d, Arm32Reg::R0, Arm32Reg::R1));
-                    }
-                    MachineFloatWidth::F32 => {
-                        let s = self.gp_scratch.scoped_alloc();
-                        emit_load_u32_into(&mut self.core.text, *s, *bits as u32);
-                        self.core.text.emit_u32(enc::vmov_s_r(scratch_d * 2, *s));
-                    }
-                }
-                Ok(scratch_d)
-            }
-        }
     }
 
     // ── Pair argument / result shuffling ─────────────────────────────────
@@ -572,16 +511,6 @@ impl<'a> Arm32Backend<'a> {
 
     // ── Compare / bool helpers ───────────────────────────────────────────
 
-    pub(super) fn emit_cmp_gp_values(
-        &mut self,
-        lhs: &MachineValue,
-        rhs: &MachineValue,
-    ) -> Result<(), WasmError> {
-        self.emit_values_to_regs_via_stack(&[Arm32Reg::R0, Arm32Reg::R1], &[lhs, rhs])?;
-        self.core.text.emit_u32(enc::cmp_reg(Arm32Reg::R0, Arm32Reg::R1));
-        Ok(())
-    }
-
     pub(super) fn emit_set_bool_immediate(&mut self, dst: Arm32Reg, value: bool) {
         self.emit_load_u32(dst, u32::from(value));
     }
@@ -602,40 +531,6 @@ impl<'a> Arm32Backend<'a> {
 
     pub(super) fn emit_trunc_result_buffer_free(&mut self) {
         self.emit_stack_temp_free(16);
-    }
-
-    // ── Memory word helpers ──────────────────────────────────────────────
-
-    pub(super) fn emit_load_word_from_addr(
-        &mut self,
-        dst: Arm32Reg,
-        base: Arm32Reg,
-        offset: i32,
-    ) {
-        if (-4095..=4095).contains(&offset) {
-            self.core.text.emit_u32(enc::ldr_imm(dst, base, offset));
-        } else {
-            let s = self.gp_scratch.scoped_alloc();
-            emit_load_u32_into(&mut self.core.text, *s, offset as u32);
-            self.core.text.emit_u32(enc::add_reg(*s, base, *s));
-            self.core.text.emit_u32(enc::ldr_imm(dst, *s, 0));
-        }
-    }
-
-    pub(super) fn emit_store_word_to_addr(
-        &mut self,
-        src: Arm32Reg,
-        base: Arm32Reg,
-        offset: i32,
-    ) {
-        if (-4095..=4095).contains(&offset) {
-            self.core.text.emit_u32(enc::str_imm(src, base, offset));
-        } else {
-            let s = self.gp_scratch.scoped_alloc();
-            emit_load_u32_into(&mut self.core.text, *s, offset as u32);
-            self.core.text.emit_u32(enc::add_reg(*s, base, *s));
-            self.core.text.emit_u32(enc::str_imm(src, *s, 0));
-        }
     }
 
     // ── Parallel move source dispatch ────────────────────────────────────

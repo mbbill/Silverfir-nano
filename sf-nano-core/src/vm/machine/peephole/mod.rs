@@ -35,7 +35,6 @@ use crate::vm::machine::machine_ir::{
     MachineStorageType, MachineValue,
 };
 
-pub(crate) use fuse_compare_branch::reg_dead_at_block_entry;
 
 #[derive(Clone, Copy)]
 struct TrackedStore {

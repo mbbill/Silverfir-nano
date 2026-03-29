@@ -34,7 +34,7 @@ use super::{
     armv7a_i64_popcnt, armv7a_i64_rem_s, armv7a_i64_rem_u, armv7a_i64_rotl, armv7a_i64_rotr,
     armv7a_i64_shl, armv7a_i64_shr_s, armv7a_i64_shr_u, armv7a_i64s_to_f32, armv7a_i64s_to_f64,
     armv7a_i64u_to_f32, armv7a_i64u_to_f64, armv7a_saturating_trunc,
-    armv7a_sdiv, armv7a_smul_wide, armv7a_trapping_trunc, armv7a_udiv, armv7a_umul_wide,
+    armv7a_sdiv, armv7a_trapping_trunc, armv7a_udiv,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     operands::{PreparedFp, PreparedGp},
@@ -711,7 +711,7 @@ fn compile_store(
 
 fn compile_int_binary(
     &mut self,
-    width: MachineIntWidth,
+    _width: MachineIntWidth,
     op: MachineIntBinaryOp,
     dst: MachineReg,
     lhs: &MachineValue,
@@ -1052,7 +1052,7 @@ fn compile_int_binary(
 
 fn compile_int_unary(
     &mut self,
-    width: MachineIntWidth,
+    _width: MachineIntWidth,
     op: MachineIntUnaryOp,
     dst: MachineReg,
     src: &MachineValue,
@@ -1132,32 +1132,6 @@ fn compile_int_unary(
             }
         }
     }
-    Ok(())
-}
-
-// ─── Integer widening multiply ──────────────────────────────────────────────
-
-fn compile_int_mul_wide(
-    &mut self,
-    sign: MachineSign,
-    dst_lo: MachineReg,
-    dst_hi: MachineReg,
-    lhs: &MachineValue,
-    rhs: &MachineValue,
-) -> Result<(), WasmError> {
-    {
-        let lhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs)?;
-        let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?;
-        self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, lhs_gp.reg()));
-        self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R1, rhs_gp.reg()));
-    }
-    self.emit_host_call(
-        match sign {
-            MachineSign::Signed => armv7a_smul_wide as usize,
-            MachineSign::Unsigned => armv7a_umul_wide as usize,
-        },
-    );
-    self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
     Ok(())
 }
 
@@ -2036,13 +2010,6 @@ fn compile_float_unary(
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Sqrt) => {
             self.core.text.emit_u32(enc::vsqrt_s(dd * 2, dm * 2));
         }
-        _ => {
-            return Err(WasmError::invalid(alloc::format!(
-                "armv7a: unsupported float unary op {:?} {:?}",
-                width,
-                op
-            )));
-        }
     }
     Ok(())
 }
@@ -2291,12 +2258,6 @@ fn compile_convert(
             }
         }
 
-        _ => {
-            return Err(WasmError::invalid(alloc::format!(
-                "armv7a: unsupported convert op {:?}",
-                op
-            )));
-        }
     }
     Ok(())
 }

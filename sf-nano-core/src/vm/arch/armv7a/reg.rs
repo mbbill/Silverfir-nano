@@ -1,6 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Arm32Reg {
+pub(super) enum Arm32Reg {
     R0 = 0,
     R1 = 1,
     R2 = 2,
@@ -20,18 +20,15 @@ pub enum Arm32Reg {
 }
 
 impl Arm32Reg {
-    pub const SP: Self = Self::R13;
-    pub const LR: Self = Self::R14;
-    pub const PC: Self = Self::R15;
-    pub const IP: Self = Self::R12;
+    pub(super) const SP: Self = Self::R13;
 
     #[inline]
-    pub const fn idx(self) -> u32 {
+    pub(super) const fn idx(self) -> u32 {
         self as u32
     }
 
     #[inline]
-    pub fn from_idx(idx: u32) -> Self {
+    pub(super) fn from_idx(idx: u32) -> Self {
         match idx {
             0 => Self::R0,
             1 => Self::R1,

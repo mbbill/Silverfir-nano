@@ -3,18 +3,17 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineFloatWidth, MachineSign,
-        MachineTerminator, MachineValue, MACHINE_CTX_REG,
+        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineSign,
+        MachineTerminator, MachineValue,
     },
 };
 
 use super::{
-    abi::{map_fixed_reg, map_reg},
+    abi::map_reg,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     inst::{emit_load_u32_into, prepare_gp},
     reg::Arm32Reg,
-    select,
 };
 
 // ─── Terminator compilation ─────────────────────────────────────────────────
@@ -145,7 +144,7 @@ pub(super) fn compile_branch_condition(
         }
 
         MachineBranchCond::IntCompare {
-            width,
+            width: _,
             kind,
             sign,
             lhs,

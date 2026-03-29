@@ -1,6 +1,6 @@
 pub(super) mod abi;
 pub(crate) mod backend;
-pub mod compile;
+pub(crate) mod compile;
 mod control;
 mod enc;
 mod inst;
@@ -41,12 +41,12 @@ unsafe extern "C" {
     fn trunc(x: f64) -> f64;
 }
 
-pub fn eval(
+pub(crate) fn eval(
     spec: &FunctionSpec,
     code: &NativeCode,
     store: &mut Store,
     args: &[Value],
-    backend: &'static str,
+    _backend: &'static str,
 ) -> Result<ResultBuffer, WasmError> {
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
@@ -240,16 +240,6 @@ pub(crate) extern "C" fn armv7a_sdiv(num: i32, den: i32) -> i32 {
     // this helper. Use wrapping semantics here anyway so helper-backed
     // remainder paths can safely compute INT_MIN / -1 as an intermediate.
     num.wrapping_div(den)
-}
-
-/// Unsigned 32x32 -> 64 multiply.
-pub(crate) extern "C" fn armv7a_umul_wide(lhs: u32, rhs: u32) -> u64 {
-    u64::from(lhs) * u64::from(rhs)
-}
-
-/// Signed 32x32 -> 64 multiply.
-pub(crate) extern "C" fn armv7a_smul_wide(lhs: i32, rhs: i32) -> i64 {
-    i64::from(lhs) * i64::from(rhs)
 }
 
 #[inline]
@@ -451,23 +441,6 @@ pub(crate) extern "C" fn armv7a_f64_trunc(val: f64) -> f64 {
 
 pub(crate) extern "C" fn armv7a_f64_nearest_bits(bits: u64) -> u64 {
     wasm_f64_nearest_bits(bits)
-}
-
-pub(crate) unsafe extern "C" fn armv7a_raise_unsupported(
-    ctx: *mut NativeContext,
-    func_id: u32,
-) -> u32 {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return 1;
-    };
-    let error = WasmError::invalid(alloc::format!(
-        "armv7a backend has not finalized machine function {} yet",
-        func_id
-    ));
-    #[cfg(feature = "function-trace")]
-    function_trace::native_trap_current(ctx, &error);
-    ctx.error = Some(error);
-    1
 }
 
 #[inline]

@@ -153,7 +153,6 @@ const CALLEE_SAVED_GP_REGS: [Arm32Reg; 9] = [
 const CALLEE_SAVED_FP_FIRST: u32 = 8;
 const CALLEE_SAVED_FP_COUNT: u32 = 8;
 
-const STACK_ALIGNMENT_BYTES: u32 = 8; // EABI requires 8-byte stack alignment
 const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 == 1 {
     4
 } else {

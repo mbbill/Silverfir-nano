@@ -16,7 +16,7 @@ use crate::{
             types::FunctionArtifact,
         },
         entities::ModuleInst,
-        runtime::code::{NativeCodePtr, NativeRootEntry, CompiledNativeModule},
+        runtime::code::{NativeRootEntry, CompiledNativeModule},
     },
 };
 
@@ -56,7 +56,7 @@ const ARM32_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Arm32FunctionInfo>(
 
 // ── Module compilation ───────────────────────────────────────────────────────
 
-pub fn compile_module(
+pub(crate) fn compile_module(
     module: &ModuleInst,
     compiled: &CompiledNativeModule,
 ) -> Result<Vec<Option<CompiledArm32Entry>>, WasmError> {

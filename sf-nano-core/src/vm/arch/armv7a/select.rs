@@ -5,28 +5,11 @@
 //! allocation, no mutable state.
 
 use crate::vm::machine::machine_ir::{
-    MachineCompareKind, MachineConvertOp, MachineTrapKind, MachineSign,
+    MachineConvertOp, MachineTrapKind,
 };
 
 use super::enc::Cond;
 use super::reg::Arm32Reg;
-
-// ── Condition code mapping ───────────────────────────────────────────────────
-
-pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cond {
-    match (kind, sign) {
-        (MachineCompareKind::Eq, _) => Cond::Eq,
-        (MachineCompareKind::Ne, _) => Cond::Ne,
-        (MachineCompareKind::Lt, MachineSign::Signed) => Cond::Lt,
-        (MachineCompareKind::Lt, MachineSign::Unsigned) => Cond::Cc,
-        (MachineCompareKind::Gt, MachineSign::Signed) => Cond::Gt,
-        (MachineCompareKind::Gt, MachineSign::Unsigned) => Cond::Hi,
-        (MachineCompareKind::Le, MachineSign::Signed) => Cond::Le,
-        (MachineCompareKind::Le, MachineSign::Unsigned) => Cond::Ls,
-        (MachineCompareKind::Ge, MachineSign::Signed) => Cond::Ge,
-        (MachineCompareKind::Ge, MachineSign::Unsigned) => Cond::Cs,
-    }
-}
 
 // ── Trap helpers ─────────────────────────────────────────────────────────────
 

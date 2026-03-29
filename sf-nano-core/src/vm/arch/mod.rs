@@ -3,12 +3,12 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use crate::vm::backend::BackendConfig;
 
 pub(crate) mod common;
+pub(crate) mod emulator;
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod arm64;
 #[cfg(target_arch = "arm")]
-pub mod armv7a;
-pub(crate) mod emulator;
+pub(crate) mod armv7a;
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
