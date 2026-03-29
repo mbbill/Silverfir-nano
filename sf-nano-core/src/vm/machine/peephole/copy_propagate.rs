@@ -16,7 +16,7 @@ use crate::vm::machine::machine_ir::{
     MachineInstKind, MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
 
-use super::helpers::{count_value_uses, defined_reg, inst_defines, reg_live_after, terminator_uses_reg};
+use super::helpers::{count_value_uses, for_each_defined_reg, inst_defines, reg_live_after, terminator_uses_reg};
 
 /// Reusable scratch buffers for copy_propagate to avoid per-block allocation.
 pub(super) struct CopyPropagateScratch {
@@ -72,10 +72,10 @@ pub(super) fn copy_propagate(
             continue;
         }
 
-        if let Some(dst) = defined_reg(&inst.kind) {
+        for_each_defined_reg(&inst.kind, |dst| {
             kill_alias(aliases, dst);
             kill_alias(float_aliases, dst);
-        }
+        });
 
         match &inst.kind {
             MachineInstKind::Move {

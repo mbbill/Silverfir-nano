@@ -11,7 +11,7 @@ use crate::vm::machine::machine_ir::{
     MachineValue,
 };
 
-use super::helpers::defined_reg;
+use super::helpers::for_each_defined_reg;
 
 pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
     let mut gp_consts: Vec<(u64, MachineReg)> = Vec::new();
@@ -72,10 +72,10 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
         }
 
         // Invalidate tracking for any register redefined by this instruction.
-        if let Some(def) = defined_reg(&inst.kind) {
+        for_each_defined_reg(&inst.kind, |def| {
             gp_consts.retain(|(_, r)| *r != def);
             fp_consts.retain(|(_, _, r)| *r != def);
-        }
+        });
 
         if let Some(e) = new_gp {
             gp_consts.push(e);

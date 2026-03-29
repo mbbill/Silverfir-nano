@@ -1370,8 +1370,13 @@ fn compile_int64_pair_shift(
     let dst_lo_hw = map_reg(dst_lo)?;
     let dst_hi_hw = map_reg(dst_hi)?;
     self.spill_caller_saved_gp_regs();
-    self.emit_move_gp_value(Arm32Reg::R2, rhs)?;
-    self.emit_pair_args_to_r0_r1(lhs_lo, lhs_hi)?;
+    // Stage all three operands atomically via stack to avoid clobbering:
+    // if lhs_lo or lhs_hi lives in R2, moving rhs into R2 first would
+    // destroy the lhs value before emit_pair_args_to_r0_r1 reads it.
+    self.emit_values_to_regs_via_stack(
+        &[Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2],
+        &[lhs_lo, lhs_hi, rhs],
+    )?;
     self.emit_host_call(
         match op {
             MachineIntBinaryOp::Shl => armv7a_i64_shl as usize,

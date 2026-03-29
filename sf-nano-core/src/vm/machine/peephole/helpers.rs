@@ -45,6 +45,26 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     }
 }
 
+/// Visit all registers defined (written) by an instruction.
+/// Unlike `defined_reg`, this handles multi-output instructions (i64 pair ops).
+pub(super) fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
+    if let Some(dst) = defined_reg(kind) {
+        f(dst);
+    }
+    match kind {
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
+        | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            f(*dst_lo);
+            f(*dst_hi);
+        }
+        _ => {}
+    }
+}
+
 /// Check if `kind` defines (writes to) `reg`.
 pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
