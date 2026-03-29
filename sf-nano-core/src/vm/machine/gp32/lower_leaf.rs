@@ -1,5 +1,7 @@
 //! 32-bit i64 pair lowering — splitting i64 operations into lo/hi word pairs.
 
+use alloc::vec::Vec;
+
 use crate::{
     error::WasmError,
     vm::{
@@ -17,6 +19,17 @@ use super::super::{
     lower_context::BlockLowerContext,
     lower_util::{single_arg, single_result, two_args},
 };
+
+/// Extract SsaValues from operands, skipping Const entries.
+fn dead_input_values(operands: &[SsaOperand]) -> Vec<SsaValue> {
+    operands
+        .iter()
+        .filter_map(|op| match op {
+            SsaOperand::Value(v) => Some(*v),
+            SsaOperand::Const(_) => None,
+        })
+        .collect()
+}
 
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_i64_pair_leaf(
@@ -60,20 +73,18 @@ impl<'a> BlockLowerContext<'a> {
                 if args.len() != 3 {
                     return Err(WasmError::internal("select expects three arguments".into()));
                 }
-                let true_val = args[0].unwrap_value();
-                let false_val = args[1].unwrap_value();
-                let cond_val = args[2].unwrap_value();
-                let (true_lo, true_hi) = self.use_i64_value_pair(true_val)?;
-                let (false_lo, false_hi) = self.use_i64_value_pair(false_val)?;
-                let cond = self.use_value(cond_val)?;
+                let (true_lo, true_hi) = self.use_i64_operand_pair(&args[0])?;
+                let (false_lo, false_hi) = self.use_i64_operand_pair(&args[1])?;
+                let cond = self.use_operand(args[2])?;
+                let dead = dead_input_values(&[args[0], args[1], args[2]]);
                 let (dst_lo, dst_hi) =
-                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[true_val, false_val, cond_val])?;
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Select {
                         ty: Ty::GpWord,
                         dst: dst_lo,
-                        on_true: MachineValue::Reg(true_lo),
-                        on_false: MachineValue::Reg(false_lo),
+                        on_true: true_lo,
+                        on_false: false_lo,
                         cond: MachineValue::Reg(cond),
                     },
                 });
@@ -81,22 +92,20 @@ impl<'a> BlockLowerContext<'a> {
                     kind: MachineInstKind::Select {
                         ty: Ty::GpWord,
                         dst: dst_hi,
-                        on_true: MachineValue::Reg(true_hi),
-                        on_false: MachineValue::Reg(false_hi),
+                        on_true: true_hi,
+                        on_false: false_hi,
                         cond: MachineValue::Reg(cond),
                     },
                 });
                 Ok(true)
             }
             P::I64Add | P::I64Sub | P::I64Mul | P::I64And | P::I64Or | P::I64Xor => {
-                let (lhs_value, rhs_value) = {
-                    let (a, b) = two_args(args)?;
-                    (a.unwrap_value(), b.unwrap_value())
-                };
-                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
-                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let (a, b) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_operand_pair(&a)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_operand_pair(&b)?;
+                let dead = dead_input_values(&[a, b]);
                 let (dst_lo, dst_hi) =
-                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_binary(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 binary lowering".into()))?
                     .1;
@@ -105,23 +114,21 @@ impl<'a> BlockLowerContext<'a> {
                         op,
                         dst_lo,
                         dst_hi,
-                        lhs_lo: MachineValue::Reg(lhs_lo),
-                        lhs_hi: MachineValue::Reg(lhs_hi),
-                        rhs_lo: MachineValue::Reg(rhs_lo),
-                        rhs_hi: MachineValue::Reg(rhs_hi),
+                        lhs_lo,
+                        lhs_hi,
+                        rhs_lo,
+                        rhs_hi,
                     },
                 });
                 Ok(true)
             }
             P::I64DivS | P::I64DivU | P::I64RemS | P::I64RemU => {
-                let (lhs_value, rhs_value) = {
-                    let (a, b) = two_args(args)?;
-                    (a.unwrap_value(), b.unwrap_value())
-                };
-                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
-                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let (a, b) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_operand_pair(&a)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_operand_pair(&b)?;
+                let dead = dead_input_values(&[a, b]);
                 let (dst_lo, dst_hi) =
-                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairDivRem {
                         sign: match primitive {
@@ -131,23 +138,21 @@ impl<'a> BlockLowerContext<'a> {
                         rem: matches!(primitive, P::I64RemS | P::I64RemU),
                         dst_lo,
                         dst_hi,
-                        lhs_lo: MachineValue::Reg(lhs_lo),
-                        lhs_hi: MachineValue::Reg(lhs_hi),
-                        rhs_lo: MachineValue::Reg(rhs_lo),
-                        rhs_hi: MachineValue::Reg(rhs_hi),
+                        lhs_lo,
+                        lhs_hi,
+                        rhs_lo,
+                        rhs_hi,
                     },
                 });
                 Ok(true)
             }
             P::I64Shl | P::I64ShrS | P::I64ShrU | P::I64Rotl | P::I64Rotr => {
-                let (lhs_value, rhs_value) = {
-                    let (a, b) = two_args(args)?;
-                    (a.unwrap_value(), b.unwrap_value())
-                };
-                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
-                let (rhs_lo, _) = self.use_i64_value_pair(rhs_value)?;
+                let (a, b) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_operand_pair(&a)?;
+                let (rhs_lo, _) = self.use_i64_operand_pair(&b)?;
+                let dead = dead_input_values(&[a, b]);
                 let (dst_lo, dst_hi) =
-                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[lhs_value, rhs_value])?;
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_binary(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 shift lowering".into()))?
                     .1;
@@ -156,9 +161,9 @@ impl<'a> BlockLowerContext<'a> {
                         op,
                         dst_lo,
                         dst_hi,
-                        lhs_lo: MachineValue::Reg(lhs_lo),
-                        lhs_hi: MachineValue::Reg(lhs_hi),
-                        rhs: MachineValue::Reg(rhs_lo),
+                        lhs_lo,
+                        lhs_hi,
+                        rhs: rhs_lo,
                     },
                 });
                 Ok(true)
@@ -173,15 +178,13 @@ impl<'a> BlockLowerContext<'a> {
             | P::I64LeU
             | P::I64GeS
             | P::I64GeU => {
-                let (lhs_value, rhs_value) = {
-                    let (a, b) = two_args(args)?;
-                    (a.unwrap_value(), b.unwrap_value())
-                };
-                let (lhs_lo, lhs_hi) = self.use_i64_value_pair(lhs_value)?;
-                let (rhs_lo, rhs_hi) = self.use_i64_value_pair(rhs_value)?;
+                let (a, b) = two_args(args)?;
+                let (lhs_lo, lhs_hi) = self.use_i64_operand_pair(&a)?;
+                let (rhs_lo, rhs_hi) = self.use_i64_operand_pair(&b)?;
+                let dead = dead_input_values(&[a, b]);
                 let dst = self.alloc_value_reusing_dead_inputs(
                     single_result(results)?,
-                    &[lhs_value, rhs_value],
+                    &dead,
                 )?;
                 let (_, kind, sign) = machine_int_compare(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 compare lowering".into()))?;
@@ -190,26 +193,27 @@ impl<'a> BlockLowerContext<'a> {
                         kind,
                         sign,
                         dst,
-                        lhs_lo: MachineValue::Reg(lhs_lo),
-                        lhs_hi: MachineValue::Reg(lhs_hi),
-                        rhs_lo: MachineValue::Reg(rhs_lo),
-                        rhs_hi: MachineValue::Reg(rhs_hi),
+                        lhs_lo,
+                        lhs_hi,
+                        rhs_lo,
+                        rhs_hi,
                     },
                 });
                 Ok(true)
             }
             P::I64Eqz => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let arg = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
+                let dead = dead_input_values(&[arg]);
                 let dst =
-                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairCompare {
                         kind: Cmp::Eq,
                         sign: Sign::Unsigned,
                         dst,
-                        lhs_lo: MachineValue::Reg(src_lo),
-                        lhs_hi: MachineValue::Reg(src_hi),
+                        lhs_lo: src_lo,
+                        lhs_hi: src_hi,
                         rhs_lo: MachineValue::Imm64(0),
                         rhs_hi: MachineValue::Imm64(0),
                     },
@@ -222,11 +226,12 @@ impl<'a> BlockLowerContext<'a> {
             | P::I64Extend8S
             | P::I64Extend16S
             | P::I64Extend32S => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let arg = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
+                let dead = dead_input_values(&[arg]);
                 let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                 )?;
                 let op = machine_int_unary(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 unary lowering".into()))?
@@ -236,32 +241,34 @@ impl<'a> BlockLowerContext<'a> {
                         op,
                         dst_lo,
                         dst_hi,
-                        src_lo: MachineValue::Reg(src_lo),
-                        src_hi: MachineValue::Reg(src_hi),
+                        src_lo,
+                        src_hi,
                     },
                 });
                 Ok(true)
             }
             P::I32WrapI64 => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let (src_lo, _) = self.use_i64_value_pair(src_value)?;
+                let arg = single_arg(args)?;
+                let (src_lo, _) = self.use_i64_operand_pair(&arg)?;
+                let dead = dead_input_values(&[arg]);
                 let dst =
-                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &[src_value])?;
+                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
                         ty: Ty::GpWord,
                         dst,
-                        src: MachineValue::Reg(src_lo),
+                        src: src_lo,
                     },
                 });
                 Ok(true)
             }
             P::I64ExtendI32S | P::I64ExtendI32U => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let src = self.use_value(src_value)?;
+                let arg = single_arg(args)?;
+                let src = self.use_operand(arg)?;
+                let dead = dead_input_values(&[arg]);
                 let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                 )?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
@@ -296,15 +303,16 @@ impl<'a> BlockLowerContext<'a> {
                 Ok(true)
             }
             P::F32ConvertI64S | P::F32ConvertI64U | P::F64ConvertI64S | P::F64ConvertI64U => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let arg = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
                 let width = match primitive {
                     P::F32ConvertI64S | P::F32ConvertI64U => Fw::F32,
                     _ => Fw::F64,
                 };
+                let dead = dead_input_values(&[arg]);
                 let dst = self.alloc_float_value_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                     width,
                 )?;
                 self.emit_machine_inst(MachineInst {
@@ -315,8 +323,8 @@ impl<'a> BlockLowerContext<'a> {
                             _ => Sign::Unsigned,
                         },
                         dst,
-                        src_lo: MachineValue::Reg(src_lo),
-                        src_hi: MachineValue::Reg(src_hi),
+                        src_lo,
+                        src_hi,
                     },
                 });
                 Ok(true)
@@ -329,11 +337,12 @@ impl<'a> BlockLowerContext<'a> {
             | P::I64TruncSatF32U
             | P::I64TruncSatF64S
             | P::I64TruncSatF64U => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let src = self.use_value(src_value)?;
+                let arg = single_arg(args)?;
+                let src = self.use_operand(arg)?;
+                let dead = dead_input_values(&[arg]);
                 let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                 )?;
                 let op = machine_convert(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 trunc lowering".into()))?;
@@ -348,11 +357,12 @@ impl<'a> BlockLowerContext<'a> {
                 Ok(true)
             }
             P::I64ReinterpretF64 => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let src = self.use_value(src_value)?;
+                let arg = single_arg(args)?;
+                let src = self.use_operand(arg)?;
+                let dead = dead_input_values(&[arg]);
                 let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                 )?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::ReinterpretF64ToI64Pair {
@@ -364,18 +374,19 @@ impl<'a> BlockLowerContext<'a> {
                 Ok(true)
             }
             P::F64ReinterpretI64 => {
-                let src_value = single_arg(args)?.unwrap_value();
-                let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
+                let arg = single_arg(args)?;
+                let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
+                let dead = dead_input_values(&[arg]);
                 let dst = self.alloc_float_value_reusing_dead_inputs(
                     single_result(results)?,
-                    &[src_value],
+                    &dead,
                     Fw::F64,
                 )?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::ReinterpretI64PairToF64 {
                         dst,
-                        src_lo: MachineValue::Reg(src_lo),
-                        src_hi: MachineValue::Reg(src_hi),
+                        src_lo,
+                        src_hi,
                     },
                 });
                 Ok(true)

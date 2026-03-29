@@ -269,10 +269,13 @@ impl<'a> BlockLowerContext<'a> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments".into()));
         }
-        let on_true = self.use_value(args[0].unwrap_value())?;
-        let on_false = self.use_value(args[1].unwrap_value())?;
-        let cond = self.use_value(args[2].unwrap_value())?;
-        let dead_inputs: Vec<_> = args.iter().map(|a| a.unwrap_value()).collect();
+        let on_true = self.use_operand(args[0])?;
+        let on_false = self.use_operand(args[1])?;
+        let cond = self.use_operand(args[2])?;
+        let dead_inputs: Vec<_> = args.iter().filter_map(|a| match a {
+            SsaOperand::Value(v) => Some(*v),
+            SsaOperand::Const(_) => None,
+        }).collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead_inputs)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {

@@ -163,22 +163,6 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
 /// table, global, select, drop, or reference ops.
 fn can_accept_const_operand(kind: &crate::vm::wasm::primitive_op::PrimitiveOpKind) -> bool {
     use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
-    // On 32-bit targets, the gp32 pair lowering does not yet support
-    // inline constant operands for i64 ops, so skip them.
-    #[cfg(not(target_pointer_width = "64"))]
-    if matches!(
-        kind,
-        P::I64Add | P::I64Sub | P::I64Mul | P::I64DivS | P::I64DivU
-        | P::I64RemS | P::I64RemU | P::I64And | P::I64Or | P::I64Xor
-        | P::I64Shl | P::I64ShrS | P::I64ShrU | P::I64Rotl | P::I64Rotr
-        | P::I64Eq | P::I64Ne | P::I64LtS | P::I64LtU | P::I64GtS | P::I64GtU
-        | P::I64LeS | P::I64LeU | P::I64GeS | P::I64GeU
-        | P::I64Eqz | P::I64Clz | P::I64Ctz | P::I64Popcnt
-        | P::I64Extend8S | P::I64Extend16S | P::I64Extend32S
-        | P::Select
-    ) {
-        return false;
-    }
     matches!(
         kind,
         // i32 binary
