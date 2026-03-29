@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -28,6 +29,12 @@ TESTS = [
         "args": ["coremark.wasm"],
         "pattern": r"Iterations/Sec\s*:\s*(\S+)",
         "source": "stdout",
+        "stdout_contains": [
+            "seedcrc          : 0xe9f5",
+            "[0]crclist       : 0xe714",
+            "[0]crcmatrix     : 0x1fd7",
+            "[0]crcstate      : 0x8e3a",
+        ],
     },
     {
         "name": "sha256/sha256.wasm",
@@ -35,6 +42,7 @@ TESTS = [
         "args": ["sha256.wasm"],
         "pattern": r"sha256: throughput = (\S+ MB/s)",
         "source": "stdout",
+        "stdout_contains": "hash = d824bde2acff5ab2",
     },
     {
         "name": "bzip2/bzip2.wasm",
@@ -58,6 +66,7 @@ TESTS = [
         "args": ["lua.wasm", "fib.lua"],
         "pattern": None,
         "source": None,
+        "stdout_contains": "fib(38) = 39088169",
     },
     {
         "name": "lua/sunfish",
@@ -80,6 +89,7 @@ TESTS = [
         "args": ["mandel.wasm", "128", "6e6"],
         "pattern": r"Elapsed time:\s*(.+)",
         "source": "stderr",
+        "stdout_md5": "a254de76a7cc668adb5464ab66517c5c",
     },
     {
         "name": "c-ray/c-ray.wasm",
@@ -88,6 +98,7 @@ TESTS = [
         "stdin": os.path.join(SCRIPT_DIR, "c-ray", "scene"),
         "pattern": r"Rendering took:\s*(.+\))",
         "source": "stderr",
+        "stdout_md5": "d02c3bc410e3ba820688599794aa3e9d",
     },
     # --- Memory Bound ---
     {
@@ -162,6 +173,20 @@ def run_test(cli, test, cli_extra=()):
             if "Error" in line:
                 return name, "FAIL", line.strip(), elapsed
         return name, "FAIL", f"exit code {exit_code}", elapsed
+
+    # Verify deterministic output if configured.
+    stdout_contains = test.get("stdout_contains")
+    if stdout_contains:
+        if isinstance(stdout_contains, str):
+            stdout_contains = [stdout_contains]
+        for needle in stdout_contains:
+            if needle not in stdout:
+                return name, "FAIL", f"expected stdout to contain '{needle}'", elapsed
+    stdout_md5 = test.get("stdout_md5")
+    if stdout_md5:
+        actual_md5 = hashlib.md5(proc.stdout).hexdigest()
+        if actual_md5 != stdout_md5:
+            return name, "FAIL", f"stdout md5 {actual_md5} != {stdout_md5}", elapsed
 
     # Extract compile stats if present: [arch] (func:N, ssa:N, mir:N, code:N)
     native_info = ""
