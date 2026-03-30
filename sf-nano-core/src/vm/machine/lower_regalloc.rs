@@ -292,11 +292,14 @@ impl<'a> BlockLowerContext<'a> {
         continuation_term: &MachineTerminator,
     ) -> Vec<MachineBlockParam> {
         let mut params = Vec::new();
-        let all_defined = continuation_ops
-            .iter()
-            .filter_map(|inst| inst_defined_reg(&inst.kind))
-            .filter(|reg| self.is_transient_reg(*reg))
-            .collect::<Vec<_>>();
+        let mut all_defined = Vec::new();
+        for inst in continuation_ops {
+            for_each_inst_defined_reg(&inst.kind, |reg| {
+                if self.is_transient_reg(reg) && !all_defined.contains(&reg) {
+                    all_defined.push(reg);
+                }
+            });
+        }
 
         for entry in self.values_iter() {
             let remaining = self.remaining_use_count(entry.value);
@@ -329,11 +332,11 @@ impl<'a> BlockLowerContext<'a> {
                     );
                 }
             });
-            if let Some(dst) = inst_defined_reg(&inst.kind) {
+            for_each_inst_defined_reg(&inst.kind, |dst| {
                 if self.is_transient_reg(dst) && !defined_so_far.contains(&dst) {
                     defined_so_far.push(dst);
                 }
-            }
+            });
         }
         visit_term_source_regs(continuation_term, |reg| {
             if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
@@ -726,6 +729,25 @@ pub(super) fn machine_block_params_for_value(
             ]
         }
         _ => alloc::vec![machine_block_param(regs.lo, ty)],
+    }
+}
+
+/// Visit all registers defined by an instruction, including both halves of i64 pair ops.
+fn for_each_inst_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
+    if let Some(dst) = inst_defined_reg(kind) {
+        f(dst);
+    }
+    match kind {
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
+        | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            f(*dst_lo);
+            f(*dst_hi);
+        }
+        _ => {}
     }
 }
 
