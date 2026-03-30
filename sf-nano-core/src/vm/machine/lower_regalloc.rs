@@ -9,10 +9,10 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineBlockParam, MachineBranchCond,
-            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg,
-            MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind,
+            MachineIntWidth, MachineMemWidth, MachineReg, MachineStorageType, MachineTerminator,
+            MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{SsaProgram, SsaValue},
     },
@@ -27,9 +27,10 @@ use super::lower_context::BlockLowerContext;
 /// Fixed machine-register partition used by lowering.
 ///
 /// `ctx`, `fp`, and the pinned `mem0` view regs are fixed MachineIR roles.
-/// The remaining cache and lane partitions are a logical ownership model chosen
-/// for lowering; they may be reused for other temporary purposes when the
-/// owning values are proven dead.
+/// The remaining cache and transient partitions are part of the shared
+/// lowering contract. Cached locals stay owned by the cache layer; transient
+/// registers may only be borrowed for non-SSA work through explicit helpers
+/// that prove the use is short-lived and non-overlapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
     gp_local_cache: Vec<MachineReg>,
@@ -277,12 +278,10 @@ impl<'a> BlockLowerContext<'a> {
                 let (lo, hi) = self.use_i64_value_pair(*v)?;
                 Ok((MachineValue::Reg(lo), MachineValue::Reg(hi)))
             }
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => {
-                Ok((
-                    MachineValue::Imm64(*bits as u32 as u64),
-                    MachineValue::Imm64((*bits >> 32) as u64),
-                ))
-            }
+            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => Ok((
+                MachineValue::Imm64(*bits as u32 as u64),
+                MachineValue::Imm64((*bits >> 32) as u64),
+            )),
         }
     }
 
@@ -594,9 +593,19 @@ impl<'a> BlockLowerContext<'a> {
             .unwrap_or(MachineStorageType::GpWord)
     }
 
-    pub(super) fn transient_reg(&self, index: usize) -> Result<MachineReg, WasmError> {
+    /// Reserve a specific GP transient lane for structured lowering-internal
+    /// control flow. This is the narrow escape hatch for non-SSA use of the
+    /// transient bank; callers must name the purpose so the exception is
+    /// explicit at the call site.
+    pub(super) fn reserved_gp_transient(
+        &self,
+        index: usize,
+        purpose: &'static str,
+    ) -> Result<MachineReg, WasmError> {
         self.regfile().gp_transient(index).ok_or_else(|| {
-            WasmError::internal("native lowering requires one transient register".into())
+            WasmError::internal(alloc::format!(
+                "native lowering requires GP transient register {index} for {purpose}"
+            ))
         })
     }
 
@@ -692,10 +701,7 @@ pub(super) fn canonical_cached_local_mem_width(ty: MachineStorageType) -> Machin
     canonical_storage_mem_width(ty)
 }
 
-pub(super) fn lir_value_storage_type(
-    program: &SsaProgram,
-    value: SsaValue,
-) -> MachineStorageType {
+pub(super) fn lir_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineStorageType {
     program
         .value_types
         .get(value.0 as usize)
@@ -797,7 +803,9 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit(*base);
             visit(*index);
         }
-        MachineInstKind::IndexedStore { base, index, src, .. } => {
+        MachineInstKind::IndexedStore {
+            base, index, src, ..
+        } => {
             visit(*base);
             visit(*index);
             visit_value_reg(src, &mut visit);
@@ -1025,13 +1033,11 @@ mod tests {
         vm::{
             backend::BackendConfig,
             machine::machine_ir::{
-                MachineFunctionRuntime, MachineCallLinkLayout, MachineStorageType,
+                MachineCallLinkLayout, MachineFunctionRuntime, MachineStorageType,
             },
-            middle::{
-                ssa_ir::{
-                    ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
-                    target::SsaTarget,
-                },
+            middle::ssa_ir::{
+                ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
+                target::SsaTarget,
             },
         },
     };
@@ -1054,8 +1060,7 @@ mod tests {
             value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
-            MachineRegFile::new(BackendConfig::new(0, 4, 0, 0, 4, 8))
-                .expect("regfile"),
+            MachineRegFile::new(BackendConfig::new(0, 4, 0, 0, 4, 8)).expect("regfile"),
         ));
         let runtime = MachineFunctionRuntime::default();
         let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
@@ -1076,6 +1081,7 @@ mod tests {
             4,
             &super::super::gp32::Gp32Lowering,
             true,
+            None,
             #[cfg(has_guard_pages)]
             false,
         )

@@ -26,9 +26,9 @@ pub enum BackendKind {
 ///   onto cache regs
 /// - the frontend frame planner reserves `call_scratch_slots` in the native
 ///   frame prefix for call-link and helper scratch state
-/// - backends may also repurpose cache or transient regs for other temporary
-///   work
-///   when they can prove the owning values are not live
+/// - backend-only temporaries must be modeled explicitly through scratch pools
+///   or lowering helpers rather than by ad hoc reach-through into these
+///   partitions
 ///
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.

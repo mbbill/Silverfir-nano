@@ -1,8 +1,9 @@
 //! x86_64 register plan — single source of truth for register allocation.
 //!
-//! `REG_PLAN` declares every register role in one place.  `BackendConfig` is
+//! `REG_PLAN` declares every register role in one place. `BackendConfig` is
 //! derived from the array lengths, so budgets can never drift out of sync with
-//! the physical register tables.
+//! the physical register tables. The raw plan stays private to this module;
+//! backend code must come through the accessors below.
 
 use crate::{
     error::WasmError,
@@ -20,23 +21,23 @@ use crate::vm::arch::common::scratch_pool::ScratchPool;
 
 // ── Register plan ────────────────────────────────────────────────────────────
 
-pub(super) struct RegPlan {
-    pub ctx: X86Reg,
-    pub fp: X86Reg,
-    pub mem0_base: X86Reg,
-    pub mem0_size: X86Reg,
-    pub gp_unit_bytes: u8,
-    pub gp_local_cache: &'static [X86Reg],
-    pub gp_transient: &'static [X86Reg],
-    pub gp_scratch: &'static [X86Reg],
-    pub fp_transient: &'static [u32],
-    pub fp_local_cache: &'static [u32],
-    pub fp_scratch: &'static [u32],
-    pub callee_saved_gp: &'static [X86Reg],
-    pub stack_alignment_bytes: u32,
+struct RegPlan {
+    ctx: X86Reg,
+    fp: X86Reg,
+    mem0_base: X86Reg,
+    mem0_size: X86Reg,
+    gp_unit_bytes: u8,
+    gp_local_cache: &'static [X86Reg],
+    gp_transient: &'static [X86Reg],
+    gp_scratch: &'static [X86Reg],
+    fp_transient: &'static [u32],
+    fp_local_cache: &'static [u32],
+    fp_scratch: &'static [u32],
+    callee_saved_gp: &'static [X86Reg],
+    stack_alignment_bytes: u32,
 }
 
-pub(super) const REG_PLAN: RegPlan = RegPlan {
+const REG_PLAN: RegPlan = RegPlan {
     ctx: X86Reg::RBX,
     fp: X86Reg::RBP,
     mem0_base: X86Reg::R12,
@@ -97,7 +98,27 @@ const _: () = assert!(
     "FP register plan must account for all 16 XMM registers"
 );
 
+#[inline]
+pub(super) const fn callee_saved_gp_count() -> usize {
+    REG_PLAN.callee_saved_gp.len()
+}
+
+#[inline]
+pub(super) const fn stack_alignment_bytes() -> u32 {
+    REG_PLAN.stack_alignment_bytes
+}
+
+#[inline]
+pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
+    REG_PLAN.callee_saved_gp
+}
+
 // ── C ABI boundary registers ─────────────────────────────────────────────────
+//
+// These are foreign ABI registers, not extra MachineIR roles. They may alias
+// caller-saved transient or scratch regs, but must not alias the fixed
+// MachineIR roles. Boundary lowering is what makes that safe: transients are
+// dead at the boundary and cached locals have already been published.
 
 #[cfg(not(target_os = "windows"))]
 pub(super) const C_ARG0: X86Reg = X86Reg::RDI;

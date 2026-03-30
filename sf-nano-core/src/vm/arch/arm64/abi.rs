@@ -1,8 +1,9 @@
 //! ARM64 register plan — single source of truth for register allocation.
 //!
-//! `REG_PLAN` declares every register role in one place.  `BackendConfig` is
+//! `REG_PLAN` declares every register role in one place. `BackendConfig` is
 //! derived from the array lengths, so budgets can never drift out of sync with
-//! the physical register tables.
+//! the physical register tables. The raw plan stays private to this module;
+//! backend code must come through the accessors below.
 
 use crate::{
     error::WasmError,
@@ -20,30 +21,30 @@ use crate::vm::arch::common::scratch_pool::ScratchPool;
 
 // ── Register plan ────────────────────────────────────────────────────────────
 
-pub(super) struct RegPlan {
+struct RegPlan {
     // Fixed MachineIR roles
-    pub ctx: Arm64Reg,
-    pub fp: Arm64Reg,
-    pub mem0_base: Arm64Reg,
-    pub mem0_size: Arm64Reg,
+    ctx: Arm64Reg,
+    fp: Arm64Reg,
+    mem0_base: Arm64Reg,
+    mem0_size: Arm64Reg,
     // GP budget unit size
-    pub gp_unit_bytes: u8,
+    gp_unit_bytes: u8,
     // GP dynamic partition (ordered: cache first, then transient)
-    pub gp_local_cache: &'static [Arm64Reg],
-    pub gp_transient: &'static [Arm64Reg],
-    pub gp_scratch: &'static [Arm64Reg],
+    gp_local_cache: &'static [Arm64Reg],
+    gp_transient: &'static [Arm64Reg],
+    gp_scratch: &'static [Arm64Reg],
     // FP dynamic partition (ordered: transient first, then cache)
-    pub fp_transient: &'static [Arm64FpReg],
-    pub fp_local_cache: &'static [Arm64FpReg],
-    pub fp_scratch: &'static [Arm64FpReg],
+    fp_transient: &'static [Arm64FpReg],
+    fp_local_cache: &'static [Arm64FpReg],
+    fp_scratch: &'static [Arm64FpReg],
     // Callee-saved sets
-    pub callee_saved_gp_pairs: &'static [(Arm64Reg, Arm64Reg)],
-    pub callee_saved_fp: &'static [Arm64FpReg],
+    callee_saved_gp_pairs: &'static [(Arm64Reg, Arm64Reg)],
+    callee_saved_fp: &'static [Arm64FpReg],
     // Stack
-    pub stack_alignment_bytes: u32,
+    stack_alignment_bytes: u32,
 }
 
-pub(super) const REG_PLAN: RegPlan = RegPlan {
+const REG_PLAN: RegPlan = RegPlan {
     ctx: Arm64Reg::X19,
     fp: Arm64Reg::X20,
     mem0_base: Arm64Reg::X21,
@@ -142,8 +143,38 @@ const _: () = assert!(
     "FP register plan must account for all 32 D-registers"
 );
 
+#[inline]
+pub(super) const fn callee_saved_gp_pair_count() -> usize {
+    REG_PLAN.callee_saved_gp_pairs.len()
+}
+
+#[inline]
+pub(super) const fn callee_saved_fp_count() -> usize {
+    REG_PLAN.callee_saved_fp.len()
+}
+
+#[inline]
+pub(super) const fn stack_alignment_bytes() -> u32 {
+    REG_PLAN.stack_alignment_bytes
+}
+
+#[inline]
+pub(super) fn callee_saved_gp_pairs() -> &'static [(Arm64Reg, Arm64Reg)] {
+    REG_PLAN.callee_saved_gp_pairs
+}
+
+#[inline]
+pub(super) fn callee_saved_fp_regs() -> &'static [Arm64FpReg] {
+    REG_PLAN.callee_saved_fp
+}
+
 // ── C ABI boundary registers ─────────────────────────────────────────────────
 // Platform calling-convention facts, used only at the C↔JIT boundary.
+//
+// These are foreign ABI registers, not extra MachineIR roles. They may alias
+// caller-saved transient or scratch regs, but must not alias the fixed
+// MachineIR roles. Boundary lowering is what makes that safe: transients are
+// dead at the boundary and cached locals have already been published.
 
 pub(super) const C_ARG0: Arm64Reg = Arm64Reg::X0;
 pub(super) const C_ARG1: Arm64Reg = Arm64Reg::X1;

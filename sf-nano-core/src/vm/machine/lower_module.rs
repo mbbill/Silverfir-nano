@@ -1,4 +1,3 @@
-
 // ---------------------------------------------------------------------------
 // Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
@@ -12,12 +11,11 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallLinkLayout, MachineCompareKind, MachineEdge,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId,
-            MachineFunction, MachineFunctionRuntime, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineModule,
-            MachineProgram, MachineReg, MachineRuntimeContract, MachineSign, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue,
+            MachineCallLinkLayout, MachineCompareKind, MachineEdge, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionRuntime,
+            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
+            MachineMemWidth, MachineModule, MachineProgram, MachineReg, MachineRuntimeContract,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
@@ -36,9 +34,9 @@ use crate::{
     },
 };
 
+use crate::vm::middle::frame::FrameSlot;
 use crate::vm::middle::ssa_ir::ir::{SsaBlock, SsaTerminator as SsaTerm};
 use crate::vm::middle::ssa_ir::target::SsaTarget;
-use crate::vm::middle::frame::FrameSlot;
 
 use super::{
     gp32::Gp32Lowering,
@@ -130,11 +128,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
         .into_iter()
         .enumerate()
         .map(|(index, function)| {
-            function.unwrap_or_else(|| {
-                stub_machine_function(
-                    MachineFuncId(index as u32),
-                )
-            })
+            function.unwrap_or_else(|| stub_machine_function(MachineFuncId(index as u32)))
         })
         .collect();
     let module = MachineModule {
@@ -199,11 +193,8 @@ fn lower_function(
         &Gp64Lowering
     };
 
-    let block_entry_dirty = compute_block_entry_dirty(
-        &input.ssa.blocks,
-        input.ssa.entry,
-        &input.ssa.local_cache,
-    );
+    let block_entry_dirty =
+        compute_block_entry_dirty(&input.ssa.blocks, input.ssa.entry, &input.ssa.local_cache);
 
     for block in &input.ssa.blocks {
         let target = block.id;
@@ -369,7 +360,8 @@ fn lower_function(
                         let local_call = extra_block_ids.alloc();
                         let external_call = extra_block_ids.alloc();
                         let continuation = extra_block_ids.alloc();
-                        let local_call_target_param = lower.transient_reg(0)?;
+                        let indirect_temps = call_indirect_gp_temps(&lower)?;
+                        let local_call_target_param = indirect_temps.lane0;
 
                         lower.emit_save_all_cached_locals()?;
                         emit_call_indirect_bounds_check_setup(
@@ -388,8 +380,8 @@ fn lower_function(
                                     width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ge,
                                     sign: MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(2)?),
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
+                                    rhs: MachineValue::Reg(indirect_temps.lane2),
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_oob,
@@ -413,8 +405,8 @@ fn lower_function(
                                     width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ge,
                                     sign: MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(2)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(1)?),
+                                    lhs: MachineValue::Reg(indirect_temps.lane2),
+                                    rhs: MachineValue::Reg(indirect_temps.lane1),
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_invalid_ref,
@@ -447,8 +439,8 @@ fn lower_function(
                                     width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Ne,
                                     sign: MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
-                                    rhs: MachineValue::Reg(lower.transient_reg(2)?),
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
+                                    rhs: MachineValue::Reg(indirect_temps.lane2),
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_type,
@@ -481,12 +473,12 @@ fn lower_function(
                                     width: lower.gp_word_int_width(),
                                     kind: MachineCompareKind::Eq,
                                     sign: MachineSign::Unsigned,
-                                    lhs: MachineValue::Reg(lower.transient_reg(0)?),
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
                                     rhs: MachineValue::Imm64(function_kind::LOCAL as u64),
                                 },
                                 then_edge: MachineEdge {
                                     target: local_call,
-                                    args: vec![MachineValue::Reg(lower.transient_reg(2)?)],
+                                    args: vec![MachineValue::Reg(indirect_temps.lane2)],
                                 },
                                 else_edge: MachineEdge {
                                     target: external_call,
@@ -512,7 +504,7 @@ fn lower_function(
                             build_call_indirect_local_block(&mut lower, args)?,
                             MachineTerminator::CallIndirect {
                                 callee_target: MachineValue::Reg(local_call_target_param),
-                                callee_frame_base: lower.transient_reg(1)?,
+                                callee_frame_base: indirect_temps.lane1,
                                 arg_slots: args.count,
                                 caller_result_base: results.start.0,
                                 continuation,
@@ -601,7 +593,9 @@ fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
 }
 
 #[inline]
-pub(super) fn slot_offset_bytes(slot: crate::vm::middle::frame::FrameSlot) -> Result<i32, WasmError> {
+pub(super) fn slot_offset_bytes(
+    slot: crate::vm::middle::frame::FrameSlot,
+) -> Result<i32, WasmError> {
     let bytes = i32::from(slot.0)
         .checked_mul(8)
         .ok_or_else(|| WasmError::internal("frame slot byte offset overflow".into()))?;
@@ -836,15 +830,33 @@ impl ExtraBlockAllocator {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CallIndirectGpTemps {
+    lane0: MachineReg,
+    lane1: MachineReg,
+    lane2: MachineReg,
+}
+
+// `call_indirect` is the structured MachineIR exception that intentionally
+// threads a fixed GP transient bundle across synthetic blocks.
+fn call_indirect_gp_temps(lower: &BlockLowerContext<'_>) -> Result<CallIndirectGpTemps, WasmError> {
+    Ok(CallIndirectGpTemps {
+        lane0: lower.reserved_gp_transient(0, "call_indirect control lane 0")?,
+        lane1: lower.reserved_gp_transient(1, "call_indirect control lane 1")?,
+        lane2: lower.reserved_gp_transient(2, "call_indirect control lane 2")?,
+    })
+}
+
 fn emit_call_indirect_bounds_check_setup(
     lower: &mut BlockLowerContext<'_>,
     table_idx: u32,
     index_slot: crate::vm::middle::frame::FrameSlot,
 ) -> Result<(), WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
-    let index = lower.transient_reg(0)?;
-    let table_views = lower.transient_reg(1)?;
-    let table_len = lower.transient_reg(2)?;
+    let temps = call_indirect_gp_temps(lower)?;
+    let index = temps.lane0;
+    let table_views = temps.lane1;
+    let table_len = temps.lane2;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
             ty: MachineStorageType::GpWord,
@@ -886,9 +898,10 @@ fn build_call_indirect_checked_block(
     index_slot: crate::vm::middle::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
-    let index = lower.transient_reg(0)?;
-    let table_base = lower.transient_reg(1)?;
-    let func_idx = lower.transient_reg(2)?;
+    let temps = call_indirect_gp_temps(lower)?;
+    let index = temps.lane0;
+    let table_base = temps.lane1;
+    let func_idx = temps.lane2;
     Ok(vec![
         MachineInst {
             kind: MachineInstKind::Load {
@@ -979,10 +992,11 @@ fn build_call_indirect_type_check_block(
 ) -> Result<Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
     let runtime_layout = lower.runtime_abi_layout();
-    let actual_type = lower.transient_reg(0)?;
-    let function_views = lower.transient_reg(1)?;
-    let scaled_index = lower.transient_reg(2)?;
-    let expected_type = lower.transient_reg(2)?;
+    let temps = call_indirect_gp_temps(lower)?;
+    let actual_type = temps.lane0;
+    let function_views = temps.lane1;
+    let scaled_index = temps.lane2;
+    let expected_type = temps.lane2;
     let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
@@ -1025,10 +1039,11 @@ fn build_call_indirect_dispatch_block(
     index_slot: crate::vm::middle::frame::FrameSlot,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
-    let kind = lower.transient_reg(0)?;
-    let function_views = lower.transient_reg(1)?;
-    let scaled_index = lower.transient_reg(2)?;
-    let local_target = lower.transient_reg(2)?;
+    let temps = call_indirect_gp_temps(lower)?;
+    let kind = temps.lane0;
+    let function_views = temps.lane1;
+    let scaled_index = temps.lane2;
+    let local_target = temps.lane2;
     let mut ops = dynamic_function_view_load(
         lower,
         index_slot,
@@ -1059,7 +1074,7 @@ fn build_call_indirect_local_block(
     lower: &mut BlockLowerContext<'_>,
     args: FrameSpan,
 ) -> Result<Vec<MachineInst>, WasmError> {
-    let callee_frame_base = lower.transient_reg(1)?;
+    let callee_frame_base = call_indirect_gp_temps(lower)?.lane1;
 
     let ops = vec![MachineInst {
         kind: MachineInstKind::IntBinary {
@@ -1187,8 +1202,7 @@ fn compute_block_entry_dirty(
     cache_prefs: &SsaLocalCachePrefs,
 ) -> Vec<Vec<bool>> {
     let n_blocks = blocks.len();
-    let n_cached = cache_prefs.gp_preferred_slots.len()
-        + cache_prefs.fp_preferred_slots.len();
+    let n_cached = cache_prefs.gp_preferred_slots.len() + cache_prefs.fp_preferred_slots.len();
 
     if n_cached == 0 || n_blocks == 0 {
         return vec![vec![]; n_blocks];
@@ -1309,9 +1323,7 @@ fn terminator_successors(term: &SsaTerm) -> Vec<SsaTarget> {
             else_edge,
             ..
         } => vec![then_edge.target, else_edge.target],
-        SsaTerm::BrTable { entries, .. } => {
-            entries.iter().map(|e| e.target).collect()
-        }
+        SsaTerm::BrTable { entries, .. } => entries.iter().map(|e| e.target).collect(),
         SsaTerm::Return { .. } | SsaTerm::TrapUnreachable => vec![],
     }
 }

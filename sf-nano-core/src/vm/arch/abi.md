@@ -181,6 +181,32 @@ The engine defines its own JIT-to-JIT ABI. Therefore:
 - cached locals are not required to survive local calls in registers
 - fixed registers are the only always-live machine state across local calls
 
+### Foreign C ABI argument and return registers
+
+Per-target `abi.rs` may also define physical C ABI boundary registers such as
+`C_ARG*` and `C_RET*`.
+
+These are **not** extra MachineIR register classes. They are foreign-call ABI
+facts used only while entering or leaving a helper or other foreign boundary.
+
+Rules:
+
+- `C_ARG*` / `C_RET*` may overlap caller-saved transient or scratch registers
+- `C_ARG*` / `C_RET*` must not overlap the 4 fixed MachineIR roles
+- backends should prefer them to overlap transient or scratch-only registers,
+  not local-cache registers
+- non-boundary backend code must not treat `C_ARG*` / `C_RET*` as general
+  allocatable registers
+
+Why the overlap is safe:
+
+- transients are required to be dead before the foreign boundary
+- cached locals are published to frame slots before the foreign boundary
+- fixed registers remain live across the boundary
+
+So the foreign ABI temporarily reuses caller-saved physical registers only
+after shared lowering has made dynamic MachineIR state unavailable there.
+
 ## Frame Slots Are Canonical State
 
 Frame slots are the canonical storage for:

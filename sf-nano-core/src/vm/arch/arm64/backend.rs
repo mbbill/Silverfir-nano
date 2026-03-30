@@ -10,22 +10,22 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
-            MachineInst, MachineFunction,
-            MachineReg, MachineTerminator, MachineTrapKind,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
+            MachineInst, MachineReg, MachineTerminator, MachineTrapKind, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{NativeCodePtr, NativeRootEntry, CompiledNativeModule},
+            code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
         },
     },
 };
 
-use super::{abi, enc, reg::{Arm64FpReg, Arm64Reg}};
-use super::abi::{
-    max_fp_machine_regs, max_total_machine_regs, FP_MACHINE_REG_COUNT,
+use super::abi::{max_fp_machine_regs, max_total_machine_regs, FP_MACHINE_REG_COUNT};
+use super::{
+    abi, enc,
+    reg::{Arm64FpReg, Arm64Reg},
 };
 use crate::vm::arch::common::{
     backend::ArchBackend,
@@ -37,12 +37,13 @@ use crate::vm::arch::common::{
 // ── Frame layout constants ───────────────────────────────────────────────────
 
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
-const CALLEE_SAVED_GP_FRAME_SIZE: u32 = abi::REG_PLAN.callee_saved_gp_pairs.len() as u32 * (2 * STACK_SLOT_BYTES);
+const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
+    abi::callee_saved_gp_pair_count() as u32 * (2 * STACK_SLOT_BYTES);
 const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
-const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::REG_PLAN.callee_saved_fp.len() as u32 * STACK_SLOT_BYTES;
+const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::callee_saved_fp_count() as u32 * STACK_SLOT_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: u32 = {
     let total = CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE;
-    total.div_ceil(abi::REG_PLAN.stack_alignment_bytes) * abi::REG_PLAN.stack_alignment_bytes
+    total.div_ceil(abi::stack_alignment_bytes()) * abi::stack_alignment_bytes()
 };
 
 const fn stack_u64_slot(offset_bytes: u32) -> u32 {
@@ -95,8 +96,12 @@ pub(crate) struct Arm64Backend<'a> {
 impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     const NAME: &'static str = "arm64";
 
-    fn max_total_regs() -> usize { max_total_machine_regs() }
-    fn max_fp_regs() -> usize { max_fp_machine_regs() }
+    fn max_total_regs() -> usize {
+        max_total_machine_regs()
+    }
+    fn max_fp_regs() -> usize {
+        max_fp_machine_regs()
+    }
 
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
@@ -107,24 +112,35 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         }
     }
 
-    fn core(&self) -> &CompilerCore<'a> { &self.core }
-    fn core_mut(&mut self) -> &mut CompilerCore<'a> { &mut self.core }
-    fn into_core(self) -> CompilerCore<'a> { self.core }
+    fn core(&self) -> &CompilerCore<'a> {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut CompilerCore<'a> {
+        &mut self.core
+    }
+    fn into_core(self) -> CompilerCore<'a> {
+        self.core
+    }
 
     fn lower_prologue(&mut self) {
         // Allocate frame and save callee-saved registers.
         self.core.text.emit_u32(enc::sub_imm_64(
-            Arm64Reg::SP, Arm64Reg::SP, CALLEE_SAVED_FRAME_SIZE,
+            Arm64Reg::SP,
+            Arm64Reg::SP,
+            CALLEE_SAVED_FRAME_SIZE,
         ));
-        for (index, (lhs, rhs)) in abi::REG_PLAN.callee_saved_gp_pairs.iter().copied().enumerate() {
+        for (index, (lhs, rhs)) in abi::callee_saved_gp_pairs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::stp_64(
-                lhs, rhs, Arm64Reg::SP,
+                lhs,
+                rhs,
+                Arm64Reg::SP,
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
-        for (index, reg) in abi::REG_PLAN.callee_saved_fp.iter().copied().enumerate() {
+        for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::str_d(
-                reg, Arm64Reg::SP,
+                reg,
+                Arm64Reg::SP,
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
             ));
         }
@@ -148,21 +164,26 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn lower_epilogue(&mut self) {
         // Restore callee-saved FP registers.
-        for (index, reg) in abi::REG_PLAN.callee_saved_fp.iter().copied().enumerate() {
+        for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::ldr_d(
-                reg, Arm64Reg::SP,
+                reg,
+                Arm64Reg::SP,
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
             ));
         }
         // Restore callee-saved GP registers and deallocate frame.
-        for (index, (lhs, rhs)) in abi::REG_PLAN.callee_saved_gp_pairs.iter().copied().enumerate() {
+        for (index, (lhs, rhs)) in abi::callee_saved_gp_pairs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::ldp_64(
-                lhs, rhs, Arm64Reg::SP,
+                lhs,
+                rhs,
+                Arm64Reg::SP,
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
         self.core.text.emit_u32(enc::add_imm_64(
-            Arm64Reg::SP, Arm64Reg::SP, CALLEE_SAVED_FRAME_SIZE,
+            Arm64Reg::SP,
+            Arm64Reg::SP,
+            CALLEE_SAVED_FRAME_SIZE,
         ));
         self.core.text.emit_u32(enc::ret());
     }
@@ -185,9 +206,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.core.current_op_index = Some(index);
             if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(block, index) {
                 let base_reg = self.map_gp_reg(base)?;
-                self.core.text.emit_u32(
-                    enc::stp_64(Arm64Reg::Xzr, Arm64Reg::Xzr, base_reg, imm7),
-                );
+                self.core
+                    .text
+                    .emit_u32(enc::stp_64(Arm64Reg::Xzr, Arm64Reg::Xzr, base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 index += 2;
@@ -228,7 +249,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn patch_fixups(&mut self) -> Result<(), WasmError> {
         for fixup in &self.fixups {
-            let target = self.core.labels
+            let target = self
+                .core
+                .labels
                 .get(fixup.label)
                 .and_then(|v| *v)
                 .ok_or_else(|| {
@@ -246,19 +269,32 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         Ok(())
     }
 
-    fn alloc_gp_scratch(&mut self) -> u8 { self.gp_scratch.alloc() }
-    fn free_gp_scratch(&mut self, id: u8) { self.gp_scratch.free_index(id) }
-    fn alloc_fp_scratch(&mut self) -> u8 { self.fp_scratch.alloc() }
-    fn free_fp_scratch(&mut self, id: u8) { self.fp_scratch.free_index(id) }
+    fn alloc_gp_scratch(&mut self) -> u8 {
+        self.gp_scratch.alloc()
+    }
+    fn free_gp_scratch(&mut self, id: u8) {
+        self.gp_scratch.free_index(id)
+    }
+    fn alloc_fp_scratch(&mut self) -> u8 {
+        self.fp_scratch.alloc()
+    }
+    fn free_fp_scratch(&mut self, id: u8) {
+        self.fp_scratch.free_index(id)
+    }
 
     fn lower_source_move(
-        &mut self, dst: MachineBlockParam, src: ParallelSource,
+        &mut self,
+        dst: MachineBlockParam,
+        src: ParallelSource,
     ) -> Result<(), WasmError> {
         self.lower_source_move_dispatch(dst, src)
     }
 
     fn lower_gp_cycle_break(
-        &mut self, dst: MachineReg, src: MachineReg, scratch_id: u8,
+        &mut self,
+        dst: MachineReg,
+        src: MachineReg,
+        scratch_id: u8,
     ) -> Result<(), WasmError> {
         let temp = self.gp_scratch.reg(scratch_id);
         let dst_gp = self.map_gp_reg(dst)?;
