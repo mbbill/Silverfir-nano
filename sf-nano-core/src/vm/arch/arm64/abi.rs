@@ -61,6 +61,7 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
     gp_transient: &[
         Arm64Reg::X3, Arm64Reg::X4, Arm64Reg::X5, Arm64Reg::X6,
         Arm64Reg::X7, Arm64Reg::X8,
+        Arm64Reg::X0, Arm64Reg::X1, Arm64Reg::X2,
     ],
     gp_scratch: &[Arm64Reg::X16, Arm64Reg::X17],
 
