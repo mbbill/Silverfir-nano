@@ -61,7 +61,7 @@ impl<'a> BlockLowerContext<'a> {
             ));
         }
 
-        self.emit_save_all_cached_locals()?;
+        self.emit_save_dirty_cached_locals()?;
 
         let call_regs = self.borrow_free_transients(2)?;
         let callee_frame_base = call_regs[0];
@@ -195,7 +195,7 @@ impl<'a> BlockLowerContext<'a> {
         // Helper-backed boundaries are slot-based and may clobber cache regs,
         // so cached locals must be synchronized through their canonical frame
         // slots across the helper call.
-        self.emit_save_all_cached_locals()?;
+        self.emit_save_dirty_cached_locals()?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
         });

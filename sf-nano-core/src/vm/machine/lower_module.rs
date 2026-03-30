@@ -36,6 +36,10 @@ use crate::{
     },
 };
 
+use crate::vm::middle::ssa_ir::ir::{SsaBlock, SsaTerminator as SsaTerm};
+use crate::vm::middle::ssa_ir::target::SsaTarget;
+use crate::vm::middle::frame::FrameSlot;
+
 use super::{
     gp32::Gp32Lowering,
     lower_context::{BlockLowerContext, ValueRegs},
@@ -195,8 +199,17 @@ fn lower_function(
         &Gp64Lowering
     };
 
+    let block_entry_dirty = compute_block_entry_dirty(
+        &input.ssa.blocks,
+        input.ssa.entry,
+        &input.ssa.local_cache,
+    );
+
     for block in &input.ssa.blocks {
         let target = block.id;
+        let entry_dirty = block_entry_dirty
+            .get(target.as_u32() as usize)
+            .map(|v| v.as_slice());
         let mut lower = BlockLowerContext::new(
             regfile,
             input.ssa,
@@ -207,6 +220,7 @@ fn lower_function(
             gp_reg_width,
             i64_ops,
             target == input.ssa.entry,
+            entry_dirty,
             #[cfg(has_guard_pages)]
             guard_pages,
         )?;
@@ -1152,4 +1166,152 @@ fn indexed_const_addr(
     let offset = i32::try_from(scaled)
         .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))?;
     Ok(MachineAddr { base, offset })
+}
+
+// ---------------------------------------------------------------------------
+// Cross-block dirty-flag dataflow analysis
+// ---------------------------------------------------------------------------
+//
+// Computes, for each SSA-IR block, which cached locals are dirty (register !=
+// frame slot) at block entry.  A cached local becomes dirty when a `LocalSet`
+// writes to it and becomes clean at every `Boundary` op (which saves all dirty
+// locals to frame).
+//
+// The analysis is a forward dataflow with join = OR (dirty if ANY predecessor
+// leaves it dirty).  Initialized optimistically (all-clean) and iterated to
+// fixpoint.  Entry block is always all-clean.
+
+fn compute_block_entry_dirty(
+    blocks: &[SsaBlock],
+    entry: SsaTarget,
+    cache_prefs: &SsaLocalCachePrefs,
+) -> Vec<Vec<bool>> {
+    let n_blocks = blocks.len();
+    let n_cached = cache_prefs.gp_preferred_slots.len()
+        + cache_prefs.fp_preferred_slots.len();
+
+    if n_cached == 0 || n_blocks == 0 {
+        return vec![vec![]; n_blocks];
+    }
+
+    // Map FrameSlot → cached-local index (GP then FP order).
+    let all_slots: Vec<FrameSlot> = cache_prefs
+        .gp_preferred_slots
+        .iter()
+        .chain(cache_prefs.fp_preferred_slots.iter())
+        .copied()
+        .collect();
+    let max_slot = all_slots.iter().map(|s| s.0).max().unwrap_or(0) as usize;
+    let mut slot_to_index = vec![usize::MAX; max_slot + 1];
+    for (i, slot) in all_slots.iter().enumerate() {
+        slot_to_index[slot.0 as usize] = i;
+    }
+
+    // Build predecessor map.
+    let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); n_blocks];
+    for (idx, block) in blocks.iter().enumerate() {
+        let succs = terminator_successors(&block.terminator);
+        for succ in succs {
+            let si = succ.0 as usize;
+            if si < n_blocks {
+                predecessors[si].push(idx);
+            }
+        }
+    }
+
+    // Precompute per-block transfer summaries.
+    //
+    // If a block has any Boundary op:
+    //   exit_dirty = locals written AFTER the last Boundary (entry state irrelevant)
+    // If no Boundary:
+    //   exit_dirty[i] = entry_dirty[i] OR written_in_block[i]
+    let mut has_boundary = vec![false; n_blocks];
+    let mut written_after_last_boundary = vec![vec![false; n_cached]; n_blocks];
+    let mut written_anywhere = vec![vec![false; n_cached]; n_blocks];
+
+    for (idx, block) in blocks.iter().enumerate() {
+        for op in &block.ops {
+            match &op.kind {
+                SsaInstKind::LocalSet { slot, .. } => {
+                    let si = slot.0 as usize;
+                    if si <= max_slot {
+                        let ci = slot_to_index[si];
+                        if ci != usize::MAX {
+                            written_after_last_boundary[idx][ci] = true;
+                            written_anywhere[idx][ci] = true;
+                        }
+                    }
+                }
+                SsaInstKind::Boundary(_) => {
+                    has_boundary[idx] = true;
+                    for w in &mut written_after_last_boundary[idx] {
+                        *w = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Forward dataflow to fixpoint.
+    let entry_idx = entry.0 as usize;
+    let mut entry_dirty = vec![vec![false; n_cached]; n_blocks];
+    let mut exit_dirty = vec![vec![false; n_cached]; n_blocks];
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for idx in 0..n_blocks {
+            // Join: entry_dirty = OR of predecessor exit_dirty values.
+            if idx != entry_idx {
+                for &pred in &predecessors[idx] {
+                    for i in 0..n_cached {
+                        if exit_dirty[pred][i] && !entry_dirty[idx][i] {
+                            entry_dirty[idx][i] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // Transfer: compute exit_dirty.
+            if has_boundary[idx] {
+                // Last boundary cleared everything; only subsequent writes
+                // contribute to exit state.
+                for i in 0..n_cached {
+                    let new = written_after_last_boundary[idx][i];
+                    if new != exit_dirty[idx][i] {
+                        exit_dirty[idx][i] = new;
+                        changed = true;
+                    }
+                }
+            } else {
+                // No boundary: exit = entry OR written_anywhere.
+                for i in 0..n_cached {
+                    let new = entry_dirty[idx][i] || written_anywhere[idx][i];
+                    if new != exit_dirty[idx][i] {
+                        exit_dirty[idx][i] = new;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    entry_dirty
+}
+
+fn terminator_successors(term: &SsaTerm) -> Vec<SsaTarget> {
+    match term {
+        SsaTerm::Goto(edge) => vec![edge.target],
+        SsaTerm::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => vec![then_edge.target, else_edge.target],
+        SsaTerm::BrTable { entries, .. } => {
+            entries.iter().map(|e| e.target).collect()
+        }
+        SsaTerm::Return { .. } | SsaTerm::TrapUnreachable => vec![],
+    }
 }

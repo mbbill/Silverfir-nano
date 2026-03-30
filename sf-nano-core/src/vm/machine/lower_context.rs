@@ -77,6 +77,11 @@ pub(super) struct BlockLowerContext<'a> {
     i64_ops: &'static dyn I64Lowering,
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
+    /// Per cached-local dirty bit: `true` means the register has been written
+    /// since the last boundary save.  Only dirty locals need saving before the
+    /// next call boundary.  Starts all-dirty for non-entry blocks (conservative)
+    /// and all-clean for the entry block.
+    cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
     transient_state: Vec<TransientState>,
@@ -95,6 +100,7 @@ impl<'a> BlockLowerContext<'a> {
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
+        initial_cache_dirty: Option<&[bool]>,
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
         if cache_prefs.gp_preferred_slots.len() != cache_prefs.gp_preferred_types.len() {
@@ -187,6 +193,12 @@ impl<'a> BlockLowerContext<'a> {
             });
         }
 
+        // Use CFG-computed dirty state when available; otherwise fall back to
+        // conservative defaults (entry = all-clean, non-entry = all-dirty).
+        let cache_dirty = match initial_cache_dirty {
+            Some(d) if d.len() == cached_locals.len() => d.to_vec(),
+            _ => alloc::vec![!is_entry; cached_locals.len()],
+        };
         let mut lower = Self {
             regfile,
             program,
@@ -198,6 +210,7 @@ impl<'a> BlockLowerContext<'a> {
             i64_ops,
             ops: Vec::new(),
             cached_locals,
+            cache_dirty,
             values: Vec::new(),
             remaining_uses: compute_remaining_uses(block),
             transient_state: alloc::vec![
@@ -431,6 +444,25 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn cached_locals(&self) -> &[CachedLocal] {
         &self.cached_locals
+    }
+
+    /// Mark a cached local as dirty (register was written by a LocalSet).
+    pub(super) fn mark_cache_dirty(&mut self, index: usize) {
+        if index < self.cache_dirty.len() {
+            self.cache_dirty[index] = true;
+        }
+    }
+
+    /// Check if a cached local is dirty.
+    pub(super) fn is_cache_dirty(&self, index: usize) -> bool {
+        self.cache_dirty.get(index).copied().unwrap_or(true)
+    }
+
+    /// Clear all dirty flags (called after saving all dirty locals).
+    pub(super) fn clear_cache_dirty(&mut self) {
+        for d in &mut self.cache_dirty {
+            *d = false;
+        }
     }
 
     pub(super) fn values_iter(&self) -> core::slice::Iter<'_, ValueLocation> {

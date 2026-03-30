@@ -191,6 +191,7 @@ impl<'a> BlockLowerContext<'a> {
                     return Ok(());
                 }
                 if let Some(cached_index) = self.cached_local_index(*slot) {
+                    self.mark_cache_dirty(cached_index);
                     let cached = self.cached_locals()[cached_index];
                     if cached.ty != ty {
                         return Err(WasmError::internal(alloc::format!(
