@@ -12,11 +12,13 @@ use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineAddr, MachineBranchCond, MachineBlock, MachineConvertOp, MachineEdge, MachineInst,
+    self, MachineAddr, MachineBlock, MachineBranchCond, MachineConvertOp, MachineEdge, MachineInst,
     MachineInstKind, MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
 
-use super::helpers::{count_value_uses, defined_reg, inst_defines, reg_live_after, terminator_uses_reg};
+use super::helpers::{
+    count_value_uses, for_each_defined_reg, inst_defines, reg_live_after, terminator_uses_reg,
+};
 
 /// Reusable scratch buffers for copy_propagate to avoid per-block allocation.
 pub(super) struct CopyPropagateScratch {
@@ -72,10 +74,10 @@ pub(super) fn copy_propagate(
             continue;
         }
 
-        if let Some(dst) = defined_reg(&inst.kind) {
+        for_each_defined_reg(&inst.kind, |dst| {
             kill_alias(aliases, dst);
             kill_alias(float_aliases, dst);
-        }
+        });
 
         match &inst.kind {
             MachineInstKind::Move {
@@ -97,9 +99,7 @@ pub(super) fn copy_propagate(
                     aliases[dst.0 as usize] = Some(*src);
                     continue;
                 }
-                if !machine_ir::is_fp_reg(*dst, config)
-                    && machine_ir::is_fp_reg(*src, config)
-                {
+                if !machine_ir::is_fp_reg(*dst, config) && machine_ir::is_fp_reg(*src, config) {
                     float_aliases[dst.0 as usize] = Some(*src);
                 }
             }
@@ -169,7 +169,9 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             *base = resolve_alias(*base, aliases);
             *index = resolve_alias(*index, aliases);
         }
-        MachineInstKind::IndexedStore { base, index, src, .. } => {
+        MachineInstKind::IndexedStore {
+            base, index, src, ..
+        } => {
             *base = resolve_alias(*base, aliases);
             *index = resolve_alias(*index, aliases);
             rewrite_value(src, aliases);
@@ -316,10 +318,7 @@ fn rewrite_float_alias_sources(kind: &mut MachineInstKind, aliases: &[Option<Mac
             rewrite_float_alias_value(rhs, aliases);
         }
         MachineInstKind::Store { width, src, .. }
-            if matches!(
-                width,
-                MachineMemWidth::U32 | MachineMemWidth::U64
-            ) =>
+            if matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64) =>
         {
             rewrite_float_alias_value(src, aliases);
         }

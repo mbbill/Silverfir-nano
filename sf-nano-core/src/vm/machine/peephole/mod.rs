@@ -35,7 +35,6 @@ use crate::vm::machine::machine_ir::{
     MachineStorageType, MachineValue,
 };
 
-
 #[derive(Clone, Copy)]
 struct TrackedStore {
     addr: MachineAddr,
@@ -58,7 +57,8 @@ struct TrackedLoad {
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let first_fp_reg = config.first_fp_reg();
     let gp_reg_width = config.gp_unit_bytes;
-    let mut cp_scratch = copy_propagate::CopyPropagateScratch::new(config.total_reg_count() as usize);
+    let mut cp_scratch =
+        copy_propagate::CopyPropagateScratch::new(config.total_reg_count() as usize);
     for block in &mut program.blocks {
         deduplicate_constants::deduplicate_constants(block, first_fp_reg);
         forward_stored_values::forward_stored_values(block, config);

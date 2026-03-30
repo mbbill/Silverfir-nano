@@ -152,6 +152,58 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
 }
 
 #[test]
+fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefines_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Imm64(5),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        dst_lo: MachineReg(7),
+                        dst_hi: MachineReg(8),
+                        lhs_lo: MachineValue::Reg(MachineReg(2)),
+                        lhs_hi: MachineValue::Reg(MachineReg(3)),
+                        rhs_lo: MachineValue::Imm64(1),
+                        rhs_hi: MachineValue::Imm64(0),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(9),
+                        src: MachineValue::Imm64(5),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(9),
+            src: MachineValue::Imm64(5),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn forwards_non_adjacent_u64_store_load_pairs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
@@ -301,6 +353,70 @@ fn forwards_fp_spill_reload_into_gp_move() {
         MachineInstKind::Move {
             dst: MachineReg(7),
             src: MachineValue::Reg(MachineReg(11)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        dst_lo: MachineReg(7),
+                        dst_hi: MachineReg(8),
+                        lhs_lo: MachineValue::Reg(MachineReg(2)),
+                        lhs_hi: MachineValue::Reg(MachineReg(3)),
+                        rhs_lo: MachineValue::Imm64(1),
+                        rhs_hi: MachineValue::Imm64(0),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(9),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(9),
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 64,
+            },
             ..
         }
     ));
@@ -615,6 +731,123 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
                 base: MachineReg(1),
                 offset: 80,
             },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 80,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        dst_lo: MachineReg(7),
+                        dst_hi: MachineReg(8),
+                        lhs_lo: MachineValue::Reg(MachineReg(2)),
+                        lhs_hi: MachineValue::Reg(MachineReg(3)),
+                        rhs_lo: MachineValue::Imm64(1),
+                        rhs_hi: MachineValue::Imm64(0),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(9),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 80,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(9),
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 80,
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        dst_lo: MachineReg(7),
+                        dst_hi: MachineReg(8),
+                        lhs_lo: MachineValue::Reg(MachineReg(2)),
+                        lhs_hi: MachineValue::Reg(MachineReg(3)),
+                        rhs_lo: MachineValue::Imm64(1),
+                        rhs_hi: MachineValue::Imm64(0),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntUnary {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                        dst: MachineReg(9),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(7)),
             ..
         }
     ));
@@ -1301,15 +1534,24 @@ fn fuses_shru_and_into_bitfield_extract() {
     crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
-    assert_eq!(block.ops.len(), 1, "should fuse ShrU+And into 1 instruction, got: {:?}", block.ops);
-    assert!(matches!(
-        block.ops[0].kind,
-        MachineInstKind::BitfieldExtractU {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-            dst: MachineReg(8),
-            src: MachineReg(4),
-            lsb: 1,
-            bits: 15,
-        }
-    ), "expected BitfieldExtractU, got: {:?}", block.ops[0].kind);
+    assert_eq!(
+        block.ops.len(),
+        1,
+        "should fuse ShrU+And into 1 instruction, got: {:?}",
+        block.ops
+    );
+    assert!(
+        matches!(
+            block.ops[0].kind,
+            MachineInstKind::BitfieldExtractU {
+                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                dst: MachineReg(8),
+                src: MachineReg(4),
+                lsb: 1,
+                bits: 15,
+            }
+        ),
+        "expected BitfieldExtractU, got: {:?}",
+        block.ops[0].kind
+    );
 }

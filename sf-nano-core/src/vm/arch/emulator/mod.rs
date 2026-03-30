@@ -18,21 +18,20 @@ use crate::{
             MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
             MachineHelperCall, MachineIndexExtend, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineShiftOp,
-            MachineMemWidth, MachineProgram, MachineReg, MachineSign, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineMemWidth, MachineProgram, MachineReg, MachineShiftOp, MachineSign,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         raw_value::{
-            as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32,
-            from_i64,
+            as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64,
         },
+        result_buffer::ResultBuffer,
         runtime::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
             helpers::{resolve_helper_entry, NativeHelperStatus},
         },
-        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -644,9 +643,7 @@ impl<'a> Emulator<'a> {
                         let extracted = (v >> *lsb) & ((1u32 << *bits) - 1);
                         u64::from(extracted)
                     }
-                    MachineIntWidth::I64 => {
-                        (src_val >> *lsb) & ((1u64 << *bits) - 1)
-                    }
+                    MachineIntWidth::I64 => (src_val >> *lsb) & ((1u64 << *bits) - 1),
                 };
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
@@ -721,10 +718,7 @@ impl<'a> Emulator<'a> {
             .unwrap_or_else(|| trap_from_kind(MachineTrapKind::HelperFailure)))
     }
 
-    fn jump_to_edge(
-        &mut self,
-        edge: &MachineEdge,
-    ) -> Result<(), WasmError> {
+    fn jump_to_edge(&mut self, edge: &MachineEdge) -> Result<(), WasmError> {
         let target_params = self
             .current_program()?
             .blocks
@@ -766,8 +760,7 @@ impl<'a> Emulator<'a> {
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        let callee =
-            MachineFuncId(self.read_value(callee_target)? as u32);
+        let callee = MachineFuncId(self.read_value(callee_target)? as u32);
         let callee_runtime = self.runtime_for(callee)?;
         if arg_slots > callee_runtime.frame_prefix_slots {
             return Err(WasmError::internal(
@@ -940,9 +933,7 @@ impl<'a> Emulator<'a> {
         }
     }
 
-    fn current_program(
-        &self,
-    ) -> Result<&MachineProgram, WasmError> {
+    fn current_program(&self) -> Result<&MachineProgram, WasmError> {
         Ok(&self
             .compiled
             .function(self.func_id)
@@ -957,10 +948,7 @@ impl<'a> Emulator<'a> {
             .ok_or_else(|| WasmError::internal("machine current block is out of range".into()))
     }
 
-    fn runtime_for(
-        &self,
-        func_id: MachineFuncId,
-    ) -> Result<&MachineFunctionRuntime, WasmError> {
+    fn runtime_for(&self, func_id: MachineFuncId) -> Result<&MachineFunctionRuntime, WasmError> {
         self.compiled
             .runtime()
             .functions
@@ -1073,7 +1061,9 @@ impl<'a> Emulator<'a> {
             MachineIndexExtend::ZeroExtend32 => u64::from(index as u32),
         };
         Ok((
-            base_value.wrapping_add(index).wrapping_add_signed(i64::from(offset)),
+            base_value
+                .wrapping_add(index)
+                .wrapping_add_signed(i64::from(offset)),
             self.reg_addr_kind(base),
         ))
     }
@@ -1133,7 +1123,12 @@ impl<'a> Emulator<'a> {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<u64, WasmError> {
-        self.load_at(self.addr_value(addr), self.reg_addr_kind(addr.base), width, extension)
+        self.load_at(
+            self.addr_value(addr),
+            self.reg_addr_kind(addr.base),
+            width,
+            extension,
+        )
     }
 
     fn load_at(
@@ -1199,7 +1194,12 @@ impl<'a> Emulator<'a> {
         width: MachineMemWidth,
         value: u64,
     ) -> Result<(), WasmError> {
-        self.store_at(self.addr_value(addr), self.reg_addr_kind(addr.base), width, value)
+        self.store_at(
+            self.addr_value(addr),
+            self.reg_addr_kind(addr.base),
+            width,
+            value,
+        )
     }
 
     fn store_at(
@@ -2241,9 +2241,9 @@ mod tests {
             entities::{Caller, FunctionInst, MemInst, ModuleInst, TableInst},
             machine::machine_ir::{
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-                MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction, MachineIndexExtend,
-                MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth, MachineModule,
-                MachineProgram, MachineReg, MachineRuntimeContract, MachineSign,
+                MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
+                MachineIndexExtend, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
+                MachineModule, MachineProgram, MachineReg, MachineRuntimeContract, MachineSign,
                 MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
                 MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },
@@ -2404,6 +2404,190 @@ mod tests {
     }
 
     #[test]
+    fn runtime_eval_emu32_preserves_first_local_call_result_across_second_local_call() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let malloc_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let diff_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&malloc_ty), Rc::clone(&diff_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut malloc_spec = FunctionSpec::new(Rc::clone(&malloc_ty), 0);
+        malloc_spec.set_code((&[0x41, 0x10, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: malloc_spec,
+            type_index: 0,
+        });
+
+        let mut diff_spec = FunctionSpec::new(Rc::clone(&diff_ty), 1);
+        diff_spec.set_locals(vec![ValueType::I32, ValueType::I32]);
+        diff_spec.set_code(
+            (&[
+                0x41, 0x04, // i32.const 4
+                0x10, 0x00, // call 0
+                0x21, 0x00, // local.set 0
+                0x41, 0x04, // i32.const 4
+                0x10, 0x00, // call 0
+                0x21, 0x01, // local.set 1
+                0x20, 0x01, // local.get 1
+                0x20, 0x00, // local.get 0
+                0x6b, // i32.sub
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: diff_spec,
+            type_index: 1,
+        });
+
+        let mut store = Store::new(module);
+        ensure_module_compiled(&store).expect("native compile");
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[]).expect("runtime eval");
+        assert_eq!(results.peek_at_index(0), Value::I32(0).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_emu32_recursive_i32_fib_matches_expected_result() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let fib_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(vec![Rc::clone(&fib_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut fib_spec = FunctionSpec::new(Rc::clone(&fib_ty), 0);
+        fib_spec.set_code(
+            (&[
+                0x20, 0x00, // local.get 0
+                0x41, 0x01, // i32.const 1
+                0x4c, // i32.le_s
+                0x04, 0x7f, // if (result i32)
+                0x20, 0x00, //   local.get 0
+                0x05, // else
+                0x20, 0x00, //   local.get 0
+                0x41, 0x02, //   i32.const 2
+                0x6b, //   i32.sub
+                0x10, 0x00, //   call 0
+                0x20, 0x00, //   local.get 0
+                0x41, 0x01, //   i32.const 1
+                0x6b, //   i32.sub
+                0x10, 0x00, //   call 0
+                0x6a, //   i32.add
+                0x0b, // end if
+                0x0b, // end func
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: fib_spec,
+            type_index: 0,
+        });
+
+        let mut store = Store::new(module);
+        ensure_module_compiled(&store).expect("native compile");
+        let func_ptr = &store.module().functions[0] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[Value::I32(10)]).expect("runtime eval");
+        assert_eq!(results.peek_at_index(0), Value::I32(55).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_emu32_preserves_positive_i64_across_identity_call() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let id_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I64],
+            vec![ValueType::I64],
+        ));
+        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I64]));
+        let types = TypeContext::new(vec![Rc::clone(&id_ty), Rc::clone(&caller_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut id_spec = FunctionSpec::new(Rc::clone(&id_ty), 0);
+        id_spec.set_code((&[0x20, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: id_spec,
+            type_index: 0,
+        });
+
+        let mut caller_spec = FunctionSpec::new(Rc::clone(&caller_ty), 1);
+        caller_spec.set_code(
+            (&[
+                0x42, 0x26, // i64.const 38
+                0x10, 0x00, // call 0
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: caller_spec,
+            type_index: 1,
+        });
+
+        let mut store = Store::new(module);
+        ensure_module_compiled(&store).expect("native compile");
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[]).expect("runtime eval");
+        assert_eq!(results.peek_at_index(0), Value::I64(38).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_emu32_preserves_mixed_i32_i64_i32_call_arguments() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+
+        let callee_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32, ValueType::I64, ValueType::I32],
+            vec![ValueType::I64],
+        ));
+        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I64]));
+        let types = TypeContext::new(vec![Rc::clone(&callee_ty), Rc::clone(&caller_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut callee_spec = FunctionSpec::new(Rc::clone(&callee_ty), 0);
+        callee_spec.set_code((&[0x20, 0x01, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: callee_spec,
+            type_index: 0,
+        });
+
+        let mut caller_spec = FunctionSpec::new(Rc::clone(&caller_ty), 1);
+        caller_spec.set_code(
+            (&[
+                0x41, 0x01, // i32.const 1
+                0x42, 0x26, // i64.const 38
+                0x41, 0x02, // i32.const 2
+                0x10, 0x00, // call 0
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: caller_spec,
+            type_index: 1,
+        });
+
+        let mut store = Store::new(module);
+        ensure_module_compiled(&store).expect("native compile");
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[]).expect("runtime eval");
+        assert_eq!(results.peek_at_index(0), Value::I64(38).to_raw());
+    }
+
+    #[test]
     fn jump_to_edge_preserves_mem0_provenance_for_block_params() {
         let compiled = Rc::new(
             CompiledNativeModule::new(
@@ -2549,7 +2733,10 @@ mod tests {
             )
             .expect("indexed addr");
         let base = emulator.read_reg(MACHINE_MEM0_BASE_REG).expect("mem0 base");
-        assert_eq!(addr_value, base.wrapping_add(u64::from(u32::MAX)).wrapping_add(4));
+        assert_eq!(
+            addr_value,
+            base.wrapping_add(u64::from(u32::MAX)).wrapping_add(4)
+        );
         assert_eq!(kind, RegAddrKind::Mem0);
     }
 

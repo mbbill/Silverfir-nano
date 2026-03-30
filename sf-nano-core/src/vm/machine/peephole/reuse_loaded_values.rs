@@ -6,11 +6,11 @@
 use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
-use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineInstKind, MachineValue,
-};
+use crate::vm::machine::machine_ir::{MachineBlock, MachineInstKind, MachineValue};
 
-use super::helpers::{addrs_overlap, defined_reg, kill_tracked_loads_by_reg, rewrite_move_storage_type};
+use super::helpers::{
+    addrs_overlap, for_each_defined_reg, kill_tracked_loads_by_reg, rewrite_move_storage_type,
+};
 use super::TrackedLoad;
 
 pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
@@ -43,12 +43,9 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                 {
                     if src_reg == *dst {
                         keep_inst = false;
-                    } else if let Some(move_ty) = rewrite_move_storage_type(
-                        *dst,
-                        MachineValue::Reg(src_reg),
-                        *ty,
-                        config,
-                    ) {
+                    } else if let Some(move_ty) =
+                        rewrite_move_storage_type(*dst, MachineValue::Reg(src_reg), *ty, config)
+                    {
                         rewrite_load = Some((*dst, src_reg, move_ty));
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
@@ -85,9 +82,9 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                     src: MachineValue::Reg(src_reg),
                 };
             }
-            if let Some(dst) = defined_reg(&inst.kind) {
+            for_each_defined_reg(&inst.kind, |dst| {
                 kill_tracked_loads_by_reg(&mut tracked, dst);
-            }
+            });
             if let Some(load) = produced_load {
                 tracked.push(load);
             }

@@ -11,7 +11,9 @@ use crate::vm::machine::machine_ir::{
     MachineBlock, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineValue,
 };
 
-use super::helpers::{addrs_overlap, defined_reg, kill_tracked_stores_by_reg, rewrite_move_storage_type};
+use super::helpers::{
+    addrs_overlap, for_each_defined_reg, kill_tracked_stores_by_reg, rewrite_move_storage_type,
+};
 use super::TrackedStore;
 
 pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendConfig) {
@@ -37,8 +39,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                 {
                     if matches!(src, MachineValue::Reg(src_reg) if src_reg == *dst) {
                         keep_inst = false;
-                    } else if let Some(move_ty) =
-                        rewrite_move_storage_type(*dst, src, *ty, config)
+                    } else if let Some(move_ty) = rewrite_move_storage_type(*dst, src, *ty, config)
                     {
                         inst.kind = MachineInstKind::Move {
                             ty: move_ty,
@@ -68,9 +69,9 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
         }
 
         if keep_inst {
-            if let Some(dst) = defined_reg(&inst.kind) {
+            for_each_defined_reg(&inst.kind, |dst| {
                 kill_tracked_stores_by_reg(&mut tracked, dst);
-            }
+            });
             rewritten.push(inst);
         }
     }

@@ -4,9 +4,8 @@ use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineBranchCond, MachineAddr, MachineEdge, MachineInst, MachineInstKind,
-    MachineMemWidth, MachineReg, MachineStorageType, MachineTerminator,
-    MachineValue,
+    MachineAddr, MachineBranchCond, MachineEdge, MachineInst, MachineInstKind, MachineMemWidth,
+    MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
 
 // --- Instruction analysis ---
@@ -42,6 +41,26 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallHelper(_) => None,
+    }
+}
+
+/// Visit every register defined by an instruction, including both halves of
+/// legalized i64 pair destinations on 32-bit backends.
+pub(super) fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
+    if let Some(dst) = defined_reg(kind) {
+        f(dst);
+    }
+    match kind {
+        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
+        | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+            f(*dst_lo);
+            f(*dst_hi);
+        }
+        _ => {}
     }
 }
 
@@ -121,7 +140,9 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(&MachineValue::Reg(*base));
             f(&MachineValue::Reg(*index));
         }
-        MachineInstKind::IndexedStore { base, index, src, .. } => {
+        MachineInstKind::IndexedStore {
+            base, index, src, ..
+        } => {
             f(&MachineValue::Reg(*base));
             f(&MachineValue::Reg(*index));
             f(src);
@@ -253,7 +274,11 @@ pub(super) fn value_is_reg(v: &MachineValue, reg: MachineReg) -> bool {
 
 /// Check if `reg` is used by any instruction in `ops` or the terminator before
 /// being redefined.
-pub(super) fn reg_live_after(ops: &[MachineInst], term: &MachineTerminator, reg: MachineReg) -> bool {
+pub(super) fn reg_live_after(
+    ops: &[MachineInst],
+    term: &MachineTerminator,
+    reg: MachineReg,
+) -> bool {
     for inst in ops {
         if inst_uses_value(&inst.kind, reg) {
             return true;
