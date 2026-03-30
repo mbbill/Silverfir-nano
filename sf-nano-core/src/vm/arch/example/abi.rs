@@ -15,9 +15,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
-            classify_gp_reg, classify_fp_reg,
+            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -57,13 +56,9 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<FpReg, 3> {
 
 pub(super) const GP_UNIT_BYTES: u8 = 8;
 
-pub(super) const GP_LOCAL_CACHE: [GpReg; 3] = [
-    gp::X23, gp::X24, gp::X25,
-];
+pub(super) const GP_LOCAL_CACHE: [GpReg; 3] = [gp::X23, gp::X24, gp::X25];
 
-pub(super) const GP_TRANSIENT: [GpReg; 3] = [
-    gp::X26, gp::X27, gp::X28,
-];
+pub(super) const GP_TRANSIENT: [GpReg; 3] = [gp::X26, gp::X27, gp::X28];
 
 pub(super) const FP_TRANSIENT: [FpReg; 2] = [fp::D16, fp::D17];
 
@@ -73,25 +68,42 @@ pub(super) const FP_LOCAL_CACHE: [FpReg; 2] = [fp::D18, fp::D19];
 
 #[inline]
 pub(super) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new_with_gp_unit_bytes(
+    BackendConfig::new(
         GP_LOCAL_CACHE.len() as u8,
         GP_TRANSIENT.len() as u8,
         FP_LOCAL_CACHE.len() as u8,
         FP_TRANSIENT.len() as u8,
         GP_UNIT_BYTES,
+        3,
     )
 }
 
 // ── Callee-saved sets ────────────────────────────────────────────────────────
 
 pub(super) const CALLEE_SAVED_GP: [GpReg; 12] = [
-    gp::X19, gp::X20, gp::X21, gp::X22,
-    gp::X23, gp::X24, gp::X25, gp::X26, gp::X27, gp::X28,
-    gp::X29, gp::X30,
+    gp::X19,
+    gp::X20,
+    gp::X21,
+    gp::X22,
+    gp::X23,
+    gp::X24,
+    gp::X25,
+    gp::X26,
+    gp::X27,
+    gp::X28,
+    gp::X29,
+    gp::X30,
 ];
 
 pub(super) const CALLEE_SAVED_FP: [FpReg; 8] = [
-    fp::D8, fp::D9, fp::D10, fp::D11, fp::D12, fp::D13, fp::D14, fp::D15,
+    fp::D8,
+    fp::D9,
+    fp::D10,
+    fp::D11,
+    fp::D12,
+    fp::D13,
+    fp::D14,
+    fp::D15,
 ];
 
 pub(super) const STACK_ALIGNMENT_BYTES: u32 = 16;

@@ -43,9 +43,7 @@ impl I64Lowering for Gp32Lowering {
                 )));
             }
             let cached_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal(
-                    "cached i64 local is missing a high-half register".into(),
-                )
+                WasmError::internal("cached i64 local is missing a high-half register".into())
             })?;
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
@@ -93,6 +91,7 @@ impl I64Lowering for Gp32Lowering {
         let ty = lir_value_storage_type(ctx.program(), src);
         let (src_lo, src_hi) = ctx.use_i64_value_pair(src)?;
         if let Some(cached_index) = ctx.cached_local_index(slot) {
+            ctx.mark_cache_dirty(cached_index);
             let cached = ctx.cached_locals()[cached_index];
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
@@ -101,9 +100,7 @@ impl I64Lowering for Gp32Lowering {
                 )));
             }
             let cache_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal(
-                    "cached i64 local is missing a high-half register".into(),
-                )
+                WasmError::internal("cached i64 local is missing a high-half register".into())
             })?;
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
@@ -214,9 +211,7 @@ impl I64Lowering for Gp32Lowering {
         is_param: bool,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
-            WasmError::internal(
-                "cached i64 local is missing a high-half register".into(),
-            )
+            WasmError::internal("cached i64 local is missing a high-half register".into())
         })?;
         if is_param {
             ctx.emit_machine_inst(MachineInst {

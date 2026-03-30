@@ -11,14 +11,13 @@ use crate::error::WasmError;
 use crate::vm::{
     backend::{BackendConfig, BackendKind},
     entities::ModuleInst,
-    ssa_ir::ir::SsaProgram,
     plan::{
-        config::PlanConfig,
         frame::FrameLayoutPlan,
         group::GroupPlan,
         policy::{GroupingMode, PlanPolicy},
         prepare_function, PrepareInput,
     },
+    ssa_ir::ir::SsaProgram,
     store::Store,
     wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
 };
@@ -26,7 +25,7 @@ use crate::vm::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterpreterBuildBundle {
     pub backend: BackendKind,
-    pub config: PlanConfig,
+    pub config: BackendConfig,
     pub semantic: SemanticProgram,
     pub frame: FrameLayoutPlan,
     pub groups: GroupPlan,
@@ -41,7 +40,7 @@ pub const fn normalize_interpreter_backend(_requested: BackendKind) -> BackendKi
 
 #[inline]
 pub const fn interpreter_backend_config() -> BackendConfig {
-    BackendConfig::new(3, 4)
+    BackendConfig::new(3, 4, 0, 0, core::mem::size_of::<usize>() as u8, 3)
 }
 
 #[inline]
@@ -56,7 +55,7 @@ pub fn build_interpreter_function(
     compile: CompileContext<'_>,
 ) -> Result<InterpreterBuildBundle, WasmError> {
     let backend = normalize_interpreter_backend(backend);
-    let config = PlanConfig::from_backend_config(interpreter_backend_config(), 0);
+    let config = interpreter_backend_config();
     let semantic = decode::decode_to_semantic_ir(code, compile)?;
     let prepared = prepare_function(
         PrepareInput {

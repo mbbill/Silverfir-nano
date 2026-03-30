@@ -9,9 +9,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
-            classify_gp_reg, classify_fp_reg,
+            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -49,8 +48,13 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
     gp_local_cache: &[X86Reg::R14, X86Reg::R15],
     // GP transient: caller-saved — dead at call boundaries
     gp_transient: &[
-        X86Reg::RCX, X86Reg::RDX, X86Reg::RSI, X86Reg::RDI,
-        X86Reg::R8, X86Reg::R9, X86Reg::R10,
+        X86Reg::RCX,
+        X86Reg::RDX,
+        X86Reg::RSI,
+        X86Reg::RDI,
+        X86Reg::R8,
+        X86Reg::R9,
+        X86Reg::R10,
     ],
     gp_scratch: &[X86Reg::RAX, X86Reg::R11],
 
@@ -64,9 +68,25 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
     // Callee-saved GP registers (fixed + cached locals).
     // No callee-saved FP regs on System V AMD64.
     #[cfg(not(target_os = "windows"))]
-    callee_saved_gp: &[X86Reg::RBX, X86Reg::RBP, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15],
+    callee_saved_gp: &[
+        X86Reg::RBX,
+        X86Reg::RBP,
+        X86Reg::R12,
+        X86Reg::R13,
+        X86Reg::R14,
+        X86Reg::R15,
+    ],
     #[cfg(target_os = "windows")]
-    callee_saved_gp: &[X86Reg::RBX, X86Reg::RBP, X86Reg::R12, X86Reg::R13, X86Reg::R14, X86Reg::R15, X86Reg::RDI, X86Reg::RSI],
+    callee_saved_gp: &[
+        X86Reg::RBX,
+        X86Reg::RBP,
+        X86Reg::R12,
+        X86Reg::R13,
+        X86Reg::R14,
+        X86Reg::R15,
+        X86Reg::RDI,
+        X86Reg::RSI,
+    ],
 
     stack_alignment_bytes: 16,
 };
@@ -99,12 +119,13 @@ pub(super) const C_RET0: X86Reg = X86Reg::RAX;
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new_with_gp_unit_bytes(
+    BackendConfig::new(
         REG_PLAN.gp_local_cache.len() as u8,
         REG_PLAN.gp_transient.len() as u8,
         REG_PLAN.fp_local_cache.len() as u8,
         REG_PLAN.fp_transient.len() as u8,
         REG_PLAN.gp_unit_bytes,
+        3,
     )
 }
 
@@ -115,7 +136,11 @@ pub(super) fn new_gp_scratch_pool() -> ScratchPool<X86Reg, 2> {
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
-    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1], REG_PLAN.fp_scratch[2]])
+    ScratchPool::new([
+        REG_PLAN.fp_scratch[0],
+        REG_PLAN.fp_scratch[1],
+        REG_PLAN.fp_scratch[2],
+    ])
 }
 
 // ── Capacity queries ─────────────────────────────────────────────────────────

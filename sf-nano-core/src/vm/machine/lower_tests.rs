@@ -26,6 +26,41 @@ use crate::vm::{
     wasm::primitive_op::PrimitiveOpKind,
 };
 
+const HOST_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
+const HOST_CALL_SCRATCH_SLOTS: u16 = if HOST_GP_UNIT_BYTES == 4 { 8 } else { 3 };
+
+fn host_backend_config(
+    gp_local_cache_budget: u8,
+    gp_transient_budget: u8,
+    fp_local_cache_budget: u8,
+    fp_transient_budget: u8,
+) -> BackendConfig {
+    BackendConfig::new(
+        gp_local_cache_budget,
+        gp_transient_budget,
+        fp_local_cache_budget,
+        fp_transient_budget,
+        HOST_GP_UNIT_BYTES,
+        HOST_CALL_SCRATCH_SLOTS,
+    )
+}
+
+fn gp32_backend_config(
+    gp_local_cache_budget: u8,
+    gp_transient_budget: u8,
+    fp_local_cache_budget: u8,
+    fp_transient_budget: u8,
+) -> BackendConfig {
+    BackendConfig::new(
+        gp_local_cache_budget,
+        gp_transient_budget,
+        fp_local_cache_budget,
+        fp_transient_budget,
+        4,
+        8,
+    )
+}
+
 fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) {
     assert!(backend.is_32bit_gp_target());
     let max_gp_regs = MACHINE_FIXED_REG_COUNT
@@ -83,7 +118,7 @@ fn lowers_simple_slot_and_add_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -194,7 +229,7 @@ fn lowers_select_with_wasm_operand_order() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 3, 0, 2),
+        backend: host_backend_config(0, 3, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -243,7 +278,7 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 0, 0, 0),
+        backend: host_backend_config(0, 0, 0, 0),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -279,7 +314,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -345,7 +380,7 @@ fn rejects_inconsistent_return_result_spans() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -391,7 +426,7 @@ fn rejects_mixed_void_and_value_returns() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -443,7 +478,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -496,7 +531,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -544,7 +579,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
 
 #[test]
 fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
-    let backend = BackendConfig::new_with_gp_unit_bytes(0, 6, 0, 2, 4);
+    let backend = gp32_backend_config(0, 6, 0, 2, 4);
     let frame = plan_frame_layout(1, 4, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -634,7 +669,7 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
-    let backend = BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4);
+    let backend = gp32_backend_config(0, 4, 0, 2, 4);
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -693,7 +728,7 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
-    let backend = BackendConfig::new_with_gp_unit_bytes(0, 5, 0, 2, 4);
+    let backend = gp32_backend_config(0, 5, 0, 2, 4);
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -781,7 +816,7 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_direct_local_call_to_legal_32bit_machineir() {
-    let backend = BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4);
+    let backend = gp32_backend_config(0, 4, 0, 2, 4);
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
@@ -901,7 +936,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -944,7 +979,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
 
 #[test]
 fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
-    let backend = BackendConfig::new_with_gp_unit_bytes(1, 4, 0, 2, 4);
+    let backend = gp32_backend_config(1, 4, 0, 2, 4);
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -1046,7 +1081,7 @@ fn lowers_runtime_memory_grow_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1095,7 +1130,7 @@ fn lowers_memory_copy_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1143,7 +1178,7 @@ fn lowers_table_fill_through_frame_metadata() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1193,7 +1228,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1255,7 +1290,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1331,7 +1366,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1425,7 +1460,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1517,7 +1552,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[
@@ -1717,7 +1752,7 @@ fn flushes_cached_local_before_second_direct_call() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[
@@ -1857,7 +1892,7 @@ fn preserves_cached_locals_across_block_edges() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1951,7 +1986,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(1, 4, 0, 2, 4),
+        backend: gp32_backend_config(1, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2019,7 +2054,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[
@@ -2081,7 +2116,7 @@ fn lowers_memory_size_without_helper_boundary() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2132,7 +2167,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2199,7 +2234,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2392,7 +2427,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2488,7 +2523,7 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2565,7 +2600,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[
@@ -2648,7 +2683,7 @@ fn lowers_global_get_and_set_without_helpers() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2710,7 +2745,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2782,7 +2817,7 @@ fn lowers_i32_load_with_inline_trap_if() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2870,7 +2905,7 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2948,7 +2983,7 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3037,7 +3072,7 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         use_guard_pages: true,
         functions: &[LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
@@ -3119,7 +3154,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2, 4),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3188,7 +3223,7 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3270,7 +3305,7 @@ fn threads_live_transients_through_split_continuation_params() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3363,7 +3398,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3443,7 +3478,7 @@ fn lowers_f32_const_to_fp_machine_const() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3514,7 +3549,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3579,7 +3614,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(1, 4, 0, 2),
+        backend: host_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3646,7 +3681,7 @@ fn f32_block_params_keep_f32_width() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 0, 2),
+        backend: host_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -3707,7 +3742,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: BackendConfig::new(0, 4, 1, 2),
+        backend: host_backend_config(0, 4, 1, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {

@@ -9,9 +9,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
-            classify_gp_reg, classify_fp_reg,
+            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -53,36 +52,67 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
     gp_unit_bytes: 8,
 
     gp_local_cache: &[
-        Arm64Reg::X23, Arm64Reg::X24, Arm64Reg::X25, Arm64Reg::X26,
-        Arm64Reg::X27, Arm64Reg::X28,
-        Arm64Reg::X9, Arm64Reg::X10, Arm64Reg::X11, Arm64Reg::X12,
-        Arm64Reg::X13, Arm64Reg::X14, Arm64Reg::X15,
+        Arm64Reg::X23,
+        Arm64Reg::X24,
+        Arm64Reg::X25,
+        Arm64Reg::X26,
+        Arm64Reg::X27,
+        Arm64Reg::X28,
+        Arm64Reg::X9,
+        Arm64Reg::X10,
+        Arm64Reg::X11,
+        Arm64Reg::X12,
+        Arm64Reg::X13,
+        Arm64Reg::X14,
+        Arm64Reg::X15,
     ],
     gp_transient: &[
-        Arm64Reg::X3, Arm64Reg::X4, Arm64Reg::X5, Arm64Reg::X6,
-        Arm64Reg::X7, Arm64Reg::X8,
-        Arm64Reg::X0, Arm64Reg::X1, Arm64Reg::X2,
+        Arm64Reg::X3,
+        Arm64Reg::X4,
+        Arm64Reg::X5,
+        Arm64Reg::X6,
+        Arm64Reg::X7,
+        Arm64Reg::X8,
+        Arm64Reg::X0,
+        Arm64Reg::X1,
+        Arm64Reg::X2,
     ],
     gp_scratch: &[Arm64Reg::X16, Arm64Reg::X17],
 
     fp_transient: &[
-        Arm64FpReg::new(3), Arm64FpReg::new(4), Arm64FpReg::new(5),
-        Arm64FpReg::new(6), Arm64FpReg::new(7), Arm64FpReg::new(16),
-        Arm64FpReg::new(17), Arm64FpReg::new(18), Arm64FpReg::new(19),
+        Arm64FpReg::new(3),
+        Arm64FpReg::new(4),
+        Arm64FpReg::new(5),
+        Arm64FpReg::new(6),
+        Arm64FpReg::new(7),
+        Arm64FpReg::new(16),
+        Arm64FpReg::new(17),
+        Arm64FpReg::new(18),
+        Arm64FpReg::new(19),
         Arm64FpReg::new(20),
     ],
     fp_local_cache: &[
-        Arm64FpReg::new(8), Arm64FpReg::new(9), Arm64FpReg::new(10),
-        Arm64FpReg::new(11), Arm64FpReg::new(12), Arm64FpReg::new(13),
-        Arm64FpReg::new(14), Arm64FpReg::new(15), Arm64FpReg::new(21),
-        Arm64FpReg::new(22), Arm64FpReg::new(23), Arm64FpReg::new(24),
-        Arm64FpReg::new(25), Arm64FpReg::new(26), Arm64FpReg::new(27),
-        Arm64FpReg::new(28), Arm64FpReg::new(29), Arm64FpReg::new(30),
+        Arm64FpReg::new(8),
+        Arm64FpReg::new(9),
+        Arm64FpReg::new(10),
+        Arm64FpReg::new(11),
+        Arm64FpReg::new(12),
+        Arm64FpReg::new(13),
+        Arm64FpReg::new(14),
+        Arm64FpReg::new(15),
+        Arm64FpReg::new(21),
+        Arm64FpReg::new(22),
+        Arm64FpReg::new(23),
+        Arm64FpReg::new(24),
+        Arm64FpReg::new(25),
+        Arm64FpReg::new(26),
+        Arm64FpReg::new(27),
+        Arm64FpReg::new(28),
+        Arm64FpReg::new(29),
+        Arm64FpReg::new(30),
         Arm64FpReg::new(31),
     ],
-    fp_scratch: &[
-        Arm64FpReg::new(0), Arm64FpReg::new(1), Arm64FpReg::new(2),
-    ],
+    fp_scratch: &[Arm64FpReg::new(0), Arm64FpReg::new(1), Arm64FpReg::new(2)],
 
     callee_saved_gp_pairs: &[
         (Arm64Reg::X19, Arm64Reg::X20),
@@ -93,9 +123,14 @@ pub(super) const REG_PLAN: RegPlan = RegPlan {
         (Arm64Reg::X29, Arm64Reg::X30),
     ],
     callee_saved_fp: &[
-        Arm64FpReg::new(8), Arm64FpReg::new(9), Arm64FpReg::new(10),
-        Arm64FpReg::new(11), Arm64FpReg::new(12), Arm64FpReg::new(13),
-        Arm64FpReg::new(14), Arm64FpReg::new(15),
+        Arm64FpReg::new(8),
+        Arm64FpReg::new(9),
+        Arm64FpReg::new(10),
+        Arm64FpReg::new(11),
+        Arm64FpReg::new(12),
+        Arm64FpReg::new(13),
+        Arm64FpReg::new(14),
+        Arm64FpReg::new(15),
     ],
 
     stack_alignment_bytes: 16,
@@ -121,12 +156,13 @@ pub(super) const C_RET1: Arm64Reg = Arm64Reg::X1;
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new_with_gp_unit_bytes(
+    BackendConfig::new(
         REG_PLAN.gp_local_cache.len() as u8,
         REG_PLAN.gp_transient.len() as u8,
         REG_PLAN.fp_local_cache.len() as u8,
         REG_PLAN.fp_transient.len() as u8,
         REG_PLAN.gp_unit_bytes,
+        3,
     )
 }
 
@@ -137,7 +173,11 @@ pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm64Reg, 2> {
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm64FpReg, 3> {
-    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1], REG_PLAN.fp_scratch[2]])
+    ScratchPool::new([
+        REG_PLAN.fp_scratch[0],
+        REG_PLAN.fp_scratch[1],
+        REG_PLAN.fp_scratch[2],
+    ])
 }
 
 // ── Capacity queries ─────────────────────────────────────────────────────────

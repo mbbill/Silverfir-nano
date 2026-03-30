@@ -9,10 +9,8 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        middle::{
-            config::PlanConfig,
-            frame::{FrameLayoutPlan, FrameSpan},
-        },
+        backend::BackendConfig,
+        middle::frame::{FrameLayoutPlan, FrameSpan},
         wasm::{
             primitive_op,
             primitive_op::PrimitiveOpKind,
@@ -158,7 +156,7 @@ impl PrepareState {
 pub(super) fn prepare_semantic_ops<'a>(
     semantic: &'a SemanticProgram,
     frame: FrameLayoutPlan,
-    config: PlanConfig,
+    config: BackendConfig,
 ) -> Result<PreparedStream<'a>, WasmError> {
     let mut state = PrepareState::new(
         semantic.results,

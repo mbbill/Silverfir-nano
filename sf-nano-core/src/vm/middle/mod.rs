@@ -5,7 +5,6 @@
 //! into prepared SSA-IR with explicit spill/fill and canonical frame layout.
 //!
 //! - `ssa_ir/` — the SSA-IR contract definitions consumed by `machine/`
-//! - `config.rs` — backend budget configuration
 //! - `frame.rs` — shared frame types and layout planning
 //! - `local_cache.rs` — cached local analysis
 //! - `spill_plan.rs` — spill/fill planning pass
@@ -13,7 +12,6 @@
 //! - `state.rs` — preparation state (value allocation, budget tracking)
 //! - `optimize.rs` — post-construction SSA-IR optimization
 
-pub(crate) mod config;
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;
 
@@ -37,6 +35,7 @@ use alloc::vec::Vec;
 use crate::{
     error::WasmError,
     vm::{
+        backend::BackendConfig,
         middle::ssa_ir::{
             ir::{SsaBlock, SsaProgram},
             target::SsaTarget,
@@ -46,15 +45,12 @@ use crate::{
     },
 };
 
+use self::frame::{plan_frame_layout, FrameLayoutPlan};
 use self::{
     lower_block::lower_block_range,
     lower_cfg::{build_block_ranges, build_semantic_to_block_map, retain_reachable_blocks},
-    state::{BlockState, EntryState, ValueAlloc},
     spill_plan::prepare_semantic_ops,
-};
-use self::{
-    config::PlanConfig,
-    frame::{plan_frame_layout, FrameLayoutPlan},
+    state::{BlockState, EntryState, ValueAlloc},
 };
 
 use local_cache::analyze_local_cache_prefs;
@@ -62,7 +58,7 @@ use local_cache::analyze_local_cache_prefs;
 /// Preparation input bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareInput {
-    pub config: PlanConfig,
+    pub config: BackendConfig,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
@@ -175,10 +171,7 @@ pub(crate) fn prepare_function(
 }
 
 #[inline]
-fn make_block_params(
-    entry: &EntryState,
-    values: &mut ValueAlloc,
-) -> Vec<ssa_ir::ir::SsaValue> {
+fn make_block_params(entry: &EntryState, values: &mut ValueAlloc) -> Vec<ssa_ir::ir::SsaValue> {
     debug_assert_eq!(
         entry.live_types.len(),
         entry.live_value_count() as usize,

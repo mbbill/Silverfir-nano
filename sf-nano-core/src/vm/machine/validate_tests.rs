@@ -10,7 +10,18 @@ use crate::vm::machine::machine_ir::{MachineExternBinding, MachineHelperSymbol};
 
 /// Minimal config for validate tests: no cache/transient budget beyond the minimum.
 fn minimal_config() -> BackendConfig {
-    BackendConfig::new(0, 1, 0, 0)
+    BackendConfig::new(
+        0,
+        1,
+        0,
+        0,
+        core::mem::size_of::<usize>() as u8,
+        if core::mem::size_of::<usize>() == 4 {
+            8
+        } else {
+            3
+        },
+    )
 }
 
 #[test]

@@ -17,11 +17,11 @@ use crate::{
     vm::{
         machine::machine_ir::MachineFunctionRuntime,
         raw_value::{as_f32, as_f64, from_f32, from_f64, from_i32, from_i64},
+        result_buffer::ResultBuffer,
         runtime::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
         },
-        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -46,8 +46,11 @@ pub(crate) fn eval(
     code: &NativeCode,
     store: &mut Store,
     args: &[Value],
-    _backend: &'static str,
+    backend: &'static str,
 ) -> Result<ResultBuffer, WasmError> {
+    #[cfg(not(feature = "function-trace"))]
+    let _ = backend;
+
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid(alloc::format!(

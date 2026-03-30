@@ -24,13 +24,15 @@ pub enum BackendKind {
 ///   `gp_transient_budget`/`fp_transient_budget`
 /// - native lowering maps `gp_local_cache_budget`/`fp_local_cache_budget`
 ///   onto cache regs
+/// - the frontend frame planner reserves `call_scratch_slots` in the native
+///   frame prefix for call-link and helper scratch state
 /// - backends may also repurpose cache or transient regs for other temporary
 ///   work
 ///   when they can prove the owning values are not live
 ///
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BackendConfig {
     /// Size in bytes of one GP budget unit on the target backend.
     ///
@@ -46,33 +48,18 @@ pub(crate) struct BackendConfig {
     pub gp_transient_budget: u8,
     pub fp_local_cache_budget: u8,
     pub fp_transient_budget: u8,
+    pub call_scratch_slots: u16,
 }
 
 impl BackendConfig {
-    #[cfg(any(test, feature = "interp"))]
     #[inline]
     pub(crate) const fn new(
         gp_local_cache_budget: u8,
         gp_transient_budget: u8,
         fp_local_cache_budget: u8,
         fp_transient_budget: u8,
-    ) -> Self {
-        Self::new_with_gp_unit_bytes(
-            gp_local_cache_budget,
-            gp_transient_budget,
-            fp_local_cache_budget,
-            fp_transient_budget,
-            core::mem::size_of::<usize>() as u8,
-        )
-    }
-
-    #[inline]
-    pub(crate) const fn new_with_gp_unit_bytes(
-        gp_local_cache_budget: u8,
-        gp_transient_budget: u8,
-        fp_local_cache_budget: u8,
-        fp_transient_budget: u8,
         gp_unit_bytes: u8,
+        call_scratch_slots: u16,
     ) -> Self {
         // Minimum GP transient budget: the worst-case simultaneous GP
         // unit pressure comes from `select(i64, i64, i32)` — two i64
@@ -88,6 +75,7 @@ impl BackendConfig {
             gp_transient_budget,
             fp_local_cache_budget,
             fp_transient_budget,
+            call_scratch_slots,
         }
     }
 
@@ -121,9 +109,7 @@ impl BackendConfig {
     /// Total MachineReg count across all partitions.
     #[inline]
     pub(crate) const fn total_reg_count(self) -> u16 {
-        self.first_fp_reg()
-            + self.fp_transient_budget as u16
-            + self.fp_local_cache_budget as u16
+        self.first_fp_reg() + self.fp_transient_budget as u16 + self.fp_local_cache_budget as u16
     }
 }
 
@@ -132,21 +118,22 @@ mod tests {
     use super::BackendConfig;
 
     #[test]
-    fn backend_config_defaults_gp_unit_bytes_to_host_word_size() {
-        let config = BackendConfig::new(1, 2, 3, 4);
-        assert_eq!(config.gp_unit_bytes as usize, core::mem::size_of::<usize>());
-    }
-
-    #[test]
     fn backend_config_keeps_explicit_gp_unit_bytes() {
-        let config = BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4);
+        let config = BackendConfig::new(1, 2, 3, 4, 4, 8);
         assert_eq!(config.gp_unit_bytes, 4);
+        assert_eq!(config.call_scratch_slots, 8);
     }
 
     #[test]
     fn backend_config_detects_32bit_gp_targets() {
-        assert!(BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 4).is_32bit_gp_target());
-        assert!(!BackendConfig::new_with_gp_unit_bytes(1, 2, 3, 4, 8).is_32bit_gp_target());
+        assert!(BackendConfig::new(1, 2, 3, 4, 4, 8).is_32bit_gp_target());
+        assert!(!BackendConfig::new(1, 2, 3, 4, 8, 3).is_32bit_gp_target());
+    }
+
+    #[test]
+    fn backend_config_allows_explicit_call_scratch_slots() {
+        let config = BackendConfig::new(1, 2, 3, 4, 8, 9);
+        assert_eq!(config.call_scratch_slots, 9);
     }
 }
 
@@ -191,7 +178,6 @@ impl BackendMode {
             _ => None,
         }
     }
-
 }
 
 static ACTIVE_BACKEND_MODE: AtomicU8 = AtomicU8::new(BackendMode::Native as u8);

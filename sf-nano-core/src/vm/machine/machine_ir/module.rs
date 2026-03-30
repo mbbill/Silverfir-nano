@@ -37,7 +37,7 @@ pub(crate) struct MachineFunction {
 /// This is the shared allocation domain for function ids and sidecar constant
 /// ids used by the machine IR, plus opaque external target ids used by helper
 /// calls and other out-of-line native targets.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MachineModule {
     pub config: BackendConfig,
     pub functions: Vec<MachineFunction>,

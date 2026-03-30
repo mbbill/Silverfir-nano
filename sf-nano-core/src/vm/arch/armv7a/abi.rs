@@ -41,15 +41,14 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
-            classify_gp_reg, classify_fp_reg,
+            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
 
-use crate::vm::arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter};
 use super::{enc, reg::Arm32Reg};
+use crate::vm::arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter};
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
 /// Call-local scratch. LR is saved in the shared prologue and only used as a
@@ -90,11 +89,7 @@ pub(super) const GP_UNIT_BYTES: u8 = 4;
 /// R9 is never used for fixed MachineIR state. It stays in the dynamic bank
 /// only, so the fixed roles remain pinned to unquestionably preserved
 /// registers.
-pub(super) const GP_LOCAL_CACHE: [Arm32Reg; 3] = [
-    Arm32Reg::R5,
-    Arm32Reg::R6,
-    Arm32Reg::R7,
-];
+pub(super) const GP_LOCAL_CACHE: [Arm32Reg; 3] = [Arm32Reg::R5, Arm32Reg::R6, Arm32Reg::R7];
 
 /// GP transient: dead at call boundaries.
 pub(super) const GP_TRANSIENT: [Arm32Reg; 5] = [
@@ -124,12 +119,13 @@ const _: () = assert!(
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new_with_gp_unit_bytes(
+    BackendConfig::new(
         GP_LOCAL_CACHE.len() as u8,
         GP_TRANSIENT.len() as u8,
         FP_LOCAL_CACHE.len() as u8,
         FP_TRANSIENT.len() as u8,
         GP_UNIT_BYTES,
+        8,
     )
 }
 

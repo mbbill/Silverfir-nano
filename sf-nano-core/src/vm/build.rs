@@ -17,7 +17,12 @@ static STATS_SSA_OPS: AtomicUsize = AtomicUsize::new(0);
 static STATS_MIR_OPS: AtomicUsize = AtomicUsize::new(0);
 static STATS_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn set_native_stats(groups: usize, ssa_ops: usize, mir_ops: usize, bytes_emitted: usize) {
+pub(crate) fn set_native_stats(
+    groups: usize,
+    ssa_ops: usize,
+    mir_ops: usize,
+    bytes_emitted: usize,
+) {
     STATS_GROUPS.store(groups, Ordering::Relaxed);
     STATS_SSA_OPS.store(ssa_ops, Ordering::Relaxed);
     STATS_MIR_OPS.store(mir_ops, Ordering::Relaxed);
@@ -52,24 +57,18 @@ pub const fn native_capacity_skips() -> (usize, usize) {
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig,
         arch,
         debug::ir_dump,
         machine::{
-            {lower_module, LowerFunctionInput, LowerModuleInput},
             machine_ir::MachineFuncId,
+            {lower_module, LowerFunctionInput, LowerModuleInput},
         },
-        middle::{config::PlanConfig, PrepareInput, prepare_function},
+        middle::{prepare_function, PrepareInput},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
         store::Store,
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
     },
 };
-
-#[inline]
-pub(crate) const fn native_plan_config(backend: BackendConfig) -> PlanConfig {
-    PlanConfig::from_backend_config(backend, 3)
-}
 
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
@@ -157,7 +156,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         };
         let semantic = semantics[func_idx].as_ref().unwrap();
         let prepared =
-            prepare_function(PrepareInput { config: native_plan_config(backend) }, semantic).map_err(
+            prepare_function(PrepareInput { config: backend }, semantic).map_err(
                 |err| {
                     WasmError::internal(alloc::format!(
                         "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
@@ -205,7 +204,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     })?;
     lowered.module.optimize();
     if backend.is_32bit_gp_target() {
-        lowered.module.validate_32bit_gp_target(backend.first_fp_reg())?;
+        lowered
+            .module
+            .validate_32bit_gp_target(backend.first_fp_reg())?;
     }
 
     // Collect SSA-IR for dump before moving lowered data
@@ -225,9 +226,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     )?);
     #[cfg(target_arch = "aarch64")]
     let arm64_entries = match active_backend {
-        arch::NativeBackend::Arm64 => {
-            Some(arch::common::pipeline::compile_module::<arch::arm64::backend::Arm64Backend>(module, &compiled)?)
-        }
+        arch::NativeBackend::Arm64 => Some(arch::common::pipeline::compile_module::<
+            arch::arm64::backend::Arm64Backend,
+        >(module, &compiled)?),
         _ => None,
     };
     #[cfg(target_arch = "arm")]
@@ -239,9 +240,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     };
     #[cfg(target_arch = "x86_64")]
     let x86_64_entries = match active_backend {
-        arch::NativeBackend::X86_64 => {
-            Some(arch::common::pipeline::compile_module::<arch::x86_64::backend::X86_64Backend>(module, &compiled)?)
-        }
+        arch::NativeBackend::X86_64 => Some(arch::common::pipeline::compile_module::<
+            arch::x86_64::backend::X86_64Backend,
+        >(module, &compiled)?),
         _ => None,
     };
 
@@ -449,8 +450,8 @@ mod tests {
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
         value_type::ValueType,
         vm::{
-            entities::{FunctionInst, ModuleInst},
             arch::{backend_mode_test_lock, set_reference_backend_mode},
+            entities::{FunctionInst, ModuleInst},
             store::Store,
         },
         ReferenceBackendMode,

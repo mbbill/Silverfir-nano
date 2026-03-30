@@ -1054,7 +1054,7 @@ mod tests {
             value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
-            MachineRegFile::new(BackendConfig::new_with_gp_unit_bytes(0, 4, 0, 0, 4))
+            MachineRegFile::new(BackendConfig::new(0, 4, 0, 0, 4, 8))
                 .expect("regfile"),
         ));
         let runtime = MachineFunctionRuntime::default();

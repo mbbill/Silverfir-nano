@@ -1,4 +1,4 @@
-use crate::vm::{backend::BackendConfig, arch::ReferenceBackendMode};
+use crate::vm::{arch::ReferenceBackendMode, backend::BackendConfig};
 
 #[inline]
 pub(crate) fn compile_backend_config(mode: ReferenceBackendMode) -> BackendConfig {
@@ -7,8 +7,14 @@ pub(crate) fn compile_backend_config(mode: ReferenceBackendMode) -> BackendConfi
         "compile_backend_config called with Disabled mode"
     );
     match mode {
-        ReferenceBackendMode::Emu64 => BackendConfig::new_with_gp_unit_bytes(3, 4, 7, 6, 8),
-        ReferenceBackendMode::Emu32 => BackendConfig::new_with_gp_unit_bytes(4, 5, 8, 5, 4),
-        ReferenceBackendMode::Disabled => BackendConfig::new_with_gp_unit_bytes(3, 4, 7, 6, 8),
+        ReferenceBackendMode::Emu64 => {
+            BackendConfig::new(3, 4, 7, 6, 8, 3)
+        }
+        ReferenceBackendMode::Emu32 => {
+            BackendConfig::new(4, 5, 8, 5, 4, 8)
+        }
+        ReferenceBackendMode::Disabled => {
+            BackendConfig::new(3, 4, 7, 6, 8, 3)
+        }
     }
 }

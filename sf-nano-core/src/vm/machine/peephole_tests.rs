@@ -26,7 +26,14 @@ fn test_config(
     let fp_total = (reg_count - first_fp_reg) as u8;
     let fp_trans = fp_transient_count as u8;
     let fp_cache = fp_total - fp_trans;
-    BackendConfig::new_with_gp_unit_bytes(gp_cache, gp_trans, fp_cache, fp_trans, gp_reg_width)
+    BackendConfig::new(
+        gp_cache,
+        gp_trans,
+        fp_cache,
+        fp_trans,
+        gp_reg_width,
+        if gp_reg_width == 4 { 8 } else { 3 },
+    )
 }
 
 #[test]

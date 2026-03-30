@@ -1,16 +1,35 @@
 use crate::vm::{
+    backend::BackendConfig,
     middle::{
-    config::PlanConfig,
-    ssa_ir::ir::{SsaBoundaryOp, SsaInstKind, SsaTerminator},
-    PrepareInput, PreparedFunction,
+        ssa_ir::ir::{SsaBoundaryOp, SsaInstKind, SsaTerminator},
+        PrepareInput, PreparedFunction,
     },
     wasm::{
-    primitive_op::PrimitiveOpKind,
-    semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
+        primitive_op::PrimitiveOpKind,
+        semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
     },
 };
 
 use super::prepare_function;
+
+fn test_backend_config() -> BackendConfig {
+    BackendConfig::new(
+        0,
+        4,
+        0,
+        2,
+        core::mem::size_of::<usize>() as u8,
+        if core::mem::size_of::<usize>() == 4 {
+            8
+        } else {
+            3
+        },
+    )
+}
+
+fn test_backend_config_with_gp_unit_bytes(gp_unit_bytes: u8) -> BackendConfig {
+    BackendConfig::new(0, 6, 0, 0, gp_unit_bytes, 3)
+}
 
 #[test]
 fn prepares_memory_copy_as_boundary_op() {
@@ -30,10 +49,7 @@ fn prepares_memory_copy_as_boundary_op() {
                 kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
             },
             SemanticOp {
-                kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryCopy {
-                    imm0: 0,
-                    imm1: 1,
-                }),
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryCopy { imm0: 0, imm1: 1 }),
             },
             SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
@@ -49,7 +65,7 @@ fn prepares_memory_copy_as_boundary_op() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -67,7 +83,7 @@ fn prepares_memory_copy_as_boundary_op() {
                 ..
             })
         ))));
-    }
+}
 
 #[test]
 fn prepares_table_fill_as_boundary_op() {
@@ -89,10 +105,7 @@ fn prepares_table_fill_as_boundary_op() {
                 kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
             },
             SemanticOp {
-                kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableFill {
-                    imm0: 2,
-                    imm1: 0
-                }),
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableFill { imm0: 2, imm1: 0 }),
             },
             SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
@@ -108,7 +121,7 @@ fn prepares_table_fill_as_boundary_op() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -122,7 +135,7 @@ fn prepares_table_fill_as_boundary_op() {
             inst.kind,
             SsaInstKind::Boundary(SsaBoundaryOp::TableFill { table_idx: 2, .. })
         ))));
-    }
+}
 
 #[test]
 fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
@@ -142,10 +155,7 @@ fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
                 kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
             },
             SemanticOp {
-                kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryInit {
-                    imm0: 4,
-                    imm1: 7,
-                }),
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::MemoryInit { imm0: 4, imm1: 7 }),
             },
             SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
@@ -161,7 +171,7 @@ fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -179,7 +189,7 @@ fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
                 ..
             })
         ))));
-    }
+}
 
 #[test]
 fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
@@ -199,10 +209,7 @@ fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
                 kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 3 }),
             },
             SemanticOp {
-                kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableInit {
-                    imm0: 5,
-                    imm1: 8,
-                }),
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::TableInit { imm0: 5, imm1: 8 }),
             },
             SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
@@ -215,7 +222,7 @@ fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -233,7 +240,7 @@ fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
                 ..
             })
         ))));
-    }
+}
 
 #[test]
 fn merges_end_into_enclosing_block_for_empty_if() {
@@ -280,7 +287,7 @@ fn merges_end_into_enclosing_block_for_empty_if() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -290,7 +297,7 @@ fn merges_end_into_enclosing_block_for_empty_if() {
     // following code. Two empty-if sequences + return = 3 blocks
     // (entry, End+LocalGet+If, End+ReturnVoid).
     assert_eq!(prepared.ssa.blocks.len(), 3);
-    }
+}
 
 #[test]
 fn prepares_result_if_without_transient_underflow() {
@@ -338,17 +345,18 @@ fn prepares_result_if_without_transient_underflow() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("result-if preparation should succeed");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Return { .. }
-    )));
-    }
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}
 
 #[test]
 fn prepares_br_if_with_block_result_payload() {
@@ -421,16 +429,17 @@ fn prepares_br_if_with_block_result_payload() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("br_if block-result preparation should succeed");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Branch { .. }
-    )));
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Branch { .. })));
     let final_return = prepared
         .ssa
         .blocks
@@ -444,7 +453,7 @@ fn prepares_br_if_with_block_result_payload() {
         .expect("final return span");
     assert_eq!(final_return.start, prepared.frame.operand_slot(0));
     assert_eq!(final_return.count, 1);
-    }
+}
 
 #[test]
 fn prepares_if_with_block_param_and_result() {
@@ -499,17 +508,18 @@ fn prepares_if_with_block_param_and_result() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("if param/result preparation should succeed");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Return { .. }
-    )));
-    }
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}
 
 #[test]
 fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
@@ -556,13 +566,16 @@ fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
         result_types: alloc::vec![crate::value_type::ValueType::I32],
         op_result_types: alloc::collections::BTreeMap::from([(
             3usize,
-            alloc::vec![crate::value_type::ValueType::I32, crate::value_type::ValueType::I32],
+            alloc::vec![
+                crate::value_type::ValueType::I32,
+                crate::value_type::ValueType::I32
+            ],
         )]),
     };
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -572,12 +585,7 @@ fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
         .ssa
         .blocks
         .iter()
-        .find(|block| {
-            matches!(
-                block.terminator,
-                SsaTerminator::Branch { .. }
-            )
-        })
+        .find(|block| matches!(block.terminator, SsaTerminator::Branch { .. }))
         .expect("if block");
     let store_count = if_block
         .ops
@@ -589,7 +597,7 @@ fn prepares_if_param_passthrough_break_with_canonical_join_publish() {
         store_count >= 2,
         "if join should publish live block values into canonical frame slots before branching to a canonical-only end block"
     );
-    }
+}
 
 #[test]
 fn prepares_unreachable_if_condition_without_phantom_result_growth() {
@@ -658,17 +666,18 @@ fn prepares_unreachable_if_condition_without_phantom_result_growth() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("unreachable folded-if preparation should succeed");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Return { .. }
-    )));
-    }
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}
 
 #[test]
 fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
@@ -713,7 +722,7 @@ fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -731,7 +740,7 @@ fn prepares_block_result_fallthrough_with_mixed_spilled_and_live_values() {
         }),
         "fallthrough from a block result must publish the older stack prefix to canonical slots before entering a mixed spill/live successor"
     );
-    }
+}
 
 #[test]
 fn prepares_block_result_used_as_select_operand_after_end() {
@@ -776,17 +785,18 @@ fn prepares_block_result_used_as_select_operand_after_end() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("block result select preparation should succeed");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Return { .. }
-    )));
-    }
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}
 
 #[test]
 fn debug_prepares_nested_br_table_value_index_shape() {
@@ -881,14 +891,14 @@ fn debug_prepares_nested_br_table_value_index_shape() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("nested br_table index preparation should succeed");
 
     assert!(!prepared.ssa.blocks.is_empty());
-    }
+}
 
 #[test]
 fn debug_prepares_break_br_table_nested_num_shape() {
@@ -957,14 +967,14 @@ fn debug_prepares_break_br_table_nested_num_shape() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("nested br_table num preparation should succeed");
 
     assert!(!prepared.ssa.blocks.is_empty());
-    }
+}
 
 #[test]
 fn debug_prepares_large_sig_shape() {
@@ -1035,14 +1045,14 @@ fn debug_prepares_large_sig_shape() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("large signature preparation should succeed");
 
     assert!(!prepared.ssa.blocks.is_empty());
-    }
+}
 
 #[test]
 fn typed_pipeline_assigns_float_types_to_float_values() {
@@ -1074,7 +1084,7 @@ fn typed_pipeline_assigns_float_types_to_float_values() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1098,7 +1108,7 @@ fn typed_pipeline_assigns_float_types_to_float_values() {
             }
         }
     }
-    }
+}
 
 #[test]
 fn typed_pipeline_assigns_i32_types_to_int_ops() {
@@ -1130,7 +1140,7 @@ fn typed_pipeline_assigns_i32_types_to_int_ops() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1144,7 +1154,7 @@ fn typed_pipeline_assigns_i32_types_to_int_ops() {
             ty,
         );
     }
-    }
+}
 
 #[test]
 fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
@@ -1186,14 +1196,14 @@ fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
 
     let prepared_64 = prepare_function(
         PrepareInput {
-            config: PlanConfig::new_with_gp_unit_bytes(0, 6, 0, 0, 3, 8),
+            config: test_backend_config_with_gp_unit_bytes(8),
         },
         &semantic,
     )
     .expect("64-bit gp pressure preparation should succeed");
     let prepared_32 = prepare_function(
         PrepareInput {
-            config: PlanConfig::new_with_gp_unit_bytes(0, 6, 0, 0, 3, 4),
+            config: test_backend_config_with_gp_unit_bytes(4),
         },
         &semantic,
     )
@@ -1218,7 +1228,7 @@ fn i64_transient_pressure_counts_as_two_gp_units_on_32_bit() {
         count_loads(&prepared_32) >= 1,
         "four i64 values should require a spill/fill under a six-register 32-bit GP budget",
     );
-    }
+}
 
 #[test]
 fn typed_pipeline_fills_preserve_float_types() {
@@ -1273,7 +1283,7 @@ fn typed_pipeline_fills_preserve_float_types() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1288,7 +1298,7 @@ fn typed_pipeline_fills_preserve_float_types() {
             ty,
         );
     }
-    }
+}
 
 #[test]
 fn typed_select_preserves_operand_type() {
@@ -1324,7 +1334,7 @@ fn typed_select_preserves_operand_type() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1355,7 +1365,7 @@ fn typed_select_preserves_operand_type() {
         "select of f64 operands must produce F64-typed value, got {:?}",
         ty,
     );
-    }
+}
 
 #[test]
 fn typed_if_else_preserves_param_types_across_arms() {
@@ -1422,7 +1432,7 @@ fn typed_if_else_preserves_param_types_across_arms() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1445,7 +1455,7 @@ fn typed_if_else_preserves_param_types_across_arms() {
             );
         }
     }
-    }
+}
 
 #[test]
 fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
@@ -1501,7 +1511,7 @@ fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
@@ -1528,7 +1538,7 @@ fn typed_ref_is_null_preserves_ref_operand_type_across_if_else() {
         "ref.is_null operand must keep funcref type across if/else, got {:?}",
         arg_ty,
     );
-    }
+}
 
 #[test]
 fn prepares_result_if_with_returning_arms_without_typed_stack_mismatch() {
@@ -1581,14 +1591,15 @@ fn prepares_result_if_with_returning_arms_without_typed_stack_mismatch() {
 
     let prepared = prepare_function(
         PrepareInput {
-            config: PlanConfig::new(0, 4, 0, 2, 3),
+            config: test_backend_config(),
         },
         &semantic,
     )
     .expect("result if with returning arms should prepare cleanly");
 
-    assert!(prepared.ssa.blocks.iter().any(|block| matches!(
-        block.terminator,
-        SsaTerminator::Return { .. }
-    )));
-    }
+    assert!(prepared
+        .ssa
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}

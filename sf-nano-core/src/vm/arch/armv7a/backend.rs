@@ -15,10 +15,10 @@ use crate::{
             types::{DebugRegion, ParallelSource},
         },
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFuncId,
-            MachineFloatWidth, MachineFunction, MachineInst, MachineReg, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG, MachineFunctionRuntime,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
+            MachineFunction, MachineFunctionRuntime, MachineInst, MachineReg, MachineTerminator,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
@@ -30,12 +30,12 @@ use crate::{
 
 use super::{
     abi::{
-        self, emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg,
-        map_reg,
+        self, emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg, map_reg,
+        SCRATCH0,
     },
     armv7a_raise_trap,
     enc::{self, Cond},
-    inst::{emit_load_u32_into, emit_patchable_addr_into},
+    inst::{emit_load_u32_into, emit_load_word_into, emit_patchable_addr_into, emit_store_word_to},
     reg::Arm32Reg,
     select,
 };
@@ -78,13 +78,70 @@ pub(crate) struct Arm32Backend<'a> {
     pub(super) fp_scratch: ScratchPool<u32, 3>,
 }
 
+fn emit_zero_dynamic_callee_prefix(
+    core: &mut CompilerCore<'_>,
+    fixups: &mut Vec<BranchFixup>,
+    gp_scratch: &ScratchPool<Arm32Reg, 2>,
+    callee_fp: Arm32Reg,
+    arg_slots: u16,
+    frame_prefix_slots_reg: Arm32Reg,
+    zero_reg: Arm32Reg,
+) {
+    let start_guard = gp_scratch.scoped_alloc();
+    let start = *start_guard;
+    emit_load_u32_into(&mut core.text, start, u32::from(arg_slots) * 8);
+    core.text.emit_u32(enc::add_reg(start, callee_fp, start));
+    core.text.emit_u32(enc::lsl_imm(
+        frame_prefix_slots_reg,
+        frame_prefix_slots_reg,
+        3,
+    ));
+    core.text.emit_u32(enc::add_reg(
+        frame_prefix_slots_reg,
+        callee_fp,
+        frame_prefix_slots_reg,
+    ));
+    core.text
+        .emit_u32(enc::cmp_reg(start, frame_prefix_slots_reg));
+
+    let done = core.new_label();
+    let loop_label = core.new_label();
+    let done_fixup = core.text.len();
+    core.text.emit_u32(enc::nop());
+    fixups.push(BranchFixup {
+        offset: done_fixup,
+        kind: BranchFixupKind::BCond(Cond::Cs),
+        target: done,
+    });
+
+    emit_load_u32_into(&mut core.text, zero_reg, 0);
+    core.bind_label(loop_label);
+    core.text.emit_u32(enc::str_imm(zero_reg, start, 0));
+    core.text.emit_u32(enc::str_imm(zero_reg, start, 4));
+    core.text.emit_u32(enc::add_imm(start, start, 8, 0));
+    core.text
+        .emit_u32(enc::cmp_reg(start, frame_prefix_slots_reg));
+    let loop_fixup = core.text.len();
+    core.text.emit_u32(enc::nop());
+    fixups.push(BranchFixup {
+        offset: loop_fixup,
+        kind: BranchFixupKind::BCond(Cond::Cc),
+        target: loop_label,
+    });
+    core.bind_label(done);
+}
+
 // ── ArchBackend trait implementation ─────────────────────────────────────────
 
 impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     const NAME: &'static str = "armv7a";
 
-    fn max_total_regs() -> usize { abi::max_total_machine_regs() }
-    fn max_fp_regs() -> usize { abi::max_fp_machine_regs() }
+    fn max_total_regs() -> usize {
+        abi::max_total_machine_regs()
+    }
+    fn max_fp_regs() -> usize {
+        abi::max_fp_machine_regs()
+    }
 
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
@@ -95,16 +152,26 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         }
     }
 
-    fn core(&self) -> &CompilerCore<'a> { &self.core }
-    fn core_mut(&mut self) -> &mut CompilerCore<'a> { &mut self.core }
-    fn into_core(self) -> CompilerCore<'a> { self.core }
+    fn core(&self) -> &CompilerCore<'a> {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut CompilerCore<'a> {
+        &mut self.core
+    }
+    fn into_core(self) -> CompilerCore<'a> {
+        self.core
+    }
 
     fn lower_prologue(&mut self) {
         emit_shared_prologue(&mut self.core.text);
         // Move args: entry is `fn(ctx: *mut NativeContext, fp: *mut u64) -> u32`
         // R0 = ctx, R1 = fp → fixed CTX / FP machine regs
-        self.core.text.emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_CTX_REG), Arm32Reg::R0));
-        self.core.text.emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), Arm32Reg::R1));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_CTX_REG), Arm32Reg::R0));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), Arm32Reg::R1));
         // Load fixed mem0 registers
         self.core.text.emit_u32(enc::ldr_imm(
             map_fixed_reg(MACHINE_MEM0_BASE_REG),
@@ -159,7 +226,9 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     fn lower_trap(&mut self, kind: MachineTrapKind) {
         // Shared trap handler: called once per trap kind, shared by all TrapIf sites.
         // R0 = ctx, R1 = trap code, R2 = trap site
-        self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
         let trap_code = select::trap_kind_to_u32(kind);
         self.emit_load_u32(Arm32Reg::R1, trap_code);
         let site = select::encode_trap_site(self.core.function.id.0, None);
@@ -176,7 +245,9 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
 
     fn patch_fixups(&mut self) -> Result<(), WasmError> {
         for fixup in &self.fixups {
-            let target_offset = self.core.labels
+            let target_offset = self
+                .core
+                .labels
                 .get(fixup.target)
                 .and_then(|v| *v)
                 .ok_or_else(|| WasmError::internal("armv7a branch label unresolved".into()))?;
@@ -192,10 +263,18 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
 
     // ── Scratch allocation for parallel-move protocol ────────────────────
 
-    fn alloc_gp_scratch(&mut self) -> u8 { self.gp_scratch.alloc() }
-    fn free_gp_scratch(&mut self, id: u8) { self.gp_scratch.free_index(id) }
-    fn alloc_fp_scratch(&mut self) -> u8 { self.fp_scratch.alloc() }
-    fn free_fp_scratch(&mut self, id: u8) { self.fp_scratch.free_index(id) }
+    fn alloc_gp_scratch(&mut self) -> u8 {
+        self.gp_scratch.alloc()
+    }
+    fn free_gp_scratch(&mut self, id: u8) {
+        self.gp_scratch.free_index(id)
+    }
+    fn alloc_fp_scratch(&mut self) -> u8 {
+        self.fp_scratch.alloc()
+    }
+    fn free_fp_scratch(&mut self, id: u8) {
+        self.fp_scratch.free_index(id)
+    }
 
     // ── Parallel move primitives ─────────────────────────────────────────
 
@@ -268,7 +347,6 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
 // ── Helper methods ───────────────────────────────────────────────────────────
 
 impl<'a> Arm32Backend<'a> {
-
     // ── FP register mapping ──────────────────────────────────────────────
 
     #[inline]
@@ -278,13 +356,14 @@ impl<'a> Arm32Backend<'a> {
 
     #[inline]
     pub(super) fn map_fp_dreg(&self, reg: MachineReg) -> Result<u32, WasmError> {
-        let fp_idx = crate::vm::machine::machine_ir::fp_reg_index(reg, self.core.compiled.backend())
-            .ok_or_else(|| {
-                WasmError::invalid(alloc::format!(
-                    "armv7a: expected FP register, got GP machine reg {}",
-                    reg.0
-                ))
-            })?;
+        let fp_idx =
+            crate::vm::machine::machine_ir::fp_reg_index(reg, self.core.compiled.backend())
+                .ok_or_else(|| {
+                    WasmError::invalid(alloc::format!(
+                        "armv7a: expected FP register, got GP machine reg {}",
+                        reg.0
+                    ))
+                })?;
         fp_machine_reg(fp_idx).ok_or_else(|| {
             WasmError::invalid(alloc::format!(
                 "armv7a: FP machine reg index {} out of range",
@@ -329,9 +408,65 @@ impl<'a> Arm32Backend<'a> {
 
     #[inline]
     pub(super) fn emit_host_call(&mut self, target: usize) {
-        let s = self.gp_scratch.scoped_alloc();
-        emit_load_u32_into(&mut self.core.text, *s, target as u32);
-        self.core.text.emit_u32(enc::blx_reg(*s));
+        // ARM hard-float helpers may clobber D0-D7. D0-D2 are reserved as
+        // scratch/return registers in this backend; preserve the live
+        // transient bank D3-D7 around every host call without perturbing
+        // the native stack layout used for helper stack arguments.
+        let helper_scratch = self
+            .core
+            .compiled
+            .runtime()
+            .functions
+            .get(self.core.function.id.0 as usize)
+            .and_then(|runtime| runtime.helper_scratch);
+        if let Some(helper_scratch) = helper_scratch {
+            debug_assert!(
+                helper_scratch.slots >= 5,
+                "armv7a helper scratch must reserve five 64-bit slots for D3-D7"
+            );
+            let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+            let gp_lo = self.gp_scratch.reg(0);
+            let gp_hi = self.gp_scratch.reg(1);
+            let mut d_reg = 3u32;
+            let mut slot = 0i32;
+            while d_reg <= 7 {
+                let byte_offset = (i32::from(helper_scratch.base_slot) + slot) * 8;
+                debug_assert!(
+                    byte_offset >= 0 && byte_offset + 4 <= 4095,
+                    "armv7a helper scratch offset must fit LDR/STR immediate"
+                );
+                self.core.text.emit_u32(enc::vmov_rr_d(gp_lo, gp_hi, d_reg));
+                self.core
+                    .text
+                    .emit_u32(enc::str_imm(gp_lo, fp_reg, byte_offset));
+                self.core
+                    .text
+                    .emit_u32(enc::str_imm(gp_hi, fp_reg, byte_offset + 4));
+                d_reg += 1;
+                slot += 1;
+            }
+        }
+        emit_load_u32_into(&mut self.core.text, SCRATCH0, target as u32);
+        self.core.text.emit_u32(enc::blx_reg(SCRATCH0));
+        if let Some(helper_scratch) = helper_scratch {
+            let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+            let gp_lo = self.gp_scratch.reg(0);
+            let gp_hi = self.gp_scratch.reg(1);
+            let mut d_reg = 3u32;
+            let mut slot = 0i32;
+            while d_reg <= 7 {
+                let byte_offset = (i32::from(helper_scratch.base_slot) + slot) * 8;
+                self.core
+                    .text
+                    .emit_u32(enc::ldr_imm(gp_lo, fp_reg, byte_offset));
+                self.core
+                    .text
+                    .emit_u32(enc::ldr_imm(gp_hi, fp_reg, byte_offset + 4));
+                self.core.text.emit_u32(enc::vmov_d_rr(d_reg, gp_lo, gp_hi));
+                d_reg += 1;
+                slot += 1;
+            }
+        }
     }
 
     // ── GP value materialization ─────────────────────────────────────────
@@ -390,13 +525,18 @@ impl<'a> Arm32Backend<'a> {
         if matches!(src_lo_reg, Some(Arm32Reg::R1)) && matches!(src_hi_reg, Some(Arm32Reg::R0)) {
             let s = self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::mov_reg(*s, Arm32Reg::R0));
-            self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
             self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R1, *s));
             return Ok(());
         }
-        let moved_hi = matches!(src_hi_reg, Some(Arm32Reg::R0)) && !matches!(src_lo_reg, Some(Arm32Reg::R0));
+        let moved_hi =
+            matches!(src_hi_reg, Some(Arm32Reg::R0)) && !matches!(src_lo_reg, Some(Arm32Reg::R0));
         if moved_hi {
-            self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R1, Arm32Reg::R0));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(Arm32Reg::R1, Arm32Reg::R0));
         }
         if !matches!(src_lo_reg, Some(Arm32Reg::R0)) {
             self.emit_move_gp_value(Arm32Reg::R0, src_lo)?;
@@ -417,23 +557,33 @@ impl<'a> Arm32Backend<'a> {
         if dst_lo_hw == Arm32Reg::R1 && dst_hi_hw == Arm32Reg::R0 {
             let s = self.gp_scratch.scoped_alloc();
             self.core.text.emit_u32(enc::mov_reg(*s, Arm32Reg::R0));
-            self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R1));
             self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R1, *s));
             return Ok(());
         }
         let moved_lo = dst_hi_hw == Arm32Reg::R0 && dst_lo_hw != Arm32Reg::R0;
         if moved_lo {
-            self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, Arm32Reg::R0));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(dst_lo_hw, Arm32Reg::R0));
         }
         let moved_hi = dst_lo_hw == Arm32Reg::R1 && dst_hi_hw != Arm32Reg::R1;
         if moved_hi {
-            self.core.text.emit_u32(enc::mov_reg(dst_hi_hw, Arm32Reg::R1));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(dst_hi_hw, Arm32Reg::R1));
         }
         if !moved_lo && dst_lo_hw != Arm32Reg::R0 {
-            self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, Arm32Reg::R0));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(dst_lo_hw, Arm32Reg::R0));
         }
         if !moved_hi && dst_hi_hw != Arm32Reg::R1 {
-            self.core.text.emit_u32(enc::mov_reg(dst_hi_hw, Arm32Reg::R1));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(dst_hi_hw, Arm32Reg::R1));
         }
         Ok(())
     }
@@ -441,27 +591,58 @@ impl<'a> Arm32Backend<'a> {
     // ── Caller-saved register spill / restore ────────────────────────────
 
     pub(super) fn spill_caller_saved_gp_regs(&mut self) {
-        self.core.text.emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, 16, 0));
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R2, Arm32Reg::SP, 8));
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R3, Arm32Reg::SP, 12));
+        // Keep SP 8-byte aligned across helper calls while preserving the
+        // full transient GP bank. R9 is platform-defined under AAPCS, so the
+        // JIT cannot rely on host helpers preserving it.
+        self.core
+            .text
+            .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, 24, 0));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R2, Arm32Reg::SP, 8));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R3, Arm32Reg::SP, 12));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R9, Arm32Reg::SP, 16));
     }
 
     pub(super) fn restore_caller_saved_gp_regs(&mut self, preserved: &[Arm32Reg]) {
         if !preserved.contains(&Arm32Reg::R0) {
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
         }
         if !preserved.contains(&Arm32Reg::R1) {
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
         }
         if !preserved.contains(&Arm32Reg::R2) {
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, Arm32Reg::SP, 8));
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(Arm32Reg::R2, Arm32Reg::SP, 8));
         }
         if !preserved.contains(&Arm32Reg::R3) {
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R3, Arm32Reg::SP, 12));
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(Arm32Reg::R3, Arm32Reg::SP, 12));
         }
-        self.core.text.emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, 16, 0));
+        if !preserved.contains(&Arm32Reg::R9) {
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(Arm32Reg::R9, Arm32Reg::SP, 16));
+        }
+        self.core
+            .text
+            .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, 24, 0));
     }
 
     // ── Stack-staged value moves ─────────────────────────────────────────
@@ -518,11 +699,15 @@ impl<'a> Arm32Backend<'a> {
     // ── Stack temp alloc/free ────────────────────────────────────────────
 
     pub(super) fn emit_stack_temp_alloc(&mut self, bytes: u32) {
-        self.core.text.emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, bytes, 0));
+        self.core
+            .text
+            .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, bytes, 0));
     }
 
     pub(super) fn emit_stack_temp_free(&mut self, bytes: u32) {
-        self.core.text.emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, bytes, 0));
+        self.core
+            .text
+            .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, bytes, 0));
     }
 
     pub(super) fn emit_trunc_result_buffer_alloc(&mut self) {
@@ -553,19 +738,25 @@ impl<'a> Arm32Backend<'a> {
                     // GP → FP
                     let src_gp = map_reg(reg)?;
                     self.emit_load_u32(Arm32Reg::R1, 0);
-                    self.core.text.emit_u32(enc::vmov_d_rr(dd, src_gp, Arm32Reg::R1));
+                    self.core
+                        .text
+                        .emit_u32(enc::vmov_d_rr(dd, src_gp, Arm32Reg::R1));
                 }
                 ParallelSource::Imm(value) => {
                     let lo = value as u32;
                     let hi = (value >> 32) as u32;
                     self.emit_load_u32(Arm32Reg::R0, lo);
                     self.emit_load_u32(Arm32Reg::R1, hi);
-                    self.core.text.emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
+                    self.core
+                        .text
+                        .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
                 }
                 ParallelSource::GpTemp(id) => {
                     let temp = self.gp_scratch.reg(id);
                     self.emit_load_u32(Arm32Reg::R1, 0);
-                    self.core.text.emit_u32(enc::vmov_d_rr(dd, temp, Arm32Reg::R1));
+                    self.core
+                        .text
+                        .emit_u32(enc::vmov_d_rr(dd, temp, Arm32Reg::R1));
                 }
                 ParallelSource::FpTemp(id, _) => {
                     let temp = self.fp_scratch.reg(id);
@@ -581,7 +772,9 @@ impl<'a> Arm32Backend<'a> {
                 ParallelSource::Reg { reg, .. } if self.is_fp_machine_reg(reg) => {
                     // FP → GP: extract low 32 bits
                     let sd = self.map_fp_dreg(reg)?;
-                    self.core.text.emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, sd));
+                    self.core
+                        .text
+                        .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, sd));
                 }
                 ParallelSource::Reg { reg, .. } => {
                     let src_gp = map_reg(reg)?;
@@ -598,7 +791,9 @@ impl<'a> Arm32Backend<'a> {
                 }
                 ParallelSource::FpTemp(id, _) => {
                     let temp = self.fp_scratch.reg(id);
-                    self.core.text.emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, temp));
+                    self.core
+                        .text
+                        .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, temp));
                 }
             }
         }
@@ -632,24 +827,40 @@ impl<'a> Arm32Backend<'a> {
         // inner scoped_alloc() calls never return the same register.
         let callee_fp_guard = self.gp_scratch.scoped_alloc();
         let callee_fp = *callee_fp_guard;
-        self.core.text.emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
 
         // Store continuation address (patchable) into callee frame
         let cont_byte_offset = (continuation_slot as i32) * 8;
         let cont_patch = {
             let s = self.gp_scratch.scoped_alloc();
             let patch = emit_patchable_addr_into(&mut self.core.text, *s);
-            self.core.text.emit_u32(enc::str_imm(*s, callee_fp, cont_byte_offset));
+            emit_store_word_to(
+                &mut self.core.text,
+                &self.gp_scratch,
+                *s,
+                callee_fp,
+                cont_byte_offset,
+            );
             patch
         };
         emit_load_u32_into(&mut self.core.text, Arm32Reg::R3, 0);
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R3, callee_fp, cont_byte_offset + 4));
+        emit_store_word_to(
+            &mut self.core.text,
+            &self.gp_scratch,
+            Arm32Reg::R3,
+            callee_fp,
+            cont_byte_offset + 4,
+        );
 
         // Load callee entry (patchable) and jump
         let callee_patch = {
             let s = self.gp_scratch.scoped_alloc();
             let patch = emit_patchable_addr_into(&mut self.core.text, *s);
-            self.core.text.emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
             self.core.text.emit_u32(enc::bx(*s));
             patch
         };
@@ -657,18 +868,18 @@ impl<'a> Arm32Backend<'a> {
 
         // Record patches
         let continuation_label = self.core.block_label(continuation)?;
-        self.core.local_ptr_patches.push(
-            crate::vm::arch::common::types::PendingLocalPtrPatch {
+        self.core
+            .local_ptr_patches
+            .push(crate::vm::arch::common::types::PendingLocalPtrPatch {
                 literal_offset: cont_patch,
                 target_label: continuation_label,
-            },
-        );
-        self.core.direct_call_patches.push(
-            crate::vm::arch::common::types::DirectCallPatch {
+            });
+        self.core
+            .direct_call_patches
+            .push(crate::vm::arch::common::types::DirectCallPatch {
                 literal_offset: callee_patch,
                 callee,
-            },
-        );
+            });
         Ok(())
     }
 
@@ -687,27 +898,60 @@ impl<'a> Arm32Backend<'a> {
 
         // Load continuation address into scratch (lives until bx)
         let cont_reg = self.gp_scratch.scoped_alloc().release();
-        self.core.text.emit_u32(enc::ldr_imm(cont_reg, fp_reg, (continuation_slot as i32) * 8));
+        emit_load_word_into(
+            &mut self.core.text,
+            cont_reg,
+            fp_reg,
+            (continuation_slot as i32) * 8,
+        );
         // Load caller FP
-        self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R3, fp_reg, (caller_frame_slot as i32) * 8));
+        emit_load_word_into(
+            &mut self.core.text,
+            Arm32Reg::R3,
+            fp_reg,
+            (caller_frame_slot as i32) * 8,
+        );
         // Load caller result base
-        self.core.text.emit_u32(enc::ldr_imm(
-            Arm32Reg::R0, fp_reg, (caller_result_base_slot as i32) * 8,
-        ));
+        emit_load_word_into(
+            &mut self.core.text,
+            Arm32Reg::R0,
+            fp_reg,
+            (caller_result_base_slot as i32) * 8,
+        );
         // Compute absolute result address: caller_fp + result_base
-        self.core.text.emit_u32(enc::add_reg(Arm32Reg::R0, Arm32Reg::R3, Arm32Reg::R0));
+        self.core
+            .text
+            .emit_u32(enc::add_reg(Arm32Reg::R0, Arm32Reg::R3, Arm32Reg::R0));
 
         // Copy return results to caller frame
         if let Some(results) = runtime.return_results {
             for index in 0..results.slots as i32 {
-                self.core.text.emit_u32(enc::ldr_imm(
-                    Arm32Reg::R1, fp_reg, (results.base_slot as i32 + index) * 8,
-                ));
-                self.core.text.emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::R0, index * 8));
-                self.core.text.emit_u32(enc::ldr_imm(
-                    Arm32Reg::R1, fp_reg, (results.base_slot as i32 + index) * 8 + 4,
-                ));
-                self.core.text.emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::R0, index * 8 + 4));
+                emit_load_word_into(
+                    &mut self.core.text,
+                    Arm32Reg::R1,
+                    fp_reg,
+                    (results.base_slot as i32 + index) * 8,
+                );
+                emit_store_word_to(
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    Arm32Reg::R1,
+                    Arm32Reg::R0,
+                    index * 8,
+                );
+                emit_load_word_into(
+                    &mut self.core.text,
+                    Arm32Reg::R1,
+                    fp_reg,
+                    (results.base_slot as i32 + index) * 8 + 4,
+                );
+                emit_store_word_to(
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    Arm32Reg::R1,
+                    Arm32Reg::R0,
+                    index * 8 + 4,
+                );
             }
         }
 
@@ -720,7 +964,7 @@ impl<'a> Arm32Backend<'a> {
         &mut self,
         callee_target: MachineValue,
         callee_frame_base: MachineReg,
-        _arg_slots: u16,
+        arg_slots: u16,
         caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
@@ -729,7 +973,9 @@ impl<'a> Arm32Backend<'a> {
         // returns the same register.
         let callee_fp_guard = self.gp_scratch.scoped_alloc();
         let callee_fp = *callee_fp_guard;
-        self.core.text.emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
 
         // Materialize callee ID into R3
         let callee_id_reg = match callee_target {
@@ -740,7 +986,9 @@ impl<'a> Arm32Backend<'a> {
             }
         };
         if callee_id_reg != Arm32Reg::R3 {
-            self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R3, callee_id_reg));
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(Arm32Reg::R3, callee_id_reg));
         }
 
         // Load function info table base, compute entry address, load fields,
@@ -752,52 +1000,91 @@ impl<'a> Arm32Backend<'a> {
             self.core.function_table_patches.push(table_patch);
 
             // Each Arm32FunctionInfo is 16 bytes. Compute entry: table + callee_id * 16
-            self.core.text.emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
+            self.core
+                .text
+                .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
             self.core.text.emit_u32(enc::add_reg(*s, *s, Arm32Reg::R3));
 
             // Load function info fields
             self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, *s, 0)); // entry
             self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, *s, 4)); // total_frame_bytes
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, *s, 12)); // call_scratch_base_slot
+            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, *s, 8)); // frame_prefix_slots
+            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R3, *s, 12)); // call_scratch_base_slot
 
             // Stack overflow check
-            self.core.text.emit_u32(enc::add_reg(*s, callee_fp, Arm32Reg::R1));
+            self.core
+                .text
+                .emit_u32(enc::add_reg(*s, callee_fp, Arm32Reg::R1));
             self.core.text.emit_u32(enc::ldr_imm(
-                Arm32Reg::R3,
+                Arm32Reg::R1,
                 map_fixed_reg(MACHINE_CTX_REG),
                 ctx_offset::STACK_END as i32,
             ));
-            self.core.text.emit_u32(enc::cmp_reg(*s, Arm32Reg::R3));
+            self.core.text.emit_u32(enc::cmp_reg(*s, Arm32Reg::R1));
         }
         // Inline emit_branch: callee_fp_guard is alive, can't call &mut self.
         let stack_overflow = self.core.stack_overflow_label;
         {
             let offset = self.core.text.len();
             self.core.text.emit_u32(enc::nop());
-            self.fixups.push(BranchFixup { offset, kind: BranchFixupKind::BCond(Cond::Hi), target: stack_overflow });
+            self.fixups.push(BranchFixup {
+                offset,
+                kind: BranchFixupKind::BCond(Cond::Hi),
+                target: stack_overflow,
+            });
         }
 
+        // Zero any callee frame-prefix slots that are not covered by the
+        // indirect call's argument span. Direct calls zero static prefixes in
+        // MachineIR, but indirect calls need this backend-side because the
+        // callee's frame layout is only known after loading function metadata.
+        emit_zero_dynamic_callee_prefix(
+            &mut self.core,
+            &mut self.fixups,
+            &self.gp_scratch,
+            callee_fp,
+            arg_slots,
+            Arm32Reg::R2,
+            Arm32Reg::R1,
+        );
+
         // Compute call_scratch absolute byte offset
-        self.core.text.emit_u32(enc::lsl_imm(Arm32Reg::R2, Arm32Reg::R2, 3));
-        self.core.text.emit_u32(enc::add_reg(Arm32Reg::R2, callee_fp, Arm32Reg::R2));
+        self.core
+            .text
+            .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 3));
+        self.core
+            .text
+            .emit_u32(enc::add_reg(Arm32Reg::R2, callee_fp, Arm32Reg::R3));
 
         // Store continuation address (patchable)
         let call_link = self.core.compiled.runtime().call_link;
         let cont_patch = {
             let s = self.gp_scratch.scoped_alloc();
             let patch = emit_patchable_addr_into(&mut self.core.text, *s);
-            self.core.text.emit_u32(enc::str_imm(*s, Arm32Reg::R2, call_link.continuation_offset));
+            self.core.text.emit_u32(enc::str_imm(
+                *s,
+                Arm32Reg::R2,
+                call_link.continuation_offset,
+            ));
             patch
         };
         emit_load_u32_into(&mut self.core.text, Arm32Reg::R3, 0);
-        self.core.text.emit_u32(enc::str_imm(Arm32Reg::R3, Arm32Reg::R2, call_link.continuation_offset + 4));
+        self.core.text.emit_u32(enc::str_imm(
+            Arm32Reg::R3,
+            Arm32Reg::R2,
+            call_link.continuation_offset + 4,
+        ));
 
         // Store caller FP
         self.core.text.emit_u32(enc::str_imm(
-            map_fixed_reg(MACHINE_FP_REG), Arm32Reg::R2, call_link.caller_frame_offset,
+            map_fixed_reg(MACHINE_FP_REG),
+            Arm32Reg::R2,
+            call_link.caller_frame_offset,
         ));
         self.core.text.emit_u32(enc::str_imm(
-            Arm32Reg::R3, Arm32Reg::R2, call_link.caller_frame_offset + 4,
+            Arm32Reg::R3,
+            Arm32Reg::R2,
+            call_link.caller_frame_offset + 4,
         ));
 
         // Store caller result base
@@ -805,26 +1092,32 @@ impl<'a> Arm32Backend<'a> {
             let s = self.gp_scratch.scoped_alloc();
             emit_load_u32_into(&mut self.core.text, *s, u32::from(caller_result_base) * 8);
             self.core.text.emit_u32(enc::str_imm(
-                *s, Arm32Reg::R2, call_link.caller_result_base_offset,
+                *s,
+                Arm32Reg::R2,
+                call_link.caller_result_base_offset,
             ));
         }
         self.core.text.emit_u32(enc::str_imm(
-            Arm32Reg::R3, Arm32Reg::R2, call_link.caller_result_base_offset + 4,
+            Arm32Reg::R3,
+            Arm32Reg::R2,
+            call_link.caller_result_base_offset + 4,
         ));
 
         // Set FP to callee and jump
-        self.core.text.emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
         self.core.text.emit_u32(enc::bx(Arm32Reg::R0));
         drop(callee_fp_guard);
 
         // Record continuation patch
         let continuation_label = self.core.block_label(continuation)?;
-        self.core.local_ptr_patches.push(
-            crate::vm::arch::common::types::PendingLocalPtrPatch {
+        self.core
+            .local_ptr_patches
+            .push(crate::vm::arch::common::types::PendingLocalPtrPatch {
                 literal_offset: cont_patch,
                 target_label: continuation_label,
-            },
-        );
+            });
         Ok(())
     }
 }
