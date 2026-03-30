@@ -1,13 +1,12 @@
-//! ARM64 codegen fusion patterns: immediate selection, float compare-branch
-//! fusion, zero-store pair fusion.
+//! ARM64 codegen fusion patterns: immediate selection and zero-store pair
+//! fusion.
 //!
 //! These are pure functions — they inspect MachineIR and return optional
 //! instruction encodings. No compiler state is accessed.
 
-use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineBlock, MachineBranchCond, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
-    MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
+    MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineMemWidth,
+    MachineReg, MachineValue,
 };
 
 use super::{enc::{self, Cond}, reg::Arm64Reg};
@@ -187,51 +186,6 @@ pub(super) fn try_imm12_u32(value: u32) -> Option<u32> {
 
 pub(super) fn try_imm12_u64(value: u64) -> Option<u32> {
     (value < 4096).then_some(value as u32)
-}
-
-// ── Float compare-branch fusion ──────────────────────────────────────────────
-
-/// Detect when the last instruction in a block is a FloatCompare whose result
-/// register is only used by the branch terminator. Returns a fused ARM64 Cond.
-pub(super) fn float_compare_branch_fusion(
-    block: &MachineBlock,
-    all_blocks: &[MachineBlock],
-    config: BackendConfig,
-) -> Option<Cond> {
-    let last = block.ops.last()?;
-    let MachineTerminator::Branch {
-        cond: MachineBranchCond::Value(MachineValue::Reg(cond_reg)),
-        then_edge,
-        else_edge,
-    } = &block.terminator
-    else {
-        return None;
-    };
-    let MachineInstKind::FloatCompare { kind, dst, .. } = &last.kind else {
-        return None;
-    };
-    if dst != cond_reg {
-        return None;
-    }
-    // Only fuse when the compare-result register is transient.
-    // Cached-local and fixed registers are implicitly live across block
-    // boundaries, so the single-successor liveness check is not sufficient.
-    if !machine_ir::is_transient_reg(*dst, config) {
-        return None;
-    }
-    if crate::vm::machine::peephole::reg_dead_at_block_entry(
-        all_blocks,
-        then_edge.target,
-        *dst,
-    ) && crate::vm::machine::peephole::reg_dead_at_block_entry(
-        all_blocks,
-        else_edge.target,
-        *dst,
-    ) {
-        Some(map_float_cond(*kind))
-    } else {
-        None
-    }
 }
 
 // ── Zero-store pair fusion ───────────────────────────────────────────────────

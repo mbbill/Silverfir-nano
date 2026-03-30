@@ -189,7 +189,7 @@ Six intra-block peephole passes, run in sequence:
    - Pattern A: `cvt.I64ExtendI32U + [offset_add] + base_add + load/store` → `IndexedLoad/Store { base, index, index_extend: UXTW, offset }`
    - Pattern B: `base_add + load/store` → `IndexedLoad/Store { base, index, offset }`
 
-6. **Compare-and-branch fusion** (`fuse_compare_branch`): Fuses `IntCompare { dst } + Branch { Reg(dst) }` into `Branch { IntCompare { ... } }` when the compare result register is a transient and is dead in both successors. Cached-local and fixed registers are implicitly live across block boundaries, so fusion is only safe for transients. Eliminates boolean materialization (CSET/SETCC). FloatCompare is NOT fused at this level due to x86_64 NaN handling complexity; ARM64 performs float compare-branch fusion in the arch backend (`arch/arm64/fusion.rs`) with the same transient-register guard.
+6. **Compare-and-branch fusion** (`fuse_compare_branch`): Fuses `IntCompare { dst } + Branch { Reg(dst) }` into `Branch { IntCompare { ... } }` when the compare result register is a transient and is dead in both successors. Cached-local and fixed registers are implicitly live across block boundaries, so fusion is only safe for transients. Eliminates boolean materialization (CSET/SETCC). FloatCompare is not fused in shared MachineIR.
 
 ### Machine IR Validation
 
@@ -214,7 +214,6 @@ Allocates stack frame, saves callee-saved registers, loads fixed registers (cont
 Iterates blocks in layout order. For each block: binds the block label, emits each `MachineInst` via the backend's instruction selector, emits the terminator. The backend handles:
 - **Operand preparation**: Maps virtual MachineRegs to physical registers. Immediates are materialized into scratch registers when they can't be encoded inline.
 - **Immediate selection** (`arch/arm64/fusion.rs`, `arch/x86_64/fusion.rs`): Tries reg+imm forms (add/sub imm12, logical bitmask, shift immediate, mul by power-of-two via shift) before falling back to scratch materialization.
-- **Float compare-branch fusion** (arch-specific): ARM64 emits `fcmp + b.cond`. x86_64 emits `ucomisd/ucomiss + jp/jcc` multi-instruction sequences.
 - **Zero-store pair fusion** (ARM64): Consecutive stores of zero to adjacent addresses fused into `stp xzr, xzr`.
 
 ### Edge Stubs

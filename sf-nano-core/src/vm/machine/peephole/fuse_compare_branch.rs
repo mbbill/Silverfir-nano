@@ -126,7 +126,7 @@ fn term_edge_uses_value(term: &MachineTerminator, reg: MachineReg) -> bool {
 /// Returns true if `reg` is provably dead at the beginning of `target`:
 /// either the block defines it before any use, the block has it as a
 /// parameter, or the block never touches it.
-pub(crate) fn reg_dead_at_block_entry(
+fn reg_dead_at_block_entry(
     blocks: &[MachineBlock],
     target: MachineBlockId,
     reg: MachineReg,

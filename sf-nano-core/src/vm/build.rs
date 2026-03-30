@@ -442,12 +442,11 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, rc::Rc, string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
 
-    use super::{ensure_module_compiled, native_plan_config};
+    use super::ensure_module_compiled;
     use crate::{
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
-        utils::limits::Limitable,
         value_type::ValueType,
         vm::{
             entities::{FunctionInst, ModuleInst},

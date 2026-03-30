@@ -11,7 +11,7 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
-            MachineInst, MachineFunction, MachineInstKind,
+            MachineInst, MachineFunction,
             MachineReg, MachineTerminator, MachineTrapKind,
             MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
@@ -180,25 +180,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
 
-        let fused_fcmp_cond = super::fusion::float_compare_branch_fusion(
-            block, &self.core.function.program.blocks,
-            self.core.compiled.backend(),
-        );
-
         let mut index = 0;
         while index < block.ops.len() {
             self.core.current_op_index = Some(index);
-            if fused_fcmp_cond.is_some() && index == block.ops.len() - 1 {
-                if let MachineInstKind::FloatCompare { width, lhs, rhs, .. }
-                    = &block.ops[index].kind
-                {
-                    self.lower_fcmp_values(*width, *lhs, *rhs)?;
-                    self.gp_scratch.assert_all_free();
-                    self.fp_scratch.assert_all_free();
-                    index += 1;
-                    continue;
-                }
-            }
             if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(block, index) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.core.text.emit_u32(
@@ -217,16 +201,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         }
         self.core.current_op_index = None;
 
-        let result = if let Some(cond) = fused_fcmp_cond {
-            match &block.terminator {
-                MachineTerminator::Branch { then_edge, else_edge, .. } => {
-                    self.lower_fused_cond_branch(cond, then_edge, else_edge, fallthrough)
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            self.lower_terminator(&block.terminator, fallthrough)
-        };
+        let result = self.lower_terminator(&block.terminator, fallthrough);
         self.core.current_block = None;
         result
     }

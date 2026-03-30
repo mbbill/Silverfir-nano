@@ -3,7 +3,7 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineBranchCond, MachineBlockId, MachineCompareKind, MachineConstId,
-    MachineEdge, MachineFloatWidth, MachineFuncId, MachineReg,
+    MachineEdge, MachineFuncId, MachineReg,
     MachineTerminator, MachineTrapKind, MachineValue,
     MACHINE_CTX_REG, MACHINE_FP_REG,
 };
@@ -171,76 +171,6 @@ fn lower_branch(&mut self,
                 self.lower_b(else_label);
             }
         }
-    }
-    Ok(())
-}
-
-// ── Fused conditional branch (float compare-branch fusion) ───────────────────
-
-/// Emit a conditional branch when the CPU flags have already been set
-/// by a preceding CMP/FCMP.
-pub(super) fn lower_fused_cond_branch(&mut self,
-    cond: enc::Cond,
-    then_edge: &MachineEdge,
-    else_edge: &MachineEdge,
-    fallthrough: Option<MachineBlockId>,
-) -> Result<(), WasmError> {
-    let blocks = &self.core.function.program.blocks;
-    let then_fallthrough =
-        is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
-    let else_fallthrough =
-        is_fallthrough_edge(else_edge.target, &else_edge.args, fallthrough, blocks);
-
-    let then_label = (!then_fallthrough)
-        .then(|| self.core.emit_edge(then_edge.target, &then_edge.args))
-        .transpose()?;
-    let else_label = (!else_fallthrough)
-        .then(|| self.core.emit_edge(else_edge.target, &else_edge.args))
-        .transpose()?;
-
-    if else_fallthrough {
-        if let Some(label) = then_label {
-            self.lower_b_cond(cond, label);
-        }
-    } else if then_fallthrough {
-        if let Some(label) = else_label {
-            self.lower_b_cond(cond.invert(), label);
-        }
-    } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
-        self.lower_b_cond(cond, then_label);
-        self.lower_b(else_label);
-    }
-    Ok(())
-}
-
-// ── FCMP (for float compare-and-branch fusion) ──────────────────────────────
-
-/// Emit FCMP without CSET (for float compare-and-branch fusion).
-pub(super) fn lower_fcmp_values(&mut self,
-    width: MachineFloatWidth,
-    lhs: MachineValue,
-    rhs: MachineValue,
-) -> Result<(), WasmError> {
-    let lhs_fp = super::inst::prepare_fp(
-        self.core.compiled.backend(), &self.core.fp_reg_widths,
-        &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
-        width, lhs,
-    )?;
-    if matches!(rhs, MachineValue::Imm64(0)) {
-        match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s_zero(lhs_fp.reg())),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d_zero(lhs_fp.reg())),
-        };
-    } else {
-        let rhs_fp = super::inst::prepare_fp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
-            width, rhs,
-        )?;
-        match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s(lhs_fp.reg(), rhs_fp.reg())),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d(lhs_fp.reg(), rhs_fp.reg())),
-        };
     }
     Ok(())
 }
