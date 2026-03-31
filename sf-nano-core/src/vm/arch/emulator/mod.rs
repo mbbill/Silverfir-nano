@@ -690,8 +690,17 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
-            MachineInstKind::MemoryGrow { .. } => {
-                unimplemented!("MemoryGrow in emulator")
+            MachineInstKind::MemoryGrow { .. }
+            | MachineInstKind::MemoryFill { .. }
+            | MachineInstKind::MemoryCopy { .. }
+            | MachineInstKind::MemoryInit { .. }
+            | MachineInstKind::DataDrop { .. }
+            | MachineInstKind::TableGrow { .. }
+            | MachineInstKind::TableFill { .. }
+            | MachineInstKind::TableCopy { .. }
+            | MachineInstKind::TableInit { .. }
+            | MachineInstKind::ElemDrop { .. } => {
+                unimplemented!("memory/table ops in emulator")
             }
         }
         Ok(())
@@ -1417,6 +1426,7 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         }
         MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
+        MachineTrapKind::InvalidConversion => WasmError::trap("invalid conversion to integer".into()),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
     }

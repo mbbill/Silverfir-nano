@@ -470,12 +470,31 @@ impl MachineProgram {
                 self.validate_branch_cond(*cond, config)?;
             }
             MachineInstKind::CallHelper(_) => {}
-            MachineInstKind::MemoryGrow {
-                dst, delta, ..
-            } => {
+            MachineInstKind::MemoryGrow { dst, delta, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*delta, config)?;
             }
+            MachineInstKind::MemoryFill { dest, val, len, .. }
+            | MachineInstKind::TableFill { start: dest, val, len, .. } => {
+                self.validate_value(*dest, config)?;
+                self.validate_value(*val, config)?;
+                self.validate_value(*len, config)?;
+            }
+            MachineInstKind::MemoryCopy { dest, src, len, .. }
+            | MachineInstKind::MemoryInit { dest, src, len, .. }
+            | MachineInstKind::TableCopy { dest, src, len, .. }
+            | MachineInstKind::TableInit { dest, src, len, .. } => {
+                self.validate_value(*dest, config)?;
+                self.validate_value(*src, config)?;
+                self.validate_value(*len, config)?;
+            }
+            MachineInstKind::TableGrow { dst, init_val, delta, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*init_val, config)?;
+                self.validate_value(*delta, config)?;
+            }
+            MachineInstKind::DataDrop { .. }
+            | MachineInstKind::ElemDrop { .. } => {}
         }
         Ok(())
     }

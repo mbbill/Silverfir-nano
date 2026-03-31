@@ -28,7 +28,7 @@ impl<'a> BlockLowerContext<'a> {
     /// - `SsaOperand::Const(bits)` → `MachineValue::Imm64(bits)` with no register
     ///   allocation.  The architecture backend encodes this as a native
     ///   immediate when possible, or materializes into a scratch register.
-    fn lower_operand(&mut self, operand: SsaOperand) -> Result<MachineValue, WasmError> {
+    pub(super) fn lower_operand(&mut self, operand: SsaOperand) -> Result<MachineValue, WasmError> {
         match operand {
             SsaOperand::Value(v) => Ok(MachineValue::Reg(self.use_value(v)?)),
             SsaOperand::Const(bits) => Ok(MachineValue::Imm64(bits)),

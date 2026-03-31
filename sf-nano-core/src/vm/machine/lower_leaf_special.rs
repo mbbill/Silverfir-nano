@@ -22,7 +22,7 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_inst::LeafLowering,
-    lower_util::{single_arg, single_result, two_args},
+    lower_util::{single_arg, single_result, two_args, three_args},
 };
 
 impl<'a> BlockLowerContext<'a> {
@@ -81,10 +81,7 @@ impl<'a> BlockLowerContext<'a> {
         args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
-        let delta = match single_arg(args)? {
-            SsaOperand::Value(v) => MachineValue::Reg(self.use_value(v)?),
-            SsaOperand::Const(bits) => MachineValue::Imm64(bits),
-        };
+        let delta = self.lower_operand(single_arg(args)?)?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::MemoryGrow { mem_idx, dst, delta },
@@ -92,6 +89,131 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_reload_mem0_cache_regs();
         Ok(())
     }
+
+    pub(super) fn lower_memory_fill(
+        &mut self,
+        mem_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dest, val, len) = three_args(args)?;
+        let dest = self.lower_operand(dest)?;
+        let val = self.lower_operand(val)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::MemoryFill { mem_idx, dest, val, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_memory_copy(
+        &mut self,
+        dst_mem: u32,
+        src_mem: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dest, src, len) = three_args(args)?;
+        let dest = self.lower_operand(dest)?;
+        let src = self.lower_operand(src)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::MemoryCopy { dst_mem, src_mem, dest, src, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_memory_init(
+        &mut self,
+        mem_idx: u32,
+        data_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dest, src, len) = three_args(args)?;
+        let dest = self.lower_operand(dest)?;
+        let src = self.lower_operand(src)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::MemoryInit { mem_idx, data_idx, dest, src, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::DataDrop { data_idx },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_table_grow(
+        &mut self,
+        table_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let (init_val, delta) = two_args(args)?;
+        let init_val = self.lower_operand(init_val)?;
+        let delta = self.lower_operand(delta)?;
+        let dst = self.alloc_result_value(single_result(results)?)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TableGrow { table_idx, dst, init_val, delta },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_table_fill(
+        &mut self,
+        table_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (start, val, len) = three_args(args)?;
+        let start = self.lower_operand(start)?;
+        let val = self.lower_operand(val)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TableFill { table_idx, start, val, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_table_copy(
+        &mut self,
+        dst_tbl: u32,
+        src_tbl: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dest, src, len) = three_args(args)?;
+        let dest = self.lower_operand(dest)?;
+        let src = self.lower_operand(src)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TableCopy { dst_tbl, src_tbl, dest, src, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_table_init(
+        &mut self,
+        table_idx: u32,
+        elem_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dest, src, len) = three_args(args)?;
+        let dest = self.lower_operand(dest)?;
+        let src = self.lower_operand(src)?;
+        let len = self.lower_operand(len)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TableInit { table_idx, elem_idx, dest, src, len },
+        });
+        Ok(())
+    }
+
+    pub(super) fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ElemDrop { elem_idx },
+        });
+        Ok(())
+    }
+
 
     pub(super) fn lower_global_get(&mut self, idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;

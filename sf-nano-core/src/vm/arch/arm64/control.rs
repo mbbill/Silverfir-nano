@@ -581,7 +581,7 @@ pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
     materialize_u64_into(
         &mut self.core.text,
         call_scratch,
-        super::helpers::arm64_raise_trap as u64,
+        crate::vm::runtime::helpers::raise_trap as u64,
     );
     self.core.text.emit_u32(enc::blr(call_scratch));
     // Branch to the shared error-return epilogue

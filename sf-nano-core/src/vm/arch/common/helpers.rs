@@ -14,12 +14,13 @@ pub(crate) fn trap_code(kind: MachineTrapKind) -> u64 {
         MachineTrapKind::IndirectCallTypeMismatch => 4,
         MachineTrapKind::IntegerDivideByZero => 5,
         MachineTrapKind::IntegerOverflow => 6,
-        MachineTrapKind::StackOverflow => 7,
-        MachineTrapKind::HelperFailure => 8,
+        MachineTrapKind::InvalidConversion => 7,
+        MachineTrapKind::StackOverflow => 8,
+        MachineTrapKind::HelperFailure => 9,
     }
 }
 
-pub(crate) const MACHINE_TRAP_KIND_COUNT: usize = 9;
+pub(crate) const MACHINE_TRAP_KIND_COUNT: usize = 10;
 
 pub(crate) fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize

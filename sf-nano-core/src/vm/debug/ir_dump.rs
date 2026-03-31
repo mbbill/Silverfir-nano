@@ -856,12 +856,35 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 call.target.0, call.metadata.0
             )
         }
-        MachineInstKind::MemoryGrow {
-            mem_idx,
-            dst,
-            delta,
-        } => {
-            format!("memory.grow mem={} r{} <- {}", mem_idx, dst.0, mval(delta))
+        MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
+            format!("memory.grow mem={} {} -> r{}", mem_idx, mval(delta), dst.0)
+        }
+        MachineInstKind::MemoryFill { mem_idx, dest, val, len } => {
+            format!("memory.fill mem={} {} {} {}", mem_idx, mval(dest), mval(val), mval(len))
+        }
+        MachineInstKind::MemoryCopy { dst_mem, src_mem, dest, src, len } => {
+            format!("memory.copy dst={} src={} {} {} {}", dst_mem, src_mem, mval(dest), mval(src), mval(len))
+        }
+        MachineInstKind::MemoryInit { mem_idx, data_idx, dest, src, len } => {
+            format!("memory.init mem={} data={} {} {} {}", mem_idx, data_idx, mval(dest), mval(src), mval(len))
+        }
+        MachineInstKind::DataDrop { data_idx } => {
+            format!("data.drop data={}", data_idx)
+        }
+        MachineInstKind::TableGrow { table_idx, dst, init_val, delta } => {
+            format!("table.grow tbl={} {} {} -> r{}", table_idx, mval(init_val), mval(delta), dst.0)
+        }
+        MachineInstKind::TableFill { table_idx, start, val, len } => {
+            format!("table.fill tbl={} {} {} {}", table_idx, mval(start), mval(val), mval(len))
+        }
+        MachineInstKind::TableCopy { dst_tbl, src_tbl, dest, src, len } => {
+            format!("table.copy dst={} src={} {} {} {}", dst_tbl, src_tbl, mval(dest), mval(src), mval(len))
+        }
+        MachineInstKind::TableInit { table_idx, elem_idx, dest, src, len } => {
+            format!("table.init tbl={} elem={} {} {} {}", table_idx, elem_idx, mval(dest), mval(src), mval(len))
+        }
+        MachineInstKind::ElemDrop { elem_idx } => {
+            format!("elem.drop elem={}", elem_idx)
         }
     }
 }

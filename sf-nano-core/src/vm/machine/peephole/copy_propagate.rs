@@ -259,6 +259,26 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         MachineInstKind::MemoryGrow { delta, .. } => {
             rewrite_value(delta, aliases);
         }
+        MachineInstKind::MemoryFill { dest, val, len, .. }
+        | MachineInstKind::TableFill { start: dest, val, len, .. } => {
+            rewrite_value(dest, aliases);
+            rewrite_value(val, aliases);
+            rewrite_value(len, aliases);
+        }
+        MachineInstKind::MemoryCopy { dest, src, len, .. }
+        | MachineInstKind::MemoryInit { dest, src, len, .. }
+        | MachineInstKind::TableCopy { dest, src, len, .. }
+        | MachineInstKind::TableInit { dest, src, len, .. } => {
+            rewrite_value(dest, aliases);
+            rewrite_value(src, aliases);
+            rewrite_value(len, aliases);
+        }
+        MachineInstKind::TableGrow { init_val, delta, .. } => {
+            rewrite_value(init_val, aliases);
+            rewrite_value(delta, aliases);
+        }
+        MachineInstKind::DataDrop { .. }
+        | MachineInstKind::ElemDrop { .. } => {}
     }
 }
 

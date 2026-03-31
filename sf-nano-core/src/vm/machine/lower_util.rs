@@ -129,3 +129,12 @@ pub(super) fn two_args(args: &[SsaOperand]) -> Result<(SsaOperand, SsaOperand), 
         )),
     }
 }
+
+pub(super) fn three_args(args: &[SsaOperand]) -> Result<(SsaOperand, SsaOperand, SsaOperand), WasmError> {
+    match args {
+        [a, b, c] => Ok((*a, *b, *c)),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly three arguments".into(),
+        )),
+    }
+}

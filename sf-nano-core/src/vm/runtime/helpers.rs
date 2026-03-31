@@ -929,6 +929,41 @@ pub(crate) mod preserved_io {
 /// Op-code constants for [`preserved_helper`].
 pub(crate) mod preserved_op {
     pub const MEMORY_GROW: u32 = 0;
+    pub const MEMORY_FILL: u32 = 1;
+    pub const MEMORY_COPY: u32 = 2;
+    pub const MEMORY_INIT: u32 = 3;
+    pub const DATA_DROP: u32 = 4;
+    pub const TABLE_GROW: u32 = 5;
+    pub const TABLE_FILL: u32 = 6;
+    pub const TABLE_COPY: u32 = 7;
+    pub const TABLE_INIT: u32 = 8;
+    pub const ELEM_DROP: u32 = 9;
+}
+
+/// Trap entry point called from generated code.  Sets `ctx.error` to the
+/// appropriate trap error and returns nonzero.
+///
+/// # Safety
+///
+/// `ctx` must point to a valid `NativeContext`.
+pub(crate) unsafe extern "C" fn raise_trap(ctx: *mut NativeContext, kind: u64) -> u32 {
+    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+        return 1;
+    };
+    let error = match kind {
+        0 => WasmError::trap("unreachable executed".into()),
+        1 => WasmError::trap("out of bounds memory access".into()),
+        2 => WasmError::trap("out of bounds table access".into()),
+        3 => WasmError::trap("invalid function reference".into()),
+        4 => WasmError::trap("indirect call type mismatch".into()),
+        5 => WasmError::trap("integer divide by zero".into()),
+        6 => WasmError::trap("integer overflow".into()),
+        7 => WasmError::trap("invalid conversion to integer".into()),
+        8 => WasmError::exhaustion("stack overflow".into()),
+        _ => WasmError::trap("native helper failed".into()),
+    };
+    set_ctx_error(ctx, error);
+    1
 }
 
 /// Unified preserved-helper entry point called from generated code.
@@ -945,10 +980,7 @@ pub(crate) unsafe extern "C" fn preserved_helper(
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
         return NativeHelperStatus::Error as u32;
     };
-    let result = match op_code {
-        preserved_op::MEMORY_GROW => unsafe { preserved_memory_grow(ctx, io) },
-        _ => Err(internal_error("unknown preserved-helper op code")),
-    };
+    let result = unsafe { preserved_dispatch(ctx, op_code, io) };
     match result {
         Ok(()) => NativeHelperStatus::Ok as u32,
         Err(err) => {
@@ -958,14 +990,310 @@ pub(crate) unsafe extern "C" fn preserved_helper(
     }
 }
 
-unsafe fn preserved_memory_grow(
+unsafe fn preserved_dispatch(
     ctx: &mut NativeContext,
+    op_code: u32,
     io: *mut u64,
 ) -> Result<(), WasmError> {
-    let mem_idx = unsafe { *io.add(preserved_io::IMM0) } as u32;
-    let delta_raw = unsafe { *io.add(preserved_io::ARG0) };
-    let result = do_memory_grow(ctx, mem_idx, delta_raw)?;
-    unsafe { *io.add(preserved_io::RET0) = result; }
+    use preserved_io::*;
+    match op_code {
+        preserved_op::MEMORY_GROW => {
+            let mem_idx = unsafe { *io.add(IMM0) } as u32;
+            let delta = unsafe { *io.add(ARG0) };
+            let result = do_memory_grow(ctx, mem_idx, delta)?;
+            unsafe { *io.add(RET0) = result; }
+            Ok(())
+        }
+        preserved_op::MEMORY_FILL => {
+            let mem_idx = unsafe { *io.add(IMM0) } as u32;
+            let dest = unsafe { *io.add(ARG0) } as usize;
+            let val = unsafe { *io.add(ARG1) } as u8;
+            let len = unsafe { *io.add(ARG2) } as usize;
+            let mem = memory_mut(ctx, mem_idx)?;
+            let mem_len = mem.memory_len();
+            if dest.saturating_add(len) > mem_len {
+                return Err(trap_error("out of bounds memory access"));
+            }
+            unsafe {
+                let slice = core::slice::from_raw_parts_mut(mem.memory_ptr(), mem_len);
+                slice[dest..dest + len].fill(val);
+            }
+            Ok(())
+        }
+        preserved_op::MEMORY_COPY => {
+            let dst_mem_idx = unsafe { *io.add(IMM0) } as u32;
+            let src_mem_idx = unsafe { *io.add(IMM1) } as u32;
+            let dest = unsafe { *io.add(ARG0) } as usize;
+            let src = unsafe { *io.add(ARG1) } as usize;
+            let len = unsafe { *io.add(ARG2) } as usize;
+            do_memory_copy(ctx, dst_mem_idx, src_mem_idx, dest, src, len)
+        }
+        preserved_op::MEMORY_INIT => {
+            let mem_idx = unsafe { *io.add(IMM0) } as u32;
+            let data_idx = unsafe { *io.add(IMM1) } as u32;
+            let dest = unsafe { *io.add(ARG0) } as usize;
+            let src = unsafe { *io.add(ARG1) } as usize;
+            let len = unsafe { *io.add(ARG2) } as usize;
+            do_memory_init(ctx, mem_idx, data_idx, dest, src, len)
+        }
+        preserved_op::DATA_DROP => {
+            let data_idx = unsafe { *io.add(IMM0) } as u32;
+            let store = ctx.store_mut()
+                .ok_or_else(|| internal_error("native helper context is missing store"))?;
+            if let Some(data) = store.module_mut().data.get_mut(data_idx as usize) {
+                data.drop_segment();
+            }
+            Ok(())
+        }
+        preserved_op::TABLE_GROW => {
+            let table_idx = unsafe { *io.add(IMM0) } as u32;
+            let init_val = unsafe { *io.add(ARG0) };
+            let delta = unsafe { *io.add(ARG1) } as usize;
+            let result = do_table_grow(ctx, table_idx, init_val, delta)?;
+            unsafe { *io.add(RET0) = result; }
+            Ok(())
+        }
+        preserved_op::TABLE_FILL => {
+            let table_idx = unsafe { *io.add(IMM0) } as u32;
+            let start = unsafe { *io.add(ARG0) } as usize;
+            let val = unsafe { *io.add(ARG1) };
+            let len = unsafe { *io.add(ARG2) } as usize;
+            let table = table_mut(ctx, table_idx)?;
+            if start.saturating_add(len) > table.elements.len() {
+                return Err(trap_error("out of bounds table access"));
+            }
+            table.elements[start..start + len].fill(RefHandle::new(val as usize));
+            Ok(())
+        }
+        preserved_op::TABLE_COPY => {
+            let dst_tbl = unsafe { *io.add(IMM0) } as u32;
+            let src_tbl = unsafe { *io.add(IMM1) } as u32;
+            let dest = unsafe { *io.add(ARG0) } as usize;
+            let src = unsafe { *io.add(ARG1) } as usize;
+            let len = unsafe { *io.add(ARG2) } as usize;
+            do_table_copy(ctx, dst_tbl, src_tbl, dest, src, len)
+        }
+        preserved_op::TABLE_INIT => {
+            let table_idx = unsafe { *io.add(IMM0) } as u32;
+            let elem_idx = unsafe { *io.add(IMM1) } as u32;
+            let dest = unsafe { *io.add(ARG0) } as usize;
+            let src = unsafe { *io.add(ARG1) } as usize;
+            let len = unsafe { *io.add(ARG2) } as usize;
+            do_table_init(ctx, table_idx, elem_idx, dest, src, len)
+        }
+        preserved_op::ELEM_DROP => {
+            let elem_idx = unsafe { *io.add(IMM0) } as u32;
+            let store = ctx.store_mut()
+                .ok_or_else(|| internal_error("native helper context is missing store"))?;
+            if let Some(elem) = store.module_mut().elements.get_mut(elem_idx as usize) {
+                elem.drop_segment();
+            }
+            Ok(())
+        }
+        _ => Err(internal_error("unknown preserved-helper op code")),
+    }
+}
+
+/// Core memory.copy logic shared by boundary and preserved-helper paths.
+fn do_memory_copy(
+    ctx: &mut NativeContext,
+    dst_mem_idx: u32,
+    src_mem_idx: u32,
+    dest: usize,
+    src: usize,
+    len: usize,
+) -> Result<(), WasmError> {
+    let store = ctx.store_mut()
+        .ok_or_else(|| internal_error("native helper context is missing store"))?;
+    let di = dst_mem_idx as usize;
+    let si = src_mem_idx as usize;
+    if di >= store.module().memories.len() || si >= store.module().memories.len() {
+        return Err(internal_error("native helper referenced invalid memory index"));
+    }
+    if di == si {
+        let mem = store.memory_mut(di);
+        let mem_len = mem.memory_len();
+        if src.saturating_add(len) > mem_len || dest.saturating_add(len) > mem_len {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(mem.memory_ptr(), mem_len) };
+        data.copy_within(src..src + len, dest);
+    } else {
+        let module = store.module_mut();
+        let (src_mem, dst_mem) = if si < di {
+            let (left, right) = module.memories.split_at_mut(di);
+            (&left[si], &mut right[0])
+        } else {
+            let (left, right) = module.memories.split_at_mut(si);
+            (&right[0] as &MemInst, &mut left[di])
+        };
+        let sl = src_mem.memory_len();
+        let dl = dst_mem.memory_len();
+        if src.saturating_add(len) > sl || dest.saturating_add(len) > dl {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        let ss = unsafe { core::slice::from_raw_parts(src_mem.memory_ptr(), sl) };
+        let ds = unsafe { core::slice::from_raw_parts_mut(dst_mem.memory_ptr(), dl) };
+        ds[dest..dest + len].copy_from_slice(&ss[src..src + len]);
+    }
+    Ok(())
+}
+
+/// Core memory.init logic.
+fn do_memory_init(
+    ctx: &mut NativeContext,
+    mem_idx: u32,
+    data_idx: u32,
+    dest: usize,
+    src: usize,
+    len: usize,
+) -> Result<(), WasmError> {
+    let store = ctx.store_mut()
+        .ok_or_else(|| internal_error("native helper context is missing store"))?;
+    let module = store.module_mut();
+    let mi = mem_idx as usize;
+    let di = data_idx as usize;
+    if mi >= module.memories.len() {
+        return Err(internal_error("native helper referenced invalid memory index"));
+    }
+    if di >= module.data.len() {
+        return Err(trap_error("out of bounds memory access"));
+    }
+    let data_bytes = &module.data[di].bytes;
+    let data_dropped = module.data[di].is_dropped();
+    let mem_len = module.memories[mi].memory_len();
+    if len == 0 {
+        if src > data_bytes.len() || dest > mem_len {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        return Ok(());
+    }
+    if data_dropped {
+        return Err(trap_error("out of bounds memory access"));
+    }
+    if src.saturating_add(len) > data_bytes.len() {
+        return Err(trap_error("out of bounds memory access"));
+    }
+    if dest.saturating_add(len) > mem_len {
+        return Err(trap_error("out of bounds memory access"));
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            data_bytes[src..].as_ptr(),
+            module.memories[mi].memory_ptr().add(dest),
+            len,
+        );
+    }
+    Ok(())
+}
+
+/// Core table.grow logic.
+fn do_table_grow(
+    ctx: &mut NativeContext,
+    table_idx: u32,
+    init_val_raw: u64,
+    delta: usize,
+) -> Result<u64, WasmError> {
+    let fill = RefHandle::new(init_val_raw as usize);
+    let table = table_mut(ctx, table_idx)?;
+    let old_len = table.elements.len();
+    let result = match old_len.checked_add(delta) {
+        None => u32::MAX as u64,
+        Some(new_len) if new_len > table.limits.get_max() => u32::MAX as u64,
+        Some(_) if table.elements.try_reserve(delta).is_err() => u32::MAX as u64,
+        Some(new_len) => {
+            table.elements.resize_with(new_len, || fill);
+            old_len as u64
+        }
+    };
+    if result != u32::MAX as u64 {
+        ctx.refresh_table_views();
+    }
+    Ok(result)
+}
+
+/// Core table.copy logic.
+fn do_table_copy(
+    ctx: &mut NativeContext,
+    dst_tbl: u32,
+    src_tbl: u32,
+    dest: usize,
+    src: usize,
+    len: usize,
+) -> Result<(), WasmError> {
+    let store = ctx.store_mut()
+        .ok_or_else(|| internal_error("native helper context is missing store"))?;
+    let di = dst_tbl as usize;
+    let si = src_tbl as usize;
+    if di >= store.module().tables.len() || si >= store.module().tables.len() {
+        return Err(internal_error("native helper referenced invalid table index"));
+    }
+    if di == si {
+        let table = store.table_mut(di);
+        if src.saturating_add(len) > table.elements.len()
+            || dest.saturating_add(len) > table.elements.len()
+        {
+            return Err(trap_error("out of bounds table access"));
+        }
+        table.elements.copy_within(src..src + len, dest);
+    } else {
+        let module = store.module_mut();
+        let (src_table, dst_table) = if si < di {
+            let (left, right) = module.tables.split_at_mut(di);
+            (&left[si], &mut right[0])
+        } else {
+            let (left, right) = module.tables.split_at_mut(si);
+            (&right[0] as &TableInst, &mut left[di])
+        };
+        if src.saturating_add(len) > src_table.elements.len()
+            || dest.saturating_add(len) > dst_table.elements.len()
+        {
+            return Err(trap_error("out of bounds table access"));
+        }
+        dst_table.elements[dest..dest + len]
+            .copy_from_slice(&src_table.elements[src..src + len]);
+    }
+    Ok(())
+}
+
+/// Core table.init logic.
+fn do_table_init(
+    ctx: &mut NativeContext,
+    table_idx: u32,
+    elem_idx: u32,
+    dest: usize,
+    src: usize,
+    len: usize,
+) -> Result<(), WasmError> {
+    let store = ctx.store_mut()
+        .ok_or_else(|| internal_error("native helper context is missing store"))?;
+    let module = store.module_mut();
+    let ti = table_idx as usize;
+    let ei = elem_idx as usize;
+    if ti >= module.tables.len() {
+        return Err(internal_error("native helper referenced invalid table index"));
+    }
+    if ei >= module.elements.len() {
+        return Err(trap_error("out of bounds table access"));
+    }
+    let elem = &module.elements[ei];
+    if len == 0 {
+        if src > elem.refs.len() || dest > module.tables[ti].elements.len() {
+            return Err(trap_error("out of bounds table access"));
+        }
+        return Ok(());
+    }
+    if src.saturating_add(len) > elem.refs.len()
+        || dest.saturating_add(len) > module.tables[ti].elements.len()
+    {
+        return Err(trap_error("out of bounds table access"));
+    }
+    if elem.is_dropped() {
+        return Err(trap_error("out of bounds table access"));
+    }
+    for offset in 0..len {
+        module.tables[ti].elements[dest + offset] = module.elements[ei].refs[src + offset];
+    }
     Ok(())
 }
 

@@ -292,6 +292,42 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_memory_grow(*mem_idx, args, results)?;
                 LeafLowering::InPlace
             }
+            P::MemoryFill { imm0, .. } => {
+                self.lower_memory_fill(*imm0, args)?;
+                LeafLowering::InPlace
+            }
+            P::MemoryCopy { imm0, imm1 } => {
+                self.lower_memory_copy(*imm0, *imm1, args)?;
+                LeafLowering::InPlace
+            }
+            P::MemoryInit { imm0, imm1 } => {
+                self.lower_memory_init(*imm0, *imm1, args)?;
+                LeafLowering::InPlace
+            }
+            P::DataDrop { data_idx } => {
+                self.lower_data_drop(*data_idx)?;
+                LeafLowering::InPlace
+            }
+            P::TableGrow { table_idx } => {
+                self.lower_table_grow(*table_idx, args, results)?;
+                LeafLowering::InPlace
+            }
+            P::TableFill { imm0, .. } => {
+                self.lower_table_fill(*imm0, args)?;
+                LeafLowering::InPlace
+            }
+            P::TableCopy { imm0, imm1 } => {
+                self.lower_table_copy(*imm0, *imm1, args)?;
+                LeafLowering::InPlace
+            }
+            P::TableInit { imm0, imm1 } => {
+                self.lower_table_init(*imm0, *imm1, args)?;
+                LeafLowering::InPlace
+            }
+            P::ElemDrop { elem_idx } => {
+                self.lower_elem_drop(*elem_idx)?;
+                LeafLowering::InPlace
+            }
             P::GlobalGet { idx } => {
                 self.lower_global_get(*idx, results)?;
                 LeafLowering::InPlace

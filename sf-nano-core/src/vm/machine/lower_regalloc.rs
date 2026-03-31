@@ -773,8 +773,17 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. }
-        | MachineInstKind::MemoryGrow { dst, .. } => Some(*dst),
+        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryGrow { dst, .. }
+        | MachineInstKind::TableGrow { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryFill { .. }
+        | MachineInstKind::MemoryCopy { .. }
+        | MachineInstKind::MemoryInit { .. }
+        | MachineInstKind::DataDrop { .. }
+        | MachineInstKind::TableFill { .. }
+        | MachineInstKind::TableCopy { .. }
+        | MachineInstKind::TableInit { .. }
+        | MachineInstKind::ElemDrop { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -909,6 +918,26 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         MachineInstKind::MemoryGrow { delta, .. } => {
             visit_value_reg(delta, &mut visit);
         }
+        MachineInstKind::MemoryFill { dest, val, len, .. }
+        | MachineInstKind::TableFill { start: dest, val, len, .. } => {
+            visit_value_reg(dest, &mut visit);
+            visit_value_reg(val, &mut visit);
+            visit_value_reg(len, &mut visit);
+        }
+        MachineInstKind::MemoryCopy { dest, src, len, .. }
+        | MachineInstKind::MemoryInit { dest, src, len, .. }
+        | MachineInstKind::TableCopy { dest, src, len, .. }
+        | MachineInstKind::TableInit { dest, src, len, .. } => {
+            visit_value_reg(dest, &mut visit);
+            visit_value_reg(src, &mut visit);
+            visit_value_reg(len, &mut visit);
+        }
+        MachineInstKind::TableGrow { init_val, delta, .. } => {
+            visit_value_reg(init_val, &mut visit);
+            visit_value_reg(delta, &mut visit);
+        }
+        MachineInstKind::DataDrop { .. }
+        | MachineInstKind::ElemDrop { .. } => {}
     }
 }
 

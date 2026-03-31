@@ -3,7 +3,7 @@ pub(crate) mod backend;
 mod control;
 pub(crate) mod enc;
 mod fusion;
-pub(crate) mod helpers;
 mod inst;
 mod operands;
+mod preserved;
 pub(crate) mod reg;

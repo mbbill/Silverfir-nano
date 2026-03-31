@@ -27,8 +27,17 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. }
-        | MachineInstKind::MemoryGrow { dst, .. } => Some(*dst),
+        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryGrow { dst, .. }
+        | MachineInstKind::TableGrow { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryFill { .. }
+        | MachineInstKind::MemoryCopy { .. }
+        | MachineInstKind::MemoryInit { .. }
+        | MachineInstKind::DataDrop { .. }
+        | MachineInstKind::TableFill { .. }
+        | MachineInstKind::TableCopy { .. }
+        | MachineInstKind::TableInit { .. }
+        | MachineInstKind::ElemDrop { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -82,8 +91,17 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. }
-        | MachineInstKind::MemoryGrow { dst, .. } => *dst == reg,
+        | MachineInstKind::TestBits { dst, .. } => *dst == reg,
+        MachineInstKind::MemoryGrow { dst, .. }
+        | MachineInstKind::TableGrow { dst, .. } => *dst == reg,
+        MachineInstKind::MemoryFill { .. }
+        | MachineInstKind::MemoryCopy { .. }
+        | MachineInstKind::MemoryInit { .. }
+        | MachineInstKind::DataDrop { .. }
+        | MachineInstKind::TableFill { .. }
+        | MachineInstKind::TableCopy { .. }
+        | MachineInstKind::TableInit { .. }
+        | MachineInstKind::ElemDrop { .. } => false,
         MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
@@ -251,7 +269,24 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
         }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
         MachineInstKind::CallHelper(_) => {}
-        MachineInstKind::MemoryGrow { delta, .. } => f(delta),
+        MachineInstKind::MemoryGrow { delta, .. } => {
+            f(delta);
+        }
+        MachineInstKind::MemoryFill { dest, val, len, .. }
+        | MachineInstKind::TableFill { start: dest, val, len, .. } => {
+            f(dest); f(val); f(len);
+        }
+        MachineInstKind::MemoryCopy { dest, src, len, .. }
+        | MachineInstKind::MemoryInit { dest, src, len, .. }
+        | MachineInstKind::TableCopy { dest, src, len, .. }
+        | MachineInstKind::TableInit { dest, src, len, .. } => {
+            f(dest); f(src); f(len);
+        }
+        MachineInstKind::TableGrow { init_val, delta, .. } => {
+            f(init_val); f(delta);
+        }
+        MachineInstKind::DataDrop { .. }
+        | MachineInstKind::ElemDrop { .. } => {}
     }
 }
 

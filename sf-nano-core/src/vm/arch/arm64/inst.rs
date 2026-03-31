@@ -7,16 +7,15 @@ use crate::vm::machine::machine_ir::{
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
     MachineInstKind, MachineInst, MachineIndexExtend, MachineLoadExtension, MachineMemWidth,
     MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
-    MACHINE_CTX_REG,
 };
 
 use super::{abi, enc, reg::{Arm64FpReg, Arm64Reg}};
-use super::abi::{fp_machine_reg, map_fixed_reg, map_reg};
+use super::abi::{fp_machine_reg, map_reg};
 use super::operands::{PreparedGp, PreparedFp};
 
 use super::backend::BranchFixup;
 use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_int_cond, map_float_cond};
-use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_width, mem_width_bytes};
+use crate::vm::arch::common::helpers::{convert_result_float_width, mem_width_bytes};
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 use crate::vm::arch::common::text_emitter::TextEmitter;
 use crate::vm::arch::common::types::ParallelSource;
@@ -41,7 +40,7 @@ use crate::vm::machine::machine_ir::{is_fp_reg, fp_reg_index};
 // materialize_u64_into is defined at the end of this file as a free function.
 
 /// Map a MachineReg to a physical GP register, rejecting FP regs.
-fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
+pub(super) fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
     if is_fp_reg(reg, config) {
         return Err(WasmError::invalid(alloc::format!(
             "expected GP register, got FP machine reg {}", reg.0
@@ -323,6 +322,33 @@ inst: &MachineInst) -> Result<(), WasmError> {
         }
         MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
             self.lower_memory_grow(*mem_idx, *dst, *delta)
+        }
+        MachineInstKind::MemoryFill { mem_idx, dest, val, len } => {
+            self.lower_memory_fill(*mem_idx, *dest, *val, *len)
+        }
+        MachineInstKind::MemoryCopy { dst_mem, src_mem, dest, src, len } => {
+            self.lower_memory_copy(*dst_mem, *src_mem, *dest, *src, *len)
+        }
+        MachineInstKind::MemoryInit { mem_idx, data_idx, dest, src, len } => {
+            self.lower_memory_init(*mem_idx, *data_idx, *dest, *src, *len)
+        }
+        MachineInstKind::DataDrop { data_idx } => {
+            self.lower_data_drop(*data_idx)
+        }
+        MachineInstKind::TableGrow { table_idx, dst, init_val, delta } => {
+            self.lower_table_grow(*table_idx, *dst, *init_val, *delta)
+        }
+        MachineInstKind::TableFill { table_idx, start, val, len } => {
+            self.lower_table_fill(*table_idx, *start, *val, *len)
+        }
+        MachineInstKind::TableCopy { dst_tbl, src_tbl, dest, src, len } => {
+            self.lower_table_copy(*dst_tbl, *src_tbl, *dest, *src, *len)
+        }
+        MachineInstKind::TableInit { table_idx, elem_idx, dest, src, len } => {
+            self.lower_table_init(*table_idx, *elem_idx, *dest, *src, *len)
+        }
+        MachineInstKind::ElemDrop { elem_idx } => {
+            self.lower_elem_drop(*elem_idx)
         }
         // 32-bit legalized instructions -- should not reach arm64 codegen.
         MachineInstKind::Int64PairBinary { .. }
@@ -2079,7 +2105,7 @@ op: MachineConvertOp,
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
             }
         }
-        // Trapping truncations: call Rust helpers
+        // Trapping truncations: preserved-helper call
         MachineConvertOp::I32TruncF32S
         | MachineConvertOp::I32TruncF32U
         | MachineConvertOp::I32TruncF64S
@@ -2089,11 +2115,7 @@ op: MachineConvertOp,
         | MachineConvertOp::I64TruncF64S
         | MachineConvertOp::I64TruncF64U => {
             let dst_gp = self.map_gp_reg(dst)?;
-            let src_gp = prepare_gp(
-                self.core.compiled.backend(), &self.core.fp_reg_widths,
-                &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
-            self.lower_trapping_trunc(op, dst_gp, src_gp)?;
+            self.lower_trapping_trunc(op, dst_gp, src)?;
         }
         // Saturating truncations -- inline via native fcvtzs/fcvtzu
         // ARM64 fcvtzs/fcvtzu already matches Wasm saturating semantics:
@@ -2182,31 +2204,7 @@ op: MachineConvertOp,
     Ok(())
 }
 
-fn lower_trapping_trunc(&mut self,
-op: MachineConvertOp,
-    dst: Arm64Reg,
-    src: Arm64Reg,
-) -> Result<(), WasmError> {
-    use super::helpers::arm64_trapping_trunc;
-
-    // Call the helper: extern "C" fn(ctx, src_bits, op_code) -> status
-    self.core.text.emit_u32(enc::mov_reg_64(
-        abi::C_ARG0,
-        map_fixed_reg(MACHINE_CTX_REG),
-    ));
-    self.core.text.emit_u32(enc::mov_reg_64(abi::C_ARG1, src));
-    self.materialize_u64(abi::C_ARG2, convert_op_code(op));
-    let call_scratch = self.gp_scratch.scoped_alloc().release();
-    self.materialize_u64(call_scratch, arm64_trapping_trunc as usize as u64);
-    self.core.text.emit_u32(enc::blr(call_scratch));
-    // C_RET0 = status (0 = ok), C_RET1 = result value
-    let return_error_label = self.core.return_error_label;
-    self.lower_cbnz(abi::C_RET0, return_error_label);
-    self.core.text.emit_u32(enc::mov_reg_64(dst, abi::C_RET1));
-    Ok(())
-}
-
-// ── Preserved-helper call ───────────────────────────────────────────────────
+// ── Memory/table instruction lowering ────────────────────────────────────────
 
 fn lower_memory_grow(
     &mut self,
@@ -2214,152 +2212,318 @@ fn lower_memory_grow(
     dst: MachineReg,
     delta: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_helper, preserved_io, preserved_op};
-
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
     let dst_gp = map_gp(self.core.compiled.backend(), dst)?;
 
-    // ── 1. Allocate preserved-helper frame ──────────────────────────────
-    self.core.text.emit_u32(enc::sub_imm_64(
-        Arm64Reg::SP, Arm64Reg::SP, abi::PRESERVED_HELPER_FRAME_SIZE,
-    ));
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+    self.emit_io_store_value(preserved_io::ARG0, delta)?;
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW);
 
-    // ── 2. Save all caller-clobbered JIT registers ─────────────────────
-    self.emit_save_preserved_gp();
-    self.emit_save_preserved_fp();
-
-    // ── 3. Write arguments to I/O area (regs still valid after STP) ────
-    //   io[IMM0] = mem_idx
-    //   io[ARG0] = delta
-    let imm_scratch = Arm64Reg::X16;
-    materialize_u64_into(&mut self.core.text, imm_scratch, mem_idx as u64);
-    self.core.text.emit_u32(enc::str_64(
-        imm_scratch, Arm64Reg::SP, (preserved_io::IMM0 * 8 / 8) as u32,
-    ));
-    let delta_gp = prepare_gp(
-        self.core.compiled.backend(), &self.core.fp_reg_widths,
-        &mut self.core.text, &self.gp_scratch, delta,
-    )?.release();
-    self.core.text.emit_u32(enc::str_64(
-        delta_gp, Arm64Reg::SP, (preserved_io::ARG0 * 8 / 8) as u32,
-    ));
-
-    // ── 4. Call preserved_helper(ctx, op_code, io=SP) ──────────────────
-    self.core.text.emit_u32(enc::mov_reg_64(
-        abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG),
-    ));
-    materialize_u64_into(
-        &mut self.core.text, abi::C_ARG1, preserved_op::MEMORY_GROW as u64,
-    );
-    // SP cannot appear in ORR (reg 31 = XZR there); use ADD Xd, SP, #0.
-    self.core.text.emit_u32(enc::add_imm_64(abi::C_ARG2, Arm64Reg::SP, 0));
-    let call_scratch = Arm64Reg::X17;
-    materialize_u64_into(
-        &mut self.core.text, call_scratch, preserved_helper as usize as u64,
-    );
-    self.core.text.emit_u32(enc::blr(call_scratch));
-
-    // ── 5. Stash status and result in scratch regs ─────────────────────
-    //   X16 = status (C_RET0 = X0)
-    //   X17 = result from io[RET0]
-    self.core.text.emit_u32(enc::mov_reg_64(Arm64Reg::X16, abi::C_RET0));
-    self.core.text.emit_u32(enc::ldr_64(
-        Arm64Reg::X17, Arm64Reg::SP, (preserved_io::RET0 * 8 / 8) as u32,
-    ));
-
-    // ── 6. Restore all caller-clobbered JIT registers ──────────────────
-    self.emit_restore_preserved_fp();
-    self.emit_restore_preserved_gp();
-
-    // ── 7. Deallocate preserved-helper frame ───────────────────────────
-    self.core.text.emit_u32(enc::add_imm_64(
-        Arm64Reg::SP, Arm64Reg::SP, abi::PRESERVED_HELPER_FRAME_SIZE,
-    ));
-
-    // ── 8. Check status and deliver result ──────────────────────────────
-    let return_error_label = self.core.return_error_label;
-    self.lower_cbnz(Arm64Reg::X16, return_error_label);
     self.core.text.emit_u32(enc::mov_reg_64(dst_gp, Arm64Reg::X17));
     Ok(())
 }
 
-/// Save all caller-clobbered GP registers (STP pairs at GP_OFFSET).
+fn lower_memory_fill(
+    &mut self,
+    mem_idx: u32,
+    dest: MachineValue,
+    val: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+    self.emit_io_store_value(preserved_io::ARG0, dest)?;
+    self.emit_io_store_value(preserved_io::ARG1, val)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL);
+    Ok(())
+}
+
+fn lower_memory_copy(
+    &mut self,
+    dst_mem: u32,
+    src_mem: u32,
+    dest: MachineValue,
+    src: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
+    self.emit_io_store_imm(preserved_io::IMM1, src_mem);
+    self.emit_io_store_value(preserved_io::ARG0, dest)?;
+    self.emit_io_store_value(preserved_io::ARG1, src)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY);
+    Ok(())
+}
+
+fn lower_memory_init(
+    &mut self,
+    mem_idx: u32,
+    data_idx: u32,
+    dest: MachineValue,
+    src: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+    self.emit_io_store_imm(preserved_io::IMM1, data_idx);
+    self.emit_io_store_value(preserved_io::ARG0, dest)?;
+    self.emit_io_store_value(preserved_io::ARG1, src)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_INIT);
+    Ok(())
+}
+
+fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, data_idx);
+    self.emit_preserved_call_and_close(preserved_op::DATA_DROP);
+    Ok(())
+}
+
+fn lower_table_grow(
+    &mut self,
+    table_idx: u32,
+    dst: MachineReg,
+    init_val: MachineValue,
+    delta: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+    let dst_gp = map_gp(self.core.compiled.backend(), dst)?;
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+    self.emit_io_store_value(preserved_io::ARG0, init_val)?;
+    self.emit_io_store_value(preserved_io::ARG1, delta)?;
+    self.emit_preserved_call_and_close(preserved_op::TABLE_GROW);
+
+    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, Arm64Reg::X17));
+    Ok(())
+}
+
+fn lower_table_fill(
+    &mut self,
+    table_idx: u32,
+    start: MachineValue,
+    val: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+    self.emit_io_store_value(preserved_io::ARG0, start)?;
+    self.emit_io_store_value(preserved_io::ARG1, val)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::TABLE_FILL);
+    Ok(())
+}
+
+fn lower_table_copy(
+    &mut self,
+    dst_tbl: u32,
+    src_tbl: u32,
+    dest: MachineValue,
+    src: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, dst_tbl);
+    self.emit_io_store_imm(preserved_io::IMM1, src_tbl);
+    self.emit_io_store_value(preserved_io::ARG0, dest)?;
+    self.emit_io_store_value(preserved_io::ARG1, src)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::TABLE_COPY);
+    Ok(())
+}
+
+fn lower_table_init(
+    &mut self,
+    table_idx: u32,
+    elem_idx: u32,
+    dest: MachineValue,
+    src: MachineValue,
+    len: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+    self.emit_io_store_imm(preserved_io::IMM1, elem_idx);
+    self.emit_io_store_value(preserved_io::ARG0, dest)?;
+    self.emit_io_store_value(preserved_io::ARG1, src)?;
+    self.emit_io_store_value(preserved_io::ARG2, len)?;
+    self.emit_preserved_call_and_close(preserved_op::TABLE_INIT);
+    Ok(())
+}
+
+fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
+    self.emit_preserved_frame_open();
+    self.emit_io_store_imm(preserved_io::IMM0, elem_idx);
+    self.emit_preserved_call_and_close(preserved_op::ELEM_DROP);
+    Ok(())
+}
+
+// ── Inline trapping truncation ───────────────────────────────────────────────
+
+/// Inline trapping truncation: NaN check + bounds check + FCVTZS/FCVTZU.
 ///
-/// Saves GP transients then caller-saved GP local-cache, both derived
-/// from `REG_PLAN`.
-fn emit_save_preserved_gp(&mut self) {
-    let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
-    let mut slot = 0u32;
-    for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
-        let mut i = 0;
-        while i + 1 < regs.len() {
-            self.core.text.emit_u32(enc::stp_64(
-                regs[i], regs[i + 1], Arm64Reg::SP,
-                ((base_off + slot * 8) / 8) as i32,
-            ));
-            slot += 2;
-            i += 2;
-        }
-        if i < regs.len() {
-            self.core.text.emit_u32(enc::str_64(
-                regs[i], Arm64Reg::SP, (base_off + slot * 8) / 8,
-            ));
-            slot += 1;
-        }
-    }
-}
+/// The error path is a one-way trap exit — no register preservation needed.
+/// The fast path (common case) is just a few inline instructions.
+fn lower_trapping_trunc(
+    &mut self,
+    op: MachineConvertOp,
+    dst: Arm64Reg,
+    src: MachineValue,
+) -> Result<(), WasmError> {
+    let spec = trunc_spec(op);
 
-/// Restore all caller-clobbered GP registers (LDP pairs at GP_OFFSET).
-fn emit_restore_preserved_gp(&mut self) {
-    let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
-    let mut slot = 0u32;
-    for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
-        let mut i = 0;
-        while i + 1 < regs.len() {
-            self.core.text.emit_u32(enc::ldp_64(
-                regs[i], regs[i + 1], Arm64Reg::SP,
-                ((base_off + slot * 8) / 8) as i32,
-            ));
-            slot += 2;
-            i += 2;
-        }
-        if i < regs.len() {
-            self.core.text.emit_u32(enc::ldr_64(
-                regs[i], Arm64Reg::SP, (base_off + slot * 8) / 8,
-            ));
-            slot += 1;
-        }
-    }
-}
+    // Get source into an FP scratch register.
+    let src_fp = *self.fp_scratch.scoped_alloc();
+    let src_gp = prepare_gp(
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, src,
+    )?.release();
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fmov_s_from_gp(src_fp, src_gp)
+    } else {
+        enc::fmov_d_from_gp(src_fp, src_gp)
+    });
 
-/// Save all caller-clobbered FP registers (individual STR_D at FP_OFFSET).
-fn emit_save_preserved_fp(&mut self) {
-    let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
-    let mut slot = 0u32;
-    for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
-        for reg in regs.iter().copied() {
-            self.core.text.emit_u32(enc::str_d(
-                reg, Arm64Reg::SP, (base_off + slot * 8) / 8,
-            ));
-            slot += 1;
-        }
-    }
-}
+    // 1. NaN check: FCMP src, src — NaN ≠ NaN sets V flag.
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fcmp_s(src_fp, src_fp)
+    } else {
+        enc::fcmp_d(src_fp, src_fp)
+    });
+    let trap_nan = self.core.ensure_trap_label(MachineTrapKind::InvalidConversion);
+    self.lower_b_cond(enc::Cond::Vs, trap_nan);
 
-/// Restore all caller-clobbered FP registers (individual LDR_D at FP_OFFSET).
-fn emit_restore_preserved_fp(&mut self) {
-    let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
-    let mut slot = 0u32;
-    for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
-        for reg in regs.iter().copied() {
-            self.core.text.emit_u32(enc::ldr_d(
-                reg, Arm64Reg::SP, (base_off + slot * 8) / 8,
-            ));
-            slot += 1;
-        }
-    }
+    // 2. Upper bound check: FCMP src, upper — trap if src >= upper.
+    let bound_fp = *self.fp_scratch.scoped_alloc();
+    materialize_u64_into(&mut self.core.text, Arm64Reg::X16, spec.upper_bits);
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fmov_s_from_gp(bound_fp, Arm64Reg::X16)
+    } else {
+        enc::fmov_d_from_gp(bound_fp, Arm64Reg::X16)
+    });
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fcmp_s(src_fp, bound_fp)
+    } else {
+        enc::fcmp_d(src_fp, bound_fp)
+    });
+    let trap_overflow = self.core.ensure_trap_label(MachineTrapKind::IntegerOverflow);
+    self.lower_b_cond(enc::Cond::Ge, trap_overflow);
+
+    // 3. Lower bound check: FCMP src, lower — trap condition depends on variant.
+    materialize_u64_into(&mut self.core.text, Arm64Reg::X16, spec.lower_bits);
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fmov_s_from_gp(bound_fp, Arm64Reg::X16)
+    } else {
+        enc::fmov_d_from_gp(bound_fp, Arm64Reg::X16)
+    });
+    self.core.text.emit_u32(if spec.src_f32 {
+        enc::fcmp_s(src_fp, bound_fp)
+    } else {
+        enc::fcmp_d(src_fp, bound_fp)
+    });
+    // Signed: trap if src < lower (Mi after NaN ruled out).
+    // Unsigned: trap if src <= lower (Ls after NaN ruled out).
+    self.lower_b_cond(spec.lower_cond, trap_overflow);
+
+    // 4. Safe conversion — value is in range and not NaN.
+    self.core.text.emit_u32((spec.fcvt)(dst, src_fp));
+    Ok(())
 }
 
 } // impl Arm64Backend (inst.rs)
+
+// ── Trapping trunc specification ────────────────────────────────────────────
+
+/// Compile-time specification for one trapping trunc variant.
+struct TruncSpec {
+    src_f32: bool,
+    upper_bits: u64,
+    lower_bits: u64,
+    lower_cond: enc::Cond,
+    fcvt: fn(Arm64Reg, Arm64FpReg) -> u32,
+}
+
+fn trunc_spec(op: MachineConvertOp) -> TruncSpec {
+    match op {
+        MachineConvertOp::I32TruncF32S => TruncSpec {
+            src_f32: true,
+            upper_bits: 2147483648.0_f32.to_bits() as u64,    // 2^31
+            lower_bits: (-2147483648.0_f32).to_bits() as u64,  // -2^31
+            lower_cond: enc::Cond::Mi, // trap if src < lower
+            fcvt: enc::fcvtzs_32_s,
+        },
+        MachineConvertOp::I32TruncF32U => TruncSpec {
+            src_f32: true,
+            upper_bits: 4294967296.0_f32.to_bits() as u64,    // 2^32
+            lower_bits: (-1.0_f32).to_bits() as u64,           // -1.0
+            lower_cond: enc::Cond::Ls, // trap if src <= lower
+            fcvt: enc::fcvtzu_32_s,
+        },
+        MachineConvertOp::I32TruncF64S => TruncSpec {
+            src_f32: false,
+            upper_bits: 2147483648.0_f64.to_bits(),
+            lower_bits: (-2147483649.0_f64).to_bits(),
+            lower_cond: enc::Cond::Ls, // trap if src <= lower
+            fcvt: enc::fcvtzs_32_d,
+        },
+        MachineConvertOp::I32TruncF64U => TruncSpec {
+            src_f32: false,
+            upper_bits: 4294967296.0_f64.to_bits(),
+            lower_bits: (-1.0_f64).to_bits(),
+            lower_cond: enc::Cond::Ls, // trap if src <= lower
+            fcvt: enc::fcvtzu_32_d,
+        },
+        MachineConvertOp::I64TruncF32S => TruncSpec {
+            src_f32: true,
+            upper_bits: 9223372036854775808.0_f32.to_bits() as u64,    // 2^63
+            lower_bits: (-9223372036854775808.0_f32).to_bits() as u64,  // -2^63
+            lower_cond: enc::Cond::Mi, // trap if src < lower
+            fcvt: enc::fcvtzs_64_s,
+        },
+        MachineConvertOp::I64TruncF32U => TruncSpec {
+            src_f32: true,
+            upper_bits: 18446744073709551616.0_f32.to_bits() as u64, // 2^64
+            lower_bits: (-1.0_f32).to_bits() as u64,
+            lower_cond: enc::Cond::Ls, // trap if src <= lower
+            fcvt: enc::fcvtzu_64_s,
+        },
+        MachineConvertOp::I64TruncF64S => TruncSpec {
+            src_f32: false,
+            upper_bits: 9223372036854775808.0_f64.to_bits(),
+            lower_bits: (-9223372036854775808.0_f64).to_bits(),
+            lower_cond: enc::Cond::Mi, // trap if src < lower
+            fcvt: enc::fcvtzs_64_d,
+        },
+        MachineConvertOp::I64TruncF64U => TruncSpec {
+            src_f32: false,
+            upper_bits: 18446744073709551616.0_f64.to_bits(),
+            lower_bits: (-1.0_f64).to_bits(),
+            lower_cond: enc::Cond::Ls, // trap if src <= lower
+            fcvt: enc::fcvtzu_64_d,
+        },
+        _ => unreachable!("not a trapping trunc op"),
+    }
+}
 
 // ── Free helper (not a method — operates on TextEmitter directly) ────────────
 

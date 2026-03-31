@@ -22,17 +22,6 @@ impl SsaLeafOp {
 }
 
 #[inline]
-pub(crate) fn is_boundary_primitive(kind: &PrimitiveOpKind) -> bool {
-    matches!(
-        kind,
-        PrimitiveOpKind::MemoryFill { .. }
-            | PrimitiveOpKind::MemoryCopy { .. }
-            | PrimitiveOpKind::TableGrow { .. }
-            | PrimitiveOpKind::TableFill { .. }
-            | PrimitiveOpKind::TableCopy { .. }
-            | PrimitiveOpKind::MemoryInit { .. }
-            | PrimitiveOpKind::DataDrop { .. }
-            | PrimitiveOpKind::TableInit { .. }
-            | PrimitiveOpKind::ElemDrop { .. }
-    )
+pub(crate) fn is_boundary_primitive(_kind: &PrimitiveOpKind) -> bool {
+    false
 }
