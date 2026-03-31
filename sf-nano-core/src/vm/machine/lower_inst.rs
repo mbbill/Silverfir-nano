@@ -288,6 +288,10 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_memory_size(*mem_idx, results)?;
                 LeafLowering::InPlace
             }
+            P::MemoryGrow { mem_idx } => {
+                self.lower_memory_grow(*mem_idx, args, results)?;
+                LeafLowering::InPlace
+            }
             P::GlobalGet { idx } => {
                 self.lower_global_get(*idx, results)?;
                 LeafLowering::InPlace

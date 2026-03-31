@@ -30,12 +30,18 @@ struct RegPlan {
     // GP budget unit size
     gp_unit_bytes: u8,
     // GP dynamic partition (ordered: cache first, then transient)
+    //   gp_local_cache: first `gp_local_cache_callee_saved` entries are
+    //   ABI callee-saved; the remainder are caller-saved.
     gp_local_cache: &'static [Arm64Reg],
+    gp_local_cache_callee_saved: usize,
     gp_transient: &'static [Arm64Reg],
     gp_scratch: &'static [Arm64Reg],
     // FP dynamic partition (ordered: transient first, then cache)
+    //   fp_local_cache: first `fp_local_cache_callee_saved` entries are
+    //   ABI callee-saved; the remainder are caller-saved.
     fp_transient: &'static [Arm64FpReg],
     fp_local_cache: &'static [Arm64FpReg],
+    fp_local_cache_callee_saved: usize,
     fp_scratch: &'static [Arm64FpReg],
     // Callee-saved sets
     callee_saved_gp_pairs: &'static [(Arm64Reg, Arm64Reg)],
@@ -53,12 +59,14 @@ const REG_PLAN: RegPlan = RegPlan {
     gp_unit_bytes: 8,
 
     gp_local_cache: &[
+        // callee-saved (first 6)
         Arm64Reg::X23,
         Arm64Reg::X24,
         Arm64Reg::X25,
         Arm64Reg::X26,
         Arm64Reg::X27,
         Arm64Reg::X28,
+        // caller-saved (remaining)
         Arm64Reg::X9,
         Arm64Reg::X10,
         Arm64Reg::X11,
@@ -67,6 +75,7 @@ const REG_PLAN: RegPlan = RegPlan {
         Arm64Reg::X14,
         Arm64Reg::X15,
     ],
+    gp_local_cache_callee_saved: 6,
     gp_transient: &[
         Arm64Reg::X3,
         Arm64Reg::X4,
@@ -93,6 +102,7 @@ const REG_PLAN: RegPlan = RegPlan {
         Arm64FpReg::new(20),
     ],
     fp_local_cache: &[
+        // callee-saved (first 8)
         Arm64FpReg::new(8),
         Arm64FpReg::new(9),
         Arm64FpReg::new(10),
@@ -101,6 +111,7 @@ const REG_PLAN: RegPlan = RegPlan {
         Arm64FpReg::new(13),
         Arm64FpReg::new(14),
         Arm64FpReg::new(15),
+        // caller-saved (remaining)
         Arm64FpReg::new(21),
         Arm64FpReg::new(22),
         Arm64FpReg::new(23),
@@ -113,6 +124,7 @@ const REG_PLAN: RegPlan = RegPlan {
         Arm64FpReg::new(30),
         Arm64FpReg::new(31),
     ],
+    fp_local_cache_callee_saved: 8,
     fp_scratch: &[Arm64FpReg::new(0), Arm64FpReg::new(1), Arm64FpReg::new(2)],
 
     callee_saved_gp_pairs: &[
@@ -273,3 +285,54 @@ pub(super) fn fp_machine_reg(index: usize) -> Option<Arm64FpReg> {
         REG_PLAN.fp_transient.get(i).copied()
     }
 }
+
+// ── Preserved-helper save sets ──────────────────────────────────────────────
+//
+// Derived from REG_PLAN — not duplicated.  The preserved-helper wrapper
+// saves all caller-clobbered registers that may hold live JIT state:
+//   GP: all transients + caller-saved local-cache
+//   FP: all transients + caller-saved local-cache
+
+/// All GP transient registers (all caller-saved).
+pub(super) fn gp_transient_regs() -> &'static [Arm64Reg] { REG_PLAN.gp_transient }
+
+/// Caller-saved portion of the GP local cache (after the callee-saved prefix).
+pub(super) fn gp_caller_saved_cache() -> &'static [Arm64Reg] {
+    &REG_PLAN.gp_local_cache[REG_PLAN.gp_local_cache_callee_saved..]
+}
+
+/// All FP transient registers (all caller-saved).
+pub(super) fn fp_transient_regs() -> &'static [Arm64FpReg] { REG_PLAN.fp_transient }
+
+/// Caller-saved portion of the FP local cache (after the callee-saved prefix).
+pub(super) fn fp_caller_saved_cache() -> &'static [Arm64FpReg] {
+    &REG_PLAN.fp_local_cache[REG_PLAN.fp_local_cache_callee_saved..]
+}
+
+/// Total number of GP registers saved by the preserved-helper.
+const PRESERVED_GP_COUNT: usize =
+    REG_PLAN.gp_transient.len()
+    + REG_PLAN.gp_local_cache.len() - REG_PLAN.gp_local_cache_callee_saved;
+
+/// Total number of FP registers saved by the preserved-helper.
+const PRESERVED_FP_COUNT: usize =
+    REG_PLAN.fp_transient.len()
+    + REG_PLAN.fp_local_cache.len() - REG_PLAN.fp_local_cache_callee_saved;
+
+const fn preserved_io_size() -> u32 {
+    crate::vm::runtime::helpers::preserved_io::SLOT_COUNT as u32 * 8
+}
+
+/// Byte offset of the GP save area within the preserved-helper frame.
+pub(super) const PRESERVED_HELPER_GP_OFFSET: u32 = preserved_io_size();
+
+/// Byte offset of the FP save area within the preserved-helper frame.
+pub(super) const PRESERVED_HELPER_FP_OFFSET: u32 =
+    PRESERVED_HELPER_GP_OFFSET + PRESERVED_GP_COUNT as u32 * 8;
+
+/// Stack frame size for the preserved-helper save area + I/O region,
+/// rounded up to 16-byte alignment.
+pub(super) const PRESERVED_HELPER_FRAME_SIZE: u32 = {
+    let raw = PRESERVED_HELPER_FP_OFFSET + PRESERVED_FP_COUNT as u32 * 8;
+    raw.div_ceil(16) * 16
+};

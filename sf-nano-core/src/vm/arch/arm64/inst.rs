@@ -321,6 +321,9 @@ inst: &MachineInst) -> Result<(), WasmError> {
         MachineInstKind::TestBits { width, kind, dst, src, mask } => {
             self.lower_test_bits(*width, *kind, *dst, *src, *mask)
         }
+        MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
+            self.lower_memory_grow(*mem_idx, *dst, *delta)
+        }
         // 32-bit legalized instructions -- should not reach arm64 codegen.
         MachineInstKind::Int64PairBinary { .. }
         | MachineInstKind::Int64PairUnary { .. }
@@ -2201,6 +2204,159 @@ op: MachineConvertOp,
     self.lower_cbnz(abi::C_RET0, return_error_label);
     self.core.text.emit_u32(enc::mov_reg_64(dst, abi::C_RET1));
     Ok(())
+}
+
+// ── Preserved-helper call ───────────────────────────────────────────────────
+
+fn lower_memory_grow(
+    &mut self,
+    mem_idx: u32,
+    dst: MachineReg,
+    delta: MachineValue,
+) -> Result<(), WasmError> {
+    use crate::vm::runtime::helpers::{preserved_helper, preserved_io, preserved_op};
+
+    let dst_gp = map_gp(self.core.compiled.backend(), dst)?;
+
+    // ── 1. Allocate preserved-helper frame ──────────────────────────────
+    self.core.text.emit_u32(enc::sub_imm_64(
+        Arm64Reg::SP, Arm64Reg::SP, abi::PRESERVED_HELPER_FRAME_SIZE,
+    ));
+
+    // ── 2. Save all caller-clobbered JIT registers ─────────────────────
+    self.emit_save_preserved_gp();
+    self.emit_save_preserved_fp();
+
+    // ── 3. Write arguments to I/O area (regs still valid after STP) ────
+    //   io[IMM0] = mem_idx
+    //   io[ARG0] = delta
+    let imm_scratch = Arm64Reg::X16;
+    materialize_u64_into(&mut self.core.text, imm_scratch, mem_idx as u64);
+    self.core.text.emit_u32(enc::str_64(
+        imm_scratch, Arm64Reg::SP, (preserved_io::IMM0 * 8 / 8) as u32,
+    ));
+    let delta_gp = prepare_gp(
+        self.core.compiled.backend(), &self.core.fp_reg_widths,
+        &mut self.core.text, &self.gp_scratch, delta,
+    )?.release();
+    self.core.text.emit_u32(enc::str_64(
+        delta_gp, Arm64Reg::SP, (preserved_io::ARG0 * 8 / 8) as u32,
+    ));
+
+    // ── 4. Call preserved_helper(ctx, op_code, io=SP) ──────────────────
+    self.core.text.emit_u32(enc::mov_reg_64(
+        abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG),
+    ));
+    materialize_u64_into(
+        &mut self.core.text, abi::C_ARG1, preserved_op::MEMORY_GROW as u64,
+    );
+    // SP cannot appear in ORR (reg 31 = XZR there); use ADD Xd, SP, #0.
+    self.core.text.emit_u32(enc::add_imm_64(abi::C_ARG2, Arm64Reg::SP, 0));
+    let call_scratch = Arm64Reg::X17;
+    materialize_u64_into(
+        &mut self.core.text, call_scratch, preserved_helper as usize as u64,
+    );
+    self.core.text.emit_u32(enc::blr(call_scratch));
+
+    // ── 5. Stash status and result in scratch regs ─────────────────────
+    //   X16 = status (C_RET0 = X0)
+    //   X17 = result from io[RET0]
+    self.core.text.emit_u32(enc::mov_reg_64(Arm64Reg::X16, abi::C_RET0));
+    self.core.text.emit_u32(enc::ldr_64(
+        Arm64Reg::X17, Arm64Reg::SP, (preserved_io::RET0 * 8 / 8) as u32,
+    ));
+
+    // ── 6. Restore all caller-clobbered JIT registers ──────────────────
+    self.emit_restore_preserved_fp();
+    self.emit_restore_preserved_gp();
+
+    // ── 7. Deallocate preserved-helper frame ───────────────────────────
+    self.core.text.emit_u32(enc::add_imm_64(
+        Arm64Reg::SP, Arm64Reg::SP, abi::PRESERVED_HELPER_FRAME_SIZE,
+    ));
+
+    // ── 8. Check status and deliver result ──────────────────────────────
+    let return_error_label = self.core.return_error_label;
+    self.lower_cbnz(Arm64Reg::X16, return_error_label);
+    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, Arm64Reg::X17));
+    Ok(())
+}
+
+/// Save all caller-clobbered GP registers (STP pairs at GP_OFFSET).
+///
+/// Saves GP transients then caller-saved GP local-cache, both derived
+/// from `REG_PLAN`.
+fn emit_save_preserved_gp(&mut self) {
+    let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
+    let mut slot = 0u32;
+    for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
+        let mut i = 0;
+        while i + 1 < regs.len() {
+            self.core.text.emit_u32(enc::stp_64(
+                regs[i], regs[i + 1], Arm64Reg::SP,
+                ((base_off + slot * 8) / 8) as i32,
+            ));
+            slot += 2;
+            i += 2;
+        }
+        if i < regs.len() {
+            self.core.text.emit_u32(enc::str_64(
+                regs[i], Arm64Reg::SP, (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
+        }
+    }
+}
+
+/// Restore all caller-clobbered GP registers (LDP pairs at GP_OFFSET).
+fn emit_restore_preserved_gp(&mut self) {
+    let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
+    let mut slot = 0u32;
+    for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
+        let mut i = 0;
+        while i + 1 < regs.len() {
+            self.core.text.emit_u32(enc::ldp_64(
+                regs[i], regs[i + 1], Arm64Reg::SP,
+                ((base_off + slot * 8) / 8) as i32,
+            ));
+            slot += 2;
+            i += 2;
+        }
+        if i < regs.len() {
+            self.core.text.emit_u32(enc::ldr_64(
+                regs[i], Arm64Reg::SP, (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
+        }
+    }
+}
+
+/// Save all caller-clobbered FP registers (individual STR_D at FP_OFFSET).
+fn emit_save_preserved_fp(&mut self) {
+    let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
+    let mut slot = 0u32;
+    for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
+        for reg in regs.iter().copied() {
+            self.core.text.emit_u32(enc::str_d(
+                reg, Arm64Reg::SP, (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
+        }
+    }
+}
+
+/// Restore all caller-clobbered FP registers (individual LDR_D at FP_OFFSET).
+fn emit_restore_preserved_fp(&mut self) {
+    let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
+    let mut slot = 0u32;
+    for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
+        for reg in regs.iter().copied() {
+            self.core.text.emit_u32(enc::ldr_d(
+                reg, Arm64Reg::SP, (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
+        }
+    }
 }
 
 } // impl Arm64Backend (inst.rs)

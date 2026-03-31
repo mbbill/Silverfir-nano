@@ -470,6 +470,12 @@ impl MachineProgram {
                 self.validate_branch_cond(*cond, config)?;
             }
             MachineInstKind::CallHelper(_) => {}
+            MachineInstKind::MemoryGrow {
+                dst, delta, ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*delta, config)?;
+            }
         }
         Ok(())
     }

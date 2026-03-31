@@ -288,4 +288,16 @@ pub(crate) enum MachineInstKind {
         cond: MachineBranchCond,
     },
     CallHelper(MachineHelperCall),
+    /// Memory grow — arch-local preserved-helper call.
+    ///
+    /// The arch backend saves all caller-clobbered JIT registers, writes the
+    /// operands to a small I/O area on the native stack, calls the unified
+    /// preserved-helper dispatch, reads the result back, and restores all
+    /// saved registers.  From the machine-IR perspective this is a leaf
+    /// instruction with one input and one output.
+    MemoryGrow {
+        mem_idx: u32,
+        dst: MachineReg,
+        delta: MachineValue,
+    },
 }

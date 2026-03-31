@@ -25,8 +25,7 @@ impl SsaLeafOp {
 pub(crate) fn is_boundary_primitive(kind: &PrimitiveOpKind) -> bool {
     matches!(
         kind,
-        PrimitiveOpKind::MemoryGrow { .. }
-            | PrimitiveOpKind::MemoryFill { .. }
+        PrimitiveOpKind::MemoryFill { .. }
             | PrimitiveOpKind::MemoryCopy { .. }
             | PrimitiveOpKind::TableGrow { .. }
             | PrimitiveOpKind::TableFill { .. }

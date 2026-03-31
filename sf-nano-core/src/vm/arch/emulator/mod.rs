@@ -690,6 +690,9 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
+            MachineInstKind::MemoryGrow { .. } => {
+                unimplemented!("MemoryGrow in emulator")
+            }
         }
         Ok(())
     }

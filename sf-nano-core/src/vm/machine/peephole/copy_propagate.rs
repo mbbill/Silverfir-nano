@@ -256,6 +256,9 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallHelper(_) => {}
+        MachineInstKind::MemoryGrow { delta, .. } => {
+            rewrite_value(delta, aliases);
+        }
     }
 }
 

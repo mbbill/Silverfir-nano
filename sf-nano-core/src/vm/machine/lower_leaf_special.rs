@@ -75,6 +75,24 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn lower_memory_grow(
+        &mut self,
+        mem_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let delta = match single_arg(args)? {
+            SsaOperand::Value(v) => MachineValue::Reg(self.use_value(v)?),
+            SsaOperand::Const(bits) => MachineValue::Imm64(bits),
+        };
+        let dst = self.alloc_result_value(single_result(results)?)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::MemoryGrow { mem_idx, dst, delta },
+        });
+        self.emit_reload_mem0_cache_regs();
+        Ok(())
+    }
+
     pub(super) fn lower_global_get(&mut self, idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let ty = self.value_storage_type(result);

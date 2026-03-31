@@ -856,6 +856,13 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 call.target.0, call.metadata.0
             )
         }
+        MachineInstKind::MemoryGrow {
+            mem_idx,
+            dst,
+            delta,
+        } => {
+            format!("memory.grow mem={} r{} <- {}", mem_idx, dst.0, mval(delta))
+        }
     }
 }
 

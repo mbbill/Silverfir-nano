@@ -409,77 +409,69 @@ fn call_external_by_index(
     Ok(())
 }
 
+/// Core memory-grow logic shared by both the legacy boundary helper and the
+/// preserved-helper path.  Returns the Wasm result value (old page count on
+/// success, or the appropriate error sentinel).
+fn do_memory_grow(ctx: &mut NativeContext, mem_idx: u32, delta_raw: u64) -> Result<u64, WasmError> {
+    let mem = memory_mut(ctx, mem_idx)?;
+    let is_64 = mem.limits.is64;
+    let error_value = memory_grow_error_value(is_64);
+    let delta_pages = decode_memory_grow_delta(delta_raw, is_64);
+
+    let old_pages = mem.current_pages();
+    let result = match old_pages.checked_add(delta_pages) {
+        None => error_value,
+        Some(new_pages) if new_pages > mem.limits.get_max() => error_value,
+        Some(new_pages) => {
+            #[cfg(has_guard_pages)]
+            {
+                if let Some(guard) = mem.guard_mut() {
+                    match guard.grow(delta_pages) {
+                        Ok(_) => old_pages as u64,
+                        Err(_) => error_value,
+                    }
+                } else {
+                    grow_heap(mem, new_pages, old_pages, error_value)
+                }
+            }
+            #[cfg(not(has_guard_pages))]
+            {
+                grow_heap(mem, new_pages, old_pages, error_value)
+            }
+        }
+    };
+
+    if memory_grow_succeeded(result, error_value) {
+        ctx.refresh_memory_views();
+    }
+    Ok(result)
+}
+
+fn grow_heap(mem: &mut MemInst, new_pages: usize, old_pages: usize, error_value: u64) -> u64 {
+    if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
+        let additional = new_len.saturating_sub(mem.data.len());
+        if mem.data.try_reserve(additional).is_err() {
+            error_value
+        } else {
+            mem.data.resize(new_len, 0);
+            old_pages as u64
+        }
+    } else {
+        error_value
+    }
+}
+
 fn memory_grow_helper(
     ctx: &mut NativeContext,
     frame: *mut u64,
     meta: &MemoryGrowMeta,
 ) -> Result<(), WasmError> {
     require_region_slots(meta.io, 1, "memory.grow expects one io slot")?;
-
-    let delta_pages_raw =
+    let delta_raw =
         unsafe { region_read(frame, meta.io, 0, "memory.grow io slot is out of bounds")? };
-
-    let (result, error_value) = {
-        let mem = memory_mut(ctx, meta.mem_idx)?;
-        let is_64 = mem.limits.is64;
-        let error_value = memory_grow_error_value(is_64);
-        let delta_pages = decode_memory_grow_delta(delta_pages_raw, is_64);
-
-        let old_pages = mem.current_pages();
-        match old_pages.checked_add(delta_pages) {
-            None => (error_value, error_value),
-            Some(new_pages) if new_pages > mem.limits.get_max() => (error_value, error_value),
-            Some(new_pages) => {
-                #[cfg(has_guard_pages)]
-                {
-                    if let Some(guard) = mem.guard_mut() {
-                        match guard.grow(delta_pages) {
-                            Ok(_) => (old_pages as u64, error_value),
-                            Err(_) => (error_value, error_value),
-                        }
-                    } else {
-                        if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
-                            let additional = new_len.saturating_sub(mem.data.len());
-                            if mem.data.try_reserve(additional).is_err() {
-                                (error_value, error_value)
-                            } else {
-                                mem.data.resize(new_len, 0);
-                                (old_pages as u64, error_value)
-                            }
-                        } else {
-                            (error_value, error_value)
-                        }
-                    }
-                }
-                #[cfg(not(has_guard_pages))]
-                {
-                    if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
-                        let additional = new_len.saturating_sub(mem.data.len());
-                        if mem.data.try_reserve(additional).is_err() {
-                            (error_value, error_value)
-                        } else {
-                            mem.data.resize(new_len, 0);
-                            (old_pages as u64, error_value)
-                        }
-                    } else {
-                        (error_value, error_value)
-                    }
-                }
-            }
-        }
-    };
-
+    let result = do_memory_grow(ctx, meta.mem_idx, delta_raw)?;
     unsafe {
-        region_write(
-            frame,
-            meta.io,
-            0,
-            result,
-            "memory.grow io slot is out of bounds",
-        )?;
-    }
-    if memory_grow_succeeded(result, error_value) {
-        ctx.refresh_memory_views();
+        region_write(frame, meta.io, 0, result, "memory.grow io slot is out of bounds")?;
     }
     Ok(())
 }
@@ -903,6 +895,77 @@ fn elem_drop_helper(
     if let Some(elem) = store.module_mut().elements.get_mut(meta.elem_idx as usize) {
         elem.drop_segment();
     }
+    Ok(())
+}
+
+// ── Preserved-helper ABI ────────────────────────────────────────────────────
+//
+// Uniform calling convention for arch-local helper calls.  Every helper uses
+// the same C signature:
+//
+//     fn(ctx: *mut NativeContext, op_code: u32, io: *mut u64) -> u32
+//
+// `io` points to a small I/O area on the native stack.  The layout is
+// standardised across all operations:
+
+/// Preserved-helper I/O slot indices.
+pub(crate) mod preserved_io {
+    /// First immediate (mem_idx, table_idx, data_idx, elem_idx).
+    pub const IMM0: usize = 0;
+    /// Second immediate (src_mem_idx, src_table_idx) — zero when unused.
+    pub const IMM1: usize = 1;
+    /// First Wasm stack operand.
+    pub const ARG0: usize = 2;
+    /// Second Wasm stack operand.
+    pub const ARG1: usize = 3;
+    /// Third Wasm stack operand.
+    pub const ARG2: usize = 4;
+    /// Result written by the helper.
+    pub const RET0: usize = 5;
+    /// Total number of 8-byte slots in the I/O area.
+    pub const SLOT_COUNT: usize = 8;
+}
+
+/// Op-code constants for [`preserved_helper`].
+pub(crate) mod preserved_op {
+    pub const MEMORY_GROW: u32 = 0;
+}
+
+/// Unified preserved-helper entry point called from generated code.
+///
+/// # Safety
+///
+/// `ctx` must point to a valid `NativeContext` and `io` must point to at
+/// least `preserved_io::SLOT_COUNT` writable `u64` slots.
+pub(crate) unsafe extern "C" fn preserved_helper(
+    ctx: *mut NativeContext,
+    op_code: u32,
+    io: *mut u64,
+) -> u32 {
+    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+        return NativeHelperStatus::Error as u32;
+    };
+    let result = match op_code {
+        preserved_op::MEMORY_GROW => unsafe { preserved_memory_grow(ctx, io) },
+        _ => Err(internal_error("unknown preserved-helper op code")),
+    };
+    match result {
+        Ok(()) => NativeHelperStatus::Ok as u32,
+        Err(err) => {
+            set_ctx_error(ctx, err);
+            NativeHelperStatus::Error as u32
+        }
+    }
+}
+
+unsafe fn preserved_memory_grow(
+    ctx: &mut NativeContext,
+    io: *mut u64,
+) -> Result<(), WasmError> {
+    let mem_idx = unsafe { *io.add(preserved_io::IMM0) } as u32;
+    let delta_raw = unsafe { *io.add(preserved_io::ARG0) };
+    let result = do_memory_grow(ctx, mem_idx, delta_raw)?;
+    unsafe { *io.add(preserved_io::RET0) = result; }
     Ok(())
 }
 

@@ -773,7 +773,8 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
+        | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::MemoryGrow { dst, .. } => Some(*dst),
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -905,6 +906,9 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_branch_cond_regs(cond, &mut visit);
         }
         MachineInstKind::CallHelper(_) => {}
+        MachineInstKind::MemoryGrow { delta, .. } => {
+            visit_value_reg(delta, &mut visit);
+        }
     }
 }
 
