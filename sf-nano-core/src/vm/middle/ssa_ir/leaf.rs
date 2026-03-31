@@ -1,7 +1,6 @@
 //! SSA-IR leaf-op vocabulary.
 //!
-//! This wraps `PrimitiveOpKind` but excludes operations that are designated as
-//! true slot-based boundary ops in prepared SSA-IR.
+//! This wraps `PrimitiveOpKind` for use in prepared SSA-IR leaf instructions.
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
@@ -12,16 +11,11 @@ pub(crate) struct SsaLeafOp(PrimitiveOpKind);
 impl SsaLeafOp {
     #[inline]
     pub(crate) fn from_primitive(kind: PrimitiveOpKind) -> Option<Self> {
-        (!is_boundary_primitive(&kind)).then_some(Self(kind))
+        Some(Self(kind))
     }
 
     #[inline]
     pub(crate) fn primitive(&self) -> &PrimitiveOpKind {
         &self.0
     }
-}
-
-#[inline]
-pub(crate) fn is_boundary_primitive(_kind: &PrimitiveOpKind) -> bool {
-    false
 }

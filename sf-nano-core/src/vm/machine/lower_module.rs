@@ -284,18 +284,6 @@ fn lower_function(
                     lower.lower_inst(inst)?;
                 }
                 SsaInstKind::Boundary(boundary) => match boundary {
-                    SsaBoundaryOp::MemoryGrow { .. }
-                    | SsaBoundaryOp::MemoryFill { .. }
-                    | SsaBoundaryOp::MemoryCopy { .. }
-                    | SsaBoundaryOp::TableGrow { .. }
-                    | SsaBoundaryOp::TableFill { .. }
-                    | SsaBoundaryOp::TableCopy { .. }
-                    | SsaBoundaryOp::MemoryInit { .. }
-                    | SsaBoundaryOp::DataDrop { .. }
-                    | SsaBoundaryOp::TableInit { .. }
-                    | SsaBoundaryOp::ElemDrop { .. } => {
-                        lower.lower_runtime(boundary, sidecar)?;
-                    }
                     SsaBoundaryOp::CallExternal {
                         func_idx,
                         args,

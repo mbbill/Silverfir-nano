@@ -1059,151 +1059,6 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
 }
 
 #[test]
-fn lowers_runtime_memory_grow_through_frame_metadata() {
-    let frame = plan_frame_layout(0, 1, 3);
-    let ssa = SsaProgram {
-        entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
-        blocks: alloc::vec![SsaBlock {
-            id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow {
-                    mem_idx: 0,
-                    io: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
-                }),
-            }],
-            terminator: SsaTerminator::TrapUnreachable,
-        }],
-        value_types: alloc::vec![],
-        value_homes: alloc::vec![],
-        value_sink_local: alloc::vec![],
-    };
-
-    let lowered = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 4, 0, 2),
-        #[cfg(has_guard_pages)]
-        use_guard_pages: false,
-        functions: &[LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
-            frame,
-            ssa: &ssa,
-            result_count: 0,
-        }],
-    })
-    .expect("runtime helper lowering should succeed");
-
-    assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(
-        lowered.module.externs[0].symbol,
-        MachineHelperSymbol::MemoryGrow
-    );
-    assert_eq!(lowered.module.consts.len(), 1);
-    let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
-    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
-}
-
-#[test]
-fn lowers_memory_copy_through_frame_metadata() {
-    let frame = plan_frame_layout(0, 3, 3);
-    let ssa = SsaProgram {
-        entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
-        blocks: alloc::vec![SsaBlock {
-            id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy {
-                    dst_mem_idx: 0,
-                    src_mem_idx: 1,
-                    args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 3),
-                }),
-            }],
-            terminator: SsaTerminator::TrapUnreachable,
-        }],
-        value_types: alloc::vec![],
-        value_homes: alloc::vec![],
-        value_sink_local: alloc::vec![],
-    };
-
-    let lowered = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 4, 0, 2),
-        #[cfg(has_guard_pages)]
-        use_guard_pages: false,
-        functions: &[LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
-            frame,
-            ssa: &ssa,
-            result_count: 0,
-        }],
-    })
-    .expect("memory.copy helper lowering should succeed");
-
-    assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(
-        lowered.module.externs[0].symbol,
-        MachineHelperSymbol::MemoryCopy
-    );
-    assert_eq!(lowered.module.consts.len(), 1);
-    let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
-    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
-}
-
-#[test]
-fn lowers_table_fill_through_frame_metadata() {
-    let frame = plan_frame_layout(0, 3, 3);
-    let ssa = SsaProgram {
-        entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
-        blocks: alloc::vec![SsaBlock {
-            id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::TableFill {
-                    table_idx: 2,
-                    args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 3),
-                }),
-            }],
-            terminator: SsaTerminator::TrapUnreachable,
-        }],
-        value_types: alloc::vec![],
-        value_homes: alloc::vec![],
-        value_sink_local: alloc::vec![],
-    };
-
-    let lowered = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 4, 0, 2),
-        #[cfg(has_guard_pages)]
-        use_guard_pages: false,
-        functions: &[LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
-            frame,
-            ssa: &ssa,
-            result_count: 0,
-        }],
-    })
-    .expect("table.fill helper lowering should succeed");
-
-    assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(
-        lowered.module.externs[0].symbol,
-        MachineHelperSymbol::TableFill
-    );
-    assert_eq!(lowered.module.consts.len(), 1);
-    let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
-    assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
-}
-
-#[test]
 fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
     let ssa = SsaProgram {
@@ -1446,9 +1301,11 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow {
-                        mem_idx: 0,
-                        io: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
+                        func_idx: 0,
+                        args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                        results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -1493,9 +1350,9 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ..
         }
     ));
-    // ops[3]: flush cache to frame before runtime helper
+    // ops[3]: flush cache to frame before call helper
     assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    // ops[4]: runtime helper call (memory grow)
+    // ops[4]: call helper (call_external)
     assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
     // ops[5-6]: reload mem0 cache regs
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));

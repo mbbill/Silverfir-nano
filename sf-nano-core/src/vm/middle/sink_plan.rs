@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn does_not_sink_across_barrier() {
         // i32.const 1 -> v0
-        // boundary (e.g., memory.grow)
+        // boundary (e.g., call_external)
         // local.set x, v0 (version 1)
         let mut program = make_program(vec![
             SsaInst {
@@ -336,7 +336,16 @@ mod tests {
             },
             SsaInst {
                 kind: SsaInstKind::Boundary(
-                    crate::vm::middle::ssa_ir::ir::SsaBoundaryOp::DataDrop { data_idx: 0 },
+                    crate::vm::middle::ssa_ir::ir::SsaBoundaryOp::CallExternal {
+                        func_idx: 0,
+                        args: crate::vm::middle::frame::FrameSpan::new(
+                            crate::vm::middle::frame::FrameSlot(0), 0,
+                        ),
+                        results: crate::vm::middle::frame::FrameSpan::new(
+                            crate::vm::middle::frame::FrameSlot(0), 0,
+                        ),
+                        skip_reload: Vec::new(),
+                    },
                 ),
             },
             SsaInst {

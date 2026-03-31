@@ -193,7 +193,6 @@ pub(super) const C_ARG1: Arm64Reg = Arm64Reg::X1;
 pub(super) const C_ARG2: Arm64Reg = Arm64Reg::X2;
 pub(super) const C_ARG3: Arm64Reg = Arm64Reg::X3;
 pub(super) const C_RET0: Arm64Reg = Arm64Reg::X0;
-pub(super) const C_RET1: Arm64Reg = Arm64Reg::X1;
 
 // ── Derived config ───────────────────────────────────────────────────────────
 

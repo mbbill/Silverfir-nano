@@ -6,9 +6,7 @@ use crate::vm::{
         MachineHelperSymbol,
     },
     runtime::helper_meta::{
-        encode_record, CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-        MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta, TableCopyMeta,
-        TableFillMeta, TableGrowMeta, TableInitMeta,
+        encode_record, CallExternalMeta, CallIndirectExternalMeta,
     },
 };
 
@@ -51,46 +49,6 @@ impl SidecarBuilder {
         &mut self,
         meta: CallIndirectExternalMeta,
     ) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn memory_grow_meta(&mut self, meta: MemoryGrowMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn memory_fill_meta(&mut self, meta: MemoryFillMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn memory_copy_meta(&mut self, meta: MemoryCopyMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn table_grow_meta(&mut self, meta: TableGrowMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn table_fill_meta(&mut self, meta: TableFillMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn table_copy_meta(&mut self, meta: TableCopyMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn memory_init_meta(&mut self, meta: MemoryInitMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn data_drop_meta(&mut self, meta: DataDropMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn table_init_meta(&mut self, meta: TableInitMeta) -> MachineConstId {
-        self.push_encoded(meta)
-    }
-
-    pub(super) fn elem_drop_meta(&mut self, meta: ElemDropMeta) -> MachineConstId {
         self.push_encoded(meta)
     }
 

@@ -114,7 +114,7 @@ pub(super) fn lower_primitive(
     state.ops.push(SsaInst {
         kind: SsaInstKind::Value {
             op: SsaLeafOp::from_primitive(kind.clone())
-                .expect("non-boundary primitive must lower as a leaf op"),
+                .expect("primitive must lower as a leaf op"),
             args: args.into_iter().map(SsaOperand::Value).collect(),
             results: results.clone(),
         },
@@ -122,74 +122,6 @@ pub(super) fn lower_primitive(
     state.push_results(results, alloc::vec![result_ty; push as usize])
 }
 
-pub(super) fn lower_boundary_primitive(
-    kind: &PrimitiveOpKind,
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-) -> Result<(), WasmError> {
-    if !state.live().is_empty() {
-        return Err(WasmError::internal(
-            "boundary primitive reached SSA-IR lowering with live transient SSA values; preparation must spill all before the boundary".into(),
-        ));
-    }
-    let (pop, push) = primitive_op::stack_effect(kind);
-    let boundary_base = call_base_slot(frame, state.height(), pop as u16);
-    let boundary = match kind {
-        PrimitiveOpKind::MemoryGrow { mem_idx } => SsaBoundaryOp::MemoryGrow {
-            mem_idx: *mem_idx,
-            io: FrameSpan::new(boundary_base, 1),
-        },
-        PrimitiveOpKind::MemoryFill { imm0, .. } => SsaBoundaryOp::MemoryFill {
-            mem_idx: *imm0,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::MemoryCopy { imm0, imm1 } => SsaBoundaryOp::MemoryCopy {
-            dst_mem_idx: *imm0,
-            src_mem_idx: *imm1,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::TableGrow { table_idx } => SsaBoundaryOp::TableGrow {
-            table_idx: *table_idx,
-            args: FrameSpan::new(boundary_base, 2),
-            results: FrameSpan::new(boundary_base, 1),
-        },
-        PrimitiveOpKind::TableFill { imm0, .. } => SsaBoundaryOp::TableFill {
-            table_idx: *imm0,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::TableCopy { imm0, imm1 } => SsaBoundaryOp::TableCopy {
-            dst_table_idx: *imm0,
-            src_table_idx: *imm1,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::MemoryInit { imm0, imm1 } => SsaBoundaryOp::MemoryInit {
-            data_idx: *imm1,
-            mem_idx: *imm0,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::DataDrop { data_idx } => SsaBoundaryOp::DataDrop {
-            data_idx: *data_idx,
-        },
-        PrimitiveOpKind::TableInit { imm0, imm1 } => SsaBoundaryOp::TableInit {
-            elem_idx: *imm1,
-            table_idx: *imm0,
-            args: FrameSpan::new(boundary_base, 3),
-        },
-        PrimitiveOpKind::ElemDrop { elem_idx } => SsaBoundaryOp::ElemDrop {
-            elem_idx: *elem_idx,
-        },
-        _ => {
-            return Err(WasmError::internal(
-                "non-boundary primitive reached boundary lowering".into(),
-            ))
-        }
-    };
-    state.ops.push(SsaInst {
-        kind: SsaInstKind::Boundary(boundary),
-    });
-    state.finish_boundary(pop as u16, push as u16);
-    Ok(())
-}
 
 pub(super) fn lower_local_get(
     local_idx: u16,
@@ -395,11 +327,7 @@ pub(super) fn lower_block_body_op(
             ))
         }
         SemanticOpKind::Primitive(kind) => {
-            if crate::vm::middle::ssa_ir::leaf::is_boundary_primitive(kind) {
-                lower_boundary_primitive(kind, state, frame)
-            } else {
-                lower_primitive(kind, semantic_index, state, values, op_result_types)
-            }
+            lower_primitive(kind, semantic_index, state, values, op_result_types)
         }
         SemanticOpKind::LocalGet { idx } => {
             lower_local_get(*idx, state, frame, values, local_types, local_versions)

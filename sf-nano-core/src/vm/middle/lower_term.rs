@@ -11,7 +11,6 @@ use crate::{
             frame::FrameLayoutPlan,
             ssa_ir::{
                 ir::{SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaTerminator, SsaValue},
-                leaf::is_boundary_primitive,
                 target::SsaTarget,
             },
         },
@@ -26,7 +25,7 @@ use crate::{
 use super::{
     lower_edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     lower_ops::{
-        branch_payload, lower_boundary_primitive, lower_call_external, lower_call_indirect,
+        branch_payload, lower_call_external, lower_call_indirect,
         lower_call_internal, lower_local_get, lower_local_set, lower_local_tee,
         lower_prefix_actions, lower_primitive, return_results,
     },
@@ -64,11 +63,7 @@ pub(super) fn lower_block_terminator(
             Ok(LoweredTerminator::new(SsaTerminator::TrapUnreachable))
         }
         SemanticOpKind::Primitive(kind) => {
-            if is_boundary_primitive(kind) {
-                lower_boundary_primitive(kind, state, frame)?;
-            } else {
-                lower_primitive(kind, semantic_index, state, values, op_result_types)?;
-            }
+            lower_primitive(kind, semantic_index, state, values, op_result_types)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,

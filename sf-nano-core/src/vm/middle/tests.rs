@@ -1,7 +1,7 @@
 use crate::vm::{
     backend::BackendConfig,
     middle::{
-        ssa_ir::ir::{SsaBoundaryOp, SsaInstKind, SsaTerminator},
+        ssa_ir::ir::{SsaInstKind, SsaTerminator},
         PrepareInput, PreparedFunction,
     },
     wasm::{
@@ -32,7 +32,7 @@ fn test_backend_config_with_gp_unit_bytes(gp_unit_bytes: u8) -> BackendConfig {
 }
 
 #[test]
-fn prepares_memory_copy_as_boundary_op() {
+fn prepares_memory_copy_as_leaf_op() {
     let semantic = SemanticProgram {
         params: 0,
         results: 0,
@@ -77,16 +77,13 @@ fn prepares_memory_copy_as_boundary_op() {
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy {
-                dst_mem_idx: 0,
-                src_mem_idx: 1,
-                ..
-            })
+            SsaInstKind::Value { ref op, .. }
+                if matches!(op.primitive(), PrimitiveOpKind::MemoryCopy { imm0: 0, imm1: 1 })
         ))));
 }
 
 #[test]
-fn prepares_table_fill_as_boundary_op() {
+fn prepares_table_fill_as_leaf_op() {
     use crate::value_type::ValueType;
 
     let semantic = SemanticProgram {
@@ -133,7 +130,8 @@ fn prepares_table_fill_as_boundary_op() {
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            SsaInstKind::Boundary(SsaBoundaryOp::TableFill { table_idx: 2, .. })
+            SsaInstKind::Value { ref op, .. }
+                if matches!(op.primitive(), PrimitiveOpKind::TableFill { imm0: 2, .. })
         ))));
 }
 
@@ -183,11 +181,8 @@ fn prepares_memory_init_with_data_and_memory_indices_in_spec_order() {
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            SsaInstKind::Boundary(SsaBoundaryOp::MemoryInit {
-                data_idx: 7,
-                mem_idx: 4,
-                ..
-            })
+            SsaInstKind::Value { ref op, .. }
+                if matches!(op.primitive(), PrimitiveOpKind::MemoryInit { imm0: 4, imm1: 7 })
         ))));
 }
 
@@ -234,11 +229,8 @@ fn prepares_table_init_with_element_and_table_indices_in_spec_order() {
         .iter()
         .any(|block| block.ops.iter().any(|inst| matches!(
             inst.kind,
-            SsaInstKind::Boundary(SsaBoundaryOp::TableInit {
-                elem_idx: 8,
-                table_idx: 5,
-                ..
-            })
+            SsaInstKind::Value { ref op, .. }
+                if matches!(op.primitive(), PrimitiveOpKind::TableInit { imm0: 5, imm1: 8 })
         ))));
 }
 

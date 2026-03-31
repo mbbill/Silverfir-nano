@@ -55,16 +55,6 @@ pub(crate) struct MachineRuntimeContract {
 pub(crate) enum MachineHelperSymbol {
     CallExternal,
     CallIndirectExternal,
-    MemoryGrow,
-    MemoryFill,
-    MemoryCopy,
-    TableGrow,
-    TableFill,
-    TableCopy,
-    MemoryInit,
-    DataDrop,
-    TableInit,
-    ElemDrop,
 }
 
 /// One opaque external binding referenced from machine IR.

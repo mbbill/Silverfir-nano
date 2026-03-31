@@ -106,7 +106,7 @@ fn rejects_out_of_range_helper_metadata() {
         }],
         externs: alloc::vec![MachineExternBinding {
             id: MachineExternId(0),
-            symbol: MachineHelperSymbol::MemoryGrow,
+            symbol: MachineHelperSymbol::CallExternal,
         }],
     };
 

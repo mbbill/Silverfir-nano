@@ -224,35 +224,31 @@ fn plan_prefix(
             if matches!(kind, PrimitiveOpKind::Unreachable) {
                 return prefix;
             }
-            if crate::vm::middle::ssa_ir::leaf::is_boundary_primitive(kind) {
-                spill_all(&mut prefix, state, frame);
-            } else {
-                let (pop, push) = primitive_op::stack_effect(kind);
-                if push > 0 {
-                    let push_ty = if matches!(kind, PrimitiveOpKind::Select) {
-                        state
-                            .type_stack
-                            .len()
-                            .checked_sub(3)
-                            .and_then(|idx| state.type_stack.get(idx).copied())
-                            .or_else(|| primitive_result_type(kind, op_index, op_result_types))
-                    } else {
-                        primitive_result_type(kind, op_index, op_result_types)
-                    };
-                    spill_before_result_push(
-                        &mut prefix,
-                        state,
-                        frame,
-                        gp_unit_bytes,
-                        gp_transient_budget,
-                        fp_transient_budget,
-                        pop as u16,
-                        push as u16,
-                        push_ty.unwrap_or(ValueType::I64),
-                    );
-                }
-                fill_for_operands(&mut prefix, state, frame, pop as u16);
+            let (pop, push) = primitive_op::stack_effect(kind);
+            if push > 0 {
+                let push_ty = if matches!(kind, PrimitiveOpKind::Select) {
+                    state
+                        .type_stack
+                        .len()
+                        .checked_sub(3)
+                        .and_then(|idx| state.type_stack.get(idx).copied())
+                        .or_else(|| primitive_result_type(kind, op_index, op_result_types))
+                } else {
+                    primitive_result_type(kind, op_index, op_result_types)
+                };
+                spill_before_result_push(
+                    &mut prefix,
+                    state,
+                    frame,
+                    gp_unit_bytes,
+                    gp_transient_budget,
+                    fp_transient_budget,
+                    pop as u16,
+                    push as u16,
+                    push_ty.unwrap_or(ValueType::I64),
+                );
             }
+            fill_for_operands(&mut prefix, state, frame, pop as u16);
         }
         SemanticOpKind::LocalGet { idx } => {
             let push_ty = state.local_type(*idx);

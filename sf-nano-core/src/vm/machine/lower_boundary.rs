@@ -8,14 +8,9 @@ use crate::{
             MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
             MachineValue,
         },
-        middle::{
-            frame::{FrameSlot, FrameSpan},
-            ssa_ir::ir::SsaBoundaryOp,
-        },
+        middle::frame::{FrameSlot, FrameSpan},
         runtime::helper_meta::{
-            CallExternalMeta, CallIndirectExternalMeta, DataDropMeta, ElemDropMeta,
-            HelperFrameRegion, MemoryCopyMeta, MemoryFillMeta, MemoryGrowMeta, MemoryInitMeta,
-            TableCopyMeta, TableFillMeta, TableGrowMeta, TableInitMeta,
+            CallExternalMeta, CallIndirectExternalMeta,
         },
     },
 };
@@ -174,19 +169,6 @@ impl<'a> BlockLowerContext<'a> {
         MachineHelperCall { target, metadata }
     }
 
-    pub(super) fn lower_runtime(
-        &mut self,
-        boundary: &SsaBoundaryOp,
-        sidecar: &mut SidecarBuilder,
-    ) -> Result<(), WasmError> {
-        self.ensure_no_live_values(
-            "prepared SSA-IR runtime boundary reached native lowering with live transient SSA values; values must be published before the boundary",
-        )?;
-
-        let (target, metadata) = self.runtime_call_site(boundary, sidecar)?;
-        self.emit_helper_backed_boundary(target, metadata)
-    }
-
     fn emit_helper_backed_boundary(
         &mut self,
         target: MachineExternId,
@@ -202,122 +184,6 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_reload_mem0_cache_regs();
         self.emit_reload_cached_locals()?;
         Ok(())
-    }
-
-    fn runtime_call_site(
-        &self,
-        boundary: &SsaBoundaryOp,
-        sidecar: &mut SidecarBuilder,
-    ) -> Result<
-        (
-            MachineExternId,
-            MachineConstId,
-        ),
-        WasmError,
-    > {
-        use MachineHelperSymbol as H;
-
-        let pair = match boundary {
-            SsaBoundaryOp::MemoryGrow { mem_idx, io } => (
-                sidecar.extern_target(H::MemoryGrow),
-                sidecar.memory_grow_meta(MemoryGrowMeta {
-                    mem_idx: *mem_idx,
-                    io: (*io).into(),
-                }),
-            ),
-            SsaBoundaryOp::MemoryFill { mem_idx, args } => (
-                sidecar.extern_target(H::MemoryFill),
-                sidecar.memory_fill_meta(MemoryFillMeta {
-                    mem_idx: *mem_idx,
-                    args: span_region_with_slots(*args, 3, "memory.fill args")?,
-                }),
-            ),
-            SsaBoundaryOp::MemoryCopy {
-                dst_mem_idx,
-                src_mem_idx,
-                args,
-            } => (
-                sidecar.extern_target(H::MemoryCopy),
-                sidecar.memory_copy_meta(MemoryCopyMeta {
-                    dst_mem_idx: *dst_mem_idx,
-                    src_mem_idx: *src_mem_idx,
-                    args: span_region_with_slots(*args, 3, "memory.copy args")?,
-                }),
-            ),
-            SsaBoundaryOp::TableGrow {
-                table_idx,
-                args,
-                results,
-            } => (
-                sidecar.extern_target(H::TableGrow),
-                sidecar.table_grow_meta(TableGrowMeta {
-                    table_idx: *table_idx,
-                    args: span_region_with_slots(*args, 2, "table.grow args")?,
-                    results: span_region_with_slots(*results, 1, "table.grow results")?,
-                }),
-            ),
-            SsaBoundaryOp::TableFill { table_idx, args } => (
-                sidecar.extern_target(H::TableFill),
-                sidecar.table_fill_meta(TableFillMeta {
-                    table_idx: *table_idx,
-                    args: span_region_with_slots(*args, 3, "table.fill args")?,
-                }),
-            ),
-            SsaBoundaryOp::TableCopy {
-                dst_table_idx,
-                src_table_idx,
-                args,
-            } => (
-                sidecar.extern_target(H::TableCopy),
-                sidecar.table_copy_meta(TableCopyMeta {
-                    dst_table_idx: *dst_table_idx,
-                    src_table_idx: *src_table_idx,
-                    args: span_region_with_slots(*args, 3, "table.copy args")?,
-                }),
-            ),
-            SsaBoundaryOp::MemoryInit {
-                data_idx,
-                mem_idx,
-                args,
-            } => (
-                sidecar.extern_target(H::MemoryInit),
-                sidecar.memory_init_meta(MemoryInitMeta {
-                    data_idx: *data_idx,
-                    mem_idx: *mem_idx,
-                    args: span_region_with_slots(*args, 3, "memory.init args")?,
-                }),
-            ),
-            SsaBoundaryOp::DataDrop { data_idx } => (
-                sidecar.extern_target(H::DataDrop),
-                sidecar.data_drop_meta(DataDropMeta {
-                    data_idx: *data_idx,
-                }),
-            ),
-            SsaBoundaryOp::TableInit {
-                elem_idx,
-                table_idx,
-                args,
-            } => (
-                sidecar.extern_target(H::TableInit),
-                sidecar.table_init_meta(TableInitMeta {
-                    elem_idx: *elem_idx,
-                    table_idx: *table_idx,
-                    args: span_region_with_slots(*args, 3, "table.init args")?,
-                }),
-            ),
-            SsaBoundaryOp::ElemDrop { elem_idx } => (
-                sidecar.extern_target(H::ElemDrop),
-                sidecar.elem_drop_meta(ElemDropMeta {
-                    elem_idx: *elem_idx,
-                }),
-            ),
-            _ => {
-                return Err(WasmError::internal(
-                    "non-runtime boundary reached runtime helper lowering".into(),
-                ))
-            }
-        };
-        Ok(pair)
     }
 
     fn emit_direct_call_stack_precheck(
@@ -408,19 +274,4 @@ impl<'a> BlockLowerContext<'a> {
         });
         Ok(())
     }
-}
-
-fn span_region_with_slots(
-    span: FrameSpan,
-    slots: u16,
-    context: &'static str,
-) -> Result<HelperFrameRegion, WasmError> {
-    if span.count != slots {
-        return Err(WasmError::internal(alloc::format!(
-            "{context} expected {} slots but got {}",
-            slots,
-            span.count,
-        )));
-    }
-    Ok(span.into())
 }

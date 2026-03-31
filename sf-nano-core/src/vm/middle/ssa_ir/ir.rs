@@ -169,52 +169,9 @@ pub(crate) enum SsaInstKind {
     Boundary(SsaBoundaryOp),
 }
 
-/// Prepared slot-based boundary operations.
+/// Prepared slot-based boundary operations (calls only).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsaBoundaryOp {
-    MemoryGrow {
-        mem_idx: u32,
-        io: FrameSpan,
-    },
-    MemoryFill {
-        mem_idx: u32,
-        args: FrameSpan,
-    },
-    MemoryCopy {
-        dst_mem_idx: u32,
-        src_mem_idx: u32,
-        args: FrameSpan,
-    },
-    TableGrow {
-        table_idx: u32,
-        args: FrameSpan,
-        results: FrameSpan,
-    },
-    TableFill {
-        table_idx: u32,
-        args: FrameSpan,
-    },
-    TableCopy {
-        dst_table_idx: u32,
-        src_table_idx: u32,
-        args: FrameSpan,
-    },
-    MemoryInit {
-        data_idx: u32,
-        mem_idx: u32,
-        args: FrameSpan,
-    },
-    DataDrop {
-        data_idx: u32,
-    },
-    TableInit {
-        elem_idx: u32,
-        table_idx: u32,
-        args: FrameSpan,
-    },
-    ElemDrop {
-        elem_idx: u32,
-    },
     CallExternal {
         func_idx: u32,
         args: FrameSpan,

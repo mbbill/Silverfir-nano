@@ -360,32 +360,6 @@ fn render_boundary(bop: &SsaBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        SsaBoundaryOp::MemoryGrow { mem_idx, io } => {
-            format!("memory.grow mem={mem_idx} io=fp[{}..{})", io.start.0, io.start.0 + io.count)
-        }
-        SsaBoundaryOp::MemoryFill { mem_idx, args } => {
-            format!("memory.fill mem={mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::MemoryCopy { dst_mem_idx, src_mem_idx, args } => {
-            format!("memory.copy dst={dst_mem_idx} src={src_mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::MemoryInit { data_idx, mem_idx, args } => {
-            format!("memory.init data={data_idx} mem={mem_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::DataDrop { data_idx } => format!("data.drop {data_idx}"),
-        SsaBoundaryOp::TableGrow { table_idx, args, results } => {
-            format!("table.grow table={table_idx} args=fp[{}..{}) results=fp[{}..{})", args.start.0, args.start.0 + args.count, results.start.0, results.start.0 + results.count)
-        }
-        SsaBoundaryOp::TableFill { table_idx, args } => {
-            format!("table.fill table={table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::TableCopy { dst_table_idx, src_table_idx, args } => {
-            format!("table.copy dst={dst_table_idx} src={src_table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::TableInit { elem_idx, table_idx, args } => {
-            format!("table.init elem={elem_idx} table={table_idx} args=fp[{}..{})", args.start.0, args.start.0 + args.count)
-        }
-        SsaBoundaryOp::ElemDrop { elem_idx } => format!("elem.drop {elem_idx}"),
     }
 }
 

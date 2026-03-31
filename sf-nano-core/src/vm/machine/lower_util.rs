@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use crate::{
     error::WasmError,
     vm::middle::ssa_ir::ir::{
-        SsaBlock, SsaBoundaryOp, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue,
+        SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue,
     },
 };
 
@@ -27,19 +27,7 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                 *uses.entry(*src).or_insert(0) += 1;
             }
             SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } => {}
-            SsaInstKind::Boundary(SsaBoundaryOp::MemoryGrow { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryFill { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryCopy { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::TableGrow { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::TableFill { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::TableCopy { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::MemoryInit { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::DataDrop { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::TableInit { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::ElemDrop { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::CallExternal { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::CallInternal { .. })
-            | SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect { .. }) => {}
+            SsaInstKind::Boundary(_) => {}
         }
     }
 
