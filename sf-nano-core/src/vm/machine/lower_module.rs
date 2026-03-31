@@ -351,7 +351,7 @@ fn lower_function(
                         let indirect_temps = call_indirect_gp_temps(&lower)?;
                         let local_call_target_param = indirect_temps.lane0;
 
-                        lower.emit_save_all_cached_locals()?;
+                        lower.emit_save_dirty_cached_locals()?;
                         emit_call_indirect_bounds_check_setup(
                             &mut lower,
                             table_idx,
