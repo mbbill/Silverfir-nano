@@ -10,7 +10,7 @@ use crate::{
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
             ssa_ir::{
-                ir::{SsaBoundaryOp, SsaInst, SsaInstKind, SsaOperand},
+                ir::{SsaCallOp, SsaInst, SsaInstKind, SsaOperand},
                 leaf::SsaLeafOp,
             },
         },
@@ -209,14 +209,14 @@ pub(super) fn lower_call_external(
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
+        kind: SsaInstKind::Call(SsaCallOp::CallExternal {
             func_idx,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
             skip_reload,
         }),
     });
-    state.finish_boundary(params, results);
+    state.finish_call(params, results);
 }
 
 pub(super) fn lower_call_internal(
@@ -229,14 +229,14 @@ pub(super) fn lower_call_internal(
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+        kind: SsaInstKind::Call(SsaCallOp::CallInternal {
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
             skip_reload,
         }),
     });
-    state.finish_boundary(params, results);
+    state.finish_call(params, results);
 }
 
 pub(super) fn lower_call_indirect(
@@ -251,7 +251,7 @@ pub(super) fn lower_call_indirect(
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
+        kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
             type_idx,
             table_idx,
             index_slot: call_base.advance(params),
@@ -260,7 +260,7 @@ pub(super) fn lower_call_indirect(
             skip_reload,
         }),
     });
-    state.finish_boundary(consumed, results);
+    state.finish_call(consumed, results);
 }
 
 #[inline]

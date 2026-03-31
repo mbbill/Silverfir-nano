@@ -159,7 +159,7 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                 SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                     check(*src, &alloc::format!("{bctx} LocalSet/Spill src"))?;
                 }
-                SsaInstKind::Boundary(_) => {}
+                SsaInstKind::Call(_) => {}
             }
         }
         match &block.terminator {
@@ -253,7 +253,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                 SsaInstKind::Fill { .. }
                 | SsaInstKind::Spill { .. }
                 | SsaInstKind::Value { .. }
-                | SsaInstKind::Boundary(_) => {}
+                | SsaInstKind::Call(_) => {}
             }
         }
     }

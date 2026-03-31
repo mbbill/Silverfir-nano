@@ -6,8 +6,8 @@
 //!
 //! The sink is legal when:
 //! - `src` is produced by a single-result `Value` instruction in the same block
-//! - The producer is "targetable" (not a boundary, not already sunk)
-//! - No barrier (Boundary) exists between the producer and the LocalSet
+//! - The producer is "targetable" (not a call, not already sunk)
+//! - No barrier (Call) exists between the producer and the LocalSet
 //! - The old version of the local (version - 1) is dead at the producer —
 //!   meaning no `LocalGet` reads the old version between the producer and
 //!   the LocalSet
@@ -90,7 +90,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         }
     }
 
-    // Step 2: Identify barrier positions. A barrier is a Boundary instruction.
+    // Step 2: Identify barrier positions. A barrier is a Call instruction.
     // We'll check for barriers in ranges on the fly.
 
     // Step 3: For each LocalSet (walking forward is fine — we check liveness
@@ -129,7 +129,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         // Check: no barrier between producer and set.
         let has_barrier = ops[prod_pos + 1..set_pos]
             .iter()
-            .any(|i| matches!(i.kind, SsaInstKind::Boundary(_)));
+            .any(|i| matches!(i.kind, SsaInstKind::Call(_)));
         if has_barrier {
             continue;
         }
@@ -212,7 +212,7 @@ mod tests {
                 SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                     max_val = max_val.max(src.0 + 1);
                 }
-                SsaInstKind::Boundary(_) => {}
+                SsaInstKind::Call(_) => {}
             }
         }
         let n = max_val as usize;
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn does_not_sink_across_barrier() {
         // i32.const 1 -> v0
-        // boundary (e.g., call_external)
+        // call (e.g., call_external)
         // local.set x, v0 (version 1)
         let mut program = make_program(vec![
             SsaInst {
@@ -335,8 +335,8 @@ mod tests {
                 },
             },
             SsaInst {
-                kind: SsaInstKind::Boundary(
-                    crate::vm::middle::ssa_ir::ir::SsaBoundaryOp::CallExternal {
+                kind: SsaInstKind::Call(
+                    crate::vm::middle::ssa_ir::ir::SsaCallOp::CallExternal {
                         func_idx: 0,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             crate::vm::middle::frame::FrameSlot(0), 0,

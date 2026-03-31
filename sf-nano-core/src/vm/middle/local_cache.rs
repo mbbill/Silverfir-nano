@@ -22,7 +22,7 @@ use super::state::gp_value_budget_units;
 /// `continuation_skip_reload` is a temporary consumed during prepare: one
 /// `Vec<bool>` per call site in SemanticProgram op order, parallel to the
 /// cached-local ordering (GP then FP).  Each entry is moved onto the
-/// corresponding `SsaBoundaryOp::skip_reload` field and never stored
+/// corresponding `SsaCallOp::skip_reload` field and never stored
 /// persistently.
 pub(super) fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,

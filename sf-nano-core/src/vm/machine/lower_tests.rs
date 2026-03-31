@@ -16,7 +16,7 @@ use crate::vm::{
         frame::plan_frame_layout,
         ssa_ir::{
             ir::{
-                CachedLocalInfo, SsaBinding, SsaBlock, SsaBoundaryOp, SsaEdge, SsaInst,
+                CachedLocalInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst,
                 SsaInstKind, SsaLocalCachePrefs, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             leaf::SsaLeafOp,
@@ -827,7 +827,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1068,7 +1068,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallExternal {
                     func_idx: 7,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
@@ -1205,7 +1205,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallExternal {
                         func_idx: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
@@ -1301,7 +1301,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallExternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallExternal {
                         func_idx: 0,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
@@ -1373,7 +1373,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1542,7 +1542,7 @@ fn flushes_cached_local_before_second_direct_call() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1569,7 +1569,7 @@ fn flushes_cached_local_before_second_direct_call() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1875,7 +1875,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                     callee: 2,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -2074,7 +2074,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
+                kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
                     index_slot: call_base.advance(2),
@@ -2267,7 +2267,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallIndirect {
+                kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
                     index_slot: call_base.advance(2),
@@ -2421,7 +2421,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Boundary(SsaBoundaryOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(

@@ -78,8 +78,8 @@ pub(super) struct BlockLowerContext<'a> {
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
     /// Per cached-local dirty bit: `true` means the register has been written
-    /// since the last boundary save.  Only dirty locals need saving before the
-    /// next call boundary.  Starts all-dirty for non-entry blocks (conservative)
+    /// since the last call save.  Only dirty locals need saving before the
+    /// next call.  Starts all-dirty for non-entry blocks (conservative)
     /// and all-clean for the entry block.
     cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,

@@ -263,10 +263,10 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }
-            SsaInstKind::Boundary(boundary) => {
+            SsaInstKind::Call(call) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "boundary op {:?} must be lowered through its specialized native path",
-                    boundary
+                    "call op {:?} must be lowered through its specialized path",
+                    call
                 )));
             }
         }

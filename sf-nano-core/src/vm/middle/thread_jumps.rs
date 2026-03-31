@@ -347,7 +347,7 @@ fn substitute_inst_uses(kind: &mut SsaInstKind, subst: &[(SsaValue, SsaValue)]) 
         SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
             *src = substitute_value(*src, subst);
         }
-        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Boundary(_) => {}
+        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
     }
 }
 

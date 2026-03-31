@@ -165,13 +165,13 @@ pub(crate) enum SsaInstKind {
         src: SsaValue,
         version: u32,
     },
-    /// Slot-based call or runtime boundary.
-    Boundary(SsaBoundaryOp),
+    /// Slot-based function call (args/results passed via frame slots, not SSA values).
+    Call(SsaCallOp),
 }
 
-/// Prepared slot-based boundary operations (calls only).
+/// Prepared slot-based call operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SsaBoundaryOp {
+pub(crate) enum SsaCallOp {
     CallExternal {
         func_idx: u32,
         args: FrameSpan,

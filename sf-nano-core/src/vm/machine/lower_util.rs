@@ -27,7 +27,7 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                 *uses.entry(*src).or_insert(0) += 1;
             }
             SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } => {}
-            SsaInstKind::Boundary(_) => {}
+            SsaInstKind::Call(_) => {}
         }
     }
 

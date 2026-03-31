@@ -131,7 +131,7 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
                     *slot = true;
                 }
             }
-            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Boundary(_) => {}
+            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
         }
     }
     // Terminator uses also keep the const alive.
@@ -565,7 +565,7 @@ fn forward_slot_values(
                 slot_values[slot.0 as usize] = Some(*src);
             }
             SsaInstKind::Fill { .. } | SsaInstKind::Spill { .. } => {}
-            SsaInstKind::Boundary(_) => {
+            SsaInstKind::Call(_) => {
                 slot_values.fill(None);
             }
             SsaInstKind::Value { .. } => {}
@@ -600,7 +600,7 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
             SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                 max_value = max_value.max(Some(*src));
             }
-            SsaInstKind::Boundary(_) => {}
+            SsaInstKind::Call(_) => {}
         }
     }
 
@@ -645,7 +645,7 @@ fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
             SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
                 last_uses[src.0 as usize] = Some(pos);
             }
-            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Boundary(_) => {}
+            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
         }
     }
 
@@ -715,7 +715,7 @@ fn rewrite_inst_uses(kind: &mut SsaInstKind, aliases: &[Option<SsaValue>]) {
         SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
             *src = resolve_alias(*src, aliases);
         }
-        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Boundary(_) => {}
+        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
     }
 }
 

@@ -21,7 +21,7 @@ use crate::{
             frame::{FrameLayoutPlan, FrameSpan},
             ssa_ir::{
                 ir::{
-                    SsaBoundaryOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator,
+                    SsaCallOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator,
                     SsaValue,
                 },
                 validate::validate_program,
@@ -283,8 +283,8 @@ fn lower_function(
                     }
                     lower.lower_inst(inst)?;
                 }
-                SsaInstKind::Boundary(boundary) => match boundary {
-                    SsaBoundaryOp::CallExternal {
+                SsaInstKind::Call(call) => match call {
+                    SsaCallOp::CallExternal {
                         func_idx,
                         args,
                         results,
@@ -292,7 +292,7 @@ fn lower_function(
                     } => {
                         lower.lower_call_external(*func_idx, *args, *results, sidecar)?;
                     }
-                    SsaBoundaryOp::CallInternal {
+                    SsaCallOp::CallInternal {
                         callee,
                         args,
                         results,
@@ -314,17 +314,17 @@ fn lower_function(
                         current_params = Vec::new();
                         lower.begin_continuation_block_selective(Some(skip_reload))?;
                     }
-                    SsaBoundaryOp::CallIndirect { .. } => {
-                        let SsaBoundaryOp::CallIndirect {
+                    SsaCallOp::CallIndirect { .. } => {
+                        let SsaCallOp::CallIndirect {
                             type_idx,
                             table_idx,
                             index_slot,
                             args,
                             results,
                             skip_reload,
-                        } = boundary
+                        } = call
                         else {
-                            unreachable!("matched call_indirect boundary");
+                            unreachable!("matched call_indirect");
                         };
                         let type_idx = *type_idx;
                         let table_idx = *table_idx;
@@ -1177,7 +1177,7 @@ fn indexed_const_addr(
 //
 // Computes, for each SSA-IR block, which cached locals are dirty (register !=
 // frame slot) at block entry.  A cached local becomes dirty when a `LocalSet`
-// writes to it and becomes clean at every `Boundary` op (which saves all dirty
+// writes to it and becomes clean at every `Call` op (which saves all dirty
 // locals to frame).
 //
 // The analysis is a forward dataflow with join = OR (dirty if ANY predecessor
@@ -1223,12 +1223,12 @@ fn compute_block_entry_dirty(
 
     // Precompute per-block transfer summaries.
     //
-    // If a block has any Boundary op:
-    //   exit_dirty = locals written AFTER the last Boundary (entry state irrelevant)
-    // If no Boundary:
+    // If a block has any Call op:
+    //   exit_dirty = locals written AFTER the last Call (entry state irrelevant)
+    // If no Call:
     //   exit_dirty[i] = entry_dirty[i] OR written_in_block[i]
-    let mut has_boundary = vec![false; n_blocks];
-    let mut written_after_last_boundary = vec![vec![false; n_cached]; n_blocks];
+    let mut has_call = vec![false; n_blocks];
+    let mut written_after_last_call = vec![vec![false; n_cached]; n_blocks];
     let mut written_anywhere = vec![vec![false; n_cached]; n_blocks];
 
     for (idx, block) in blocks.iter().enumerate() {
@@ -1239,14 +1239,14 @@ fn compute_block_entry_dirty(
                     if si <= max_slot {
                         let ci = slot_to_index[si];
                         if ci != usize::MAX {
-                            written_after_last_boundary[idx][ci] = true;
+                            written_after_last_call[idx][ci] = true;
                             written_anywhere[idx][ci] = true;
                         }
                     }
                 }
-                SsaInstKind::Boundary(_) => {
-                    has_boundary[idx] = true;
-                    for w in &mut written_after_last_boundary[idx] {
+                SsaInstKind::Call(_) => {
+                    has_call[idx] = true;
+                    for w in &mut written_after_last_call[idx] {
                         *w = false;
                     }
                 }
@@ -1277,18 +1277,18 @@ fn compute_block_entry_dirty(
             }
 
             // Transfer: compute exit_dirty.
-            if has_boundary[idx] {
-                // Last boundary cleared everything; only subsequent writes
+            if has_call[idx] {
+                // Last call cleared everything; only subsequent writes
                 // contribute to exit state.
                 for i in 0..n_cached {
-                    let new = written_after_last_boundary[idx][i];
+                    let new = written_after_last_call[idx][i];
                     if new != exit_dirty[idx][i] {
                         exit_dirty[idx][i] = new;
                         changed = true;
                     }
                 }
             } else {
-                // No boundary: exit = entry OR written_anywhere.
+                // No call: exit = entry OR written_anywhere.
                 for i in 0..n_cached {
                     let new = entry_dirty[idx][i] || written_anywhere[idx][i];
                     if new != exit_dirty[idx][i] {

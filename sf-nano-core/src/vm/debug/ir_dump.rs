@@ -19,7 +19,7 @@ use crate::{
             MachineValue,
         },
         middle::{
-            ssa_ir::ir::{SsaBlock, SsaBoundaryOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
+            ssa_ir::ir::{SsaBlock, SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
         },
     },
 };
@@ -315,13 +315,13 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
         SsaInstKind::Spill { slot, src } => {
             format!("spill fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstKind::Boundary(bop) => render_boundary(bop),
+        SsaInstKind::Call(bop) => render_call(bop),
     }
 }
 
-fn render_boundary(bop: &SsaBoundaryOp) -> String {
+fn render_call(bop: &SsaCallOp) -> String {
     match bop {
-        SsaBoundaryOp::CallInternal {
+        SsaCallOp::CallInternal {
             callee,
             args,
             results,
@@ -333,7 +333,7 @@ fn render_boundary(bop: &SsaBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        SsaBoundaryOp::CallExternal {
+        SsaCallOp::CallExternal {
             func_idx,
             args,
             results,
@@ -345,7 +345,7 @@ fn render_boundary(bop: &SsaBoundaryOp) -> String {
             results.start.0,
             results.start.0 + results.count,
         ),
-        SsaBoundaryOp::CallIndirect {
+        SsaCallOp::CallIndirect {
             type_idx,
             table_idx,
             index_slot,
