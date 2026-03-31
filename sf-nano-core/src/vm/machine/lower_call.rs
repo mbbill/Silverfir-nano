@@ -150,7 +150,7 @@ impl<'a> BlockLowerContext<'a> {
             args: args.into(),
             results: results.into(),
         });
-        self.emit_helper_backed_boundary(target, metadata)
+        self.emit_helper_call(target, metadata)
     }
 
     pub(super) fn call_indirect_external_site(
@@ -169,14 +169,13 @@ impl<'a> BlockLowerContext<'a> {
         MachineHelperCall { target, metadata }
     }
 
-    fn emit_helper_backed_boundary(
+    fn emit_helper_call(
         &mut self,
         target: MachineExternId,
         metadata: MachineConstId,
     ) -> Result<(), WasmError> {
-        // Helper-backed boundaries are slot-based and may clobber cache regs,
-        // so cached locals must be synchronized through their canonical frame
-        // slots across the helper call.
+        // Helper calls are slot-based and clobber all registers, so cached
+        // locals must be synchronized through their canonical frame slots.
         self.emit_save_dirty_cached_locals()?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
