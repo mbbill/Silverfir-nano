@@ -7,7 +7,7 @@ use crate::{
         machine::{
             machine_ir::{
                 MachineAddr, MachineCallLinkLayout,
-                MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
+                MachineFrameRegion, MachineFuncId, MachineFunctionAbi,
                 MachineInst, MachineInstKind,
                 MachineIntWidth, MachineMemWidth, MachineReg,
                 MachineStorageType, MachineValue,
@@ -70,7 +70,7 @@ pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     program: &'a SsaProgram,
     block: &'a SsaBlock,
-    all_runtime: &'a [MachineFunctionRuntime],
+    all_runtime: &'a [MachineFunctionAbi],
     call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
     gp_reg_width: u8,
@@ -95,7 +95,7 @@ impl<'a> BlockLowerContext<'a> {
         program: &'a SsaProgram,
         cache_prefs: &SsaLocalCachePrefs,
         block: &'a SsaBlock,
-        all_runtime: &'a [MachineFunctionRuntime],
+        all_runtime: &'a [MachineFunctionAbi],
         call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
@@ -321,7 +321,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn runtime_for_func(
         &self,
         func: MachineFuncId,
-    ) -> Result<MachineFunctionRuntime, WasmError> {
+    ) -> Result<MachineFunctionAbi, WasmError> {
         self.all_runtime
             .get(func.0 as usize)
             .copied()

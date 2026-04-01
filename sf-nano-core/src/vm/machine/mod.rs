@@ -17,7 +17,8 @@ mod lower_leaf_arith;
 mod lower_leaf_special;
 mod lower_module;
 mod lower_regalloc;
-mod lower_sidecar;
+mod optimize;
+mod lower_const_pool;
 mod lower_util;
 pub(crate) mod machine_ir;
 pub(crate) mod peephole;
@@ -31,3 +32,4 @@ mod peephole_tests;
 mod validate_tests;
 
 pub(crate) use lower_module::{lower_module, LowerFunctionInput, LowerModuleInput};
+pub(crate) use optimize::optimize_module;

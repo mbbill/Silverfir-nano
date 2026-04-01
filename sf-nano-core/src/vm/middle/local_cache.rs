@@ -431,9 +431,7 @@ fn continuation_skip_reload(
             .filter(|op| {
                 matches!(
                     op.kind,
-                    SemanticOpKind::CallInternal { .. }
-                        | SemanticOpKind::CallExternal { .. }
-                        | SemanticOpKind::CallIndirect { .. }
+                    SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. }
                 )
             })
             .count();
@@ -452,9 +450,7 @@ fn continuation_skip_reload(
     for (op_index, op) in semantic.ops.iter().enumerate() {
         let is_call = matches!(
             op.kind,
-            SemanticOpKind::CallInternal { .. }
-                | SemanticOpKind::CallExternal { .. }
-                | SemanticOpKind::CallIndirect { .. }
+            SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. }
         );
         if !is_call {
             continue;
@@ -475,8 +471,7 @@ fn continuation_skip_reload(
                 | SemanticOpKind::Br { .. }
                 | SemanticOpKind::BrIf { .. }
                 | SemanticOpKind::BrTable { .. }
-                | SemanticOpKind::CallInternal { .. }
-                | SemanticOpKind::CallExternal { .. }
+                | SemanticOpKind::CallDirect { .. }
                 | SemanticOpKind::CallIndirect { .. }
                 | SemanticOpKind::ReturnVoid
                 | SemanticOpKind::ReturnOne

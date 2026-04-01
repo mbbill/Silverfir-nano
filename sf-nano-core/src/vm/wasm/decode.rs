@@ -329,18 +329,10 @@ impl<'a> DecodeContext<'a> {
 
     fn handle_call(&mut self, func_idx: u32) {
         let (params, results) = self.compile.resolve_func_type(func_idx);
-        let kind = if self.compile.is_func_internal(func_idx) {
-            SemanticOpKind::CallInternal {
-                callee: func_idx,
-                params,
-                results,
-            }
-        } else {
-            SemanticOpKind::CallExternal {
-                func_idx,
-                params,
-                results,
-            }
+        let kind = SemanticOpKind::CallDirect {
+            callee: func_idx,
+            params,
+            results,
         };
         let idx = self.push_op(kind);
         if results > 0 {

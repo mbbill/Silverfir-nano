@@ -316,8 +316,7 @@ fn plan_prefix(
             fill_for_operands(&mut prefix, state, frame, keep_live);
             spill_all_except_top(&mut prefix, state, frame, keep_live);
         }
-        SemanticOpKind::CallExternal { .. }
-        | SemanticOpKind::CallInternal { .. }
+        SemanticOpKind::CallDirect { .. }
         | SemanticOpKind::CallIndirect { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
@@ -506,10 +505,7 @@ fn apply_semantic_effect(
             }
             state.mark_unreachable();
         }
-        SemanticOpKind::CallExternal {
-            params, results, ..
-        }
-        | SemanticOpKind::CallInternal {
+        SemanticOpKind::CallDirect {
             params, results, ..
         } => {
             if !state.unreachable {

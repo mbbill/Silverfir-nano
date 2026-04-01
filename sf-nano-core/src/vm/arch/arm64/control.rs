@@ -8,13 +8,11 @@ use crate::vm::machine::machine_ir::{
     MACHINE_CTX_REG, MACHINE_FP_REG,
 };
 
-use super::{abi, enc, reg::Arm64Reg};
+use super::{abi, enc};
 use super::abi::map_fixed_reg;
 use super::inst::{materialize_u64_into, prepare_gp};
 use crate::vm::arch::common::helpers::{is_fallthrough_edge, trap_code};
-use crate::vm::arch::common::types::{DirectCallPatch, PendingLocalPtrPatch, LocalPtrPatch};
-use crate::vm::runtime::context::ctx_offset;
-
+use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use super::fusion::map_int_cond;
 
 impl<'a> super::backend::Arm64Backend<'a> {
@@ -56,19 +54,20 @@ pub(super) fn lower_terminator_dispatch(&mut self,
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
+            call_link_base,
             continuation,
-        } => self.lower_call_direct(*callee, *callee_frame_base, *continuation),
+        } => self.lower_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation),
         MachineTerminator::CallIndirect {
             callee_target,
+            callee_entry,
             callee_frame_base,
-            arg_slots,
-            caller_result_base,
+            call_link_base,
             continuation,
         } => self.lower_call_indirect(
             *callee_target,
+            *callee_entry,
             *callee_frame_base,
-            *arg_slots,
-            *caller_result_base,
+            *call_link_base,
             *continuation,
         ),
     }
@@ -233,36 +232,47 @@ pub(super) fn lower_branch_if(&mut self,
 fn lower_call_direct(&mut self,
     callee: MachineFuncId,
     callee_frame_base: MachineReg,
+    call_link_base: MachineReg,
     continuation: MachineBlockId,
 ) -> Result<(), WasmError> {
-    let callee_runtime = self.runtime_for(callee)?;
-    let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-        WasmError::internal("arm64 direct local call requires callee call scratch".into())
-    })?;
-    let continuation_slot = call_scratch.base_slot
-        + (self.core.compiled.runtime().call_link.continuation_offset / 8) as u16;
     let callee_fp = self.map_gp_reg(callee_frame_base)?;
+    let call_link_base = self.map_gp_reg(call_link_base)?;
+    let continuation_offset = self.core.compiled.abi().call_link.continuation_offset;
+    let continuation_label = self.core.block_label(continuation)?;
 
-    let s0 = self.gp_scratch.scoped_alloc().release();
-    let s1 = self.gp_scratch.scoped_alloc().release();
+    let s0_idx = self.gp_scratch.alloc();
+    let s1_idx = self.gp_scratch.alloc();
+    let s0 = self.gp_scratch.reg(s0_idx);
+    let s1 = self.gp_scratch.reg(s1_idx);
 
+    // Load the native continuation address from a patchable literal and write
+    // it into the callee's call-link record. MachineIR already chose the
+    // record location; the backend only fills in the native return address.
     let continuation_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-    if continuation_slot < 4096 {
-        self.core.text.emit_u32(enc::str_64(s0, callee_fp, continuation_slot as u32));
+    if continuation_offset < 4096 {
+        self.core
+            .text
+            .emit_u32(enc::str_64(s0, call_link_base, continuation_offset as u32));
     } else {
-        self.materialize_u64(s1, u64::from(continuation_slot) * 8);
-        self.core.text.emit_u32(enc::add_reg_64(s1, callee_fp, s1));
-        self.core.text.emit_u32(enc::str_reg_64(s0, s1, Arm64Reg::Xzr));
+        self.materialize_u64(s1, continuation_offset as u64);
+        self.core
+            .text
+            .emit_u32(enc::add_reg_64(s1, call_link_base, s1));
+        self.core.text.emit_u32(enc::str_reg_64_base(s0, s1));
     }
 
+    // Direct local calls still use a patchable literal for the callee entry:
+    // the final native address is not known until the whole module has been
+    // laid out by the common pipeline.
     let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
     self.core.text.emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), callee_fp));
     self.core.text.emit_u32(enc::br(s0));
 
+    // Reserve the literal words now, then record how they should be patched
+    // once block labels and final function entry addresses are known.
     let continuation_literal = self.core.text.emit_u64(0);
     let callee_literal = self.core.text.emit_u64(0);
 
-    let continuation_label = self.core.block_label(continuation)?;
     let continuation_delta =
         ((continuation_literal as isize - continuation_load as isize) / 4) as i32;
     self.core.text.patch_u32(continuation_load, enc::ldr_lit_64(s0, continuation_delta));
@@ -277,6 +287,8 @@ fn lower_call_direct(&mut self,
         literal_offset: callee_literal,
         callee,
     });
+    self.gp_scratch.free_index(s1_idx);
+    self.gp_scratch.free_index(s0_idx);
     Ok(())
 }
 
@@ -303,13 +315,14 @@ fn lower_jump_table(&mut self,
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, index,
     )?.release();
-    self.materialize_u64(abi::C_ARG0, (entries.len() - 1) as u64);
-    self.core.text.emit_u32(enc::cmp_reg_64(index_reg, abi::C_ARG0));
-    self.core.text.emit_u32(enc::csel_64(s1, index_reg, abi::C_ARG0, enc::Cond::Ls));
+    // Keep C-ABI argument registers out of normal control lowering. `s1`
+    // holds the clamped jump-table index first, then the scaled byte offset.
+    self.materialize_u64(s1, (entries.len() - 1) as u64);
+    self.core.text.emit_u32(enc::cmp_reg_64(index_reg, s1));
+    self.core.text.emit_u32(enc::csel_64(s1, index_reg, s1, enc::Cond::Ls));
 
     let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-    self.materialize_u64(abi::C_ARG0, 3);
-    self.core.text.emit_u32(enc::lslv_64(s1, s1, abi::C_ARG0));
+    self.core.text.emit_u32(enc::lsl_imm_64(s1, s1, 3));
     self.core.text.emit_u32(enc::ldr_reg_64(s0, s0, s1));
     self.core.text.emit_u32(enc::br(s0));
 
@@ -341,14 +354,16 @@ fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
     let call_scratch = runtime.call_scratch.ok_or_else(|| {
         WasmError::internal("arm64 local return requires call scratch".into())
     })?;
-    let call_link = self.core.compiled.runtime().call_link;
+    let call_link = self.core.compiled.abi().call_link;
     let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
     let caller_frame_slot = call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
     let caller_result_base_slot =
         call_scratch.base_slot + (call_link.caller_result_base_offset / 8) as u16;
 
-    let s0 = self.gp_scratch.scoped_alloc().release();
-    let s1 = self.gp_scratch.scoped_alloc().release();
+    let s0_idx = self.gp_scratch.alloc();
+    let s1_idx = self.gp_scratch.alloc();
+    let s0 = self.gp_scratch.reg(s0_idx);
+    let s1 = self.gp_scratch.reg(s1_idx);
 
     self.core.text.emit_u32(enc::ldr_64(s0, map_fixed_reg(MACHINE_FP_REG), continuation_slot as u32));
     self.core.text.emit_u32(enc::ldr_64(s1, map_fixed_reg(MACHINE_FP_REG), caller_frame_slot as u32));
@@ -356,91 +371,44 @@ fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
     self.core.text.emit_u32(enc::add_reg_64(abi::C_ARG0, s1, abi::C_ARG0));
 
     if let Some(results) = runtime.return_results {
+        // Results live in the callee frame until return. Copy them back into
+        // the caller's result window before restoring the caller frame.
         for index in 0..results.slots as u32 {
             self.core.text.emit_u32(enc::ldr_64(abi::C_ARG1, map_fixed_reg(MACHINE_FP_REG), results.base_slot as u32 + index));
             self.core.text.emit_u32(enc::str_64(abi::C_ARG1, abi::C_ARG0, index));
         }
     }
 
+    // Restore caller FP and branch to the continuation pointer saved in the
+    // call-link record.
     self.core.text.emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), s1));
     self.core.text.emit_u32(enc::br(s0));
+    self.gp_scratch.free_index(s1_idx);
+    self.gp_scratch.free_index(s0_idx);
     Ok(())
 }
 
 // ── Indirect call ────────────────────────────────────────────────────────────
 
 fn lower_call_indirect(&mut self,
-    callee_target: MachineValue,
+    _callee_target: MachineReg,
+    callee_entry: MachineReg,
     callee_frame_base: MachineReg,
-    arg_slots: u16,
-    caller_result_base: u16,
+    call_link_base: MachineReg,
     continuation: MachineBlockId,
 ) -> Result<(), WasmError> {
-    let s0 = self.gp_scratch.scoped_alloc().release();
-    let s1 = self.gp_scratch.scoped_alloc().release();
-
-    // Load the callee function id into a register
-    let callee_id_reg = prepare_gp(
-        self.core.compiled.backend(), &self.core.fp_reg_widths,
-        &mut self.core.text, &self.gp_scratch, callee_target,
-    )?.release();
-
-    // Load function table base from a literal pool entry
-    let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-    let skip_table_literal = self.core.text.emit_u32(enc::b(0)); // skip over literal
-    self.core.function_table_patches.push(self.core.text.emit_u64(0));
-    let table_base_literal = self
-        .core
-        .function_table_patches
-        .last()
-        .copied()
-        .expect("function table literal recorded");
-    let after_table_literal = self.core.text.len();
-
-    // Patch the skip branch
-    let skip_delta = ((after_table_literal as isize - skip_table_literal as isize) / 4) as i32;
-    self.core.text.patch_u32(skip_table_literal, enc::b(skip_delta));
-    // Patch the ldr literal offset
-    let table_base_delta =
-        ((table_base_literal as isize - table_base_load as isize) / 4) as i32;
-    self.core
-        .text
-        .patch_u32(table_base_load, enc::ldr_lit_64(s0, table_base_delta));
-
-    // Index into the function table: each entry is 32 bytes (1 << 5)
-    self.materialize_u64(abi::C_ARG0, 5);
-    self.core
-        .text
-        .emit_u32(enc::lslv_64(s1, callee_id_reg, abi::C_ARG0));
-    self.core
-        .text
-        .emit_u32(enc::add_reg_64(s0, s0, s1));
-
-    // Load function info fields:
-    // [0] = entry, [1] = total_frame_bytes, [2] = frame_prefix_slots, [3] = call_scratch_base_slot
-    self.core.text.emit_u32(enc::ldr_64(abi::C_ARG0, s0, 0));
-    self.core.text.emit_u32(enc::ldr_64(abi::C_ARG1, s0, 1));
-    self.core.text.emit_u32(enc::ldr_64(abi::C_ARG2, s0, 2));
-    self.core.text.emit_u32(enc::ldr_64(abi::C_ARG3, s0, 3));
-
-    // Stack overflow check: callee_fp + total_frame_bytes > stack_end?
     let callee_fp = self.map_gp_reg(callee_frame_base)?;
-    self.core
-        .text
-        .emit_u32(enc::add_reg_64(s0, callee_fp, abi::C_ARG1));
-    self.core.text.emit_u32(enc::ldr_64(
-        s1,
-        map_fixed_reg(MACHINE_CTX_REG),
-        (ctx_offset::STACK_END / 8) as u32,
-    ));
-    self.core.text.emit_u32(enc::cmp_reg_64(s0, s1));
-    let stack_overflow_label = self.core.stack_overflow_label;
-    self.lower_b_cond(enc::Cond::Hi, stack_overflow_label);
+    let call_link_base = self.map_gp_reg(call_link_base)?;
+    let continuation_offset = self.core.compiled.abi().call_link.continuation_offset;
+    let continuation_label = self.core.block_label(continuation)?;
+    let callee_entry = self.map_gp_reg(callee_entry)?;
+    let s0_idx = self.gp_scratch.alloc();
+    let s0 = self.gp_scratch.reg(s0_idx);
 
-    // Zero-fill the dynamic callee prefix (between arg_slots and frame_prefix_slots)
-    self.lower_zero_dynamic_callee_prefix(callee_fp, arg_slots)?;
-
-    // Load continuation address from literal pool
+    // For indirect local calls the callee entry is already a runtime register,
+    // but the continuation is still a backend-resolved block label. Materialize
+    // that continuation address through a local literal so we can store it in
+    // the prepared call-link record.
     let continuation_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
     let skip_cont_literal = self.core.text.emit_u32(enc::b(0)); // skip over literal
     let continuation_literal = self.core.text.emit_u64(0);
@@ -450,7 +418,6 @@ fn lower_call_indirect(&mut self,
     self.core
         .text
         .patch_u32(skip_cont_literal, enc::b(skip_cont_delta));
-    let continuation_label = self.core.block_label(continuation)?;
     let continuation_delta =
         ((continuation_literal as isize - continuation_load as isize) / 4) as i32;
     self.core.text.patch_u32(
@@ -462,90 +429,45 @@ fn lower_call_indirect(&mut self,
         target_label: continuation_label,
     });
 
-    // Store continuation, caller frame, and caller result base into call scratch area
-    // C_ARG3 = call_scratch_base_slot; convert to byte offset and add to callee_fp
-    self.materialize_u64(s1, 3);
-    self.core
-        .text
-        .emit_u32(enc::lslv_64(abi::C_ARG3, abi::C_ARG3, s1));
-    self.core
-        .text
-        .emit_u32(enc::add_reg_64(abi::C_ARG3, callee_fp, abi::C_ARG3));
-    self.core
-        .text
-        .emit_u32(enc::str_reg_64(s0, abi::C_ARG3, Arm64Reg::Xzr));
-    self.core
-        .text
-        .emit_u32(enc::str_64(map_fixed_reg(MACHINE_FP_REG), abi::C_ARG3, 1));
-    self.materialize_u64(s1, u64::from(caller_result_base) * 8);
-    self.core.text.emit_u32(enc::str_64(s1, abi::C_ARG3, 2));
+    if continuation_offset == 0 {
+        self.core
+            .text
+            .emit_u32(enc::str_reg_64_base(s0, call_link_base));
+    } else {
+        let s1_idx = self.gp_scratch.alloc();
+        let s1 = self.gp_scratch.reg(s1_idx);
+        self.materialize_u64(s1, continuation_offset as u64);
+        self.core
+            .text
+            .emit_u32(enc::add_reg_64(s1, call_link_base, s1));
+        self.core.text.emit_u32(enc::str_reg_64_base(s0, s1));
+        self.gp_scratch.free_index(s1_idx);
+    }
 
-    // Set new frame pointer and jump to callee entry
+    // MachineIR already resolved the dynamic local target to a native entry
+    // address. At this point the backend only commits the transfer.
     self.core
         .text
         .emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), callee_fp));
-    self.core.text.emit_u32(enc::br(abi::C_ARG0));
+    self.core.text.emit_u32(enc::br(callee_entry));
+    self.gp_scratch.free_index(s0_idx);
     Ok(())
 }
 
-// ── Zero dynamic callee prefix ───────────────────────────────────────────────
+// ── Call external ────────────────────────────────────────────────────────────
 
-fn lower_zero_dynamic_callee_prefix(&mut self,
-    callee_fp: Arm64Reg,
-    arg_slots: u16,
-) -> Result<(), WasmError> {
-    let s0 = self.gp_scratch.scoped_alloc().release();
-    let s1 = self.gp_scratch.scoped_alloc().release();
-
-    // s0 = callee_fp + arg_slots * 8 (start of prefix to zero)
-    self.materialize_u64(s0, u64::from(arg_slots) * 8);
-    self.core
-        .text
-        .emit_u32(enc::add_reg_64(s0, callee_fp, s0));
-    // C_ARG2 = callee_fp + frame_prefix_slots * 8 (end of prefix)
-    self.materialize_u64(s1, 3);
-    self.core
-        .text
-        .emit_u32(enc::lslv_64(abi::C_ARG2, abi::C_ARG2, s1));
-    self.core
-        .text
-        .emit_u32(enc::add_reg_64(abi::C_ARG2, callee_fp, abi::C_ARG2));
-    self.core.text.emit_u32(enc::cmp_reg_64(s0, abi::C_ARG2));
-
-    let done = self.core.new_label();
-    let loop_label = self.core.new_label();
-    self.lower_b_cond(enc::Cond::Hs, done);
-    self.core.bind_label(loop_label);
-    self.core
-        .text
-        .emit_u32(enc::str_reg_64(Arm64Reg::Xzr, s0, Arm64Reg::Xzr));
-    self.core.text.emit_u32(enc::add_imm_64(s0, s0, 8));
-    self.core.text.emit_u32(enc::cmp_reg_64(s0, abi::C_ARG2));
-    self.lower_b_cond(enc::Cond::Lo, loop_label);
-    self.core.bind_label(done);
-    Ok(())
-}
-
-// ── Call helper ──────────────────────────────────────────────────────────────
-
-pub(super) fn lower_call_helper(&mut self,
-    extern_idx: usize,
+pub(super) fn lower_call_external(&mut self,
     const_idx: usize,
 ) -> Result<(), WasmError> {
-    let binding = self
-        .core
-        .compiled
-        .module()
-        .externs
-        .get(extern_idx)
-        .ok_or_else(|| WasmError::internal("arm64 helper target is out of range".into()))?;
     let metadata = self
         .core
         .compiled
         .const_ptr(MachineConstId(const_idx as u32))
         .ok_or_else(|| WasmError::internal("arm64 helper metadata is out of range".into()))?;
 
-    // Set up arguments: x0 = ctx, x1 = fp, x2 = metadata pointer
+    // External calls are inline runtime calls, not CFG terminators. Pass the
+    // current context, the active Wasm frame pointer, and the constant-pool
+    // metadata record that describes where args/results live in that frame.
     self.core.text.emit_u32(enc::mov_reg_64(
         abi::C_ARG0,
         map_fixed_reg(MACHINE_CTX_REG),
@@ -554,14 +476,17 @@ pub(super) fn lower_call_helper(&mut self,
         .text
         .emit_u32(enc::mov_reg_64(abi::C_ARG1, map_fixed_reg(MACHINE_FP_REG)));
     self.materialize_u64(abi::C_ARG2, metadata as u64);
-    let call_scratch = self.gp_scratch.scoped_alloc().release();
+    let call_scratch_idx = self.gp_scratch.alloc();
+    let call_scratch = self.gp_scratch.reg(call_scratch_idx);
     self.materialize_u64(
         call_scratch,
-        crate::vm::runtime::helpers::resolve_helper_entry(binding.symbol) as usize as u64,
+        crate::vm::runtime::helpers::call_external_entry_ptr() as usize as u64,
     );
     self.core.text.emit_u32(enc::blr(call_scratch));
+    self.gp_scratch.free_index(call_scratch_idx);
 
-    // If helper returned nonzero, branch to the error return path
+    // Nonzero helper status means the runtime stored a WasmError in the
+    // NativeContext, so branch to the shared error-return path.
     let return_error_label = self.core.return_error_label;
     self.lower_cbnz(abi::C_RET0, return_error_label);
     Ok(())
@@ -577,13 +502,15 @@ pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
         map_fixed_reg(MACHINE_CTX_REG),
     ));
     materialize_u64_into(&mut self.core.text, abi::C_ARG1, trap_code(kind));
-    let call_scratch = self.gp_scratch.scoped_alloc().release();
+    let call_scratch_idx = self.gp_scratch.alloc();
+    let call_scratch = self.gp_scratch.reg(call_scratch_idx);
     materialize_u64_into(
         &mut self.core.text,
         call_scratch,
         crate::vm::runtime::helpers::raise_trap as u64,
     );
     self.core.text.emit_u32(enc::blr(call_scratch));
+    self.gp_scratch.free_index(call_scratch_idx);
     // Branch to the shared error-return epilogue
     let return_error_label = self.core.return_error_label;
     self.lower_b(return_error_label);

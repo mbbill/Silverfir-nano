@@ -14,12 +14,6 @@ use super::{
 };
 
 impl<'a> BlockLowerContext<'a> {
-    /// Reload all cached locals from the frame. Used after calls and at
-    /// non-entry block boundaries where the cache may be stale.
-    pub(super) fn emit_reload_cached_locals(&mut self) -> Result<(), WasmError> {
-        self.emit_reload_cached_locals_selective(None)
-    }
-
     /// Reload cached locals from the frame, optionally skipping locals that
     /// are known to be written before read at this continuation point.
     ///

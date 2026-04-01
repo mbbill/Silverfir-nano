@@ -72,12 +72,7 @@ pub(crate) enum SemanticOpKind {
     BrTable {
         entries: Vec<BrTableEntry>,
     },
-    CallExternal {
-        func_idx: u32,
-        params: u16,
-        results: u16,
-    },
-    CallInternal {
+    CallDirect {
         callee: u32,
         params: u16,
         results: u16,
@@ -123,8 +118,7 @@ pub(crate) struct SemanticProgram {
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
     match kind {
-        SemanticOpKind::CallExternal { results, .. }
-        | SemanticOpKind::CallInternal { results, .. }
+        SemanticOpKind::CallDirect { results, .. }
         | SemanticOpKind::CallIndirect { results, .. } => Some(*results as usize),
         SemanticOpKind::Block { results, .. }
         | SemanticOpKind::Loop { results, .. }

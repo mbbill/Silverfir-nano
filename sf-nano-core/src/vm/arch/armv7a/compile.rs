@@ -16,7 +16,10 @@ use crate::{
             types::FunctionArtifact,
         },
         entities::ModuleInst,
-        runtime::code::{NativeRootEntry, CompiledNativeModule},
+        runtime::{
+            call_contract::NativeLocalCallInfo32,
+            code::{CompiledNativeModule, NativeRootEntry},
+        },
     },
 };
 
@@ -43,14 +46,8 @@ fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, addr: u32) {
 
 // ── ARM32 function info table ────────────────────────────────────────────────
 
-/// Per-function metadata: 4x u32 = 16 bytes (ARM32 uses 32-bit pointers).
-#[repr(C)]
-struct Arm32FunctionInfo {
-    entry: u32,
-    total_frame_bytes: u32,
-    frame_prefix_slots: u32,
-    call_scratch_base_slot: u32,
-}
+/// Per-function metadata written for 32-bit indirect local-call setup.
+type Arm32FunctionInfo = NativeLocalCallInfo32;
 
 const ARM32_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Arm32FunctionInfo>();
 
@@ -93,8 +90,8 @@ pub(crate) fn compile_module(
 
     // Build ARM32-specific function info table (4x u32 = 16 bytes per entry)
     let mut function_info_bytes =
-        Vec::with_capacity(compiled.runtime().functions.len() * ARM32_FUNCTION_INFO_SIZE);
-    for (func_idx, runtime) in compiled.runtime().functions.iter().enumerate() {
+        Vec::with_capacity(compiled.abi().functions.len() * ARM32_FUNCTION_INFO_SIZE);
+    for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = Arm32FunctionInfo {
             entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
                 WasmError::internal("armv7a function entry is out of range".into())
@@ -130,11 +127,6 @@ pub(crate) fn compile_module(
                     WasmError::internal("armv7a direct callee address is out of range".into())
                 })? as u32;
             patch_movw_movt(&mut artifact.text, patch.literal_offset, callee_addr);
-        }
-        // Patch function table references
-        for &literal_offset in &artifact.function_table_patches {
-            let table_addr = unsafe { base_ptr.add(function_info_table_offset) } as u32;
-            patch_movw_movt(&mut artifact.text, literal_offset, table_addr);
         }
     }
 
@@ -175,6 +167,10 @@ pub(crate) fn compile_module(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
+    compiled.publish_local_call_infos(
+        unsafe { executable.as_ptr().add(function_info_table_offset) },
+        compiled.abi().functions.len(),
+    );
 
     // Record profiler symbols
     let module_name = &module.name;

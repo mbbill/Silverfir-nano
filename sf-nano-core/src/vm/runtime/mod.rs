@@ -28,6 +28,8 @@ impl ReferenceBackendMode {
 // --- Native runtime infrastructure (micro-jit only) ---
 
 #[cfg(feature = "micro-jit")]
+pub(crate) mod call_contract;
+#[cfg(feature = "micro-jit")]
 pub(crate) mod code;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod code_buf;

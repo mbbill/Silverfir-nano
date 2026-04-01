@@ -15,12 +15,11 @@ use crate::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
         machine::machine_ir::{
             MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineHelperCall,
+            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineCallExternal,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
         },
-        runtime::helpers::resolve_helper_entry,
     },
 };
 
@@ -583,8 +582,8 @@ impl<'a> Arm32Backend<'a> {
                 self.compile_trap_if(*kind, cond)?;
             }
 
-            MachineInstKind::CallHelper(call) => {
-                self.compile_call_helper(call)?;
+            MachineInstKind::CallExternal(call) => {
+                self.compile_call_external(call)?;
             }
             MachineInstKind::IndexedLoad {
                 dst,
@@ -3044,27 +3043,15 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
-    // ─── CallHelper ─────────────────────────────────────────────────────────
+    // ─── CallExternal ───────────────────────────────────────────────────────
 
-    fn compile_call_helper(&mut self, call: &MachineHelperCall) -> Result<(), WasmError> {
-        let binding = self
-            .core
-            .compiled
-            .module()
-            .externs
-            .get(call.target.0 as usize)
-            .ok_or_else(|| {
-                WasmError::internal(alloc::format!(
-                    "armv7a: extern id {} not found",
-                    call.target.0
-                ))
-            })?;
+    fn compile_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
         let metadata =
             self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
-                WasmError::internal("armv7a: helper metadata is out of range".into())
+                WasmError::internal("armv7a: external-call metadata is out of range".into())
             })?;
 
-        let helper_ptr = resolve_helper_entry(binding.symbol) as usize;
+        let helper_ptr = crate::vm::runtime::helpers::call_external_entry_ptr() as usize;
 
         // EABI: fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32
         self.core

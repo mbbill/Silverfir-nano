@@ -68,7 +68,7 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
             MachineInstKind::Store { addr, width, .. } => {
                 tracked.retain(|entry| !addrs_overlap(entry.addr, entry.width, *addr, *width));
             }
-            MachineInstKind::CallHelper(_) => {
+            MachineInstKind::CallExternal(_) => {
                 tracked.clear();
             }
             _ => {}

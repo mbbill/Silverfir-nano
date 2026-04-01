@@ -1,4 +1,4 @@
-use super::reg::{Arm64FpReg, Arm64Reg};
+use super::{abi, reg::{Arm64FpReg, Arm64Reg}};
 
 /// ARM64 shift type for shifted-register operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,11 +212,11 @@ pub(crate) fn sub_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 }
 
 pub(crate) fn mul_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    madd(0, rd, rn, rm, Arm64Reg::Xzr)
+    madd(0, rd, rn, rm, abi::zero_reg())
 }
 
 pub(crate) fn mul_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    madd(1, rd, rn, rm, Arm64Reg::Xzr)
+    madd(1, rd, rn, rm, abi::zero_reg())
 }
 
 pub(crate) fn and_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -289,20 +289,20 @@ pub(crate) fn eor_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift
 
 pub(crate) fn tst_imm_32(rn: Arm64Reg, imm: u32) -> Option<u32> {
     let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
-    Some(logical_imm(0, 0b11, n, Arm64Reg::Xzr, rn, immr, imms))
+    Some(logical_imm(0, 0b11, n, abi::zero_reg(), rn, immr, imms))
 }
 
 pub(crate) fn tst_imm_64(rn: Arm64Reg, imm: u64) -> Option<u32> {
     let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
-    Some(logical_imm(1, 0b11, n, Arm64Reg::Xzr, rn, immr, imms))
+    Some(logical_imm(1, 0b11, n, abi::zero_reg(), rn, immr, imms))
 }
 
 pub(crate) fn tst_reg_32(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    logical_shifted_reg(0, 0b11, 0, Arm64Reg::Xzr, rn, rm)
+    logical_shifted_reg(0, 0b11, 0, abi::zero_reg(), rn, rm)
 }
 
 pub(crate) fn tst_reg_64(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    logical_shifted_reg(1, 0b11, 0, Arm64Reg::Xzr, rn, rm)
+    logical_shifted_reg(1, 0b11, 0, abi::zero_reg(), rn, rm)
 }
 
 // --- UBFX (unsigned bitfield extract) ---
@@ -326,11 +326,11 @@ pub(crate) fn orn_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 }
 
 pub(crate) fn mvn_32(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    orn_reg_32(rd, Arm64Reg::Xzr, rm)
+    orn_reg_32(rd, abi::zero_reg(), rm)
 }
 
 pub(crate) fn mvn_64(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    orn_reg_64(rd, Arm64Reg::Xzr, rm)
+    orn_reg_64(rd, abi::zero_reg(), rm)
 }
 
 pub(crate) fn lslv_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
@@ -374,23 +374,23 @@ pub(crate) fn sub_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
 }
 
 pub(crate) fn cmp_reg_32(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    add_sub_shifted_reg(0, 1, 1, Arm64Reg::Xzr, rn, rm)
+    add_sub_shifted_reg(0, 1, 1, abi::zero_reg(), rn, rm)
 }
 
 pub(crate) fn cmp_reg_64(rn: Arm64Reg, rm: Arm64Reg) -> u32 {
-    add_sub_shifted_reg(1, 1, 1, Arm64Reg::Xzr, rn, rm)
+    add_sub_shifted_reg(1, 1, 1, abi::zero_reg(), rn, rm)
 }
 
 pub(crate) fn cmp_imm_64(rn: Arm64Reg, imm12: u32) -> u32 {
-    add_sub_imm(1, 1, 1, Arm64Reg::Xzr, rn, imm12)
+    add_sub_imm(1, 1, 1, abi::zero_reg(), rn, imm12)
 }
 
 pub(crate) fn cset_32(rd: Arm64Reg, cond: Cond) -> u32 {
-    cond_select(0, 0b01, rd, Arm64Reg::Xzr, Arm64Reg::Xzr, cond.invert())
+    cond_select(0, 0b01, rd, abi::zero_reg(), abi::zero_reg(), cond.invert())
 }
 
 pub(crate) fn cset_64(rd: Arm64Reg, cond: Cond) -> u32 {
-    cond_select(1, 0b01, rd, Arm64Reg::Xzr, Arm64Reg::Xzr, cond.invert())
+    cond_select(1, 0b01, rd, abi::zero_reg(), abi::zero_reg(), cond.invert())
 }
 
 pub(crate) fn csel_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u32 {
@@ -398,7 +398,7 @@ pub(crate) fn csel_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, cond: Cond) -> u
 }
 
 pub(crate) fn mov_reg_64(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    orr_reg_64(rd, Arm64Reg::Xzr, rm)
+    orr_reg_64(rd, abi::zero_reg(), rm)
 }
 
 pub(crate) fn movz_64(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
@@ -706,7 +706,7 @@ pub(crate) fn blr(rn: Arm64Reg) -> u32 {
 }
 
 pub(crate) fn ret() -> u32 {
-    (0b1101011_0010 << 21) | (0b11111 << 16) | (Arm64Reg::X30.index() << 5)
+    (0b1101011_0010 << 21) | (0b11111 << 16) | (abi::link_reg().index() << 5)
 }
 
 // --- Integer data-processing (2 source) ---
@@ -783,19 +783,99 @@ pub(crate) fn rbit_64(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
 }
 
 pub(crate) fn cmp_imm_32(rn: Arm64Reg, imm12: u32) -> u32 {
-    add_sub_imm(0, 1, 1, Arm64Reg::Xzr, rn, imm12)
+    add_sub_imm(0, 1, 1, abi::zero_reg(), rn, imm12)
 }
 
 pub(crate) fn neg_reg_32(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    sub_reg_32(rd, Arm64Reg::Xzr, rm)
+    sub_reg_32(rd, abi::zero_reg(), rm)
 }
 
 pub(crate) fn neg_reg_64(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    sub_reg_64(rd, Arm64Reg::Xzr, rm)
+    sub_reg_64(rd, abi::zero_reg(), rm)
 }
 
 pub(crate) fn mov_reg_32(rd: Arm64Reg, rm: Arm64Reg) -> u32 {
-    orr_reg_32(rd, Arm64Reg::Xzr, rm)
+    orr_reg_32(rd, abi::zero_reg(), rm)
+}
+
+pub(crate) fn cmp_zero_32(rn: Arm64Reg) -> u32 {
+    cmp_reg_32(rn, abi::zero_reg())
+}
+
+pub(crate) fn cmp_zero_64(rn: Arm64Reg) -> u32 {
+    cmp_reg_64(rn, abi::zero_reg())
+}
+
+pub(crate) fn mov_zero_64(rd: Arm64Reg) -> u32 {
+    mov_reg_64(rd, abi::zero_reg())
+}
+
+pub(crate) fn str_zero_64(rn: Arm64Reg, imm12: u32) -> u32 {
+    str_64(abi::zero_reg(), rn, imm12)
+}
+
+pub(crate) fn stp_zero_64(rn: Arm64Reg, imm7: i32) -> u32 {
+    stp_64(abi::zero_reg(), abi::zero_reg(), rn, imm7)
+}
+
+pub(crate) fn ldr_s_base(rt: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    ldr_s_reg(rt, rn, abi::zero_reg(), false)
+}
+
+pub(crate) fn ldr_d_base(rt: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    ldr_d_reg(rt, rn, abi::zero_reg(), false)
+}
+
+pub(crate) fn str_s_base(rt: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    str_s_reg(rt, rn, abi::zero_reg(), false)
+}
+
+pub(crate) fn str_d_base(rt: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    str_d_reg(rt, rn, abi::zero_reg(), false)
+}
+
+pub(crate) fn ldrb_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldrb_reg(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldrsb_64_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldrsb_reg_64(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldrh_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldrh_reg(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldrsh_64_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldrsh_reg_64(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldr_reg_32_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldr_reg_32(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldrsw_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldrsw_reg(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn ldr_reg_64_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    ldr_reg_64(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn strb_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    strb_reg(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn strh_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    strh_reg(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn str_reg_32_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    str_reg_32(rt, rn, abi::zero_reg())
+}
+
+pub(crate) fn str_reg_64_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
+    str_reg_64(rt, rn, abi::zero_reg())
 }
 
 pub(crate) fn movz_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
@@ -1083,11 +1163,11 @@ pub(crate) fn fcmp_d(rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
 }
 /// FCMP Sn, #0.0
 pub(crate) fn fcmp_s_zero(rn: Arm64FpReg) -> u32 {
-    fp_compare(0b00, rn, Arm64FpReg::new(0), 0b01000)
+    fp_compare(0b00, rn, abi::fp_zero_reg(), 0b01000)
 }
 /// FCMP Dn, #0.0
 pub(crate) fn fcmp_d_zero(rn: Arm64FpReg) -> u32 {
-    fp_compare(0b01, rn, Arm64FpReg::new(0), 0b01000)
+    fp_compare(0b01, rn, abi::fp_zero_reg(), 0b01000)
 }
 
 // FP conditional select

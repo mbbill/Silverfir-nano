@@ -199,27 +199,7 @@ pub(super) fn lower_local_tee(
     state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
 
-pub(super) fn lower_call_external(
-    func_idx: u32,
-    params: u16,
-    results: u16,
-    frame: FrameLayoutPlan,
-    state: &mut BlockState,
-    skip_reload: Vec<bool>,
-) {
-    let call_base = call_base_slot(frame, state.height(), params);
-    state.ops.push(SsaInst {
-        kind: SsaInstKind::Call(SsaCallOp::CallExternal {
-            func_idx,
-            args: FrameSpan::new(call_base, params),
-            results: FrameSpan::new(call_base, results),
-            skip_reload,
-        }),
-    });
-    state.finish_call(params, results);
-}
-
-pub(super) fn lower_call_internal(
+pub(super) fn lower_call_direct(
     callee: u32,
     params: u16,
     results: u16,
@@ -229,7 +209,7 @@ pub(super) fn lower_call_internal(
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+        kind: SsaInstKind::Call(SsaCallOp::CallDirect {
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
@@ -336,22 +316,13 @@ pub(super) fn lower_block_body_op(
         SemanticOpKind::LocalTee { idx } => {
             lower_local_tee(*idx, state, frame, values, local_types, local_versions)
         }
-        SemanticOpKind::CallExternal {
-            func_idx,
-            params,
-            results,
-        } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_external(*func_idx, *params, *results, frame, state, skip);
-            Ok(())
-        }
-        SemanticOpKind::CallInternal {
+        SemanticOpKind::CallDirect {
             callee,
             params,
             results,
         } => {
             let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_internal(*callee, *params, *results, frame, state, skip);
+            lower_call_direct(*callee, *params, *results, frame, state, skip);
             Ok(())
         }
         SemanticOpKind::CallIndirect {

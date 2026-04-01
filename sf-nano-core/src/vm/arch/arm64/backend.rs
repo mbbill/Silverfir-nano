@@ -125,22 +125,22 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     fn lower_prologue(&mut self) {
         // Allocate frame and save callee-saved registers.
         self.core.text.emit_u32(enc::sub_imm_64(
-            Arm64Reg::SP,
-            Arm64Reg::SP,
+            abi::stack_reg(),
+            abi::stack_reg(),
             CALLEE_SAVED_FRAME_SIZE,
         ));
         for (index, (lhs, rhs)) in abi::callee_saved_gp_pairs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::stp_64(
                 lhs,
                 rhs,
-                Arm64Reg::SP,
+                abi::stack_reg(),
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
         for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::str_d(
                 reg,
-                Arm64Reg::SP,
+                abi::stack_reg(),
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
             ));
         }
@@ -167,7 +167,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
             self.core.text.emit_u32(enc::ldr_d(
                 reg,
-                Arm64Reg::SP,
+                abi::stack_reg(),
                 stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
             ));
         }
@@ -176,13 +176,13 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.core.text.emit_u32(enc::ldp_64(
                 lhs,
                 rhs,
-                Arm64Reg::SP,
+                abi::stack_reg(),
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
         self.core.text.emit_u32(enc::add_imm_64(
-            Arm64Reg::SP,
-            Arm64Reg::SP,
+            abi::stack_reg(),
+            abi::stack_reg(),
             CALLEE_SAVED_FRAME_SIZE,
         ));
         self.core.text.emit_u32(enc::ret());
@@ -208,7 +208,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 let base_reg = self.map_gp_reg(base)?;
                 self.core
                     .text
-                    .emit_u32(enc::stp_64(Arm64Reg::Xzr, Arm64Reg::Xzr, base_reg, imm7));
+                    .emit_u32(enc::stp_zero_64(base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 index += 2;

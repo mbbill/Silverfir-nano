@@ -336,8 +336,8 @@ mod tests {
             },
             SsaInst {
                 kind: SsaInstKind::Call(
-                    crate::vm::middle::ssa_ir::ir::SsaCallOp::CallExternal {
-                        func_idx: 0,
+                    crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
+                        callee: 0,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             crate::vm::middle::frame::FrameSlot(0), 0,
                         ),

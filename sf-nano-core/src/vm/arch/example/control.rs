@@ -145,19 +145,18 @@ impl<'a> super::backend::ExampleBackend<'a> {
         Ok(())
     }
 
-    // ── Call helper ──────────────────────────────────────────────────────
+    // ── Call external ────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_helper(
+    pub(super) fn lower_call_external(
         &mut self,
-        _extern_idx: usize,
         _const_idx: usize,
     ) -> Result<(), WasmError> {
         // A real backend would:
-        // 1. MOV helper args into HELPER_ARGS.arg0/arg1/arg2
-        // 2. Materialize helper entry into TEMPS.call_target
+        // 1. MOV external-call helper args into HELPER_ARGS.arg0/arg1/arg2
+        // 2. Materialize call_external_entry into TEMPS.call_target
         // 3. BLR call_target
         // 4. Check return status, branch to error label if nonzero
-        todo!("example backend: call helper")
+        todo!("example backend: call external")
     }
 
     // ── Local return ──────────────────────────────────────────────────────

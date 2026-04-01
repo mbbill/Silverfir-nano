@@ -41,13 +41,6 @@ impl ResultBuffer {
         }
         self.sp += 1;
     }
-
-    #[cfg(test)]
-    #[inline(always)]
-    pub(crate) fn len(&self) -> usize {
-        self.sp
-    }
-
     #[inline(always)]
     pub(crate) fn peek_at_index(&self, index: usize) -> RawValue {
         debug_assert!(index < self.sp, "Stack index out of bounds");

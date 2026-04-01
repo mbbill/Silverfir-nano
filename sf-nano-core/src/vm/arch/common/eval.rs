@@ -45,7 +45,7 @@ pub(crate) fn eval(
     let compiled = code.compiled();
     let func_id = code.func_id();
     let runtime = compiled
-        .runtime()
+        .abi()
         .functions
         .get(func_id.0 as usize)
         .ok_or_else(|| {
@@ -77,6 +77,7 @@ pub(crate) fn eval(
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
 
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
+    ctx.seed_local_call_infos(compiled);
     seed_root_call_link(compiled, runtime, stack_base, root_return)?;
     #[cfg(feature = "function-trace")]
     {
@@ -130,14 +131,14 @@ pub(crate) fn eval(
 
 fn seed_root_call_link(
     compiled: &CompiledNativeModule,
-    runtime: &crate::vm::machine::machine_ir::MachineFunctionRuntime,
+    runtime: &crate::vm::machine::machine_ir::MachineFunctionAbi,
     fp: *mut u64,
     root_return: *const u8,
 ) -> Result<(), WasmError> {
     let call_scratch = runtime.call_scratch.ok_or_else(|| {
         WasmError::internal("native root entry requires call scratch for unified return".into())
     })?;
-    let layout = compiled.runtime().call_link;
+    let layout = compiled.abi().call_link;
     unsafe {
         *fp.add(call_scratch.base_slot as usize + (layout.continuation_offset / 8) as usize) =
             root_return as u64;

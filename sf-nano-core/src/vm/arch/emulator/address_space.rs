@@ -17,15 +17,17 @@ const CTX_BASE_32: u64 = 0x1000_0000;
 const MEMORY_VIEWS_BASE_32: u64 = 0x1100_0000;
 const TABLE_VIEWS_BASE_32: u64 = 0x1200_0000;
 const FUNCTION_VIEWS_BASE_32: u64 = 0x1300_0000;
-const GLOBALS_BASE_32: u64 = 0x1400_0000;
-const TYPE_CANON_BASE_32: u64 = 0x1500_0000;
+const LOCAL_CALL_INFOS_BASE_32: u64 = 0x1400_0000;
+const GLOBALS_BASE_32: u64 = 0x1500_0000;
+const TYPE_CANON_BASE_32: u64 = 0x1600_0000;
 const MEMORY_BASE_32: u64 = 0x4000_0000;
 const MEMORY_WINDOW_32: u64 = 0x1000_0000;
 const TABLE_ELEMENTS_BASE_32: u64 = 0xC000_0000;
 const TABLE_ELEMENTS_WINDOW_32: u64 = 0x0400_0000;
 const MEMORY_VIEWS_WINDOW_32: u64 = TABLE_VIEWS_BASE_32 - MEMORY_VIEWS_BASE_32;
 const TABLE_VIEWS_WINDOW_32: u64 = FUNCTION_VIEWS_BASE_32 - TABLE_VIEWS_BASE_32;
-const FUNCTION_VIEWS_WINDOW_32: u64 = GLOBALS_BASE_32 - FUNCTION_VIEWS_BASE_32;
+const FUNCTION_VIEWS_WINDOW_32: u64 = LOCAL_CALL_INFOS_BASE_32 - FUNCTION_VIEWS_BASE_32;
+const LOCAL_CALL_INFOS_WINDOW_32: u64 = GLOBALS_BASE_32 - LOCAL_CALL_INFOS_BASE_32;
 const GLOBALS_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBALS_BASE_32;
 const TYPE_CANON_WINDOW_32: u64 = MEMORY_BASE_32 - TYPE_CANON_BASE_32;
 const MAX_MEMORY_COUNT_32: usize =
@@ -138,6 +140,7 @@ pub(super) struct Target32AddressSpace {
     memory_views_base: u64,
     table_views_base: u64,
     function_views_base: u64,
+    local_call_infos_base: u64,
     globals_base: u64,
     type_canon_base: u64,
     layout: NativeRuntimeAbiLayout,
@@ -154,6 +157,7 @@ impl Target32AddressSpace {
             memory_views_base: MEMORY_VIEWS_BASE_32,
             table_views_base: TABLE_VIEWS_BASE_32,
             function_views_base: FUNCTION_VIEWS_BASE_32,
+            local_call_infos_base: LOCAL_CALL_INFOS_BASE_32,
             globals_base: GLOBALS_BASE_32,
             type_canon_base: TYPE_CANON_BASE_32,
             layout: native_runtime_abi_layout(4),
@@ -192,6 +196,15 @@ impl Target32AddressSpace {
                 self.layout.function_view.stride as usize,
             )?,
             FUNCTION_VIEWS_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            "emu32 synthetic local-call-info metadata",
+            checked_region_bytes(
+                "emu32 synthetic local-call-info metadata",
+                ctx.local_call_infos_len,
+                self.layout.local_call_info.stride as usize,
+            )?,
+            LOCAL_CALL_INFOS_WINDOW_32,
         )?;
         ensure_window_fits(
             "emu32 synthetic globals metadata",
@@ -311,6 +324,17 @@ impl Target32AddressSpace {
                 (ctx.function_views_len as u32).saturating_mul(self.layout.function_view.stride);
             if self.contains(addr, self.function_views_base, size) {
                 return Some(self.load_function_view(ctx, addr - self.function_views_base, width));
+            }
+        }
+        if ctx.local_call_infos_len != 0 {
+            let size = (ctx.local_call_infos_len as u32)
+                .saturating_mul(self.layout.local_call_info.stride);
+            if self.contains(addr, self.local_call_infos_base, size) {
+                return Some(self.load_local_call_info(
+                    ctx,
+                    addr - self.local_call_infos_base,
+                    width,
+                ));
             }
         }
         if ctx.type_canon_len != 0 {
@@ -524,6 +548,16 @@ impl Target32AddressSpace {
         if offset == ctx_layout.function_views_len_offset {
             return self.read_scalar(width, ctx.function_views_len as u64);
         }
+        if offset == ctx_layout.local_call_infos_base_offset {
+            return Ok(if ctx.local_call_infos_len == 0 {
+                0
+            } else {
+                self.local_call_infos_base
+            });
+        }
+        if offset == ctx_layout.local_call_infos_len_offset {
+            return self.read_scalar(width, ctx.local_call_infos_len as u64);
+        }
         if offset == ctx_layout.type_canon_base_offset {
             return Ok(if ctx.type_canon_len == 0 {
                 0
@@ -658,6 +692,36 @@ impl Target32AddressSpace {
             )));
         };
         self.read_scalar(width, value)
+    }
+
+    fn load_local_call_info(
+        self,
+        ctx: &NativeContext,
+        offset: u64,
+        width: MachineMemWidth,
+    ) -> Result<u64, WasmError> {
+        let stride = u64::from(self.layout.local_call_info.stride);
+        let index = (offset / stride) as usize;
+        if index >= ctx.local_call_infos_len {
+            return Err(WasmError::internal(alloc::format!(
+                "synthetic 32-bit local call info load is out of range: entry {} >= {}",
+                index,
+                ctx.local_call_infos_len
+            )));
+        }
+        let field_offset = (offset % stride) as usize;
+        let ptr = ctx
+            .local_call_infos_base
+            .wrapping_add(index.saturating_mul(self.layout.local_call_info.stride as usize))
+            .wrapping_add(field_offset);
+        Ok(unsafe {
+            match width {
+                MachineMemWidth::U8 => core::ptr::read_unaligned(ptr.cast::<u8>()) as u64,
+                MachineMemWidth::U16 => core::ptr::read_unaligned(ptr.cast::<u16>()) as u64,
+                MachineMemWidth::U32 => core::ptr::read_unaligned(ptr.cast::<u32>()) as u64,
+                MachineMemWidth::U64 => core::ptr::read_unaligned(ptr.cast::<u64>()),
+            }
+        })
     }
 
     fn load_type_canon(

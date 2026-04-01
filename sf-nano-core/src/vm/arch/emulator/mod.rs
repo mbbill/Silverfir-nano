@@ -16,8 +16,8 @@ use crate::{
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
             MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionRuntime,
-            MachineHelperCall, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionAbi,
+            MachineCallExternal, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineProgram, MachineReg, MachineShiftOp, MachineSign,
             MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
@@ -30,7 +30,7 @@ use crate::{
         runtime::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
-            helpers::{resolve_helper_entry, NativeHelperStatus},
+            helpers::NativeHelperStatus,
         },
         store::Store,
         value::Value,
@@ -139,7 +139,7 @@ pub(crate) fn eval(
     let compiled = code.compiled();
     let func_id = code.func_id();
     let runtime = compiled
-        .runtime()
+        .abi()
         .functions
         .get(func_id.0 as usize)
         .ok_or_else(|| {
@@ -165,6 +165,7 @@ pub(crate) fn eval(
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
 
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
+    ctx.seed_local_call_infos(compiled);
     #[cfg(feature = "function-trace")]
     {
         function_trace::init_from_env();
@@ -233,19 +234,18 @@ impl<'a> Emulator<'a> {
                 MachineTerminator::CallDirect {
                     callee,
                     callee_frame_base,
+                    call_link_base: _,
                     ..
                 } => self.enter_direct_call(*callee, *callee_frame_base),
                 MachineTerminator::CallIndirect {
                     callee_target,
+                    callee_entry: _,
                     callee_frame_base,
-                    arg_slots,
-                    caller_result_base,
+                    call_link_base: _,
                     continuation,
                 } => self.enter_indirect_call(
                     *callee_target,
                     *callee_frame_base,
-                    *arg_slots,
-                    *caller_result_base,
                     *continuation,
                 ),
                 MachineTerminator::Return => {
@@ -689,7 +689,7 @@ impl<'a> Emulator<'a> {
                 };
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
-            MachineInstKind::CallHelper(call) => self.execute_helper(call)?,
+            MachineInstKind::CallExternal(call) => self.execute_call_external(call)?,
             MachineInstKind::MemoryGrow { .. }
             | MachineInstKind::MemoryFill { .. }
             | MachineInstKind::MemoryCopy { .. }
@@ -706,18 +706,14 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
-    fn execute_helper(&mut self, call: &MachineHelperCall) -> Result<(), WasmError> {
-        let binding = self
-            .compiled
-            .module()
-            .externs
-            .get(call.target.0 as usize)
-            .ok_or_else(|| WasmError::internal("machine helper target is out of range".into()))?;
+    fn execute_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
         let metadata = self
             .compiled
             .const_ptr(call.metadata)
-            .ok_or_else(|| WasmError::internal("machine helper metadata is out of range".into()))?;
-        let entry = resolve_helper_entry(binding.symbol);
+            .ok_or_else(|| {
+                WasmError::internal("machine external-call metadata is out of range".into())
+            })?;
+        let entry = crate::vm::runtime::helpers::call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeHelperStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
@@ -766,32 +762,28 @@ impl<'a> Emulator<'a> {
 
     fn enter_indirect_call(
         &mut self,
-        callee_target: MachineValue,
+        callee_target: MachineReg,
         callee_frame_base: MachineReg,
-        arg_slots: u16,
-        caller_result_base: u16,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        let callee = MachineFuncId(self.read_value(callee_target)? as u32);
+        let callee = MachineFuncId(self.read_reg(callee_target)? as u32);
         let callee_runtime = self.runtime_for(callee)?;
-        if arg_slots > callee_runtime.frame_prefix_slots {
-            return Err(WasmError::internal(
-                "indirect local call arg span exceeds callee frame prefix".into(),
-            ));
-        }
         let callee_fp = self
             .address_space
             .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        for slot in arg_slots..callee_runtime.frame_prefix_slots {
-            unsafe {
-                *callee_fp.add(slot as usize) = 0;
-            }
-        }
         let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("indirect local call requires callee call scratch".into())
         })?;
-        self.write_call_link(callee_fp, call_scratch, continuation, caller_result_base)?;
-        self.enter_callee(callee, callee_fp, true)
+        let continuation_slot = call_scratch.base_slot
+            + (self.compiled.abi().call_link.continuation_offset / 8) as u16;
+        let stored = unsafe { *callee_fp.add(continuation_slot as usize) } as u32;
+        if stored != continuation.0 {
+            return Err(WasmError::internal(
+                "machine indirect local call did not seed the continuation token before transfer"
+                    .into(),
+            ));
+        }
+        self.enter_callee(callee, callee_fp, false)
     }
 
     fn enter_callee(
@@ -844,17 +836,17 @@ impl<'a> Emulator<'a> {
             let continuation = MachineBlockId(self.read_call_link_word(
                 self.fp,
                 call_scratch,
-                self.compiled.runtime().call_link.continuation_offset,
+                self.compiled.abi().call_link.continuation_offset,
             )? as u32);
             let caller_fp = self.address_space.host_stack_ptr(self.read_call_link_word(
                 self.fp,
                 call_scratch,
-                self.compiled.runtime().call_link.caller_frame_offset,
+                self.compiled.abi().call_link.caller_frame_offset,
             )?)?;
             let caller_result_base_bytes = self.read_call_link_word(
                 self.fp,
                 call_scratch,
-                self.compiled.runtime().call_link.caller_result_base_offset,
+                self.compiled.abi().call_link.caller_result_base_offset,
             )? as usize;
             self.copy_results(
                 results,
@@ -960,9 +952,9 @@ impl<'a> Emulator<'a> {
             .ok_or_else(|| WasmError::internal("machine current block is out of range".into()))
     }
 
-    fn runtime_for(&self, func_id: MachineFuncId) -> Result<&MachineFunctionRuntime, WasmError> {
+    fn runtime_for(&self, func_id: MachineFuncId) -> Result<&MachineFunctionAbi, WasmError> {
         self.compiled
-            .runtime()
+            .abi()
             .functions
             .get(func_id.0 as usize)
             .ok_or_else(|| WasmError::internal("machine runtime record is out of range".into()))
@@ -1241,56 +1233,6 @@ impl<'a> Emulator<'a> {
                 MachineMemWidth::U16 => core::ptr::write_unaligned(ptr.cast::<u16>(), value as u16),
                 MachineMemWidth::U32 => core::ptr::write_unaligned(ptr.cast::<u32>(), value as u32),
                 MachineMemWidth::U64 => core::ptr::write_unaligned(ptr.cast::<u64>(), value),
-            }
-        }
-        Ok(())
-    }
-
-    fn write_call_link(
-        &self,
-        callee_fp: *mut u64,
-        call_scratch: MachineFrameRegion,
-        continuation: MachineBlockId,
-        caller_result_base: u16,
-    ) -> Result<(), WasmError> {
-        let layout = self.compiled.runtime().call_link;
-        self.write_call_link_word_slot(
-            callee_fp,
-            call_scratch,
-            layout.continuation_offset,
-            continuation.0 as u64,
-        )?;
-        self.write_call_link_word_slot(
-            callee_fp,
-            call_scratch,
-            layout.caller_frame_offset,
-            self.address_space.frame_base_value(self.fp)?,
-        )?;
-        self.write_call_link_word_slot(
-            callee_fp,
-            call_scratch,
-            layout.caller_result_base_offset,
-            u64::from(caller_result_base) * 8,
-        )
-    }
-
-    fn write_call_link_word_slot(
-        &self,
-        callee_fp: *mut u64,
-        call_scratch: MachineFrameRegion,
-        offset: i32,
-        value: u64,
-    ) -> Result<(), WasmError> {
-        let addr = frame_region_addr(callee_fp, call_scratch, offset)?;
-        unsafe {
-            match self.compiled.backend().gp_unit_bytes {
-                4 => core::ptr::write_unaligned(addr.cast::<u32>(), value as u32),
-                8 => core::ptr::write_unaligned(addr.cast::<u64>(), value),
-                _ => {
-                    return Err(WasmError::internal(
-                        "unsupported GP unit size in emulator call-link write".into(),
-                    ))
-                }
             }
         }
         Ok(())
@@ -2256,7 +2198,7 @@ mod tests {
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
                 MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
                 MachineIndexExtend, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
-                MachineModule, MachineProgram, MachineReg, MachineRuntimeContract, MachineSign,
+                MachineModule, MachineProgram, MachineReg, MachineModuleAbi, MachineSign,
                 MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
                 MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },
@@ -2635,9 +2577,8 @@ mod tests {
                         },
                     }],
                     consts: Vec::new(),
-                    externs: Vec::new(),
                 },
-                MachineRuntimeContract::default(),
+                MachineModuleAbi::default(),
             )
             .expect("compiled machine module"),
         );
@@ -2702,9 +2643,8 @@ mod tests {
                         },
                     }],
                     consts: Vec::new(),
-                    externs: Vec::new(),
                 },
-                MachineRuntimeContract::default(),
+                MachineModuleAbi::default(),
             )
             .expect("compiled machine module"),
         );
@@ -2781,9 +2721,8 @@ mod tests {
                     },
                 }],
                 consts: Vec::new(),
-                externs: Vec::new(),
             },
-            MachineRuntimeContract::default(),
+            MachineModuleAbi::default(),
         )
         .expect_err("emu32 should reject scalar gpi64 IR on a 32-bit GP target");
 
@@ -2830,9 +2769,8 @@ mod tests {
                     },
                 }],
                 consts: Vec::new(),
-                externs: Vec::new(),
             },
-            MachineRuntimeContract::default(),
+            MachineModuleAbi::default(),
         )
         .expect_err("emu32 should reject machine IR with a wrong 32-bit GP/FP bank boundary");
 

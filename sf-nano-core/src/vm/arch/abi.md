@@ -151,7 +151,7 @@ state.
 The shared model is:
 
 1. publish all cached locals to their canonical frame slots
-2. issue `CallHelper`
+2. issue `CallExternal`
 3. reload any fixed cached views that are modeled as explicit MachineIR state
 4. reload cached locals from their frame slots
 

@@ -1,6 +1,6 @@
 //! Function inlining at the semantic IR level.
 //!
-//! Replaces `CallInternal` ops with the callee's body when the callee is a
+//! Replaces `CallDirect` ops with the callee's body when the callee is a
 //! small leaf function. The wrapper `Block/End` pair provides the target for
 //! any branch that would have exited the callee.
 //!
@@ -33,9 +33,9 @@ fn is_leaf_inline_candidate(callee: &SemanticProgram) -> bool {
     for op in &callee.ops {
         match &op.kind {
             // Leaf: no nested calls
-            SemanticOpKind::CallInternal { .. }
-            | SemanticOpKind::CallExternal { .. }
-            | SemanticOpKind::CallIndirect { .. } => return false,
+            SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. } => {
+                return false
+            }
             // Explicit returns are handled via Return → Br conversion.
             _ => {}
         }
@@ -155,10 +155,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                 });
                 unreachable = true;
             }
-            SemanticOpKind::CallInternal {
-                params, results, ..
-            }
-            | SemanticOpKind::CallExternal {
+            SemanticOpKind::CallDirect {
                 params, results, ..
             } => {
                 depth -= *params as i32;
@@ -215,7 +212,7 @@ pub(crate) fn inline_calls_in_function(
                     loop_depth -= 1;
                 }
             }
-            SemanticOpKind::CallInternal { callee, .. } => {
+            SemanticOpKind::CallDirect { callee, .. } => {
                 if *callee == caller_func_idx {
                     continue; // skip direct recursion
                 }
@@ -247,14 +244,14 @@ pub(crate) fn inline_calls_in_function(
     true
 }
 
-/// Replace `caller.ops[site]` (a `CallInternal`) with the inlined callee body.
+/// Replace `caller.ops[site]` (a `CallDirect`) with the inlined callee body.
 fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &SemanticProgram) {
     let call_op = &caller.ops[site];
     let (call_params, call_results) = match &call_op.kind {
-        SemanticOpKind::CallInternal {
+        SemanticOpKind::CallDirect {
             params, results, ..
         } => (*params, *results),
-        _ => unreachable!("inline_single_call called on non-CallInternal"),
+        _ => unreachable!("inline_single_call called on non-CallDirect"),
     };
 
     // --- Allocate new locals for the callee's params + locals ---
@@ -370,7 +367,7 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     caller.ops.splice(site..=site, inserted);
 
     // --- Patch op_result_types keys ---
-    // 1. Remove the entry for the old CallInternal (now replaced by Block).
+    // 1. Remove the entry for the old CallDirect (now replaced by Block).
     // 2. Shift entries with key > site by the insertion delta.
     // 3. Reattach the old call's result types to the new wrapper Block.
     // 4. Copy callee's op_result_types with target_offset applied.
@@ -502,10 +499,7 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             SemanticOpKind::BrIf { .. } => {
                 depth -= 1;
             }
-            SemanticOpKind::CallInternal {
-                params, results, ..
-            }
-            | SemanticOpKind::CallExternal {
+            SemanticOpKind::CallDirect {
                 params, results, ..
             } => {
                 depth -= *params as i32;
@@ -670,7 +664,7 @@ mod tests {
             max_stack_height: 1,
             ops: alloc::vec![
                 SemanticOp {
-                    kind: SemanticOpKind::CallInternal {
+                    kind: SemanticOpKind::CallDirect {
                         callee: 1,
                         params: 0,
                         results: 1,
@@ -736,7 +730,7 @@ mod tests {
                     kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::CallInternal {
+                    kind: SemanticOpKind::CallDirect {
                         callee: 1,
                         params: 1,
                         results: 1,

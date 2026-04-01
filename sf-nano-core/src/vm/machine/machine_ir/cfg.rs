@@ -82,28 +82,113 @@ pub(crate) enum MachineTerminator {
         index: MachineValue,
         entries: Vec<MachineEdge>,
     },
-    /// Direct local call. Call setup stores and call-link writes are explicit
-    /// instructions before this terminator; the terminator performs the actual
-    /// transfer to the callee internal entry.
+    /// Direct local call to a compile-time-known local callee.
+    ///
+    /// MachineIR has already emitted everything except the final control
+    /// transfer:
+    /// - dirty cached-local flushes
+    /// - `callee_frame_base` computation
+    /// - stack overflow precheck
+    /// - zero-fill of the callee frame prefix beyond the argument span
+    /// - call-link writes for caller frame pointer and caller result-base
+    ///
+    /// The arch/backend contract for this terminator is:
+    /// - resolve `callee` to the callee's native entry point
+    /// - materialize the native address of `continuation`
+    /// - store that continuation address at
+    ///   `call_link_base + call_link.continuation_offset`
+    /// - move the machine frame pointer register to `callee_frame_base`
+    /// - branch/jump to the callee entry
+    ///
+    /// The backend must not redo frame setup, stack checks, or rebuild the
+    /// call-link record. MachineIR has already computed `call_link_base` and
+    /// written every call-link field except the continuation address.
     CallDirect {
+        /// Compile-time-known local callee id.
+        ///
+        /// Backends use this only to resolve the callee entry address. Any
+        /// metadata needed for frame setup or call-link placement has already
+        /// been consumed by MachineIR before this terminator is reached.
         callee: MachineFuncId,
+        /// GP register containing the absolute address of the callee frame
+        /// base.
+        ///
+        /// MachineIR has already computed and validated this address. The
+        /// backend should treat it as the new frame pointer value for the
+        /// transfer.
         callee_frame_base: MachineReg,
+        /// GP register containing the absolute address of the first byte of
+        /// the callee call-link record.
+        ///
+        /// MachineIR has already chosen the record location and written every
+        /// field except the continuation address. The backend must store the
+        /// native continuation address at
+        /// `call_link_base + call_link.continuation_offset`.
+        call_link_base: MachineReg,
+        /// Caller CFG block that should execute after the callee returns.
+        ///
+        /// The backend must lower this block id to a native code address and
+        /// store that address into the call-link continuation slot before
+        /// branching to the callee.
         continuation: MachineBlockId,
     },
     /// Indirect local call after earlier machine-level code has already
     /// resolved and validated the local callee target.
     ///
-    /// Unlike `CallDirect`, the remaining per-callee setup is dynamic:
-    /// execution below MachineIR may need runtime metadata for the resolved
-    /// target in order to finish any call-link/local-prefix handling before the
-    /// actual transfer. Lowering above MachineIR therefore resolves the local
-    /// callee target, computes the callee frame base, and publishes the
-    /// canonical argument/result slot facts needed by that later step.
+    /// Unlike `CallDirect`, the callee entry is a runtime value loaded through
+    /// the indirect dispatch path rather than a compile-time-known function
+    /// id. MachineIR has already emitted:
+    /// - bounds / type / kind checks on the indirect target
+    /// - `callee_frame_base` computation
+    /// - stack overflow precheck
+    /// - zero-fill of the callee frame prefix beyond the argument span
+    /// - call-link writes for caller frame pointer and caller result-base
+    /// - computation of `call_link_base`
+    ///
+    /// The arch/backend contract for this terminator is:
+    /// - materialize the native address of `continuation`
+    /// - store that continuation address at
+    ///   `call_link_base + call_link.continuation_offset`
+    /// - move the machine frame pointer register to `callee_frame_base`
+    /// - branch/jump to `callee_entry`
+    ///
+    /// The backend must not reinterpret tables, redo dispatch checks, or
+    /// rebuild the call-link record. That work already happened in MachineIR.
     CallIndirect {
-        callee_target: MachineValue,
+        /// GP register containing the resolved local target id from the
+        /// indirect dispatch path.
+        ///
+        /// Current native backends may not need this once `callee_entry` has
+        /// been loaded, but it remains part of the contract for consumers that
+        /// care about the logical callee identity, such as the emulator or a
+        /// backend that chooses to re-consult runtime metadata.
+        callee_target: MachineReg,
+        /// GP register containing the resolved native entry address of the
+        /// local callee.
+        ///
+        /// The backend should jump/branch to this address directly after
+        /// installing the continuation pointer and updating the frame pointer.
+        callee_entry: MachineReg,
+        /// GP register containing the absolute address of the callee frame
+        /// base.
+        ///
+        /// MachineIR has already computed and validated this address. The
+        /// backend should treat it as the new frame pointer value for the
+        /// transfer.
         callee_frame_base: MachineReg,
-        arg_slots: u16,
-        caller_result_base: u16,
+        /// GP register containing the absolute address of the first byte of
+        /// the callee call-link record.
+        ///
+        /// MachineIR has already chosen the record location and written every
+        /// field except the continuation address. The backend must store the
+        /// native continuation address at
+        /// `call_link_base + call_link.continuation_offset`.
+        call_link_base: MachineReg,
+        /// Caller CFG block that should execute after the callee returns.
+        ///
+        /// The backend must lower this block id to a native code address and
+        /// store that address into the call-link continuation slot before
+        /// branching to `callee_entry`.
         continuation: MachineBlockId,
     },
     /// Return using canonical frame result slots already prepared before the

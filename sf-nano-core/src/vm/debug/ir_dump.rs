@@ -15,7 +15,7 @@ use crate::{
             MachineAddr, MachineBranchCond, MachineFloatWidth, MachineFunction,
             MachineInstKind, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineModule, MachineSign,
-            MachineRuntimeContract, MachineStorageType, MachineTerminator,
+            MachineModuleAbi, MachineStorageType, MachineTerminator,
             MachineValue,
         },
         middle::{
@@ -76,7 +76,7 @@ pub(crate) fn write_module_dump(
     function_count: usize,
     lir_inputs: &[DumpFunctionLir<'_>],
     machine_module: &MachineModule,
-    runtime: &MachineRuntimeContract,
+    runtime: &MachineModuleAbi,
     code_slices: &[(u32, &[u8])],
     debug_regions_by_func: &[DumpFunctionRegions],
 ) -> Result<(), WasmError> {
@@ -118,7 +118,7 @@ fn write_dump_impl(
     function_count: usize,
     lir_inputs: &[DumpFunctionLir<'_>],
     machine_module: &MachineModule,
-    runtime: &MachineRuntimeContract,
+    runtime: &MachineModuleAbi,
     code_slices: &[(u32, &[u8])],
     debug_regions_by_func: &[DumpFunctionRegions],
 ) -> Result<(), std::io::Error> {
@@ -321,25 +321,13 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
 
 fn render_call(bop: &SsaCallOp) -> String {
     match bop {
-        SsaCallOp::CallInternal {
+        SsaCallOp::CallDirect {
             callee,
             args,
             results,
             ..
         } => format!(
-            "call_internal f{callee} args=fp[{}..{}) results=fp[{}..{})",
-            args.start.0,
-            args.start.0 + args.count,
-            results.start.0,
-            results.start.0 + results.count,
-        ),
-        SsaCallOp::CallExternal {
-            func_idx,
-            args,
-            results,
-            ..
-        } => format!(
-            "call_external f{func_idx} args=fp[{}..{}) results=fp[{}..{})",
+            "call_direct f{callee} args=fp[{}..{}) results=fp[{}..{})",
             args.start.0,
             args.start.0 + args.count,
             results.start.0,
@@ -824,11 +812,8 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::TrapIf { kind, cond } => {
             format!("trap_if {:?} {}", kind, render_branch_cond(cond))
         }
-        MachineInstKind::CallHelper(call) => {
-            format!(
-                "call_helper extern={} const={}",
-                call.target.0, call.metadata.0
-            )
+        MachineInstKind::CallExternal(call) => {
+            format!("call_external const={}", call.metadata.0)
         }
         MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
             format!("memory.grow mem={} {} -> r{}", mem_idx, mval(delta), dst.0)
@@ -887,26 +872,27 @@ fn render_machine_term(term: &MachineTerminator) -> String {
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
+            call_link_base,
             continuation,
         } => {
             format!(
-                "call_direct f{} frame_base=r{} cont=b{}",
-                callee.0, callee_frame_base.0, continuation.0
+                "call_direct f{} frame_base=r{} call_link_base=r{} cont=b{}",
+                callee.0, callee_frame_base.0, call_link_base.0, continuation.0
             )
         }
         MachineTerminator::CallIndirect {
             callee_target,
+            callee_entry,
             callee_frame_base,
-            arg_slots,
-            caller_result_base,
+            call_link_base,
             continuation,
         } => {
             format!(
-                "call_indirect target={} frame_base=r{} args={} result_base={} cont=b{}",
-                mval(callee_target),
+                "call_indirect target=r{} entry=r{} frame_base=r{} link_base=r{} cont=b{}",
+                callee_target.0,
+                callee_entry.0,
                 callee_frame_base.0,
-                arg_slots,
-                caller_result_base,
+                call_link_base.0,
                 continuation.0
             )
         }

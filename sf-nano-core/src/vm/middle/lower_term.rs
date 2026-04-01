@@ -25,8 +25,8 @@ use crate::{
 use super::{
     lower_edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     lower_ops::{
-        branch_payload, lower_call_external, lower_call_indirect,
-        lower_call_internal, lower_local_get, lower_local_set, lower_local_tee,
+        branch_payload, lower_call_direct, lower_call_indirect, lower_local_get, lower_local_set,
+        lower_local_tee,
         lower_prefix_actions, lower_primitive, return_results,
     },
     state::{BlockState, EntryState, ValueAlloc},
@@ -373,35 +373,13 @@ pub(super) fn lower_block_terminator(
                 entries,
             }))
         }
-        SemanticOpKind::CallExternal {
-            func_idx,
-            params,
-            results,
-        } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_external(*func_idx, *params, *results, frame, state, skip);
-            maybe_publish_live_window_for_targets(
-                &[fallthrough_target(semantic_index, semantic_len)?],
-                state,
-                frame,
-                entry_states,
-            );
-            Ok(LoweredTerminator::new(goto_next(
-                semantic_index,
-                semantic_len,
-                state,
-                semantic_to_block,
-                block_params,
-                entry_states,
-            )?))
-        }
-        SemanticOpKind::CallInternal {
+        SemanticOpKind::CallDirect {
             callee,
             params,
             results,
         } => {
             let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_internal(*callee, *params, *results, frame, state, skip);
+            lower_call_direct(*callee, *params, *results, frame, state, skip);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,

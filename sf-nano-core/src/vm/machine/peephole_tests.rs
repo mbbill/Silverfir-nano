@@ -22,10 +22,15 @@ fn test_config(
     fp_transient_count: u16,
 ) -> BackendConfig {
     let gp_cache = (first_transient - BackendConfig::FIXED) as u8;
-    let gp_trans = (first_fp_reg - first_transient) as u8;
-    let fp_total = (reg_count - first_fp_reg) as u8;
+    let min_gp_trans = if gp_reg_width == 4 { 5 } else { 3 };
+    let gp_trans = ((first_fp_reg - first_transient) as u8).max(min_gp_trans);
+    let adjusted_first_fp = BackendConfig::FIXED + gp_cache as u16 + gp_trans as u16;
+    let fp_total = reg_count
+        .saturating_sub(first_fp_reg)
+        .max(fp_transient_count) as u8;
     let fp_trans = fp_transient_count as u8;
     let fp_cache = fp_total - fp_trans;
+    debug_assert!(adjusted_first_fp >= first_fp_reg);
     BackendConfig::new(
         gp_cache,
         gp_trans,
@@ -997,9 +1002,8 @@ fn preserves_transient_move_live_across_helper_barrier() {
                     },
                 },
                 MachineInst {
-                    kind: MachineInstKind::CallHelper(
-                        crate::vm::machine::machine_ir::MachineHelperCall {
-                            target: crate::vm::machine::machine_ir::MachineExternId(0),
+                    kind: MachineInstKind::CallExternal(
+                        crate::vm::machine::machine_ir::MachineCallExternal {
                             metadata: crate::vm::machine::machine_ir::MachineConstId(0),
                         },
                     ),
@@ -1029,7 +1033,7 @@ fn preserves_transient_move_live_across_helper_barrier() {
             ..
         }
     ));
-    assert!(matches!(block.ops[1].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(block.ops[1].kind, MachineInstKind::CallExternal(_)));
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntUnary {

@@ -7,7 +7,7 @@ use crate::vm::{
         lower_module, LowerFunctionInput, LowerModuleInput,
         machine_ir::{
             MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
-            MachineHelperSymbol, MachineInstKind, MachineIntBinaryOp, MachineMemWidth,
+            MachineInstKind, MachineIntBinaryOp, MachineMemWidth,
             MachineModule, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
             MACHINE_FIXED_REG_COUNT,
         },
@@ -51,6 +51,9 @@ fn gp32_backend_config(
     fp_local_cache_budget: u8,
     fp_transient_budget: u8,
 ) -> BackendConfig {
+    // 32-bit GP targets need at least 5 transient budget units to satisfy
+    // the backend-wide worst-case operand pressure invariant.
+    let gp_transient_budget = gp_transient_budget.max(5);
     BackendConfig::new(
         gp_local_cache_budget,
         gp_transient_budget,
@@ -132,22 +135,22 @@ fn lowers_simple_slot_and_add_block() {
 
     let MachineModule { functions, .. } = lowered.module;
     let MachineFunction { program, .. } = &functions[0];
-    assert_eq!(lowered.runtime.call_link.slot_count, 3);
-    assert_eq!(lowered.runtime.functions.len(), 1);
-    assert_eq!(lowered.runtime.functions[0].frame_prefix_slots, 1);
+    assert_eq!(lowered.abi.call_link.slot_count, 3);
+    assert_eq!(lowered.abi.functions.len(), 1);
+    assert_eq!(lowered.abi.functions[0].frame_prefix_slots, 1);
     assert_eq!(
-        lowered.runtime.functions[0].total_frame_slots,
+        lowered.abi.functions[0].total_frame_slots,
         frame.total_slots()
     );
     assert_eq!(
-        lowered.runtime.functions[0].call_scratch,
+        lowered.abi.functions[0].call_scratch,
         Some(crate::vm::machine::machine_ir::MachineFrameRegion {
             base_slot: frame.call_scratch.unwrap().start.0,
             slots: frame.call_scratch.unwrap().count,
         })
     );
-    assert_eq!(lowered.runtime.functions[0].helper_scratch, None);
-    assert_eq!(lowered.runtime.functions[0].return_results, None);
+    assert_eq!(lowered.abi.functions[0].helper_scratch, None);
+    assert_eq!(lowered.abi.functions[0].return_results, None);
     assert_eq!(program.entry, MachineBlockId(0));
     assert_eq!(program.blocks.len(), 1);
     assert!(matches!(
@@ -262,35 +265,8 @@ fn lowers_select_with_wasm_operand_order() {
 
 #[test]
 fn native_backend_requires_at_least_one_gp_transient_register() {
-    let frame = plan_frame_layout(0, 0, 0);
-    let ssa = SsaProgram {
-        entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
-        blocks: alloc::vec![SsaBlock {
-            id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
-            terminator: SsaTerminator::Return { results: None },
-        }],
-        value_types: alloc::vec![],
-        value_homes: alloc::vec![],
-        value_sink_local: alloc::vec![],
-    };
-
-    let err = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 0, 0, 0),
-        #[cfg(has_guard_pages)]
-        use_guard_pages: false,
-        functions: &[LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
-            frame,
-            ssa: &ssa,
-            result_count: 0,
-        }],
-    })
-    .expect_err("zero-budget native backend should be rejected");
-
-    assert!(alloc::format!("{err}").contains("at least one GP transient register"));
+    let panic = std::panic::catch_unwind(|| host_backend_config(0, 0, 0, 0));
+    assert!(panic.is_err(), "zero-budget native backend must be rejected");
 }
 
 #[test]
@@ -326,7 +302,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     })
     .expect("lowering should succeed");
 
-    let runtime = &lowered.runtime;
+    let runtime = &lowered.abi;
     assert_eq!(runtime.call_link.caller_result_base_offset, 16);
     assert_eq!(
         runtime.functions[0].helper_scratch,
@@ -531,7 +507,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -579,7 +555,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
 
 #[test]
 fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
-    let backend = gp32_backend_config(0, 6, 0, 2, 4);
+    let backend = gp32_backend_config(0, 6, 0, 2);
     let frame = plan_frame_layout(1, 4, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -669,7 +645,7 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
-    let backend = gp32_backend_config(0, 4, 0, 2, 4);
+    let backend = gp32_backend_config(0, 4, 0, 2);
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -728,7 +704,7 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
-    let backend = gp32_backend_config(0, 5, 0, 2, 4);
+    let backend = gp32_backend_config(0, 5, 0, 2);
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -816,7 +792,7 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
 
 #[test]
 fn lowers_direct_local_call_to_legal_32bit_machineir() {
-    let backend = gp32_backend_config(0, 4, 0, 2, 4);
+    let backend = gp32_backend_config(0, 4, 0, 2);
     let caller_frame = plan_frame_layout(1, 4, 4);
     let callee_frame = plan_frame_layout(3, 2, 4);
 
@@ -827,7 +803,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -979,7 +955,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
 
 #[test]
 fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
-    let backend = gp32_backend_config(1, 4, 0, 2, 4);
+    let backend = gp32_backend_config(1, 4, 0, 2);
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -1068,8 +1044,8 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Call(SsaCallOp::CallExternal {
-                    func_idx: 7,
+                kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                    callee: 7,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                     skip_reload: alloc::vec![],
@@ -1095,16 +1071,11 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     })
     .expect("external helper lowering should succeed");
 
-    assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(
-        lowered.module.externs[0].symbol,
-        MachineHelperSymbol::CallExternal
-    );
     assert_eq!(lowered.module.consts.len(), 1);
-    assert!(lowered.runtime.functions[0].helper_scratch.is_none());
+    assert!(lowered.abi.functions[0].helper_scratch.is_none());
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[0].kind, MachineInstKind::CallExternal(_)));
     assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
@@ -1205,8 +1176,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Call(SsaCallOp::CallExternal {
-                        func_idx: 7,
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                        callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
                         skip_reload: alloc::vec![],
@@ -1257,12 +1228,87 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     // ops[3]: flush cache to frame before external call
     assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
     // ops[4]: external call
-    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
     // ops[5-6]: reload mem0 cache regs
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
     // ops[7]: reload cached local after call
     assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
+}
+
+#[test]
+fn skips_dead_cached_local_reload_after_direct_external_call() {
+    let frame = plan_frame_layout(1, 2, 3);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
+            gp_preferred_types: alloc::vec![ValueType::I32],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true
+            }],
+            fp_local_info: alloc::vec![],
+        },
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![SsaValue(0)],
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalSet {
+                        slot: frame.local_slot(0),
+                        src: SsaValue(0),
+                        version: 0,
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                        callee: 7,
+                        args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                        results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                        skip_reload: alloc::vec![true],
+                    }),
+                },
+            ],
+            terminator: SsaTerminator::TrapUnreachable,
+        }],
+        value_types: alloc::vec![],
+        value_homes: alloc::vec![],
+        value_sink_local: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("direct external call lowering should honor skip_reload");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 7);
+    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[1].kind, MachineInstKind::Move { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1301,8 +1347,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Call(SsaCallOp::CallExternal {
-                        func_idx: 0,
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                        callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
                         skip_reload: alloc::vec![],
@@ -1353,7 +1399,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     // ops[3]: flush cache to frame before call helper
     assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
     // ops[4]: call helper (call_external)
-    assert!(matches!(ops[4].kind, MachineInstKind::CallHelper(_)));
+    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
     // ops[5-6]: reload mem0 cache regs
     assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
@@ -1373,7 +1419,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1432,15 +1478,16 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller_program = &lowered.module.functions[0].program;
     assert_eq!(caller_program.blocks.len(), 2);
     let call_block = &caller_program.blocks[0];
-    let callee_frame_base = match call_block.terminator {
+    let (callee_frame_base, call_link_base) = match call_block.terminator {
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
+            call_link_base,
             continuation,
         } => {
             assert_eq!(callee, crate::vm::machine::machine_ir::MachineFuncId(1));
             assert_eq!(continuation, MachineBlockId(1));
-            callee_frame_base
+            (callee_frame_base, call_link_base)
         }
         ref other => panic!("expected direct call terminator, got {other:?}"),
     };
@@ -1453,7 +1500,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    assert_eq!(call_block.ops.len(), 8);
+    assert_eq!(call_block.ops.len(), 9);
     assert!(matches!(
         call_block.ops[1].kind,
         MachineInstKind::Load { .. }
@@ -1481,27 +1528,37 @@ fn lowers_direct_local_call_with_continuation_block() {
     ));
     assert!(matches!(
         call_block.ops[4].kind,
+        MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Add,
+            dst,
+            lhs: MachineValue::Reg(lhs),
+            rhs: MachineValue::Imm64(offset),
+            ..
+        } if dst == call_link_base && lhs == callee_frame_base && offset == 24
+    ));
+    assert!(matches!(
+        call_block.ops[5].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(0),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[5].kind,
+        call_block.ops[6].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(1),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[6].kind,
+        call_block.ops[7].kind,
         MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(1)),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[7].kind,
+        call_block.ops[8].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(40),
             ..
@@ -1542,7 +1599,7 @@ fn flushes_cached_local_before_second_direct_call() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1569,7 +1626,7 @@ fn flushes_cached_local_before_second_direct_call() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                         callee: 1,
                         args: crate::vm::middle::frame::FrameSpan::new(
                             caller_frame.operand_slot(0),
@@ -1843,7 +1900,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     };
 
     let err = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(1, 4, 0, 2, 4),
+        backend: gp32_backend_config(1, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -1875,7 +1932,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 2,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -1932,7 +1989,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     .expect("sparse-id local call lowering should succeed");
 
     assert_eq!(lowered.module.functions.len(), 3);
-    assert_eq!(lowered.runtime.functions.len(), 3);
+    assert_eq!(lowered.abi.functions.len(), 3);
     assert!(matches!(
         lowered.module.functions[1].program.blocks[0].terminator,
         MachineTerminator::Trap {
@@ -2024,7 +2081,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2103,14 +2160,10 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     })
     .expect("call_indirect lowering should succeed");
 
-    assert_eq!(lowered.module.externs.len(), 1);
-    assert_eq!(
-        lowered.module.externs[0].symbol,
-        MachineHelperSymbol::CallIndirectExternal
-    );
+    assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 10);
+    assert_eq!(program.blocks.len(), 12);
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
@@ -2135,16 +2188,28 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[7].terminator,
-        MachineTerminator::CallIndirect {
-            continuation: MachineBlockId(9),
-            ..
-        }
+        MachineTerminator::Branch { .. }
     ));
     assert_eq!(program.blocks[7].params.len(), 1);
     assert!(matches!(
         program.blocks[7].ops[0].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[8].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[8].ops[0].kind,
+        MachineInstKind::Store { .. }
+    ));
+    assert!(matches!(
+        program.blocks[9].terminator,
+        MachineTerminator::CallIndirect {
+            continuation: MachineBlockId(11),
             ..
         }
     ));
@@ -2235,21 +2300,18 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             ..
         }
     ));
+    assert!(matches!(program.blocks[10].ops[0].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(program.blocks[10].ops[1].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(program.blocks[10].ops[2].kind, MachineInstKind::Load { .. }));
     assert!(matches!(
-        program.blocks[8].ops.as_slice(),
-        [crate::vm::machine::machine_ir::MachineInst {
-            kind: MachineInstKind::CallHelper(_)
-        }]
-    ));
-    assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[10].terminator,
         MachineTerminator::Jump(crate::vm::machine::machine_ir::MachineEdge {
-            target: MachineBlockId(9),
+            target: MachineBlockId(11),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[11].terminator,
         MachineTerminator::Trap {
             kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
         }
@@ -2284,7 +2346,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2380,7 +2442,7 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2421,7 +2483,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             id: SsaTarget(0),
             params: alloc::vec![],
             ops: alloc::vec![SsaInst {
-                kind: SsaInstKind::Call(SsaCallOp::CallInternal {
+                kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(
@@ -2457,7 +2519,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[
@@ -2762,7 +2824,7 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2840,7 +2902,7 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {
@@ -2929,7 +2991,7 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         use_guard_pages: true,
         functions: &[LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
@@ -3011,7 +3073,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2, 4),
+        backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(has_guard_pages)]
         use_guard_pages: false,
         functions: &[LowerFunctionInput {

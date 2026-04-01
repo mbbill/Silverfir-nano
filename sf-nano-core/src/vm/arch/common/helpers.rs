@@ -37,30 +37,6 @@ pub(crate) fn mem_width_bytes(width: MachineMemWidth) -> i64 {
     }
 }
 
-// ── Convert op helpers ───────────────────────────────────────────────────────
-
-pub(crate) fn convert_op_code(op: MachineConvertOp) -> u64 {
-    match op {
-        MachineConvertOp::I32TruncF32S => 0,
-        MachineConvertOp::I32TruncF32U => 1,
-        MachineConvertOp::I32TruncF64S => 2,
-        MachineConvertOp::I32TruncF64U => 3,
-        MachineConvertOp::I64TruncF32S => 4,
-        MachineConvertOp::I64TruncF32U => 5,
-        MachineConvertOp::I64TruncF64S => 6,
-        MachineConvertOp::I64TruncF64U => 7,
-        MachineConvertOp::I32TruncSatF32S => 8,
-        MachineConvertOp::I32TruncSatF32U => 9,
-        MachineConvertOp::I32TruncSatF64S => 10,
-        MachineConvertOp::I32TruncSatF64U => 11,
-        MachineConvertOp::I64TruncSatF32S => 12,
-        MachineConvertOp::I64TruncSatF32U => 13,
-        MachineConvertOp::I64TruncSatF64S => 14,
-        MachineConvertOp::I64TruncSatF64U => 15,
-        _ => u64::MAX,
-    }
-}
-
 pub(crate) fn convert_result_float_width(op: MachineConvertOp) -> Option<MachineFloatWidth> {
     Some(match op {
         MachineConvertOp::F32ConvertI32S

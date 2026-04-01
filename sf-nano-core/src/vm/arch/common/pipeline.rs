@@ -302,17 +302,12 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
                 })? as u64;
             artifact.text.patch_u64(patch.literal_offset, callee_addr);
         }
-        for &literal_offset in &artifact.function_table_patches {
-            artifact.text.patch_u64(literal_offset, unsafe {
-                base_ptr.add(function_info_table_offset)
-            } as u64);
-        }
     }
 
     // Build function info table.
     let mut function_info_bytes =
         Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO_SIZE);
-    for (func_idx, runtime) in compiled.runtime().functions.iter().enumerate() {
+    for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = NativeFunctionInfo {
             entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
                 WasmError::internal("function entry is out of range".into())
@@ -365,6 +360,10 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
+    compiled.publish_local_call_infos(
+        unsafe { executable.as_ptr().add(function_info_table_offset) },
+        compiled.abi().functions.len(),
+    );
 
     // Construct compiled entries.
     let mut entries = Vec::with_capacity(emitted.len());

@@ -67,7 +67,7 @@ pub(super) fn copy_propagate(
         rewrite_sources(&mut inst.kind, aliases);
         rewrite_float_alias_sources(&mut inst.kind, float_aliases);
 
-        if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
+        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
             clear_aliases(aliases);
             clear_aliases(float_aliases);
             rewritten.push(inst);
@@ -130,7 +130,7 @@ fn can_elide_reg_move(
         if inst_defines(&inst.kind, dst) {
             return true;
         }
-        if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
+        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
             // copy_propagate clears aliases at helper calls, so a move can only
             // disappear here if its destination is dead after the barrier.
             let remaining = &ops[start_idx + 1 + later_index + 1..];
@@ -255,7 +255,7 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(mask, aliases);
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
-        MachineInstKind::CallHelper(_) => {}
+        MachineInstKind::CallExternal(_) => {}
         MachineInstKind::MemoryGrow { delta, .. } => {
             rewrite_value(delta, aliases);
         }
@@ -301,17 +301,24 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
             }
         }
         MachineTerminator::CallDirect {
-            callee_frame_base, ..
+            callee_frame_base,
+            call_link_base,
+            ..
         } => {
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
+            *call_link_base = resolve_alias(*call_link_base, aliases);
         }
         MachineTerminator::CallIndirect {
             callee_target,
+            callee_entry,
             callee_frame_base,
+            call_link_base,
             ..
         } => {
-            rewrite_value(callee_target, aliases);
+            *callee_target = resolve_alias(*callee_target, aliases);
+            *callee_entry = resolve_alias(*callee_entry, aliases);
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
+            *call_link_base = resolve_alias(*call_link_base, aliases);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }

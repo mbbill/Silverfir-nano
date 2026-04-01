@@ -19,7 +19,7 @@ use super::{
 
 use crate::vm::arch::common::helpers::{is_fallthrough_edge, trap_code};
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
-use crate::vm::runtime::context::ctx_offset;
+use crate::vm::runtime::{context::ctx_offset, layout::local_call_info_abi_layout};
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -59,19 +59,25 @@ impl<'a> X86_64Backend<'a> {
             MachineTerminator::CallDirect {
                 callee,
                 callee_frame_base,
+                call_link_base,
                 continuation,
-            } => self.lower_call_direct(*callee, *callee_frame_base, *continuation),
+            } => self.lower_call_direct(
+                *callee,
+                *callee_frame_base,
+                *call_link_base,
+                *continuation,
+            ),
             MachineTerminator::CallIndirect {
                 callee_target,
+                callee_entry,
                 callee_frame_base,
-                arg_slots,
-                caller_result_base,
+                call_link_base,
                 continuation,
             } => self.lower_call_indirect(
                 *callee_target,
+                *callee_entry,
                 *callee_frame_base,
-                *arg_slots,
-                *caller_result_base,
+                *call_link_base,
                 *continuation,
             ),
         }
@@ -303,7 +309,7 @@ impl<'a> X86_64Backend<'a> {
         let call_scratch = runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("x86_64 local return requires call scratch".into())
         })?;
-        let call_link = self.core.compiled.runtime().call_link;
+        let call_link = self.core.compiled.abi().call_link;
         let continuation_offset =
             (call_scratch.base_slot as i32) * 8 + call_link.continuation_offset as i32;
         let caller_frame_offset =
@@ -347,15 +353,12 @@ impl<'a> X86_64Backend<'a> {
         &mut self,
         callee: MachineFuncId,
         callee_frame_base: MachineReg,
+        call_link_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        let callee_runtime = self.core.runtime_for(callee)?;
-        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("x86_64 direct local call requires callee call scratch".into())
-        })?;
-        let continuation_slot_offset = (call_scratch.base_slot as i32) * 8
-            + self.core.compiled.runtime().call_link.continuation_offset as i32;
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
+        let call_link_base = self.map_gp_reg(call_link_base)?;
+        let call_link = self.core.compiled.abi().call_link;
 
         // Load continuation address via movabs (patched after label resolution).
         enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
@@ -369,8 +372,8 @@ impl<'a> X86_64Backend<'a> {
         // Store continuation address into callee's call-link slot
         enc::store_64(
             &mut self.core.text,
-            callee_fp,
-            continuation_slot_offset,
+            call_link_base,
+            call_link.continuation_offset as i32,
             self.gp_scratch.reg(0),
         );
 
@@ -393,55 +396,17 @@ impl<'a> X86_64Backend<'a> {
 
     fn lower_call_indirect(
         &mut self,
-        callee_target: MachineValue,
+        _callee_target: MachineReg,
+        callee_entry: MachineReg,
         callee_frame_base: MachineReg,
-        arg_slots: u16,
-        caller_result_base: u16,
+        call_link_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        // Load function table base address
-        enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
-        let table_base_offset = self.core.text.len() - 8;
-        self.core.function_table_patches.push(table_base_offset);
-
-        // Compute table entry: table_base + callee_id * 32 (sizeof X86_64FunctionInfo)
-        let callee_id_reg = self.materialize_value(self.gp_scratch.reg(1), callee_target)?;
-        if callee_id_reg != self.gp_scratch.reg(1) {
-            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), callee_id_reg);
-        }
-        // callee_id * 32 = callee_id << 5
-        enc::shl_imm_64(&mut self.core.text, self.gp_scratch.reg(1), 5);
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1));
-
-        // Resolve callee_fp BEFORE loading function info (which clobbers RDI/RSI/RDX/RCX).
         let callee_fp_orig = self.map_gp_reg(callee_frame_base)?;
         let callee_fp = X86Reg::R8;
         if callee_fp_orig != callee_fp {
             enc::mov_rr_64(&mut self.core.text, callee_fp, callee_fp_orig);
         }
-
-        // Load function info fields
-        enc::load_64(&mut self.core.text, X86Reg::RDI, self.gp_scratch.reg(0), 0); // entry
-        enc::load_64(&mut self.core.text, X86Reg::RSI, self.gp_scratch.reg(0), 8); // total_frame_bytes
-        enc::load_64(&mut self.core.text, X86Reg::RDX, self.gp_scratch.reg(0), 16); // frame_prefix_slots
-        enc::load_64(&mut self.core.text, X86Reg::RCX, self.gp_scratch.reg(0), 24); // call_scratch_base_slot
-
-        // Stack overflow check: callee_fp + total_frame_bytes > stack_end?
-        enc::lea_64(&mut self.core.text, self.gp_scratch.reg(0), callee_fp, 0);
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), X86Reg::RSI);
-        enc::load_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(1),
-            map_fixed_reg(MACHINE_CTX_REG),
-            ctx_offset::STACK_END as i32,
-        );
-        enc::cmp_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1));
-        self.emit_jcc(Cc::A, self.core.stack_overflow_label);
-
-        // Zero callee prefix
-        self.lower_zero_dynamic_callee_prefix(callee_fp, arg_slots)?;
-
-        // Load continuation address
         enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
         let cont_imm_offset = self.core.text.len() - 8;
         let continuation_label = self.core.block_label(continuation)?;
@@ -450,61 +415,18 @@ impl<'a> X86_64Backend<'a> {
             target_label: continuation_label,
         });
 
-        // call_scratch_base_slot is in RCX (in units of slots)
-        enc::shl_imm_64(&mut self.core.text, X86Reg::RCX, 3);
-        enc::add_rr_64(&mut self.core.text, X86Reg::RCX, callee_fp);
-
-        let call_link = self.core.compiled.runtime().call_link;
-        // Store continuation
+        let call_link_base = self.map_gp_reg(call_link_base)?;
+        let call_link = self.core.compiled.abi().call_link;
         enc::store_64(
             &mut self.core.text,
-            X86Reg::RCX,
+            call_link_base,
             call_link.continuation_offset as i32,
             self.gp_scratch.reg(0),
         );
-        // Store caller frame pointer
-        enc::store_64(
-            &mut self.core.text,
-            X86Reg::RCX,
-            call_link.caller_frame_offset as i32,
-            map_fixed_reg(MACHINE_FP_REG),
-        );
-        // Store caller result base
-        self.materialize_u64(self.gp_scratch.reg(1), u64::from(caller_result_base) * 8);
-        enc::store_64(
-            &mut self.core.text,
-            X86Reg::RCX,
-            call_link.caller_result_base_offset as i32,
-            self.gp_scratch.reg(1),
-        );
 
-        // Set FP to callee and jump to entry
+        let callee_entry = self.map_gp_reg(callee_entry)?;
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), callee_fp);
-        enc::jmp_reg(&mut self.core.text, X86Reg::RDI);
-        Ok(())
-    }
-
-    fn lower_zero_dynamic_callee_prefix(
-        &mut self,
-        callee_fp: X86Reg,
-        arg_slots: u16,
-    ) -> Result<(), WasmError> {
-        self.materialize_u64(self.gp_scratch.reg(0), u64::from(arg_slots) * 8);
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), callee_fp);
-        // end = callee_fp + frame_prefix_slots * 8
-        enc::shl_imm_64(&mut self.core.text, X86Reg::RDX, 3);
-        enc::add_rr_64(&mut self.core.text, X86Reg::RDX, callee_fp);
-        // If start >= end, skip
-        enc::cmp_rr_64(&mut self.core.text, self.gp_scratch.reg(0), X86Reg::RDX);
-        let done = self.core.new_label();
-        self.emit_jcc(Cc::AE, done);
-        let loop_label = self.core.new_label();
-        self.core.bind_label(loop_label);
-        enc::store_imm32_64(&mut self.core.text, self.gp_scratch.reg(0), 0, 0);
-        enc::add_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 8);
-        enc::cmp_rr_64(&mut self.core.text, self.gp_scratch.reg(0), X86Reg::RDX);
-        self.emit_jcc(Cc::B, loop_label);
-        self.core.bind_label(done);
+        enc::jmp_reg(&mut self.core.text, callee_entry);
         Ok(())
     }
 

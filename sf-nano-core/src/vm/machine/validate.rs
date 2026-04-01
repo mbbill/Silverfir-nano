@@ -10,7 +10,7 @@ use super::machine_ir::{
 use super::machine_ir::{MachineIntBinaryOp, MachineIntUnaryOp};
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{
-    MachineAddr, MachineConstId, MachineEdge, MachineExternId, MachineFloatWidth,
+    MachineAddr, MachineConstId, MachineEdge, MachineFloatWidth,
     MachineFuncId, MachineInst, MachineReg, MachineValue,
 };
 #[cfg(any(debug_assertions, test))]
@@ -469,7 +469,7 @@ impl MachineProgram {
             MachineInstKind::TrapIf { cond, .. } => {
                 self.validate_branch_cond(*cond, config)?;
             }
-            MachineInstKind::CallHelper(_) => {}
+            MachineInstKind::CallExternal(_) => {}
             MachineInstKind::MemoryGrow { dst, delta, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*delta, config)?;
@@ -521,20 +521,26 @@ impl MachineProgram {
             }
             MachineTerminator::CallDirect {
                 callee_frame_base,
+                call_link_base,
                 continuation,
                 ..
             } => {
                 self.validate_reg(*callee_frame_base, config)?;
+                self.validate_reg(*call_link_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::CallIndirect {
                 callee_target,
+                callee_entry,
                 callee_frame_base,
+                call_link_base,
                 continuation,
                 ..
             } => {
-                self.validate_value(*callee_target, config)?;
+                self.validate_reg(*callee_target, config)?;
+                self.validate_reg(*callee_entry, config)?;
                 self.validate_reg(*callee_frame_base, config)?;
+                self.validate_reg(*call_link_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::Return => Ok(()),
@@ -698,9 +704,8 @@ impl MachineModule {
     ) -> Result<(), WasmError> {
         for (block_idx, block) in program.blocks.iter().enumerate() {
             for inst in &block.ops {
-                if let MachineInstKind::CallHelper(call) = &inst.kind {
+                if let MachineInstKind::CallExternal(call) = &inst.kind {
                     self.validate_const_id(func, block_idx, call.metadata)?;
-                    self.validate_extern_id(func, block_idx, call.target)?;
                 }
             }
             if let MachineTerminator::CallDirect { callee, .. } = block.terminator {
@@ -741,24 +746,6 @@ impl MachineModule {
                 func.0,
                 block_idx,
                 callee.0,
-            )));
-        }
-        Ok(())
-    }
-
-    #[cfg(any(debug_assertions, test))]
-    fn validate_extern_id(
-        &self,
-        func: MachineFuncId,
-        block_idx: usize,
-        target: MachineExternId,
-    ) -> Result<(), WasmError> {
-        if target.0 as usize >= self.externs.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine function {} block {} has out-of-range extern {}",
-                func.0,
-                block_idx,
-                target.0,
             )));
         }
         Ok(())

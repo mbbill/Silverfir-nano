@@ -30,7 +30,6 @@ use super::{
 use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_width};
 
 use crate::vm::machine::machine_ir::{MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG};
-use crate::vm::runtime::helpers::resolve_helper_entry;
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
@@ -97,8 +96,8 @@ impl<'a> X86_64Backend<'a> {
                 let trap_label = self.core.ensure_trap_label(*kind);
                 self.lower_branch_if(cond, trap_label)
             }
-            MachineInstKind::CallHelper(call) => {
-                self.lower_call_helper(call.target.0 as usize, call.metadata.0 as usize)
+            MachineInstKind::CallExternal(call) => {
+                self.lower_call_external(call.metadata.0 as usize)
             }
             MachineInstKind::FloatUnary {
                 width,
@@ -1904,17 +1903,10 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Helper calls ──────────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_helper(
+    pub(super) fn lower_call_external(
         &mut self,
-        extern_idx: usize,
         const_idx: usize,
     ) -> Result<(), WasmError> {
-        let binding = self
-            .core.compiled
-            .module()
-            .externs
-            .get(extern_idx)
-            .ok_or_else(|| WasmError::internal("x86_64 helper target is out of range".into()))?;
         let metadata = self
             .core.compiled
             .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
@@ -1926,7 +1918,7 @@ impl<'a> X86_64Backend<'a> {
         self.materialize_u64(C_ARG2, metadata as u64);
         self.materialize_u64(
             self.gp_scratch.reg(1),
-            resolve_helper_entry(binding.symbol) as usize as u64,
+            crate::vm::runtime::helpers::call_external_entry_ptr() as usize as u64,
         );
         enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
         // Check return: RAX != 0 => error

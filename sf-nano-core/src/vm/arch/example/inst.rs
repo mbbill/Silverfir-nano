@@ -180,8 +180,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
             MachineInstKind::TrapIf { kind, cond } => {
                 self.lower_trap_if(*kind, cond)
             }
-            MachineInstKind::CallHelper(call) => {
-                self.lower_call_helper(call.target.0 as usize, call.metadata.0 as usize)
+            MachineInstKind::CallExternal(call) => {
+                self.lower_call_external(call.metadata.0 as usize)
             }
             _ => todo!("example backend: unhandled instruction"),
         }

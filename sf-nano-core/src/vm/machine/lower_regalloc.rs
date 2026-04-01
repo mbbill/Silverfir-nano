@@ -796,7 +796,7 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallHelper(_) => None,
+        | MachineInstKind::CallExternal(_) => None,
     }
 }
 
@@ -914,7 +914,7 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         MachineInstKind::TrapIf { cond, .. } => {
             visit_branch_cond_regs(cond, &mut visit);
         }
-        MachineInstKind::CallHelper(_) => {}
+        MachineInstKind::CallExternal(_) => {}
         MachineInstKind::MemoryGrow { delta, .. } => {
             visit_value_reg(delta, &mut visit);
         }
@@ -980,15 +980,24 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
             }
         }
         MachineTerminator::CallDirect {
-            callee_frame_base, ..
-        } => visit(*callee_frame_base),
-        MachineTerminator::CallIndirect {
-            callee_target,
             callee_frame_base,
+            call_link_base,
             ..
         } => {
-            visit_value_reg(callee_target, &mut visit);
             visit(*callee_frame_base);
+            visit(*call_link_base);
+        }
+        MachineTerminator::CallIndirect {
+            callee_target,
+            callee_entry,
+            callee_frame_base,
+            call_link_base,
+            ..
+        } => {
+            visit(*callee_target);
+            visit(*callee_entry);
+            visit(*callee_frame_base);
+            visit(*call_link_base);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
@@ -1066,7 +1075,7 @@ mod tests {
         vm::{
             backend::BackendConfig,
             machine::machine_ir::{
-                MachineCallLinkLayout, MachineFunctionRuntime, MachineStorageType,
+                MachineCallLinkLayout, MachineFunctionAbi, MachineStorageType,
             },
             middle::ssa_ir::{
                 ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
@@ -1093,9 +1102,9 @@ mod tests {
             value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
-            MachineRegFile::new(BackendConfig::new(0, 4, 0, 0, 4, 8)).expect("regfile"),
+            MachineRegFile::new(BackendConfig::new(0, 5, 0, 0, 4, 8)).expect("regfile"),
         ));
-        let runtime = MachineFunctionRuntime::default();
+        let runtime = MachineFunctionAbi::default();
         let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
         let call_link = MachineCallLinkLayout {
             continuation_offset: 0,

@@ -50,7 +50,7 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallHelper(_) => None,
+        | MachineInstKind::CallExternal(_) => None,
     }
 }
 
@@ -118,7 +118,7 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallHelper(_) => false,
+        | MachineInstKind::CallExternal(_) => false,
     }
 }
 
@@ -268,7 +268,7 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(mask);
         }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
-        MachineInstKind::CallHelper(_) => {}
+        MachineInstKind::CallExternal(_) => {}
         MachineInstKind::MemoryGrow { delta, .. } => {
             f(delta);
         }
@@ -345,13 +345,22 @@ pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
             value_is_reg(index, reg) || entries.iter().any(|e| edge_uses_reg(e, reg))
         }
         MachineTerminator::CallDirect {
-            callee_frame_base, ..
-        } => *callee_frame_base == reg,
+            callee_frame_base,
+            call_link_base,
+            ..
+        } => *callee_frame_base == reg || *call_link_base == reg,
         MachineTerminator::CallIndirect {
             callee_target,
+            callee_entry,
             callee_frame_base,
+            call_link_base,
             ..
-        } => value_is_reg(callee_target, reg) || *callee_frame_base == reg,
+        } => {
+            *callee_target == reg
+                || *callee_entry == reg
+                || *callee_frame_base == reg
+                || *call_link_base == reg
+        }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
     }
 }

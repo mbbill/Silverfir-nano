@@ -8,6 +8,16 @@ use super::types::{
 };
 
 /// Helper call that falls through in the same function.
+///
+/// This is the MachineIR representation for operations that cross into the
+/// runtime/host helper ABI but do not transfer control to another compiled
+/// MachineIR function. In particular, external Wasm calls lower to this form:
+/// they are semantically leaf runtime calls that return inline to the same
+/// block, so they are modeled as instructions rather than CFG terminators.
+///
+/// By contrast, local Wasm calls become [`MachineTerminator::CallDirect`] or
+/// [`MachineTerminator::CallIndirect`] because they leave the current MachineIR
+/// block and resume at an explicit continuation block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MachineHelperCall {
     /// Opaque external target id. Sidecar binding data resolves this to the
@@ -287,6 +297,18 @@ pub(crate) enum MachineInstKind {
         kind: MachineTrapKind,
         cond: MachineBranchCond,
     },
+    /// Runtime/host helper call that returns inline in the same block.
+    ///
+    /// This is intentionally not a terminator: control flow remains within the
+    /// current MachineIR block. The surrounding lowering is responsible for any
+    /// cached-local save/reload, mem0 cache refresh, and other state repair
+    /// needed around the call. The ISA/backend only performs the actual foreign
+    /// call ABI sequence for the helper target.
+    ///
+    /// Direct and indirect *external* Wasm calls use this path today because
+    /// they do not create a new compiled-frame activation or a MachineIR
+    /// continuation edge; they simply invoke the runtime helper and continue in
+    /// the same function.
     CallHelper(MachineHelperCall),
     MemoryGrow {
         mem_idx: u32,

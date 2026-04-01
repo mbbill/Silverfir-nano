@@ -17,7 +17,7 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
     let mut fp_consts: Vec<(u64, MachineFloatWidth, MachineReg)> = Vec::new();
 
     for inst in &mut block.ops {
-        if matches!(inst.kind, MachineInstKind::CallHelper(_)) {
+        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
             gp_consts.clear();
             fp_consts.clear();
             continue;

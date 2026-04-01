@@ -172,20 +172,13 @@ pub(crate) enum SsaInstKind {
 /// Prepared slot-based call operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsaCallOp {
-    CallExternal {
-        func_idx: u32,
+    CallDirect {
+        callee: u32,
         args: FrameSpan,
         results: FrameSpan,
         /// Per cached-local flag: `true` = skip reload at continuation.
         /// Parallel to `gp_preferred_slots ++ fp_preferred_slots` in cache prefs.
         /// Empty if no analysis was performed.
-        skip_reload: Vec<bool>,
-    },
-    CallInternal {
-        callee: u32,
-        args: FrameSpan,
-        results: FrameSpan,
-        /// Per cached-local flag: `true` = skip reload at continuation.
         skip_reload: Vec<bool>,
     },
     CallIndirect {

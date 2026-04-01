@@ -104,9 +104,4 @@ impl<'a> CompileContext<'a> {
         let ty = func.func_type();
         (ty.params().len() as u16, ty.results().len() as u16)
     }
-
-    #[inline]
-    pub(crate) fn is_func_internal(&self, func_idx: u32) -> bool {
-        !self.store.function(func_idx as usize).is_external()
-    }
 }

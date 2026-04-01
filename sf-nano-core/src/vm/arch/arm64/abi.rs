@@ -19,6 +19,16 @@ use crate::{
 use super::reg::{Arm64FpReg, Arm64Reg};
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 
+#[inline]
+const fn gp(index: u8) -> Arm64Reg {
+    Arm64Reg::from_raw(index)
+}
+
+#[inline]
+const fn fp(index: u8) -> Arm64FpReg {
+    Arm64FpReg::from_raw(index)
+}
+
 // ── Register plan ────────────────────────────────────────────────────────────
 
 struct RegPlan {
@@ -51,99 +61,99 @@ struct RegPlan {
 }
 
 const REG_PLAN: RegPlan = RegPlan {
-    ctx: Arm64Reg::X19,
-    fp: Arm64Reg::X20,
-    mem0_base: Arm64Reg::X21,
-    mem0_size: Arm64Reg::X22,
+    ctx: gp(19),
+    fp: gp(20),
+    mem0_base: gp(21),
+    mem0_size: gp(22),
 
     gp_unit_bytes: 8,
 
     gp_local_cache: &[
         // callee-saved (first 6)
-        Arm64Reg::X23,
-        Arm64Reg::X24,
-        Arm64Reg::X25,
-        Arm64Reg::X26,
-        Arm64Reg::X27,
-        Arm64Reg::X28,
+        gp(23),
+        gp(24),
+        gp(25),
+        gp(26),
+        gp(27),
+        gp(28),
         // caller-saved (remaining)
-        Arm64Reg::X9,
-        Arm64Reg::X10,
-        Arm64Reg::X11,
-        Arm64Reg::X12,
-        Arm64Reg::X13,
-        Arm64Reg::X14,
-        Arm64Reg::X15,
+        gp(9),
+        gp(10),
+        gp(11),
+        gp(12),
+        gp(13),
+        gp(14),
+        gp(15),
     ],
     gp_local_cache_callee_saved: 6,
     gp_transient: &[
-        Arm64Reg::X3,
-        Arm64Reg::X4,
-        Arm64Reg::X5,
-        Arm64Reg::X6,
-        Arm64Reg::X7,
-        Arm64Reg::X8,
-        Arm64Reg::X0,
-        Arm64Reg::X1,
-        Arm64Reg::X2,
+        gp(3),
+        gp(4),
+        gp(5),
+        gp(6),
+        gp(7),
+        gp(8),
+        gp(0),
+        gp(1),
+        gp(2),
     ],
-    gp_scratch: &[Arm64Reg::X16, Arm64Reg::X17],
+    gp_scratch: &[gp(16), gp(17)],
 
     fp_transient: &[
-        Arm64FpReg::new(3),
-        Arm64FpReg::new(4),
-        Arm64FpReg::new(5),
-        Arm64FpReg::new(6),
-        Arm64FpReg::new(7),
-        Arm64FpReg::new(16),
-        Arm64FpReg::new(17),
-        Arm64FpReg::new(18),
-        Arm64FpReg::new(19),
-        Arm64FpReg::new(20),
+        fp(3),
+        fp(4),
+        fp(5),
+        fp(6),
+        fp(7),
+        fp(16),
+        fp(17),
+        fp(18),
+        fp(19),
+        fp(20),
     ],
     fp_local_cache: &[
         // callee-saved (first 8)
-        Arm64FpReg::new(8),
-        Arm64FpReg::new(9),
-        Arm64FpReg::new(10),
-        Arm64FpReg::new(11),
-        Arm64FpReg::new(12),
-        Arm64FpReg::new(13),
-        Arm64FpReg::new(14),
-        Arm64FpReg::new(15),
+        fp(8),
+        fp(9),
+        fp(10),
+        fp(11),
+        fp(12),
+        fp(13),
+        fp(14),
+        fp(15),
         // caller-saved (remaining)
-        Arm64FpReg::new(21),
-        Arm64FpReg::new(22),
-        Arm64FpReg::new(23),
-        Arm64FpReg::new(24),
-        Arm64FpReg::new(25),
-        Arm64FpReg::new(26),
-        Arm64FpReg::new(27),
-        Arm64FpReg::new(28),
-        Arm64FpReg::new(29),
-        Arm64FpReg::new(30),
-        Arm64FpReg::new(31),
+        fp(21),
+        fp(22),
+        fp(23),
+        fp(24),
+        fp(25),
+        fp(26),
+        fp(27),
+        fp(28),
+        fp(29),
+        fp(30),
+        fp(31),
     ],
     fp_local_cache_callee_saved: 8,
-    fp_scratch: &[Arm64FpReg::new(0), Arm64FpReg::new(1), Arm64FpReg::new(2)],
+    fp_scratch: &[fp(0), fp(1), fp(2)],
 
     callee_saved_gp_pairs: &[
-        (Arm64Reg::X19, Arm64Reg::X20),
-        (Arm64Reg::X21, Arm64Reg::X22),
-        (Arm64Reg::X23, Arm64Reg::X24),
-        (Arm64Reg::X25, Arm64Reg::X26),
-        (Arm64Reg::X27, Arm64Reg::X28),
-        (Arm64Reg::X29, Arm64Reg::X30),
+        (gp(19), gp(20)),
+        (gp(21), gp(22)),
+        (gp(23), gp(24)),
+        (gp(25), gp(26)),
+        (gp(27), gp(28)),
+        (gp(29), gp(30)),
     ],
     callee_saved_fp: &[
-        Arm64FpReg::new(8),
-        Arm64FpReg::new(9),
-        Arm64FpReg::new(10),
-        Arm64FpReg::new(11),
-        Arm64FpReg::new(12),
-        Arm64FpReg::new(13),
-        Arm64FpReg::new(14),
-        Arm64FpReg::new(15),
+        fp(8),
+        fp(9),
+        fp(10),
+        fp(11),
+        fp(12),
+        fp(13),
+        fp(14),
+        fp(15),
     ],
 
     stack_alignment_bytes: 16,
@@ -188,11 +198,30 @@ pub(super) fn callee_saved_fp_regs() -> &'static [Arm64FpReg] {
 // MachineIR roles. Boundary lowering is what makes that safe: transients are
 // dead at the boundary and cached locals have already been published.
 
-pub(super) const C_ARG0: Arm64Reg = Arm64Reg::X0;
-pub(super) const C_ARG1: Arm64Reg = Arm64Reg::X1;
-pub(super) const C_ARG2: Arm64Reg = Arm64Reg::X2;
-pub(super) const C_ARG3: Arm64Reg = Arm64Reg::X3;
-pub(super) const C_RET0: Arm64Reg = Arm64Reg::X0;
+pub(super) const C_ARG0: Arm64Reg = gp(0);
+pub(super) const C_ARG1: Arm64Reg = gp(1);
+pub(super) const C_ARG2: Arm64Reg = gp(2);
+pub(super) const C_RET0: Arm64Reg = gp(0);
+
+#[inline]
+pub(super) const fn stack_reg() -> Arm64Reg {
+    gp(31)
+}
+
+#[inline]
+pub(super) const fn zero_reg() -> Arm64Reg {
+    gp(31)
+}
+
+#[inline]
+pub(super) const fn link_reg() -> Arm64Reg {
+    gp(30)
+}
+
+#[inline]
+pub(super) const fn fp_zero_reg() -> Arm64FpReg {
+    fp(0)
+}
 
 // ── Derived config ───────────────────────────────────────────────────────────
 

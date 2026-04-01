@@ -17,14 +17,7 @@ impl MachineBlockId {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct MachineFuncId(pub(crate) u32);
 
-/// One opaque external target id referenced from machine IR.
-///
-/// The machine IR does not know whether this resolves to a helper wrapper or
-/// some other external native target. Sidecar binding data owns that meaning.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct MachineExternId(pub(crate) u32);
-
-/// One read-only sidecar constant record referenced from machine IR.
+/// One read-only constant-pool record referenced from machine IR.
 ///
 /// This is used for immutable helper metadata or other finalized constant data
 /// that should live beside code, not inside writable frame scratch.

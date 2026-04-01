@@ -62,7 +62,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                     });
                 }
             }
-            MachineInstKind::CallHelper(_) => {
+            MachineInstKind::CallExternal(_) => {
                 tracked.clear();
             }
             _ => {}

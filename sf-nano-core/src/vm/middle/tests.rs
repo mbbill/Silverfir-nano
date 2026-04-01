@@ -464,7 +464,7 @@ fn prepares_if_with_block_param_and_result() {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
             },
             SemanticOp {
-                kind: SemanticOpKind::CallInternal {
+                kind: SemanticOpKind::CallDirect {
                     callee: 0,
                     params: 2,
                     results: 2,

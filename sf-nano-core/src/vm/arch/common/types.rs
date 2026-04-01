@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
 };
+use crate::vm::runtime::call_contract::NativeLocalCallInfo64;
 
 use super::text_emitter::TextEmitter;
 
@@ -45,7 +46,6 @@ pub(crate) struct FunctionArtifact {
     pub text: TextEmitter,
     pub local_ptr_patches: Vec<LocalPtrPatch>,
     pub direct_call_patches: Vec<DirectCallPatch>,
-    pub function_table_patches: Vec<usize>,
     pub root_return_offset: usize,
     #[cfg(has_guard_pages)]
     pub return_error_offset: usize,
@@ -57,14 +57,7 @@ pub(crate) struct FunctionArtifact {
 
 /// Per-function metadata written to the executable code buffer for indirect
 /// call dispatch. Layout is identical across arm64 and x86_64.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct NativeFunctionInfo {
-    pub(crate) entry: u64,
-    pub(crate) total_frame_bytes: u64,
-    pub(crate) frame_prefix_slots: u64,
-    pub(crate) call_scratch_base_slot: u64,
-}
+pub(crate) type NativeFunctionInfo = NativeLocalCallInfo64;
 
 pub(crate) const NATIVE_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<NativeFunctionInfo>();
 

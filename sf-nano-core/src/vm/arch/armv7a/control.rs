@@ -56,23 +56,24 @@ pub(super) fn lower_terminator_dispatch(
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
+            call_link_base,
             continuation,
         } => {
-            self.emit_call_direct(*callee, *callee_frame_base, *continuation)?;
+            self.emit_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation)?;
         }
 
         MachineTerminator::CallIndirect {
             callee_target,
+            callee_entry,
             callee_frame_base,
-            arg_slots,
-            caller_result_base,
+            call_link_base,
             continuation,
         } => {
             self.emit_call_indirect(
                 *callee_target,
+                *callee_entry,
                 *callee_frame_base,
-                *arg_slots,
-                *caller_result_base,
+                *call_link_base,
                 *continuation,
             )?;
         }

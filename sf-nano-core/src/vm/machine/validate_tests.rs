@@ -2,25 +2,21 @@ use alloc::{vec, vec::Vec};
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineBlockParam, MachineConstData, MachineConstId, MachineEdge,
-    MachineExternId, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
+    MachineBlock, MachineBlockId, MachineBlockParam, MachineCallExternal, MachineConstData,
+    MachineConstId, MachineEdge, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
     MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
-use crate::vm::machine::machine_ir::{MachineExternBinding, MachineHelperSymbol};
 
 /// Minimal config for validate tests: no cache/transient budget beyond the minimum.
 fn minimal_config() -> BackendConfig {
+    let gp_unit_bytes = core::mem::size_of::<usize>() as u8;
     BackendConfig::new(
         0,
-        1,
+        if gp_unit_bytes == 4 { 5 } else { 3 },
         0,
         0,
-        core::mem::size_of::<usize>() as u8,
-        if core::mem::size_of::<usize>() == 4 {
-            8
-        } else {
-            3
-        },
+        gp_unit_bytes,
+        if gp_unit_bytes == 4 { 8 } else { 3 },
     )
 }
 
@@ -88,12 +84,9 @@ fn rejects_out_of_range_helper_metadata() {
                     id: MachineBlockId(0),
                     params: Vec::new(),
                     ops: alloc::vec![MachineInst {
-                        kind: MachineInstKind::CallHelper(
-                            crate::vm::machine::machine_ir::MachineHelperCall {
-                                target: MachineExternId(0),
-                                metadata: MachineConstId(1),
-                            },
-                        ),
+                        kind: MachineInstKind::CallExternal(MachineCallExternal {
+                            metadata: MachineConstId(1),
+                        }),
                     }],
                     terminator: MachineTerminator::Return,
                 }],
@@ -103,10 +96,6 @@ fn rejects_out_of_range_helper_metadata() {
             id: MachineConstId(0),
             align: 8,
             bytes: alloc::vec![0; 8],
-        }],
-        externs: alloc::vec![MachineExternBinding {
-            id: MachineExternId(0),
-            symbol: MachineHelperSymbol::CallExternal,
         }],
     };
 

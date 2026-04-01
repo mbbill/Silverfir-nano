@@ -16,7 +16,7 @@ use crate::{
         },
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineFunction, MachineFunctionRuntime, MachineInst, MachineReg, MachineTerminator,
+            MachineFunction, MachineFunctionAbi, MachineInst, MachineReg, MachineTerminator,
             MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
@@ -24,6 +24,7 @@ use crate::{
             code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
+            layout::local_call_info_abi_layout,
         },
     },
 };
@@ -415,7 +416,7 @@ impl<'a> Arm32Backend<'a> {
         let helper_scratch = self
             .core
             .compiled
-            .runtime()
+            .abi()
             .functions
             .get(self.core.function.id.0 as usize)
             .and_then(|runtime| runtime.helper_scratch);
@@ -805,7 +806,7 @@ impl<'a> Arm32Backend<'a> {
     pub(super) fn runtime_for(
         &self,
         func_id: MachineFuncId,
-    ) -> Result<&MachineFunctionRuntime, WasmError> {
+    ) -> Result<&MachineFunctionAbi, WasmError> {
         self.core.runtime_for(func_id)
     }
 
@@ -813,14 +814,10 @@ impl<'a> Arm32Backend<'a> {
         &mut self,
         callee: MachineFuncId,
         callee_frame_base: MachineReg,
+        call_link_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
-        let callee_runtime = self.runtime_for(callee)?;
-        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("armv7a direct call requires callee call scratch".into())
-        })?;
-        let call_link = self.core.compiled.runtime().call_link;
-        let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
+        let call_link = self.core.compiled.abi().call_link;
 
         let callee_fp_orig = map_reg(callee_frame_base)?;
         // callee_fp must stay allocated for the entire sequence so that
@@ -830,9 +827,10 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
+        let call_link_base = map_reg(call_link_base)?;
 
         // Store continuation address (patchable) into callee frame
-        let cont_byte_offset = (continuation_slot as i32) * 8;
+        let cont_byte_offset = call_link.continuation_offset as i32;
         let cont_patch = {
             let s = self.gp_scratch.scoped_alloc();
             let patch = emit_patchable_addr_into(&mut self.core.text, *s);
@@ -840,7 +838,7 @@ impl<'a> Arm32Backend<'a> {
                 &mut self.core.text,
                 &self.gp_scratch,
                 *s,
-                callee_fp,
+                call_link_base,
                 cont_byte_offset,
             );
             patch
@@ -850,7 +848,7 @@ impl<'a> Arm32Backend<'a> {
             &mut self.core.text,
             &self.gp_scratch,
             Arm32Reg::R3,
-            callee_fp,
+            call_link_base,
             cont_byte_offset + 4,
         );
 
@@ -888,7 +886,7 @@ impl<'a> Arm32Backend<'a> {
         let call_scratch = runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("armv7a local return requires call scratch".into())
         })?;
-        let call_link = self.core.compiled.runtime().call_link;
+        let call_link = self.core.compiled.abi().call_link;
         let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
         let caller_frame_slot = call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
         let caller_result_base_slot =
@@ -962,10 +960,10 @@ impl<'a> Arm32Backend<'a> {
 
     pub(super) fn emit_call_indirect(
         &mut self,
-        callee_target: MachineValue,
+        _callee_target: MachineReg,
+        callee_entry: MachineReg,
         callee_frame_base: MachineReg,
-        arg_slots: u16,
-        caller_result_base: u16,
+        call_link_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
         let callee_fp_orig = map_reg(callee_frame_base)?;
@@ -976,138 +974,32 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::mov_reg(callee_fp, callee_fp_orig));
-
-        // Materialize callee ID into R3
-        let callee_id_reg = match callee_target {
-            MachineValue::Reg(r) => map_reg(r)?,
-            MachineValue::Imm64(v) => {
-                emit_load_u32_into(&mut self.core.text, Arm32Reg::R3, v as u32);
-                Arm32Reg::R3
-            }
-        };
-        if callee_id_reg != Arm32Reg::R3 {
-            self.core
-                .text
-                .emit_u32(enc::mov_reg(Arm32Reg::R3, callee_id_reg));
-        }
-
-        // Load function info table base, compute entry address, load fields,
-        // and perform stack overflow check — all using one scratch that is
-        // dropped before emit_branch (which needs &mut self).
-        {
-            let s = self.gp_scratch.scoped_alloc();
-            let table_patch = emit_patchable_addr_into(&mut self.core.text, *s);
-            self.core.function_table_patches.push(table_patch);
-
-            // Each Arm32FunctionInfo is 16 bytes. Compute entry: table + callee_id * 16
-            self.core
-                .text
-                .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 4));
-            self.core.text.emit_u32(enc::add_reg(*s, *s, Arm32Reg::R3));
-
-            // Load function info fields
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R0, *s, 0)); // entry
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R1, *s, 4)); // total_frame_bytes
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R2, *s, 8)); // frame_prefix_slots
-            self.core.text.emit_u32(enc::ldr_imm(Arm32Reg::R3, *s, 12)); // call_scratch_base_slot
-
-            // Stack overflow check
-            self.core
-                .text
-                .emit_u32(enc::add_reg(*s, callee_fp, Arm32Reg::R1));
-            self.core.text.emit_u32(enc::ldr_imm(
-                Arm32Reg::R1,
-                map_fixed_reg(MACHINE_CTX_REG),
-                ctx_offset::STACK_END as i32,
-            ));
-            self.core.text.emit_u32(enc::cmp_reg(*s, Arm32Reg::R1));
-        }
-        // Inline emit_branch: callee_fp_guard is alive, can't call &mut self.
-        let stack_overflow = self.core.stack_overflow_label;
-        {
-            let offset = self.core.text.len();
-            self.core.text.emit_u32(enc::nop());
-            self.fixups.push(BranchFixup {
-                offset,
-                kind: BranchFixupKind::BCond(Cond::Hi),
-                target: stack_overflow,
-            });
-        }
-
-        // Zero any callee frame-prefix slots that are not covered by the
-        // indirect call's argument span. Direct calls zero static prefixes in
-        // MachineIR, but indirect calls need this backend-side because the
-        // callee's frame layout is only known after loading function metadata.
-        emit_zero_dynamic_callee_prefix(
-            &mut self.core,
-            &mut self.fixups,
-            &self.gp_scratch,
-            callee_fp,
-            arg_slots,
-            Arm32Reg::R2,
-            Arm32Reg::R1,
-        );
-
-        // Compute call_scratch absolute byte offset
-        self.core
-            .text
-            .emit_u32(enc::lsl_imm(Arm32Reg::R3, Arm32Reg::R3, 3));
-        self.core
-            .text
-            .emit_u32(enc::add_reg(Arm32Reg::R2, callee_fp, Arm32Reg::R3));
+        let call_link_base = map_reg(call_link_base)?;
 
         // Store continuation address (patchable)
-        let call_link = self.core.compiled.runtime().call_link;
         let cont_patch = {
             let s = self.gp_scratch.scoped_alloc();
             let patch = emit_patchable_addr_into(&mut self.core.text, *s);
             self.core.text.emit_u32(enc::str_imm(
                 *s,
-                Arm32Reg::R2,
-                call_link.continuation_offset,
+                call_link_base,
+                self.core.compiled.abi().call_link.continuation_offset,
             ));
             patch
         };
         emit_load_u32_into(&mut self.core.text, Arm32Reg::R3, 0);
         self.core.text.emit_u32(enc::str_imm(
             Arm32Reg::R3,
-            Arm32Reg::R2,
-            call_link.continuation_offset + 4,
-        ));
-
-        // Store caller FP
-        self.core.text.emit_u32(enc::str_imm(
-            map_fixed_reg(MACHINE_FP_REG),
-            Arm32Reg::R2,
-            call_link.caller_frame_offset,
-        ));
-        self.core.text.emit_u32(enc::str_imm(
-            Arm32Reg::R3,
-            Arm32Reg::R2,
-            call_link.caller_frame_offset + 4,
-        ));
-
-        // Store caller result base
-        {
-            let s = self.gp_scratch.scoped_alloc();
-            emit_load_u32_into(&mut self.core.text, *s, u32::from(caller_result_base) * 8);
-            self.core.text.emit_u32(enc::str_imm(
-                *s,
-                Arm32Reg::R2,
-                call_link.caller_result_base_offset,
-            ));
-        }
-        self.core.text.emit_u32(enc::str_imm(
-            Arm32Reg::R3,
-            Arm32Reg::R2,
-            call_link.caller_result_base_offset + 4,
+            call_link_base,
+            self.core.compiled.abi().call_link.continuation_offset + 4,
         ));
 
         // Set FP to callee and jump
+        let callee_entry = map_reg(callee_entry)?;
         self.core
             .text
             .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), callee_fp));
-        self.core.text.emit_u32(enc::bx(Arm32Reg::R0));
+        self.core.text.emit_u32(enc::bx(callee_entry));
         drop(callee_fp_guard);
 
         // Record continuation patch

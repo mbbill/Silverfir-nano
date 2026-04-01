@@ -61,7 +61,7 @@ use crate::{
         debug::ir_dump,
         machine::{
             machine_ir::MachineFuncId,
-            {lower_module, LowerFunctionInput, LowerModuleInput},
+            {lower_module, optimize_module, LowerFunctionInput, LowerModuleInput},
         },
         middle::{prepare_function, PrepareInput},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
@@ -202,7 +202,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         #[cfg(has_guard_pages)]
         use_guard_pages,
     })?;
-    lowered.module.optimize();
+    optimize_module(&mut lowered.module);
     if backend.is_32bit_gp_target() {
         lowered
             .module
@@ -222,7 +222,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         active_backend,
         backend,
         lowered.module,
-        lowered.runtime,
+        lowered.abi,
     )?);
     #[cfg(target_arch = "aarch64")]
     let arm64_entries = match active_backend {
@@ -394,7 +394,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             module.functions.len(),
             &dump_lir_inputs,
             compiled.module(),
-            compiled.runtime(),
+            compiled.abi(),
             &code_slices,
             &dump_regions,
         );

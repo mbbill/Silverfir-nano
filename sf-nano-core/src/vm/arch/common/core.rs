@@ -6,7 +6,7 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
-            MachineFuncId, MachineFunctionRuntime, MachineFunction, MachineReg,
+            MachineFuncId, MachineFunctionAbi, MachineFunction, MachineReg,
             MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
     },
@@ -36,7 +36,6 @@ pub(crate) struct CompilerCore<'a> {
     pub resolved_ptr_patches: Vec<LocalPtrPatch>,
     pub local_ptr_patches: Vec<PendingLocalPtrPatch>,
     pub direct_call_patches: Vec<DirectCallPatch>,
-    pub function_table_patches: Vec<usize>,
     pub deferred_traps: Vec<(usize, MachineTrapKind)>,
     pub fp_reg_widths: Vec<Option<MachineFloatWidth>>,
     pub current_block: Option<MachineBlockId>,
@@ -95,7 +94,6 @@ impl<'a> CompilerCore<'a> {
             resolved_ptr_patches: Vec::new(),
             local_ptr_patches: Vec::new(),
             direct_call_patches: Vec::new(),
-            function_table_patches: Vec::new(),
             deferred_traps: Vec::new(),
             fp_reg_widths,
             current_block: None,
@@ -175,9 +173,9 @@ impl<'a> CompilerCore<'a> {
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,
-    ) -> Result<&MachineFunctionRuntime, WasmError> {
+    ) -> Result<&MachineFunctionAbi, WasmError> {
         self.compiled
-            .runtime()
+            .abi()
             .functions
             .get(func_id.0 as usize)
             .ok_or_else(|| {
@@ -502,7 +500,6 @@ impl<'a> CompilerCore<'a> {
             text: self.text,
             local_ptr_patches,
             direct_call_patches: self.direct_call_patches,
-            function_table_patches: self.function_table_patches,
             root_return_offset,
             #[cfg(has_guard_pages)]
             return_error_offset,

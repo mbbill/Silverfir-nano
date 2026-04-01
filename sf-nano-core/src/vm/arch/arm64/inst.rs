@@ -3,7 +3,7 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlockParam, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
-    MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionRuntime,
+    MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionAbi,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
     MachineInstKind, MachineInst, MachineIndexExtend, MachineLoadExtension, MachineMemWidth,
     MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
@@ -254,7 +254,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// Look up runtime metadata for a machine function.
     pub(super) fn runtime_for(
         &self, func_id: MachineFuncId,
-    ) -> Result<&MachineFunctionRuntime, WasmError> {
+    ) -> Result<&MachineFunctionAbi, WasmError> {
         self.core.runtime_for(func_id)
     }
 
@@ -282,8 +282,8 @@ inst: &MachineInst) -> Result<(), WasmError> {
             self.lower_select(*ty, *dst, *on_true, *on_false, *cond)
         }
         MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
-        MachineInstKind::CallHelper(call) => {
-            self.lower_call_helper(call.target.0 as usize, call.metadata.0 as usize)
+        MachineInstKind::CallExternal(call) => {
+            self.lower_call_external(call.metadata.0 as usize)
         }
         MachineInstKind::FloatUnary { width, op, dst, src } => {
             self.lower_float_unary(*width, *op, *dst, *src)
@@ -671,13 +671,13 @@ dst: MachineReg,
                 MachineFloatWidth::F32,
                 MachineMemWidth::U32,
                 MachineLoadExtension::ZeroExtend,
-            ) => enc::ldr_s_reg(dst_fp, addr_scratch, Arm64Reg::Xzr, false),
+            ) => enc::ldr_s_base(dst_fp, addr_scratch),
             (MachineFloatWidth::F64, MachineMemWidth::U64, MachineLoadExtension::None)
             | (
                 MachineFloatWidth::F64,
                 MachineMemWidth::U64,
                 MachineLoadExtension::ZeroExtend,
-            ) => enc::ldr_d_reg(dst_fp, addr_scratch, Arm64Reg::Xzr, false),
+            ) => enc::ldr_d_base(dst_fp, addr_scratch),
             _ => return Err(WasmError::invalid(
                 "arm64 MachineIR backend does not support this load shape into FP machine regs"
                     .into(),
@@ -706,28 +706,28 @@ dst: MachineReg,
     let inst = match (width, extension) {
         (MachineMemWidth::U8, MachineLoadExtension::None)
         | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
-            enc::ldrb_reg(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldrb_base(dst, addr_scratch)
         }
         (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
-            enc::ldrsb_reg_64(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldrsb_64_base(dst, addr_scratch)
         }
         (MachineMemWidth::U16, MachineLoadExtension::None)
         | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
-            enc::ldrh_reg(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldrh_base(dst, addr_scratch)
         }
         (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
-            enc::ldrsh_reg_64(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldrsh_64_base(dst, addr_scratch)
         }
         (MachineMemWidth::U32, MachineLoadExtension::None)
         | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
-            enc::ldr_reg_32(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldr_reg_32_base(dst, addr_scratch)
         }
         (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
-            enc::ldrsw_reg(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldrsw_base(dst, addr_scratch)
         }
         (MachineMemWidth::U64, MachineLoadExtension::None)
         | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
-            enc::ldr_reg_64(dst, addr_scratch, Arm64Reg::Xzr)
+            enc::ldr_reg_64_base(dst, addr_scratch)
         }
         (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
             return Err(WasmError::invalid(
@@ -767,8 +767,8 @@ addr: MachineAddr,
             let addr_scratch = *self.gp_scratch.scoped_alloc();
             self.lower_addr_into(addr_scratch, addr)?;
             self.core.text.emit_u32(match width {
-                MachineMemWidth::U32 => enc::str_s_reg(src_fp, addr_scratch, Arm64Reg::Xzr, false),
-                MachineMemWidth::U64 => enc::str_d_reg(src_fp, addr_scratch, Arm64Reg::Xzr, false),
+                MachineMemWidth::U32 => enc::str_s_base(src_fp, addr_scratch),
+                MachineMemWidth::U64 => enc::str_d_base(src_fp, addr_scratch),
                 _ => {
                     return Err(WasmError::invalid(
                         "arm64 MachineIR backend does not support narrow FP stores".into(),
@@ -784,7 +784,7 @@ addr: MachineAddr,
         if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
             self.core
                 .text
-                .emit_u32(enc::str_64(Arm64Reg::Xzr, base, (offset / 8) as u32));
+                .emit_u32(enc::str_zero_64(base, (offset / 8) as u32));
             return Ok(());
         }
     }
@@ -809,10 +809,10 @@ addr: MachineAddr,
         &mut self.core.text, &self.gp_scratch, src,
     )?.release();
     let inst = match width {
-        MachineMemWidth::U8 => enc::strb_reg(src_reg, addr_scratch, Arm64Reg::Xzr),
-        MachineMemWidth::U16 => enc::strh_reg(src_reg, addr_scratch, Arm64Reg::Xzr),
-        MachineMemWidth::U32 => enc::str_reg_32(src_reg, addr_scratch, Arm64Reg::Xzr),
-        MachineMemWidth::U64 => enc::str_reg_64(src_reg, addr_scratch, Arm64Reg::Xzr),
+        MachineMemWidth::U8 => enc::strb_base(src_reg, addr_scratch),
+        MachineMemWidth::U16 => enc::strh_base(src_reg, addr_scratch),
+        MachineMemWidth::U32 => enc::str_reg_32_base(src_reg, addr_scratch),
+        MachineMemWidth::U64 => enc::str_reg_64_base(src_reg, addr_scratch),
     };
     self.core.text.emit_u32(inst);
     Ok(())
@@ -1118,11 +1118,11 @@ width: MachineIntWidth,
     )?.release();
     match (width, op) {
         (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => {
-            self.core.text.emit_u32(enc::cmp_reg_32(src, Arm64Reg::Xzr));
+            self.core.text.emit_u32(enc::cmp_zero_32(src));
             self.core.text.emit_u32(enc::cset_32(dst, enc::Cond::Eq));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => {
-            self.core.text.emit_u32(enc::cmp_reg_64(src, Arm64Reg::Xzr));
+            self.core.text.emit_u32(enc::cmp_zero_64(src));
             self.core.text.emit_u32(enc::cset_64(dst, enc::Cond::Eq));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Clz) => {
@@ -1339,8 +1339,8 @@ fn lower_div_u_check(&mut self,
 _lhs: Arm64Reg, rhs: Arm64Reg, width: MachineIntWidth) {
     // rhs == 0 => trap IntegerDivideByZero
     match width {
-        MachineIntWidth::I32 => self.core.text.emit_u32(enc::cmp_reg_32(rhs, Arm64Reg::Xzr)),
-        MachineIntWidth::I64 => self.core.text.emit_u32(enc::cmp_reg_64(rhs, Arm64Reg::Xzr)),
+        MachineIntWidth::I32 => self.core.text.emit_u32(enc::cmp_zero_32(rhs)),
+        MachineIntWidth::I64 => self.core.text.emit_u32(enc::cmp_zero_64(rhs)),
     };
     // Branch to a trap stub
     let trap_label = self.core.new_label();
@@ -1353,7 +1353,7 @@ _lhs: Arm64Reg, rhs: Arm64Reg, width: MachineIntWidth) {
 fn lower_div_s_32(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     // Check rhs == 0 => IntegerDivideByZero
-    self.core.text.emit_u32(enc::cmp_reg_32(rhs, Arm64Reg::Xzr));
+    self.core.text.emit_u32(enc::cmp_zero_32(rhs));
     let div_zero_label = self.core.new_label();
     self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
@@ -1381,7 +1381,7 @@ dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
 
 fn lower_div_s_64(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
-    self.core.text.emit_u32(enc::cmp_reg_64(rhs, Arm64Reg::Xzr));
+    self.core.text.emit_u32(enc::cmp_zero_64(rhs));
     let div_zero_label = self.core.new_label();
     self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
@@ -1407,7 +1407,7 @@ dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
 fn lower_rem_s_32(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
     // Check rhs == 0 => IntegerDivideByZero
-    self.core.text.emit_u32(enc::cmp_reg_32(rhs, Arm64Reg::Xzr));
+    self.core.text.emit_u32(enc::cmp_zero_32(rhs));
     let div_zero_label = self.core.new_label();
     self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
@@ -1422,7 +1422,7 @@ dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
 
 fn lower_rem_s_64(&mut self,
 dst: Arm64Reg, lhs: Arm64Reg, rhs: Arm64Reg) {
-    self.core.text.emit_u32(enc::cmp_reg_64(rhs, Arm64Reg::Xzr));
+    self.core.text.emit_u32(enc::cmp_zero_64(rhs));
     let div_zero_label = self.core.new_label();
     self.lower_b_cond(enc::Cond::Eq, div_zero_label);
     self.core
@@ -2218,9 +2218,12 @@ fn lower_memory_grow(
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
     self.emit_io_store_value(preserved_io::ARG0, delta)?;
-    self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW);
+    let result_scratch_idx = self.gp_scratch.alloc();
+    let result_scratch = self.gp_scratch.reg(result_scratch_idx);
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW, Some(result_scratch_idx));
 
-    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, Arm64Reg::X17));
+    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, result_scratch));
+    self.gp_scratch.free_index(result_scratch_idx);
     Ok(())
 }
 
@@ -2238,7 +2241,7 @@ fn lower_memory_fill(
     self.emit_io_store_value(preserved_io::ARG0, dest)?;
     self.emit_io_store_value(preserved_io::ARG1, val)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL);
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL, None);
     Ok(())
 }
 
@@ -2258,7 +2261,7 @@ fn lower_memory_copy(
     self.emit_io_store_value(preserved_io::ARG0, dest)?;
     self.emit_io_store_value(preserved_io::ARG1, src)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY);
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY, None);
     Ok(())
 }
 
@@ -2278,7 +2281,7 @@ fn lower_memory_init(
     self.emit_io_store_value(preserved_io::ARG0, dest)?;
     self.emit_io_store_value(preserved_io::ARG1, src)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::MEMORY_INIT);
+    self.emit_preserved_call_and_close(preserved_op::MEMORY_INIT, None);
     Ok(())
 }
 
@@ -2287,7 +2290,7 @@ fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, data_idx);
-    self.emit_preserved_call_and_close(preserved_op::DATA_DROP);
+    self.emit_preserved_call_and_close(preserved_op::DATA_DROP, None);
     Ok(())
 }
 
@@ -2305,9 +2308,12 @@ fn lower_table_grow(
     self.emit_io_store_imm(preserved_io::IMM0, table_idx);
     self.emit_io_store_value(preserved_io::ARG0, init_val)?;
     self.emit_io_store_value(preserved_io::ARG1, delta)?;
-    self.emit_preserved_call_and_close(preserved_op::TABLE_GROW);
+    let result_scratch_idx = self.gp_scratch.alloc();
+    let result_scratch = self.gp_scratch.reg(result_scratch_idx);
+    self.emit_preserved_call_and_close(preserved_op::TABLE_GROW, Some(result_scratch_idx));
 
-    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, Arm64Reg::X17));
+    self.core.text.emit_u32(enc::mov_reg_64(dst_gp, result_scratch));
+    self.gp_scratch.free_index(result_scratch_idx);
     Ok(())
 }
 
@@ -2325,7 +2331,7 @@ fn lower_table_fill(
     self.emit_io_store_value(preserved_io::ARG0, start)?;
     self.emit_io_store_value(preserved_io::ARG1, val)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::TABLE_FILL);
+    self.emit_preserved_call_and_close(preserved_op::TABLE_FILL, None);
     Ok(())
 }
 
@@ -2345,7 +2351,7 @@ fn lower_table_copy(
     self.emit_io_store_value(preserved_io::ARG0, dest)?;
     self.emit_io_store_value(preserved_io::ARG1, src)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::TABLE_COPY);
+    self.emit_preserved_call_and_close(preserved_op::TABLE_COPY, None);
     Ok(())
 }
 
@@ -2365,7 +2371,7 @@ fn lower_table_init(
     self.emit_io_store_value(preserved_io::ARG0, dest)?;
     self.emit_io_store_value(preserved_io::ARG1, src)?;
     self.emit_io_store_value(preserved_io::ARG2, len)?;
-    self.emit_preserved_call_and_close(preserved_op::TABLE_INIT);
+    self.emit_preserved_call_and_close(preserved_op::TABLE_INIT, None);
     Ok(())
 }
 
@@ -2374,7 +2380,7 @@ fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, elem_idx);
-    self.emit_preserved_call_and_close(preserved_op::ELEM_DROP);
+    self.emit_preserved_call_and_close(preserved_op::ELEM_DROP, None);
     Ok(())
 }
 
@@ -2415,11 +2421,12 @@ fn lower_trapping_trunc(
 
     // 2. Upper bound check: FCMP src, upper — trap if src >= upper.
     let bound_fp = *self.fp_scratch.scoped_alloc();
-    materialize_u64_into(&mut self.core.text, Arm64Reg::X16, spec.upper_bits);
+    let bound_gp = *self.gp_scratch.scoped_alloc();
+    materialize_u64_into(&mut self.core.text, bound_gp, spec.upper_bits);
     self.core.text.emit_u32(if spec.src_f32 {
-        enc::fmov_s_from_gp(bound_fp, Arm64Reg::X16)
+        enc::fmov_s_from_gp(bound_fp, bound_gp)
     } else {
-        enc::fmov_d_from_gp(bound_fp, Arm64Reg::X16)
+        enc::fmov_d_from_gp(bound_fp, bound_gp)
     });
     self.core.text.emit_u32(if spec.src_f32 {
         enc::fcmp_s(src_fp, bound_fp)
@@ -2430,11 +2437,11 @@ fn lower_trapping_trunc(
     self.lower_b_cond(enc::Cond::Ge, trap_overflow);
 
     // 3. Lower bound check: FCMP src, lower — trap condition depends on variant.
-    materialize_u64_into(&mut self.core.text, Arm64Reg::X16, spec.lower_bits);
+    materialize_u64_into(&mut self.core.text, bound_gp, spec.lower_bits);
     self.core.text.emit_u32(if spec.src_f32 {
-        enc::fmov_s_from_gp(bound_fp, Arm64Reg::X16)
+        enc::fmov_s_from_gp(bound_fp, bound_gp)
     } else {
-        enc::fmov_d_from_gp(bound_fp, Arm64Reg::X16)
+        enc::fmov_d_from_gp(bound_fp, bound_gp)
     });
     self.core.text.emit_u32(if spec.src_f32 {
         enc::fcmp_s(src_fp, bound_fp)
@@ -2529,7 +2536,7 @@ fn trunc_spec(op: MachineConvertOp) -> TruncSpec {
 
 pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: Arm64Reg, value: u64) {
     if value == 0 {
-        text.emit_u32(enc::mov_reg_64(dst, Arm64Reg::Xzr));
+        text.emit_u32(enc::mov_zero_64(dst));
         return;
     }
     let chunks = [
