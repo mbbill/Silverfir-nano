@@ -13,6 +13,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::{FunctionInst, GlobalInst, ModuleInst},
+        runtime::code::CompiledNativeModule,
         store::Store,
         value::RefHandle,
     },
@@ -39,27 +40,8 @@ pub(crate) struct NativeGlobalsView {
     pub(crate) len: usize,
 }
 
-pub(crate) mod function_kind {
-    pub(crate) const LOCAL: u32 = 0;
-    pub(crate) const EXTERNAL: u32 = 1;
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct NativeFunctionView {
-    pub(crate) kind: u32,
-    /// Canonical equivalence class for the callee signature within the current
-    /// module type context. `call_indirect` compares this against the cached
-    /// canonical id for the expected type index instead of comparing raw type
-    /// indices directly.
-    pub(crate) type_canon: u32,
-    /// Native-local target token for `MachineTerminator::CallIndirect`.
-    ///
-    /// The current lowering path keeps machine function ids aligned with the
-    /// module function index space, so local callees use that machine-call
-    /// target id directly here.
-    pub(crate) local_target: u32,
-}
+pub(crate) use super::dispatch_view::function_kind;
+pub(crate) use super::dispatch_view::CallDispatchView as NativeFunctionView;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -74,6 +56,8 @@ pub(crate) struct NativeContext {
     pub(crate) table_views_len: usize,
     pub(crate) function_views_base: *const NativeFunctionView,
     pub(crate) function_views_len: usize,
+    pub(crate) local_call_infos_base: *const u8,
+    pub(crate) local_call_infos_len: usize,
     pub(crate) type_canon_base: *const u32,
     pub(crate) type_canon_len: usize,
     pub(crate) store: *mut Store,
@@ -105,6 +89,8 @@ impl NativeContext {
             table_views_len: 0,
             function_views_base: core::ptr::null(),
             function_views_len: 0,
+            local_call_infos_base: core::ptr::null(),
+            local_call_infos_len: 0,
             type_canon_base: core::ptr::null(),
             type_canon_len: 0,
             store,
@@ -135,6 +121,12 @@ impl NativeContext {
         self.refresh_table_views();
         self.refresh_type_canon();
         self.refresh_function_views();
+    }
+
+    #[inline]
+    pub(crate) fn seed_local_call_infos(&mut self, compiled: &CompiledNativeModule) {
+        self.local_call_infos_base = compiled.local_call_infos_base();
+        self.local_call_infos_len = compiled.local_call_infos_len();
     }
 
     #[inline]
@@ -328,6 +320,7 @@ impl NativeContext {
 pub(crate) mod ctx_offset {
     use super::NativeContext;
 
+    #[cfg(any(test, feature = "interp"))]
     pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
     pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
@@ -337,17 +330,28 @@ pub(crate) mod ctx_offset {
     #[cfg(test)]
     mod test_only {
         use super::super::NativeContext;
-        pub const GLOBALS_VIEW: u32 = core::mem::offset_of!(NativeContext, globals_view) as u32;
-        pub const MEMORY_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, memory_views_base) as u32;
-        pub const MEMORY_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, memory_views_len) as u32;
-        pub const TABLE_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, table_views_base) as u32;
-        pub const TABLE_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, table_views_len) as u32;
-        pub const FUNCTION_VIEWS_BASE: u32 = core::mem::offset_of!(NativeContext, function_views_base) as u32;
-        pub const FUNCTION_VIEWS_LEN: u32 = core::mem::offset_of!(NativeContext, function_views_len) as u32;
-        pub const TYPE_CANON_BASE: u32 = core::mem::offset_of!(NativeContext, type_canon_base) as u32;
-        pub const TYPE_CANON_LEN: u32 = core::mem::offset_of!(NativeContext, type_canon_len) as u32;
-        pub const STORE: u32 = core::mem::offset_of!(NativeContext, store) as u32;
-        pub const CURRENT_MODULE: u32 = core::mem::offset_of!(NativeContext, current_module) as u32;
+        pub(crate) const GLOBALS_VIEW: u32 =
+            core::mem::offset_of!(NativeContext, globals_view) as u32;
+        pub(crate) const MEMORY_VIEWS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, memory_views_base) as u32;
+        pub(crate) const MEMORY_VIEWS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, memory_views_len) as u32;
+        pub(crate) const TABLE_VIEWS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, table_views_base) as u32;
+        pub(crate) const TABLE_VIEWS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, table_views_len) as u32;
+        pub(crate) const FUNCTION_VIEWS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, function_views_base) as u32;
+        pub(crate) const FUNCTION_VIEWS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, function_views_len) as u32;
+        pub(crate) const LOCAL_CALL_INFOS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, local_call_infos_base) as u32;
+        pub(crate) const LOCAL_CALL_INFOS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, local_call_infos_len) as u32;
+        pub(crate) const TYPE_CANON_BASE: u32 =
+            core::mem::offset_of!(NativeContext, type_canon_base) as u32;
+        pub(crate) const TYPE_CANON_LEN: u32 =
+            core::mem::offset_of!(NativeContext, type_canon_len) as u32;
     }
     #[cfg(test)]
     pub(crate) use test_only::*;

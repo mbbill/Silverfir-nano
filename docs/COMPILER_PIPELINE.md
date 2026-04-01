@@ -57,7 +57,7 @@ Main code:
 
 - structured control markers (`Block`, `Loop`, `If`, `Else`, `End`)
 - abstract locals (`LocalGet`, `LocalSet`, `LocalTee`)
-- semantic calls (`CallInternal`, `CallExternal`, `CallIndirect`)
+- semantic calls (`CallDirect`, `CallIndirect`)
 - typed result information (`local_types`, `result_types`, `op_result_types`)
 - `max_stack_height`
 
@@ -73,7 +73,7 @@ Why it lives here:
 
 ### Optimization: small leaf inlining
 
-`inline_calls_in_function()` replaces eligible `CallInternal` sites with the
+`inline_calls_in_function()` replaces eligible `CallDirect` sites with the
 callee body.
 
 Current policy:
@@ -683,16 +683,16 @@ Why this is better than exploding immediately:
 On 64-bit GP targets, `Gp64Lowering` is deliberately thin and uses the scalar
 path directly.
 
-### Optimization-enabling structure: sidecar metadata
+### Optimization-enabling structure: machine constant pool
 
-`SidecarBuilder` moves helper metadata and constants out of the instruction
-stream into sidecar tables.
+`ConstPoolBuilder` moves external-call metadata and other read-only records out
+of the instruction stream into the machine module's constant pool.
 
 What this optimizes:
 
 - keeps MachineIR compact
-- avoids repeating helper payload descriptions in every instruction
-- lets helpers operate on canonical frame regions without bloating the ISA layer
+- avoids repeating metadata payloads in every instruction
+- lets runtime calls operate on canonical frame regions without bloating the ISA layer
 
 ## 4. Machine IR Optimization
 

@@ -1912,13 +1912,13 @@ impl<'a> X86_64Backend<'a> {
             .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
                 const_idx as u32,
             ))
-            .ok_or_else(|| WasmError::internal("x86_64 helper metadata is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("x86_64 external-call metadata is out of range".into()))?;
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
         self.materialize_u64(
             self.gp_scratch.reg(1),
-            crate::vm::runtime::helpers::call_external_entry_ptr() as usize as u64,
+            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
         );
         enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
         // Check return: RAX != 0 => error

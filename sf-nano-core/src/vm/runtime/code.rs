@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use core::cell::Cell;
 
 use crate::{
     error::WasmError,
@@ -7,7 +8,7 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineModule,
-            MachineRuntimeContract,
+            MachineModuleAbi,
         },
         runtime::context::NativeContext,
     },
@@ -55,8 +56,10 @@ pub(crate) struct CompiledNativeModule {
     backend_kind: NativeBackend,
     backend: BackendConfig,
     module: MachineModule,
-    runtime: MachineRuntimeContract,
+    abi: MachineModuleAbi,
     aligned_consts: Vec<AlignedConstData>,
+    local_call_infos_base: Cell<*const u8>,
+    local_call_infos_len: Cell<usize>,
 }
 
 impl CompiledNativeModule {
@@ -64,7 +67,7 @@ impl CompiledNativeModule {
         backend_kind: NativeBackend,
         backend: BackendConfig,
         module: MachineModule,
-        runtime: MachineRuntimeContract,
+        abi: MachineModuleAbi,
     ) -> Result<Self, WasmError> {
         if backend.is_32bit_gp_target() {
             module.validate_32bit_gp_target(backend.first_fp_reg())?;
@@ -77,8 +80,10 @@ impl CompiledNativeModule {
             backend_kind,
             backend,
             module,
-            runtime,
+            abi,
             aligned_consts,
+            local_call_infos_base: Cell::new(core::ptr::null()),
+            local_call_infos_len: Cell::new(0),
         })
     }
 
@@ -98,8 +103,8 @@ impl CompiledNativeModule {
     }
 
     #[inline]
-    pub(crate) const fn runtime(&self) -> &MachineRuntimeContract {
-        &self.runtime
+    pub(crate) const fn abi(&self) -> &MachineModuleAbi {
+        &self.abi
     }
 
     #[inline]
@@ -112,6 +117,22 @@ impl CompiledNativeModule {
         self.aligned_consts
             .get(id.0 as usize)
             .map(AlignedConstData::as_ptr)
+    }
+
+    #[inline]
+    pub(crate) fn publish_local_call_infos(&self, base: *const u8, len: usize) {
+        self.local_call_infos_base.set(base);
+        self.local_call_infos_len.set(len);
+    }
+
+    #[inline]
+    pub(crate) fn local_call_infos_base(&self) -> *const u8 {
+        self.local_call_infos_base.get()
+    }
+
+    #[inline]
+    pub(crate) fn local_call_infos_len(&self) -> usize {
+        self.local_call_infos_len.get()
     }
 }
 

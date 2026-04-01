@@ -30,7 +30,7 @@ use crate::{
         runtime::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
-            helpers::NativeHelperStatus,
+            common::NativeCallStatus,
         },
         store::Store,
         value::Value,
@@ -713,9 +713,9 @@ impl<'a> Emulator<'a> {
             .ok_or_else(|| {
                 WasmError::internal("machine external-call metadata is out of range".into())
             })?;
-        let entry = crate::vm::runtime::helpers::call_external_entry_ptr();
+        let entry = crate::vm::runtime::external::call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
-        if status == NativeHelperStatus::Ok as u32 {
+        if status == NativeCallStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
             return Ok(());
         }

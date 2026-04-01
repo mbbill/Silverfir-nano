@@ -1,16 +1,16 @@
 use super::cfg::MachineBranchCond;
 use super::types::{
     MachineTrapKind,
-    MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineExternId,
+    MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp,
     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
     MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineValue,
 };
 
-/// Helper call that falls through in the same function.
+/// Inline external call that falls through in the same function.
 ///
 /// This is the MachineIR representation for operations that cross into the
-/// runtime/host helper ABI but do not transfer control to another compiled
+/// runtime external-call ABI but do not transfer control to another compiled
 /// MachineIR function. In particular, external Wasm calls lower to this form:
 /// they are semantically leaf runtime calls that return inline to the same
 /// block, so they are modeled as instructions rather than CFG terminators.
@@ -19,16 +19,13 @@ use super::types::{
 /// [`MachineTerminator::CallIndirect`] because they leave the current MachineIR
 /// block and resume at an explicit continuation block.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MachineHelperCall {
-    /// Opaque external target id. Sidecar binding data resolves this to the
-    /// real Rust helper wrapper address during backend finalization.
-    pub target: MachineExternId,
-    /// Read-only sidecar metadata for this call site.
+pub(crate) struct MachineCallExternal {
+    /// Read-only constant-pool metadata for this call site.
     ///
-    /// The backend treats this as an opaque constant reference. Helper-specific
-    /// interpretation stays out of the ISA layer. Helpers operate on canonical
-    /// frame regions named by this metadata, so unrelated live machine values
-    /// remain live across the call in machine semantics.
+    /// The backend treats this as an opaque constant-pool reference and always
+    /// lowers this instruction to the shared `call_external_entry` runtime ABI.
+    /// The metadata record describes how the entrypoint finds the external target
+    /// and the frame regions used for arguments and results.
     pub metadata: MachineConstId,
 }
 
@@ -309,7 +306,7 @@ pub(crate) enum MachineInstKind {
     /// they do not create a new compiled-frame activation or a MachineIR
     /// continuation edge; they simply invoke the runtime helper and continue in
     /// the same function.
-    CallHelper(MachineHelperCall),
+    CallExternal(MachineCallExternal),
     MemoryGrow {
         mem_idx: u32,
         dst: MachineReg,

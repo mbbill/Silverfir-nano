@@ -348,7 +348,7 @@ const PRESERVED_FP_COUNT: usize =
     + REG_PLAN.fp_local_cache.len() - REG_PLAN.fp_local_cache_callee_saved;
 
 const fn preserved_io_size() -> u32 {
-    crate::vm::runtime::helpers::preserved_io::SLOT_COUNT as u32 * 8
+    crate::vm::runtime::preserved::io::SLOT_COUNT as u32 * 8
 }
 
 /// Byte offset of the GP save area within the preserved-helper frame.

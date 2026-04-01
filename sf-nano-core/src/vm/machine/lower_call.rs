@@ -2,20 +2,19 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineExternId,
-            MachineFuncId, MachineFrameRegion, MachineHelperCall, MachineHelperSymbol,
-            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
-            MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
-            MachineValue,
+            MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal, MachineCompareKind,
+            MachineConstId, MachineFuncId, MachineFrameRegion, MachineInst, MachineInstKind, MachineIntBinaryOp,
+            MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
-        runtime::helper_meta::{
-            CallExternalMeta, CallIndirectExternalMeta,
+        runtime::{
+            external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
         },
     },
 };
 
-use super::{lower_context::BlockLowerContext, lower_module::slot_offset_bytes, lower_sidecar::SidecarBuilder};
+use super::{lower_const_pool::ConstPoolBuilder, lower_context::BlockLowerContext, lower_module::slot_offset_bytes};
 
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_call_internal(
@@ -80,6 +79,25 @@ impl<'a> BlockLowerContext<'a> {
             callee_runtime.total_frame_slots,
         )?;
 
+        // Reuse the second borrowed temp after the stack precheck. From this
+        // point on it no longer needs to hold the adjusted stack limit; it
+        // becomes the absolute address of the callee call-link record that the
+        // backend will finish by storing the native continuation pointer.
+        let call_link_base = stack_limit;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: MachineIntBinaryOp::Add,
+                dst: call_link_base,
+                lhs: MachineValue::Reg(callee_frame_base),
+                rhs: MachineValue::Imm64(slot_offset_bytes(FrameSlot(call_scratch.base_slot))? as u64),
+            },
+        });
+
+        // Zero the rest of the callee frame prefix beyond the argument span so
+        // the callee sees a fully initialized local-prefix window. Arguments
+        // already occupy the low part of the prefix because the caller operand
+        // span is being reused in place as the callee frame base.
         for slot in args.count..callee_runtime.frame_prefix_slots {
             if self.gp_reg_width() == 4 {
                 self.emit_machine_inst(MachineInst {
@@ -124,11 +142,19 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
 
-        self.store_call_link(callee_frame_base, call_scratch, continuation, results)?;
+        // MachineIR writes the logical call-link fields now. The backend only
+        // needs to turn `continuation` into a native code address at the
+        // terminator boundary.
+        self.store_call_link_absolute(
+            call_link_base,
+            continuation,
+            slot_offset_bytes(results.start)? as u64,
+        )?;
 
         Ok(MachineTerminator::CallDirect {
             callee: callee_id,
             callee_frame_base,
+            call_link_base,
             continuation,
         })
     }
@@ -138,50 +164,103 @@ impl<'a> BlockLowerContext<'a> {
         func_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
-        sidecar: &mut SidecarBuilder,
+        skip_reload: &[bool],
+        const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
             "prepared SSA-IR external call reached native lowering with live transient SSA values; values must be published before the call",
         )?;
 
-        let target = sidecar.extern_target(MachineHelperSymbol::CallExternal);
-        let metadata = sidecar.call_external_meta(CallExternalMeta {
-            func_idx,
-            args: args.into(),
-            results: results.into(),
-        });
-        self.emit_helper_call(target, metadata)
+        // External calls are modeled as inline runtime-entry calls rather than MIR
+        // terminators. Unlike local calls, they do not transfer control to
+        // another compiled MachineIR function or create a MachineIR
+        // continuation edge; the runtime external-call entry returns inline to
+        // this block.
+        //
+        // The surrounding MIR still makes the call boundary explicit by
+        // emitting cached-local save/reload and mem0 cache refresh around the
+        // external-call instruction sequence.
+        let metadata = self.build_call_external_meta_direct(func_idx, args, results, const_pool);
+        self.emit_call_external(metadata, Some(skip_reload))
     }
 
-    pub(super) fn call_indirect_external_site(
+    pub(super) fn build_call_external_meta_direct(
+        &self,
+        func_idx: u32,
+        args: FrameSpan,
+        results: FrameSpan,
+        const_pool: &mut ConstPoolBuilder,
+    ) -> MachineConstId {
+        // Direct external calls carry the Wasm function index as an immediate
+        // in the metadata record. The runtime entry will use it directly.
+        const_pool.call_external_meta(ExternalCallMeta {
+            func_idx_source: func_idx,
+            func_idx_source_kind: ExternalCallTargetKind::Immediate as u32,
+            args: external_call_region(args),
+            results: external_call_region(results),
+        })
+    }
+
+    pub(super) fn build_call_external_meta_indirect(
         &self,
         func_idx_slot: FrameSlot,
         args: FrameSpan,
         results: FrameSpan,
-        sidecar: &mut SidecarBuilder,
-    ) -> MachineHelperCall {
-        let target = sidecar.extern_target(MachineHelperSymbol::CallIndirectExternal);
-        let metadata = sidecar.call_indirect_external_meta(CallIndirectExternalMeta {
-            func_idx_slot: func_idx_slot.0 as u32,
-            args: args.into(),
-            results: results.into(),
-        });
-        MachineHelperCall { target, metadata }
+        const_pool: &mut ConstPoolBuilder,
+    ) -> MachineConstId {
+        // Indirect external calls resolve the target at runtime. MachineIR
+        // publishes the frame slot that now holds the resolved function index,
+        // and the runtime entry reloads it from there.
+        const_pool.call_external_meta(ExternalCallMeta {
+            func_idx_source: func_idx_slot.0 as u32,
+            func_idx_source_kind: ExternalCallTargetKind::FrameSlot as u32,
+            args: external_call_region(args),
+            results: external_call_region(results),
+        })
     }
 
-    fn emit_helper_call(
+    pub(super) fn build_external_call_ops(&self, metadata: MachineConstId) -> alloc::vec::Vec<MachineInst> {
+        // The external-call instruction itself is the foreign-call boundary.
+        // The reloads that follow repair machine-visible runtime state that may
+        // have changed while the host callback executed, most importantly the
+        // cached mem0 base/size pair after a possible memory growth.
+        alloc::vec![
+            MachineInst {
+                kind: MachineInstKind::CallExternal(MachineCallExternal { metadata }),
+            },
+            MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: self.regfile().mem0_base(),
+                    addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_base_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            },
+            MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: MachineStorageType::GpWord,
+                    dst: self.regfile().mem0_size(),
+                    addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            },
+        ]
+    }
+
+    fn emit_call_external(
         &mut self,
-        target: MachineExternId,
         metadata: MachineConstId,
+        skip_reload: Option<&[bool]>,
     ) -> Result<(), WasmError> {
-        // Helper calls are slot-based and clobber all registers, so cached
-        // locals must be synchronized through their canonical frame slots.
+        // External calls are frame-slot based and return inline in the same
+        // MIR block. Because the runtime call may clobber every machine
+        // register, cached locals must be published to their canonical frame
+        // slots before the call and selectively reloaded after it.
         self.emit_save_dirty_cached_locals()?;
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::CallHelper(MachineHelperCall { target, metadata }),
-        });
-        self.emit_reload_mem0_cache_regs();
-        self.emit_reload_cached_locals()?;
+        self.emit_machine_ops(self.build_external_call_ops(metadata));
+        self.emit_reload_cached_locals_selective(skip_reload)?;
         Ok(())
     }
 
@@ -191,6 +270,9 @@ impl<'a> BlockLowerContext<'a> {
         stack_limit: MachineReg,
         callee_total_frame_slots: u16,
     ) -> Result<(), WasmError> {
+        // Stack growth is downward. Load the stack-end guard, subtract the
+        // callee frame footprint, and trap if the proposed callee frame base
+        // would cross below that limit.
         let callee_total_bytes = slot_offset_bytes(FrameSlot(callee_total_frame_slots))? as u64;
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
@@ -226,23 +308,96 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn store_call_link(
+    pub(super) fn emit_dynamic_call_stack_precheck(
         &mut self,
         callee_frame_base: MachineReg,
-        call_scratch: MachineFrameRegion,
-        continuation: MachineBlockId,
-        results: FrameSpan,
+        stack_limit: MachineReg,
+        callee_total_frame_bytes: MachineReg,
     ) -> Result<(), WasmError> {
-        let caller_result_base = slot_offset_bytes(results.start)? as u64;
+        // Same check as the direct path, except the callee frame size has been
+        // loaded dynamically from the runtime-published local-call-info table.
+        let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty: MachineStorageType::GpWord,
+                dst: stack_limit,
+                addr: self.runtime_addr(stack_end_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: MachineIntBinaryOp::Sub,
+                dst: stack_limit,
+                lhs: MachineValue::Reg(stack_limit),
+                rhs: MachineValue::Reg(callee_total_frame_bytes),
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::StackOverflow,
+                cond: MachineBranchCond::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Gt,
+                    sign: MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(callee_frame_base),
+                    rhs: MachineValue::Reg(stack_limit),
+                },
+            },
+        });
+        Ok(())
+    }
+
+    pub(super) fn emit_zero_canonical_slot_at_addr(
+        &mut self,
+        base: MachineReg,
+    ) -> Result<(), WasmError> {
+        if self.gp_reg_width() == 4 {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: MachineAddr { base, offset: 0 },
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: MachineAddr { base, offset: 4 },
+                    width: MachineMemWidth::U32,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        } else {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpI64,
+                    addr: MachineAddr { base, offset: 0 },
+                    width: MachineMemWidth::U64,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn store_call_link_absolute(
+        &mut self,
+        call_link_base: MachineReg,
+        continuation: MachineBlockId,
+        caller_result_base: u64,
+    ) -> Result<(), WasmError> {
         let call_link = self.call_link_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    call_link.continuation_offset,
-                )?,
+                addr: MachineAddr {
+                    base: call_link_base,
+                    offset: call_link.continuation_offset,
+                },
                 width: self.gp_word_mem_width(),
                 src: MachineValue::Imm64(continuation.0 as u64),
             },
@@ -250,11 +405,10 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    call_link.caller_frame_offset,
-                )?,
+                addr: MachineAddr {
+                    base: call_link_base,
+                    offset: call_link.caller_frame_offset,
+                },
                 width: self.gp_word_mem_width(),
                 src: MachineValue::Reg(self.frame_base_reg()),
             },
@@ -262,15 +416,25 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
-                addr: self.frame_region_addr(
-                    callee_frame_base,
-                    call_scratch,
-                    call_link.caller_result_base_offset,
-                )?,
+                addr: MachineAddr {
+                    base: call_link_base,
+                    offset: call_link.caller_result_base_offset,
+                },
                 width: self.gp_word_mem_width(),
                 src: MachineValue::Imm64(caller_result_base),
             },
         });
         Ok(())
+    }
+}
+
+#[inline]
+fn external_call_region(span: FrameSpan) -> ExternalCallFrameRegion {
+    // External calls use frame-relative regions all the way down to the runtime
+    // entry, so the Wasm frame span lowers directly to the serialized ABI
+    // record without any extra scratch slot or repacking.
+    ExternalCallFrameRegion {
+        base_slot: span.start.0,
+        slots: span.count,
     }
 }

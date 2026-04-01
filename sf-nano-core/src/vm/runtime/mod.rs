@@ -28,7 +28,7 @@ impl ReferenceBackendMode {
 // --- Native runtime infrastructure (micro-jit only) ---
 
 #[cfg(feature = "micro-jit")]
-pub(crate) mod call_contract;
+pub(crate) mod common;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod code;
 #[cfg(feature = "micro-jit")]
@@ -36,16 +36,20 @@ pub(crate) mod code_buf;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod context;
 #[cfg(feature = "micro-jit")]
+pub(crate) mod dispatch_view;
+#[cfg(feature = "micro-jit")]
+pub(crate) mod external;
+#[cfg(feature = "micro-jit")]
 #[cfg(has_guard_pages)]
 pub(crate) mod guard_pages;
 #[cfg(feature = "micro-jit")]
-pub(crate) mod helper_meta;
-#[cfg(feature = "micro-jit")]
-pub(crate) mod helpers;
-#[cfg(feature = "micro-jit")]
 pub(crate) mod layout;
 #[cfg(feature = "micro-jit")]
+pub(crate) mod preserved;
+#[cfg(feature = "micro-jit")]
 pub(crate) mod profiler;
+#[cfg(feature = "micro-jit")]
+pub(crate) mod trap;
 #[cfg(feature = "micro-jit")]
 #[cfg(has_guard_pages)]
 pub(crate) mod trap_signal;

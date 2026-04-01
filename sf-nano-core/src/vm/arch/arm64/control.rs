@@ -463,7 +463,7 @@ pub(super) fn lower_call_external(&mut self,
         .core
         .compiled
         .const_ptr(MachineConstId(const_idx as u32))
-        .ok_or_else(|| WasmError::internal("arm64 helper metadata is out of range".into()))?;
+        .ok_or_else(|| WasmError::internal("arm64 external-call metadata is out of range".into()))?;
 
     // External calls are inline runtime calls, not CFG terminators. Pass the
     // current context, the active Wasm frame pointer, and the constant-pool
@@ -480,7 +480,7 @@ pub(super) fn lower_call_external(&mut self,
     let call_scratch = self.gp_scratch.reg(call_scratch_idx);
     self.materialize_u64(
         call_scratch,
-        crate::vm::runtime::helpers::call_external_entry_ptr() as usize as u64,
+        crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
     );
     self.core.text.emit_u32(enc::blr(call_scratch));
     self.gp_scratch.free_index(call_scratch_idx);
@@ -507,7 +507,7 @@ pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
     materialize_u64_into(
         &mut self.core.text,
         call_scratch,
-        crate::vm::runtime::helpers::raise_trap as u64,
+        crate::vm::runtime::trap::raise_trap as u64,
     );
     self.core.text.emit_u32(enc::blr(call_scratch));
     self.gp_scratch.free_index(call_scratch_idx);

@@ -20,6 +20,7 @@ use crate::vm::arch::common::scratch_pool::ScratchPool;
 use crate::vm::arch::common::text_emitter::TextEmitter;
 use crate::vm::arch::common::types::ParallelSource;
 use crate::vm::backend::BackendConfig;
+use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
 use crate::vm::machine::machine_ir::{is_fp_reg, fp_reg_index};
 
 // ── Operand preparation (free functions) ─────────────────────────────────────
@@ -2212,7 +2213,7 @@ fn lower_memory_grow(
     dst: MachineReg,
     delta: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
     let dst_gp = map_gp(self.core.compiled.backend(), dst)?;
 
     self.emit_preserved_frame_open();
@@ -2234,7 +2235,7 @@ fn lower_memory_fill(
     val: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
@@ -2253,7 +2254,7 @@ fn lower_memory_copy(
     src: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
@@ -2273,7 +2274,7 @@ fn lower_memory_init(
     src: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
@@ -2286,7 +2287,7 @@ fn lower_memory_init(
 }
 
 fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, data_idx);
@@ -2301,7 +2302,7 @@ fn lower_table_grow(
     init_val: MachineValue,
     delta: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
     let dst_gp = map_gp(self.core.compiled.backend(), dst)?;
 
     self.emit_preserved_frame_open();
@@ -2324,7 +2325,7 @@ fn lower_table_fill(
     val: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, table_idx);
@@ -2343,7 +2344,7 @@ fn lower_table_copy(
     src: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, dst_tbl);
@@ -2363,7 +2364,7 @@ fn lower_table_init(
     src: MachineValue,
     len: MachineValue,
 ) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, table_idx);
@@ -2376,7 +2377,7 @@ fn lower_table_init(
 }
 
 fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
-    use crate::vm::runtime::helpers::{preserved_io, preserved_op};
+
 
     self.emit_preserved_frame_open();
     self.emit_io_store_imm(preserved_io::IMM0, elem_idx);

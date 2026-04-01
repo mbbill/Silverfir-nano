@@ -3051,7 +3051,7 @@ impl<'a> Arm32Backend<'a> {
                 WasmError::internal("armv7a: external-call metadata is out of range".into())
             })?;
 
-        let helper_ptr = crate::vm::runtime::helpers::call_external_entry_ptr() as usize;
+        let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;
 
         // EABI: fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32
         self.core

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
 };
-use crate::vm::runtime::call_contract::NativeLocalCallInfo64;
+use crate::vm::runtime::dispatch_view::NativeLocalCallInfo64;
 
 use super::text_emitter::TextEmitter;
 

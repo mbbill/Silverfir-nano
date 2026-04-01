@@ -17,7 +17,7 @@ use crate::{
         },
         entities::ModuleInst,
         runtime::{
-            call_contract::NativeLocalCallInfo32,
+            dispatch_view::NativeLocalCallInfo32,
             code::{CompiledNativeModule, NativeRootEntry},
         },
     },
