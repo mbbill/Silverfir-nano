@@ -309,28 +309,31 @@ fn lower_jump_table(&mut self,
         return Ok(());
     }
 
-    let s0 = self.gp_scratch.scoped_alloc().release();
-    let s1 = self.gp_scratch.scoped_alloc().release();
+    let s0 = self.gp_scratch.scoped_alloc().detach();
+    let s1 = self.gp_scratch.scoped_alloc().detach();
     let index_reg = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, index,
-    )?.release();
+    )?.detach();
     // Keep C-ABI argument registers out of normal control lowering. `s1`
     // holds the clamped jump-table index first, then the scaled byte offset.
-    self.materialize_u64(s1, (entries.len() - 1) as u64);
-    self.core.text.emit_u32(enc::cmp_reg_64(index_reg, s1));
-    self.core.text.emit_u32(enc::csel_64(s1, index_reg, s1, enc::Cond::Ls));
+    self.materialize_u64(*s1, (entries.len() - 1) as u64);
+    self.core.text.emit_u32(enc::cmp_reg_64(*index_reg, *s1));
+    self.core.text
+        .emit_u32(enc::csel_64(*s1, *index_reg, *s1, enc::Cond::Ls));
 
-    let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-    self.core.text.emit_u32(enc::lsl_imm_64(s1, s1, 3));
-    self.core.text.emit_u32(enc::ldr_reg_64(s0, s0, s1));
-    self.core.text.emit_u32(enc::br(s0));
+    let table_base_load = self.core.text.emit_u32(enc::ldr_lit_64(*s0, 0));
+    self.core.text.emit_u32(enc::lsl_imm_64(*s1, *s1, 3));
+    self.core.text.emit_u32(enc::ldr_reg_64(*s0, *s0, *s1));
+    self.core.text.emit_u32(enc::br(*s0));
 
     let table_base_literal = self.core.text.emit_u64(0);
     let table_offset = self.core.text.len();
     let table_base_delta =
         ((table_base_literal as isize - table_base_load as isize) / 4) as i32;
-    self.core.text.patch_u32(table_base_load, enc::ldr_lit_64(s0, table_base_delta));
+    self.core
+        .text
+        .patch_u32(table_base_load, enc::ldr_lit_64(*s0, table_base_delta));
     self.core.resolved_ptr_patches.push(LocalPtrPatch {
         literal_offset: table_base_literal,
         target_offset: table_offset,

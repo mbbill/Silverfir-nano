@@ -33,7 +33,7 @@ use super::{
     armv7a_i64u_to_f64, armv7a_saturating_trunc, armv7a_sdiv, armv7a_trapping_trunc, armv7a_udiv,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
-    operands::{PreparedFp, PreparedGp},
+    operands::{OwnedPreparedGp, PreparedFp, PreparedGp},
     reg::Arm32Reg,
     select,
 };
@@ -859,14 +859,14 @@ impl<'a> Arm32Backend<'a> {
         }
 
         // GP source
-        let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.release();
+        let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
 
         match width {
             MachineMemWidth::U8 => {
                 emit_store_byte_to(
                     &mut self.core.text,
                     &self.gp_scratch,
-                    src_hw,
+                    *src_hw,
                     base_hw,
                     offset,
                 );
@@ -875,7 +875,7 @@ impl<'a> Arm32Backend<'a> {
                 emit_store_half_to(
                     &mut self.core.text,
                     &self.gp_scratch,
-                    src_hw,
+                    *src_hw,
                     base_hw,
                     offset,
                 );
@@ -884,7 +884,7 @@ impl<'a> Arm32Backend<'a> {
                 emit_store_word_to(
                     &mut self.core.text,
                     &self.gp_scratch,
-                    src_hw,
+                    *src_hw,
                     base_hw,
                     offset,
                 );
@@ -894,7 +894,7 @@ impl<'a> Arm32Backend<'a> {
                 emit_store_word_to(
                     &mut self.core.text,
                     &self.gp_scratch,
-                    src_hw,
+                    *src_hw,
                     base_hw,
                     offset,
                 );
@@ -925,22 +925,23 @@ impl<'a> Arm32Backend<'a> {
         let dst_hw = map_reg(dst)?;
 
         let lhs_hw = match lhs {
-            MachineValue::Reg(r) => map_reg(*r)?,
+            MachineValue::Reg(r) => OwnedPreparedGp::Mapped(map_reg(*r)?),
             MachineValue::Imm64(v) => {
                 // Materialize into a scratch if rhs is a register that could
                 // alias dst_hw.  Writing dst_hw first would clobber rhs.
                 let rhs_aliases_dst =
                     matches!(rhs, MachineValue::Reg(r) if map_reg(*r).ok() == Some(dst_hw));
                 if rhs_aliases_dst {
-                    let s = self.gp_scratch.scoped_alloc();
+                    let s = self.gp_scratch.scoped_alloc().detach();
                     emit_load_u32_into(&mut self.core.text, *s, *v as u32);
-                    s.release()
+                    OwnedPreparedGp::Scratch(s)
                 } else {
                     emit_load_u32_into(&mut self.core.text, dst_hw, *v as u32);
-                    dst_hw
+                    OwnedPreparedGp::Mapped(dst_hw)
                 }
             }
         };
+        let lhs_hw = *lhs_hw;
 
         match op {
             MachineIntBinaryOp::Add => match rhs {
@@ -983,7 +984,7 @@ impl<'a> Arm32Backend<'a> {
                 let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?;
                 self.core
                     .text
-                    .emit_u32(enc::mul(dst_hw, lhs_hw, rhs_gp.reg()));
+                    .emit_u32(enc::mul(dst_hw, lhs_hw, *rhs_gp));
                 drop(rhs_gp);
             }
             MachineIntBinaryOp::And => match rhs {
@@ -1447,10 +1448,10 @@ impl<'a> Arm32Backend<'a> {
                 };
                 self.core
                     .text
-                    .emit_u32(emit(dst_lo_hw, dst_lo_hw, rhs_lo_gp.reg()));
+                    .emit_u32(emit(dst_lo_hw, dst_lo_hw, *rhs_lo_gp));
                 self.core
                     .text
-                    .emit_u32(emit(dst_hi_hw, dst_hi_hw, rhs_hi_gp.reg()));
+                    .emit_u32(emit(dst_hi_hw, dst_hi_hw, *rhs_hi_gp));
                 Ok(())
             }
             other => Err(WasmError::invalid(alloc::format!(
@@ -1488,8 +1489,8 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineIntUnaryOp::Extend8S => {
                 let src_lo_hw =
-                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.release();
-                self.core.text.emit_u32(enc::sxtb(dst_lo_hw, src_lo_hw));
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
+                self.core.text.emit_u32(enc::sxtb(dst_lo_hw, *src_lo_hw));
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
@@ -1498,8 +1499,8 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineIntUnaryOp::Extend16S => {
                 let src_lo_hw =
-                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.release();
-                self.core.text.emit_u32(enc::sxth(dst_lo_hw, src_lo_hw));
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
+                self.core.text.emit_u32(enc::sxth(dst_lo_hw, *src_lo_hw));
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
@@ -1508,9 +1509,9 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineIntUnaryOp::Extend32S => {
                 let src_lo_hw =
-                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.release();
-                if dst_lo_hw != src_lo_hw {
-                    self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, src_lo_hw));
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
+                if dst_lo_hw != *src_lo_hw {
+                    self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, *src_lo_hw));
                 }
                 self.core
                     .text
@@ -1687,7 +1688,7 @@ impl<'a> Arm32Backend<'a> {
         let rhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_hi)?;
         self.core
             .text
-            .emit_u32(enc::cmp_reg(lhs_hi_gp.reg(), rhs_hi_gp.reg()));
+            .emit_u32(enc::cmp_reg(*lhs_hi_gp, *rhs_hi_gp));
         drop(lhs_hi_gp);
         drop(rhs_hi_gp);
 
@@ -1713,7 +1714,7 @@ impl<'a> Arm32Backend<'a> {
         let rhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_lo)?;
         self.core
             .text
-            .emit_u32(enc::cmp_reg(lhs_lo_gp.reg(), rhs_lo_gp.reg()));
+            .emit_u32(enc::cmp_reg(*lhs_lo_gp, *rhs_lo_gp));
         drop(lhs_lo_gp);
         drop(rhs_lo_gp);
 
@@ -1804,7 +1805,7 @@ impl<'a> Arm32Backend<'a> {
             src_width,
             *src,
         )?
-        .release();
+        .detach();
         self.spill_caller_saved_gp_regs();
 
         if src_is_f32 {
@@ -1816,8 +1817,8 @@ impl<'a> Arm32Backend<'a> {
             self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
             self.emit_load_u32(Arm32Reg::R1, 0);
         } else {
-            if src_d != FP_SCRATCH0 {
-                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, src_d));
+            if *src_d != FP_SCRATCH0 {
+                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *src_d));
             }
             self.core
                 .text
@@ -1898,7 +1899,7 @@ impl<'a> Arm32Backend<'a> {
             src_width,
             *src,
         )?
-        .release();
+        .detach();
         let dst_hw = map_reg(dst)?;
         self.spill_caller_saved_gp_regs();
 
@@ -1911,8 +1912,8 @@ impl<'a> Arm32Backend<'a> {
             self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
             self.emit_load_u32(Arm32Reg::R1, 0);
         } else {
-            if src_d != FP_SCRATCH0 {
-                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, src_d));
+            if *src_d != FP_SCRATCH0 {
+                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *src_d));
             }
             self.core
                 .text
@@ -2031,7 +2032,7 @@ impl<'a> Arm32Backend<'a> {
             width,
             *lhs,
         )?
-        .release();
+        .detach();
         let dm = prepare_fp(
             &mut self.core.text,
             &self.gp_scratch,
@@ -2039,34 +2040,34 @@ impl<'a> Arm32Backend<'a> {
             width,
             *rhs,
         )?
-        .release();
+        .detach();
 
         let dd = self.map_fp_dreg(dst)?;
 
         match (width, op) {
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => {
-                self.core.text.emit_u32(enc::vadd_d(dd, dn, dm));
+                self.core.text.emit_u32(enc::vadd_d(dd, *dn, *dm));
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => {
-                self.core.text.emit_u32(enc::vsub_d(dd, dn, dm));
+                self.core.text.emit_u32(enc::vsub_d(dd, *dn, *dm));
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => {
-                self.core.text.emit_u32(enc::vmul_d(dd, dn, dm));
+                self.core.text.emit_u32(enc::vmul_d(dd, *dn, *dm));
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => {
-                self.core.text.emit_u32(enc::vdiv_d(dd, dn, dm));
+                self.core.text.emit_u32(enc::vdiv_d(dd, *dn, *dm));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
-                self.core.text.emit_u32(enc::vadd_s(dd * 2, dn * 2, dm * 2));
+                self.core.text.emit_u32(enc::vadd_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => {
-                self.core.text.emit_u32(enc::vsub_s(dd * 2, dn * 2, dm * 2));
+                self.core.text.emit_u32(enc::vsub_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => {
-                self.core.text.emit_u32(enc::vmul_s(dd * 2, dn * 2, dm * 2));
+                self.core.text.emit_u32(enc::vmul_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => {
-                self.core.text.emit_u32(enc::vdiv_s(dd * 2, dn * 2, dm * 2));
+                self.core.text.emit_u32(enc::vdiv_s(dd * 2, *dn * 2, *dm * 2));
             }
 
             // Min/Max: compare, handle NaN, select
@@ -2239,20 +2240,20 @@ impl<'a> Arm32Backend<'a> {
             width,
             *src,
         )?
-        .release();
+        .detach();
         let dd = self.map_fp_dreg(dst)?;
 
         match (width, op) {
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Abs) => {
-                self.core.text.emit_u32(enc::vabs_d(dd, dm));
+                self.core.text.emit_u32(enc::vabs_d(dd, *dm));
             }
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Neg) => {
-                self.core.text.emit_u32(enc::vneg_d(dd, dm));
+                self.core.text.emit_u32(enc::vneg_d(dd, *dm));
             }
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Ceil) => {
                 self.spill_caller_saved_gp_regs();
-                if dm != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, dm));
+                if *dm != FP_SCRATCH0 {
+                    self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
                 }
                 self.emit_host_call(armv7a_f64_ceil as usize);
                 if dd != FP_SCRATCH0 {
@@ -2377,7 +2378,7 @@ impl<'a> Arm32Backend<'a> {
             width,
             *lhs,
         )?
-        .release();
+        .detach();
         let rhs_d = prepare_fp(
             &mut self.core.text,
             &self.gp_scratch,
@@ -2385,15 +2386,17 @@ impl<'a> Arm32Backend<'a> {
             width,
             *rhs,
         )?
-        .release();
+        .detach();
         let dst_hw = map_reg(dst)?;
 
         match width {
             MachineFloatWidth::F64 => {
-                self.core.text.emit_u32(enc::vcmp_d(lhs_d, rhs_d));
+                self.core.text.emit_u32(enc::vcmp_d(*lhs_d, *rhs_d));
             }
             MachineFloatWidth::F32 => {
-                self.core.text.emit_u32(enc::vcmp_s(lhs_d * 2, rhs_d * 2));
+                self.core
+                    .text
+                    .emit_u32(enc::vcmp_s(*lhs_d * 2, *rhs_d * 2));
             }
         }
         self.core.text.emit_u32(enc::vmrs_apsr());
@@ -2509,14 +2512,14 @@ impl<'a> Arm32Backend<'a> {
                 let dd = self.map_fp_dreg(dst)?;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
                 let sd_tmp = FP_SCRATCH0 * 2;
-                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, src_gp.reg()));
+                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_d_s32(dd, sd_tmp));
             }
             MachineConvertOp::F64ConvertI32U => {
                 let dd = self.map_fp_dreg(dst)?;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
                 let sd_tmp = FP_SCRATCH0 * 2;
-                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, src_gp.reg()));
+                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_d_u32(dd, sd_tmp));
             }
 
@@ -2525,14 +2528,14 @@ impl<'a> Arm32Backend<'a> {
                 let sd = self.map_fp_dreg(dst)? * 2; // S-register
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
                 let sd_tmp = FP_SCRATCH0 * 2;
-                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, src_gp.reg()));
+                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_s_s32(sd, sd_tmp));
             }
             MachineConvertOp::F32ConvertI32U => {
                 let sd = self.map_fp_dreg(dst)? * 2;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
                 let sd_tmp = FP_SCRATCH0 * 2;
-                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, src_gp.reg()));
+                self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_s_u32(sd, sd_tmp));
             }
 
@@ -2546,10 +2549,10 @@ impl<'a> Arm32Backend<'a> {
                     MachineFloatWidth::F32,
                     *src,
                 )?;
-                let mut sm = src_fp.reg() * 2;
-                if src_fp.reg() == dd {
+                let mut sm = *src_fp * 2;
+                if *src_fp == dd {
                     sm = FP_SCRATCH0 * 2;
-                    self.core.text.emit_u32(enc::vmov_s(sm, src_fp.reg() * 2));
+                    self.core.text.emit_u32(enc::vmov_s(sm, *src_fp * 2));
                 }
                 self.core.text.emit_u32(enc::vcvt_d_s(dd, sm));
             }
@@ -2562,10 +2565,10 @@ impl<'a> Arm32Backend<'a> {
                     MachineFloatWidth::F64,
                     *src,
                 )?;
-                let mut dm = src_fp.reg();
+                let mut dm = *src_fp;
                 if dm * 2 == sd {
                     dm = FP_SCRATCH0;
-                    self.core.text.emit_u32(enc::vmov_d(dm, src_fp.reg()));
+                    self.core.text.emit_u32(enc::vmov_d(dm, *src_fp));
                 }
                 self.core.text.emit_u32(enc::vcvt_s_d(sd, dm));
             }
@@ -2576,13 +2579,13 @@ impl<'a> Arm32Backend<'a> {
             // then call a helper that does the conversion.
             MachineConvertOp::F64ConvertI64S => {
                 let dd = self.map_fp_dreg(dst)?;
-                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.release();
+                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
                 self.spill_caller_saved_gp_regs();
                 // R0 = lo, R1 = hi (sign-extend: hi = lo >> 31, arithmetic shift)
-                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
+                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.core
                     .text
-                    .emit_u32(enc::asr_imm(Arm32Reg::R1, src_hw, 31));
+                    .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
                 self.emit_host_call(armv7a_i64s_to_f64 as usize);
                 // Result is in D0 (EABI: f64 returned in D0)
                 if dd != FP_SCRATCH0 {
@@ -2592,10 +2595,10 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineConvertOp::F64ConvertI64U => {
                 let dd = self.map_fp_dreg(dst)?;
-                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.release();
+                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
                 self.spill_caller_saved_gp_regs();
                 // R0 = lo, R1 = 0 (zero-extend)
-                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
+                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
                 self.emit_host_call(armv7a_i64u_to_f64 as usize);
                 if dd != FP_SCRATCH0 {
@@ -2605,12 +2608,12 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineConvertOp::F32ConvertI64S => {
                 let sd = self.map_fp_dreg(dst)? * 2;
-                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.release();
+                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
                 self.spill_caller_saved_gp_regs();
-                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
+                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.core
                     .text
-                    .emit_u32(enc::asr_imm(Arm32Reg::R1, src_hw, 31));
+                    .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
                 self.emit_host_call(armv7a_i64s_to_f32 as usize);
                 // Result in S0 (EABI: f32 returned in S0)
                 let s0 = FP_SCRATCH0 * 2;
@@ -2621,9 +2624,9 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineConvertOp::F32ConvertI64U => {
                 let sd = self.map_fp_dreg(dst)? * 2;
-                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.release();
+                let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
                 self.spill_caller_saved_gp_regs();
-                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, src_hw));
+                self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
                 self.emit_host_call(armv7a_i64u_to_f32 as usize);
                 let s0 = FP_SCRATCH0 * 2;
@@ -2643,13 +2646,13 @@ impl<'a> Arm32Backend<'a> {
                     MachineFloatWidth::F32,
                     *src,
                 )?;
-                let sm = src_fp.reg() * 2;
+                let sm = *src_fp * 2;
                 self.core.text.emit_u32(enc::vmov_r_s(dst_hw, sm));
             }
             MachineConvertOp::F32ReinterpretI32 => {
                 let sd = self.map_fp_dreg(dst)? * 2;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
-                self.core.text.emit_u32(enc::vmov_s_r(sd, src_gp.reg()));
+                self.core.text.emit_u32(enc::vmov_s_r(sd, *src_gp));
             }
             MachineConvertOp::I64ReinterpretF64 => {
                 // F64 (D-reg) → I64 (GP low 32 bits on ARM32)
@@ -2661,7 +2664,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineFloatWidth::F64,
                     *src,
                 )?;
-                let dm = src_fp.reg();
+                let dm = *src_fp;
                 // VMOV Rlo, Rhi, Dm — extract low 32 bits to dst
                 self.core
                     .text
@@ -2705,8 +2708,8 @@ impl<'a> Arm32Backend<'a> {
             let dd = self.map_fp_dreg(dst)?;
 
             // Test condition first
-            let cond_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *condition)?.release();
-            self.core.text.emit_u32(enc::cmp_imm(cond_hw, 0, 0));
+            let cond_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *condition)?.detach();
+            self.core.text.emit_u32(enc::cmp_imm(*cond_hw, 0, 0));
 
             let true_label = self.core.new_label();
             let done_label = self.core.new_label();
@@ -2769,8 +2772,8 @@ impl<'a> Arm32Backend<'a> {
         let dst_hw = map_reg(dst)?;
 
         // Test condition before touching dst so dst == cond is safe.
-        let cond_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *condition)?.release();
-        self.core.text.emit_u32(enc::cmp_imm(cond_hw, 0, 0));
+        let cond_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *condition)?.detach();
+        self.core.text.emit_u32(enc::cmp_imm(*cond_hw, 0, 0));
 
         if Self::gp_value_aliases_dst(self, true_val, dst_hw)? {
             // Loading the false arm first would clobber the live true source when
@@ -2867,7 +2870,7 @@ impl<'a> Arm32Backend<'a> {
         let dst_hw = map_reg(dst)?;
         {
             let lhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs)?;
-            let lhs_hw = lhs_gp.reg();
+            let lhs_hw = *lhs_gp;
             match rhs {
                 MachineValue::Reg(r) => {
                     self.core.text.emit_u32(enc::cmp_reg(lhs_hw, map_reg(*r)?));

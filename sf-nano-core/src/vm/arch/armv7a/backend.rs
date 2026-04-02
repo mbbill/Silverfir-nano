@@ -895,10 +895,10 @@ impl<'a> Arm32Backend<'a> {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
 
         // Load continuation address into scratch (lives until bx)
-        let cont_reg = self.gp_scratch.scoped_alloc().release();
+        let cont_reg = self.gp_scratch.scoped_alloc().detach();
         emit_load_word_into(
             &mut self.core.text,
-            cont_reg,
+            *cont_reg,
             fp_reg,
             (continuation_slot as i32) * 8,
         );

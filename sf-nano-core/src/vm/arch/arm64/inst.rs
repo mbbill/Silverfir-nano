@@ -122,8 +122,8 @@ pub(super) fn prepare_fp<'p>(
     let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
     text.emit_u32(match width {
-        MachineFloatWidth::F32 => enc::fmov_s_from_gp(*fp_scratch, gp.reg()),
-        MachineFloatWidth::F64 => enc::fmov_d_from_gp(*fp_scratch, gp.reg()),
+        MachineFloatWidth::F32 => enc::fmov_s_from_gp(*fp_scratch, *gp),
+        MachineFloatWidth::F64 => enc::fmov_d_from_gp(*fp_scratch, *gp),
     });
     // gp dropped here — GP scratch slot freed immediately
     Ok(PreparedFp::Scratch(fp_scratch))
@@ -197,14 +197,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let lhs = prepare_gp(
             self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, lhs,
-        )?.release();
+        )?;
         let rhs = prepare_gp(
             self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
-        )?.release();
+        )?;
         match width {
-            MachineIntWidth::I32 => self.core.text.emit_u32(enc::cmp_reg_32(lhs, rhs)),
-            MachineIntWidth::I64 => self.core.text.emit_u32(enc::cmp_reg_64(lhs, rhs)),
+            MachineIntWidth::I32 => self.core.text.emit_u32(enc::cmp_reg_32(*lhs, *rhs)),
+            MachineIntWidth::I64 => self.core.text.emit_u32(enc::cmp_reg_64(*lhs, *rhs)),
         };
         Ok(())
     }
@@ -213,15 +213,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
     pub(super) fn lower_tst_values(
         &mut self, width: MachineIntWidth, src: MachineValue, mask: MachineValue,
     ) -> Result<(), WasmError> {
-        let src_phys = match src {
-            MachineValue::Reg(r) => map_gp(self.core.compiled.backend(), r)?,
-            MachineValue::Imm64(imm) => {
-                prepare_gp(
-                    self.core.compiled.backend(), &self.core.fp_reg_widths,
-                    &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
-                )?.release()
-            }
+        let src_gp = match src {
+            MachineValue::Reg(r) => PreparedGp::Mapped(map_gp(self.core.compiled.backend(), r)?),
+            MachineValue::Imm64(imm) => prepare_gp(
+                self.core.compiled.backend(), &self.core.fp_reg_widths,
+                &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
+            )?,
         };
+        let src_phys = *src_gp;
         match mask {
             MachineValue::Imm64(imm) => {
                 let inst = match width {
@@ -234,10 +233,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     let scratch = prepare_gp(
                         self.core.compiled.backend(), &self.core.fp_reg_widths,
                         &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
-                    )?.release();
+                    )?;
                     match width {
-                        MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, scratch)); }
-                        MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, scratch)); }
+                        MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, *scratch)); }
+                        MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, *scratch)); }
                     }
                 }
             }
@@ -796,10 +795,10 @@ addr: MachineAddr,
             let src_reg = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?;
             self.core
                 .text
-                .emit_u32(enc::str_64(src_reg, base, (offset / 8) as u32));
+                .emit_u32(enc::str_64(*src_reg, base, (offset / 8) as u32));
             return Ok(());
         }
     }
@@ -808,12 +807,12 @@ addr: MachineAddr,
     let src_reg = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
-    )?.release();
+    )?;
     let inst = match width {
-        MachineMemWidth::U8 => enc::strb_base(src_reg, addr_scratch),
-        MachineMemWidth::U16 => enc::strh_base(src_reg, addr_scratch),
-        MachineMemWidth::U32 => enc::str_reg_32_base(src_reg, addr_scratch),
-        MachineMemWidth::U64 => enc::str_reg_64_base(src_reg, addr_scratch),
+        MachineMemWidth::U8 => enc::strb_base(*src_reg, addr_scratch),
+        MachineMemWidth::U16 => enc::strh_base(*src_reg, addr_scratch),
+        MachineMemWidth::U32 => enc::str_reg_32_base(*src_reg, addr_scratch),
+        MachineMemWidth::U64 => enc::str_reg_64_base(*src_reg, addr_scratch),
     };
     self.core.text.emit_u32(inst);
     Ok(())
@@ -1030,7 +1029,8 @@ base_reg: MachineReg,
     let src_reg = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
-    )?.release();
+    )?;
+    let src_reg = *src_reg;
     let inst = match width {
         MachineMemWidth::U8 => {
             if uxtw { enc::strb_reg_uxtw(src_reg, base, index) }
@@ -1093,12 +1093,12 @@ base_reg: MachineReg,
     let src_arm = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
-    )?.release();
+    )?;
     let inst = match width {
-        MachineMemWidth::U8 => enc::strb_reg(src_arm, base_arm, idx_scratch),
-        MachineMemWidth::U16 => enc::strh_reg(src_arm, base_arm, idx_scratch),
-        MachineMemWidth::U32 => enc::str_reg_32(src_arm, base_arm, idx_scratch),
-        MachineMemWidth::U64 => enc::str_reg_64(src_arm, base_arm, idx_scratch),
+        MachineMemWidth::U8 => enc::strb_reg(*src_arm, base_arm, idx_scratch),
+        MachineMemWidth::U16 => enc::strh_reg(*src_arm, base_arm, idx_scratch),
+        MachineMemWidth::U32 => enc::str_reg_32(*src_arm, base_arm, idx_scratch),
+        MachineMemWidth::U64 => enc::str_reg_64(*src_arm, base_arm, idx_scratch),
     };
     self.core.text.emit_u32(inst);
     Ok(())
@@ -1116,64 +1116,64 @@ width: MachineIntWidth,
     let src = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
-    )?.release();
+    )?;
     match (width, op) {
         (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => {
-            self.core.text.emit_u32(enc::cmp_zero_32(src));
+            self.core.text.emit_u32(enc::cmp_zero_32(*src));
             self.core.text.emit_u32(enc::cset_32(dst, enc::Cond::Eq));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => {
-            self.core.text.emit_u32(enc::cmp_zero_64(src));
+            self.core.text.emit_u32(enc::cmp_zero_64(*src));
             self.core.text.emit_u32(enc::cset_64(dst, enc::Cond::Eq));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Clz) => {
-            self.core.text.emit_u32(enc::clz_32(dst, src));
+            self.core.text.emit_u32(enc::clz_32(dst, *src));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Clz) => {
-            self.core.text.emit_u32(enc::clz_64(dst, src));
+            self.core.text.emit_u32(enc::clz_64(dst, *src));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Extend8S) => {
-            self.core.text.emit_u32(enc::sxtb_32(dst, src));
+            self.core.text.emit_u32(enc::sxtb_32(dst, *src));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Extend16S) => {
-            self.core.text.emit_u32(enc::sxth_32(dst, src));
+            self.core.text.emit_u32(enc::sxth_32(dst, *src));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Extend8S) => {
-            self.core.text.emit_u32(enc::sxtb_64(dst, src));
+            self.core.text.emit_u32(enc::sxtb_64(dst, *src));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Extend16S) => {
-            self.core.text.emit_u32(enc::sxth_64(dst, src));
+            self.core.text.emit_u32(enc::sxth_64(dst, *src));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Extend32S) => {
-            self.core.text.emit_u32(enc::sxtw(dst, src));
+            self.core.text.emit_u32(enc::sxtw(dst, *src));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Ctz) => {
-            self.core.text.emit_u32(enc::rbit_32(dst, src));
+            self.core.text.emit_u32(enc::rbit_32(dst, *src));
             self.core.text.emit_u32(enc::clz_32(dst, dst));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Ctz) => {
-            self.core.text.emit_u32(enc::rbit_64(dst, src));
+            self.core.text.emit_u32(enc::rbit_64(dst, *src));
             self.core.text.emit_u32(enc::clz_64(dst, dst));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Popcnt) => {
             // FMOV D0, X_src (move GP to FP); CNT V0.8B; ADDV B0; UMOV Wd, V0.B[0]
             let fp_scratch = self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, src));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, *src));
             self.core.text.emit_u32(enc::cnt_8b(*fp_scratch, *fp_scratch));
             self.core.text.emit_u32(enc::addv_8b(*fp_scratch, *fp_scratch));
             self.core.text.emit_u32(enc::umov_b0(dst, *fp_scratch));
         }
         (MachineIntWidth::I64, MachineIntUnaryOp::Popcnt) => {
             let fp_scratch = self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, src));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, *src));
             self.core.text.emit_u32(enc::cnt_8b(*fp_scratch, *fp_scratch));
             self.core.text.emit_u32(enc::addv_8b(*fp_scratch, *fp_scratch));
             self.core.text.emit_u32(enc::umov_b0(dst, *fp_scratch));
         }
         (MachineIntWidth::I32, MachineIntUnaryOp::Extend32S) => {
             // i32.extend32_s is a nop (already 32-bit)
-            if dst != src {
-                self.core.text.emit_u32(enc::mov_reg_64(dst, src));
+            if dst != *src {
+                self.core.text.emit_u32(enc::mov_reg_64(dst, *src));
             }
         }
     }
@@ -1220,115 +1220,119 @@ width: MachineIntWidth,
     let lhs = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, lhs,
-    )?.release();
+    )?.detach();
     let rhs = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, rhs,
-    )?.release();
+    )?.detach();
     match (width, op) {
         (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
-            self.core.text.emit_u32(enc::add_reg_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::add_reg_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Add) => {
-            self.core.text.emit_u32(enc::add_reg_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::add_reg_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
-            self.core.text.emit_u32(enc::sub_reg_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::sub_reg_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => {
-            self.core.text.emit_u32(enc::sub_reg_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::sub_reg_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Mul) => {
-            self.core.text.emit_u32(enc::mul_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::mul_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Mul) => {
-            self.core.text.emit_u32(enc::mul_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::mul_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::And) => {
-            self.core.text.emit_u32(enc::and_reg_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::and_reg_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::And) => {
-            self.core.text.emit_u32(enc::and_reg_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::and_reg_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Or) => {
-            self.core.text.emit_u32(enc::orr_reg_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::orr_reg_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Or) => {
-            self.core.text.emit_u32(enc::orr_reg_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::orr_reg_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => {
-            self.core.text.emit_u32(enc::eor_reg_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::eor_reg_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => {
-            self.core.text.emit_u32(enc::eor_reg_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::eor_reg_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => {
-            self.core.text.emit_u32(enc::lslv_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::lslv_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => {
-            self.core.text.emit_u32(enc::lslv_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::lslv_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => {
-            self.core.text.emit_u32(enc::asrv_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::asrv_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => {
-            self.core.text.emit_u32(enc::asrv_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::asrv_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => {
-            self.core.text.emit_u32(enc::lsrv_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::lsrv_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => {
-            self.core.text.emit_u32(enc::lsrv_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::lsrv_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => {
-            self.core.text.emit_u32(enc::rorv_32(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::rorv_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Rotr) => {
-            self.core.text.emit_u32(enc::rorv_64(dst, lhs, rhs));
+            self.core.text.emit_u32(enc::rorv_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
             // rotl(x, n) = rotr(x, -n)
             let neg_dst = *self.gp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::neg_reg_32(neg_dst, rhs));
-            self.core.text.emit_u32(enc::rorv_32(dst, lhs, neg_dst));
+            self.core.text.emit_u32(enc::neg_reg_32(neg_dst, *rhs));
+            self.core.text.emit_u32(enc::rorv_32(dst, *lhs, neg_dst));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
             let neg_dst = *self.gp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::neg_reg_64(neg_dst, rhs));
-            self.core.text.emit_u32(enc::rorv_64(dst, lhs, neg_dst));
+            self.core.text.emit_u32(enc::neg_reg_64(neg_dst, *rhs));
+            self.core.text.emit_u32(enc::rorv_64(dst, *lhs, neg_dst));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::DivS) => {
-            self.lower_div_s_32(dst, lhs, rhs);
+            self.lower_div_s_32(dst, *lhs, *rhs);
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::DivS) => {
-            self.lower_div_s_64(dst, lhs, rhs);
+            self.lower_div_s_64(dst, *lhs, *rhs);
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::DivU) => {
-            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I32);
-            self.core.text.emit_u32(enc::udiv_32(dst, lhs, rhs));
+            self.lower_div_u_check(*lhs, *rhs, MachineIntWidth::I32);
+            self.core.text.emit_u32(enc::udiv_32(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::DivU) => {
-            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I64);
-            self.core.text.emit_u32(enc::udiv_64(dst, lhs, rhs));
+            self.lower_div_u_check(*lhs, *rhs, MachineIntWidth::I64);
+            self.core.text.emit_u32(enc::udiv_64(dst, *lhs, *rhs));
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::RemS) => {
-            self.lower_rem_s_32(dst, lhs, rhs);
+            self.lower_rem_s_32(dst, *lhs, *rhs);
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::RemS) => {
-            self.lower_rem_s_64(dst, lhs, rhs);
+            self.lower_rem_s_64(dst, *lhs, *rhs);
         }
         (MachineIntWidth::I32, MachineIntBinaryOp::RemU) => {
-            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I32);
+            self.lower_div_u_check(*lhs, *rhs, MachineIntWidth::I32);
             // rem = lhs - (lhs / rhs) * rhs
             let tmp = *self.gp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::udiv_32(tmp, lhs, rhs));
-            self.core.text.emit_u32(enc::msub_32(dst, tmp, rhs, lhs));
+            self.core.text.emit_u32(enc::udiv_32(tmp, *lhs, *rhs));
+            self.core
+                .text
+                .emit_u32(enc::msub_32(dst, tmp, *rhs, *lhs));
         }
         (MachineIntWidth::I64, MachineIntBinaryOp::RemU) => {
-            self.lower_div_u_check(lhs, rhs, MachineIntWidth::I64);
+            self.lower_div_u_check(*lhs, *rhs, MachineIntWidth::I64);
             let tmp = *self.gp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::udiv_64(tmp, lhs, rhs));
-            self.core.text.emit_u32(enc::msub_64(dst, tmp, rhs, lhs));
+            self.core.text.emit_u32(enc::udiv_64(tmp, *lhs, *rhs));
+            self.core
+                .text
+                .emit_u32(enc::msub_64(dst, tmp, *rhs, *lhs));
         }
     };
     Ok(())
@@ -1545,10 +1549,10 @@ width: MachineIntWidth,
                 let scratch = prepare_gp(
                     self.core.compiled.backend(), &self.core.fp_reg_widths,
                     &mut self.core.text, &self.gp_scratch, MachineValue::Imm64(imm),
-                )?.release();
+                )?;
                 match width {
-                    MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, scratch)); }
-                    MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, scratch)); }
+                    MachineIntWidth::I32 => { self.core.text.emit_u32(enc::tst_reg_32(src_phys, *scratch)); }
+                    MachineIntWidth::I64 => { self.core.text.emit_u32(enc::tst_reg_64(src_phys, *scratch)); }
                 }
             }
         }
@@ -1607,8 +1611,8 @@ ty: MachineStorageType,
                     .text
                     .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
                 self.core.text.emit_u32(match width {
-                    MachineFloatWidth::F32 => enc::fcsel_s(dst_fp, true_fp.reg(), false_fp.reg(), enc::Cond::Ne),
-                    MachineFloatWidth::F64 => enc::fcsel_d(dst_fp, true_fp.reg(), false_fp.reg(), enc::Cond::Ne),
+                    MachineFloatWidth::F32 => enc::fcsel_s(dst_fp, *true_fp, *false_fp, enc::Cond::Ne),
+                    MachineFloatWidth::F64 => enc::fcsel_d(dst_fp, *true_fp, *false_fp, enc::Cond::Ne),
                 });
                 self.core.set_fp_reg_width(dst, width)?;
                 Ok(())
@@ -1623,8 +1627,8 @@ ty: MachineStorageType,
                     self.core.compiled.backend(), &self.core.fp_reg_widths,
                     &mut self.core.text, &self.gp_scratch, selected,
                 )?;
-                if dst != src.reg() {
-                    self.core.text.emit_u32(enc::mov_reg_64(dst, src.reg()));
+                if dst != *src {
+                    self.core.text.emit_u32(enc::mov_reg_64(dst, *src));
                 }
                 return Ok(());
             }
@@ -1646,7 +1650,7 @@ ty: MachineStorageType,
         // and refs need full 64-bit values preserved (e.g. null sentinel).
         self.core
             .text
-            .emit_u32(enc::csel_64(dst, true_reg.reg(), false_reg.reg(), enc::Cond::Ne));
+            .emit_u32(enc::csel_64(dst, *true_reg, *false_reg, enc::Cond::Ne));
         Ok(())
     }
 }
@@ -1663,7 +1667,7 @@ width: MachineFloatWidth,
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, src,
-    )?.release();
+    )?.detach();
     let result_fp = if self.core.is_fp_reg(dst) {
         let dst_fp = self.map_fp_reg(dst)?;
         self.core.set_fp_reg_width(dst, width)?;
@@ -1674,46 +1678,46 @@ width: MachineFloatWidth,
     // Perform the FP operation
     match (width, op) {
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Abs) => {
-            self.core.text.emit_u32(enc::fabs_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fabs_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Abs) => {
-            self.core.text.emit_u32(enc::fabs_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fabs_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Neg) => {
-            self.core.text.emit_u32(enc::fneg_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fneg_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Neg) => {
-            self.core.text.emit_u32(enc::fneg_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fneg_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Sqrt) => {
-            self.core.text.emit_u32(enc::fsqrt_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fsqrt_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Sqrt) => {
-            self.core.text.emit_u32(enc::fsqrt_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::fsqrt_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Ceil) => {
-            self.core.text.emit_u32(enc::frintp_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintp_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Ceil) => {
-            self.core.text.emit_u32(enc::frintp_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintp_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Floor) => {
-            self.core.text.emit_u32(enc::frintm_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintm_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Floor) => {
-            self.core.text.emit_u32(enc::frintm_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintm_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Trunc) => {
-            self.core.text.emit_u32(enc::frintz_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintz_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Trunc) => {
-            self.core.text.emit_u32(enc::frintz_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintz_d(result_fp, *src_fp))
         }
         (MachineFloatWidth::F32, MachineFloatUnaryOp::Nearest) => {
-            self.core.text.emit_u32(enc::frintn_s(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintn_s(result_fp, *src_fp))
         }
         (MachineFloatWidth::F64, MachineFloatUnaryOp::Nearest) => {
-            self.core.text.emit_u32(enc::frintn_d(result_fp, src_fp))
+            self.core.text.emit_u32(enc::frintn_d(result_fp, *src_fp))
         }
     };
     if !self.core.is_fp_reg(dst) {
@@ -1741,12 +1745,12 @@ width: MachineFloatWidth,
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, lhs,
-    )?.release();
+    )?.detach();
     let rhs_fp = prepare_fp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
         width, rhs,
-    )?.release();
+    )?.detach();
     let result_fp = if self.core.is_fp_reg(dst) {
         let dst_fp = self.map_fp_reg(dst)?;
         self.core.set_fp_reg_width(dst, width)?;
@@ -1756,75 +1760,77 @@ width: MachineFloatWidth,
     };
     match (width, op) {
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
-            self.core.text.emit_u32(enc::fadd_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_s(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Add) => {
-            self.core.text.emit_u32(enc::fadd_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_d(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => {
-            self.core.text.emit_u32(enc::fsub_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fsub_s(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Sub) => {
-            self.core.text.emit_u32(enc::fsub_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fsub_d(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => {
-            self.core.text.emit_u32(enc::fmul_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmul_s(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Mul) => {
-            self.core.text.emit_u32(enc::fmul_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmul_d(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => {
-            self.core.text.emit_u32(enc::fdiv_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fdiv_s(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Div) => {
-            self.core.text.emit_u32(enc::fdiv_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fdiv_d(result_fp, *lhs_fp, *rhs_fp));
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Min) => {
             // Wasm fmin: NaN if either is NaN. ARM64 FMIN returns non-NaN operand.
-            self.core.text.emit_u32(enc::fmin_s(result_fp, lhs_fp, rhs_fp));
-            self.core.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmin_s(result_fp, *lhs_fp, *rhs_fp));
+            self.core.text.emit_u32(enc::fcmp_s(*lhs_fp, *rhs_fp));
             let done = self.core.new_label();
             self.lower_b_cond(enc::Cond::Vc, done); // no NaN => FMIN result is correct
             // NaN case: FADD produces NaN from NaN input
-            self.core.text.emit_u32(enc::fadd_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_s(result_fp, *lhs_fp, *rhs_fp));
             self.core.bind_label(done);
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Min) => {
-            self.core.text.emit_u32(enc::fmin_d(result_fp, lhs_fp, rhs_fp));
-            self.core.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmin_d(result_fp, *lhs_fp, *rhs_fp));
+            self.core.text.emit_u32(enc::fcmp_d(*lhs_fp, *rhs_fp));
             let done = self.core.new_label();
             self.lower_b_cond(enc::Cond::Vc, done);
-            self.core.text.emit_u32(enc::fadd_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_d(result_fp, *lhs_fp, *rhs_fp));
             self.core.bind_label(done);
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Max) => {
-            self.core.text.emit_u32(enc::fmax_s(result_fp, lhs_fp, rhs_fp));
-            self.core.text.emit_u32(enc::fcmp_s(lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmax_s(result_fp, *lhs_fp, *rhs_fp));
+            self.core.text.emit_u32(enc::fcmp_s(*lhs_fp, *rhs_fp));
             let done = self.core.new_label();
             self.lower_b_cond(enc::Cond::Vc, done);
-            self.core.text.emit_u32(enc::fadd_s(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_s(result_fp, *lhs_fp, *rhs_fp));
             self.core.bind_label(done);
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Max) => {
-            self.core.text.emit_u32(enc::fmax_d(result_fp, lhs_fp, rhs_fp));
-            self.core.text.emit_u32(enc::fcmp_d(lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fmax_d(result_fp, *lhs_fp, *rhs_fp));
+            self.core.text.emit_u32(enc::fcmp_d(*lhs_fp, *rhs_fp));
             let done = self.core.new_label();
             self.lower_b_cond(enc::Cond::Vc, done);
-            self.core.text.emit_u32(enc::fadd_d(result_fp, lhs_fp, rhs_fp));
+            self.core.text.emit_u32(enc::fadd_d(result_fp, *lhs_fp, *rhs_fp));
             self.core.bind_label(done);
         }
         (MachineFloatWidth::F32, MachineFloatBinaryOp::Copysign) => {
             // copysign: magnitude of lhs, sign of rhs
             let neg_fp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fabs_s(result_fp, lhs_fp)); // |lhs|
+            self.core.text.emit_u32(enc::fabs_s(result_fp, *lhs_fp)); // |lhs|
             self.core.text.emit_u32(enc::fneg_s(neg_fp, result_fp)); // -|lhs|
             let rhs_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, rhs,
-            )?.release();
+            )?.detach();
             let shift_reg = *self.gp_scratch.scoped_alloc();
             self.materialize_u64(shift_reg, 31);
-            self.core.text.emit_u32(enc::lsrv_64(shift_reg, rhs_gp, shift_reg));
+            self.core
+                .text
+                .emit_u32(enc::lsrv_64(shift_reg, *rhs_gp, shift_reg));
             self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
             self.core
                 .text
@@ -1832,15 +1838,17 @@ width: MachineFloatWidth,
         }
         (MachineFloatWidth::F64, MachineFloatBinaryOp::Copysign) => {
             let neg_fp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fabs_d(result_fp, lhs_fp));
+            self.core.text.emit_u32(enc::fabs_d(result_fp, *lhs_fp));
             self.core.text.emit_u32(enc::fneg_d(neg_fp, result_fp));
             let rhs_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, rhs,
-            )?.release();
+            )?.detach();
             let shift_reg = *self.gp_scratch.scoped_alloc();
             self.materialize_u64(shift_reg, 63);
-            self.core.text.emit_u32(enc::lsrv_64(shift_reg, rhs_gp, shift_reg));
+            self.core
+                .text
+                .emit_u32(enc::lsrv_64(shift_reg, *rhs_gp, shift_reg));
             self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
             self.core
                 .text
@@ -1876,8 +1884,8 @@ width: MachineFloatWidth,
     )?;
     if matches!(rhs, MachineValue::Imm64(0)) {
         match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s_zero(lhs_fp.reg())),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d_zero(lhs_fp.reg())),
+            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s_zero(*lhs_fp)),
+            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d_zero(*lhs_fp)),
         };
     } else {
         let rhs_fp = prepare_fp(
@@ -1886,8 +1894,8 @@ width: MachineFloatWidth,
             width, rhs,
         )?;
         match width {
-            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s(lhs_fp.reg(), rhs_fp.reg())),
-            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d(lhs_fp.reg(), rhs_fp.reg())),
+            MachineFloatWidth::F32 => self.core.text.emit_u32(enc::fcmp_s(*lhs_fp, *rhs_fp)),
+            MachineFloatWidth::F64 => self.core.text.emit_u32(enc::fcmp_d(*lhs_fp, *rhs_fp)),
         };
     }
     // Wasm float comparisons: unordered (NaN) => false for all except Ne
@@ -1926,34 +1934,34 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_gp = self.map_gp_reg(dst)?;
-            self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
+            self.core.text.emit_u32(enc::mov_reg_32(dst_gp, *src_gp));
         }
         MachineConvertOp::I64ExtendI32S => {
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_gp = self.map_gp_reg(dst)?;
-            self.core.text.emit_u32(enc::sxtw(dst_gp, src_gp));
+            self.core.text.emit_u32(enc::sxtw(dst_gp, *src_gp));
         }
         MachineConvertOp::I64ExtendI32U => {
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_gp = self.map_gp_reg(dst)?;
-            self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
+            self.core.text.emit_u32(enc::mov_reg_32(dst_gp, *src_gp));
         }
         MachineConvertOp::I32ReinterpretF32 => {
             let dst_gp = self.map_gp_reg(dst)?;
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
-            if dst_gp != src_gp {
-                self.core.text.emit_u32(enc::mov_reg_32(dst_gp, src_gp));
+            )?.detach();
+            if dst_gp != *src_gp {
+                self.core.text.emit_u32(enc::mov_reg_32(dst_gp, *src_gp));
             }
         }
         MachineConvertOp::I64ReinterpretF64 => {
@@ -1961,25 +1969,25 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
-            if dst_gp != src_gp {
-                self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
+            )?.detach();
+            if dst_gp != *src_gp {
+                self.core.text.emit_u32(enc::mov_reg_64(dst_gp, *src_gp));
             }
         }
         MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let width = dst_float_width.expect("float reinterpret width");
             let dst_fp = self.resolve_convert_fp_dst(dst, width)?;
             self.core.text.emit_u32(match width {
-                MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, src_gp),
-                MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, src_gp),
+                MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, *src_gp),
+                MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, *src_gp),
             });
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
-                self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
+                self.core.text.emit_u32(enc::mov_reg_64(dst_gp, *src_gp));
             }
         }
         // Float promotion / demotion
@@ -1988,9 +1996,9 @@ op: MachineConvertOp,
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 MachineFloatWidth::F32, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
-            self.core.text.emit_u32(enc::fcvt_d_from_s(dst_fp, src_fp));
+            self.core.text.emit_u32(enc::fcvt_d_from_s(dst_fp, *src_fp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -2001,9 +2009,9 @@ op: MachineConvertOp,
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 MachineFloatWidth::F64, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
-            self.core.text.emit_u32(enc::fcvt_s_from_d(dst_fp, src_fp));
+            self.core.text.emit_u32(enc::fcvt_s_from_d(dst_fp, *src_fp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -2014,9 +2022,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
-            self.core.text.emit_u32(enc::scvtf_s_32(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::scvtf_s_32(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -2026,9 +2034,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
-            self.core.text.emit_u32(enc::ucvtf_s_32(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::ucvtf_s_32(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -2038,9 +2046,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
-            self.core.text.emit_u32(enc::scvtf_s_64(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::scvtf_s_64(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -2050,9 +2058,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F32)?;
-            self.core.text.emit_u32(enc::ucvtf_s_64(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::ucvtf_s_64(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, dst_fp));
@@ -2062,9 +2070,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
-            self.core.text.emit_u32(enc::scvtf_d_32(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::scvtf_d_32(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -2074,9 +2082,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
-            self.core.text.emit_u32(enc::ucvtf_d_32(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::ucvtf_d_32(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -2086,9 +2094,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
-            self.core.text.emit_u32(enc::scvtf_d_64(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::scvtf_d_64(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -2098,9 +2106,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let dst_fp = self.resolve_convert_fp_dst(dst, MachineFloatWidth::F64)?;
-            self.core.text.emit_u32(enc::ucvtf_d_64(dst_fp, src_gp));
+            self.core.text.emit_u32(enc::ucvtf_d_64(dst_fp, *src_gp));
             if !self.core.is_fp_reg(dst) {
                 let dst_gp = self.map_gp_reg(dst)?;
                 self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, dst_fp));
@@ -2125,9 +2133,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_32_s(dst_gp, fp_tmp));
         }
@@ -2135,9 +2143,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_32_s(dst_gp, fp_tmp));
         }
@@ -2145,9 +2153,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_32_d(dst_gp, fp_tmp));
         }
@@ -2155,9 +2163,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_32_d(dst_gp, fp_tmp));
         }
@@ -2165,9 +2173,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_64_s(dst_gp, fp_tmp));
         }
@@ -2175,9 +2183,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_s_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_64_s(dst_gp, fp_tmp));
         }
@@ -2185,9 +2193,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzs_64_d(dst_gp, fp_tmp));
         }
@@ -2195,9 +2203,9 @@ op: MachineConvertOp,
             let src_gp = prepare_gp(
                 self.core.compiled.backend(), &self.core.fp_reg_widths,
                 &mut self.core.text, &self.gp_scratch, src,
-            )?.release();
+            )?.detach();
             let fp_tmp = *self.fp_scratch.scoped_alloc();
-            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, src_gp));
+            self.core.text.emit_u32(enc::fmov_d_from_gp(fp_tmp, *src_gp));
             let dst_gp = self.map_gp_reg(dst)?;
             self.core.text.emit_u32(enc::fcvtzu_64_d(dst_gp, fp_tmp));
         }
@@ -2404,11 +2412,11 @@ fn lower_trapping_trunc(
     let src_gp = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, src,
-    )?.release();
+    )?.detach();
     self.core.text.emit_u32(if spec.src_f32 {
-        enc::fmov_s_from_gp(src_fp, src_gp)
+        enc::fmov_s_from_gp(src_fp, *src_gp)
     } else {
-        enc::fmov_d_from_gp(src_fp, src_gp)
+        enc::fmov_d_from_gp(src_fp, *src_gp)
     });
 
     // 1. NaN check: FCMP src, src — NaN ≠ NaN sets V flag.

@@ -91,16 +91,16 @@ pub(super) fn lower_terminator_dispatch(
             }
 
             // Clamp index to entries.len()-1
-            let index_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *index)?.release();
+            let index_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *index)?.detach();
             let max_idx = (entries.len() - 1) as u32;
             {
                 let clamp = self.gp_scratch.scoped_alloc();
                 emit_load_u32_into(&mut self.core.text, *clamp, max_idx);
-                self.core.text.emit_u32(enc::cmp_reg(index_hw, *clamp));
+                self.core.text.emit_u32(enc::cmp_reg(*index_hw, *clamp));
                 // If index > max, use max (conditional move)
                 self.core
                     .text
-                    .emit_u32(enc::mov_reg_cond(Cond::Hi, index_hw, *clamp));
+                    .emit_u32(enc::mov_reg_cond(Cond::Hi, *index_hw, *clamp));
             }
 
             // Emit edge stubs and collect their labels
@@ -116,7 +116,7 @@ pub(super) fn lower_terminator_dispatch(
             self.core.text.emit_u32(enc::add_reg_lsl_imm(
                 Arm32Reg::R15,
                 Arm32Reg::R15,
-                index_hw,
+                *index_hw,
                 2,
             ));
             self.core.text.emit_u32(enc::nop());
@@ -139,8 +139,8 @@ pub(super) fn compile_branch_condition(
     match cond {
         MachineBranchCond::Value(value) => {
             // Branch taken if value != 0
-            let hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *value)?.release();
-            self.core.text.emit_u32(enc::cmp_imm(hw, 0, 0));
+            let hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *value)?.detach();
+            self.core.text.emit_u32(enc::cmp_imm(*hw, 0, 0));
             Ok(Cond::Ne)
         }
 
@@ -152,7 +152,7 @@ pub(super) fn compile_branch_condition(
             rhs,
         } => {
             let lhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs)?;
-            let lhs_hw = lhs_gp.reg();
+            let lhs_hw = *lhs_gp;
 
             match rhs {
                 MachineValue::Reg(r) => {

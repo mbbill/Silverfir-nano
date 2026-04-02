@@ -479,7 +479,8 @@ Main code:
 - `sf-nano-core/src/vm/machine/lower_inst.rs`
 - `sf-nano-core/src/vm/machine/lower_leaf_arith.rs`
 - `sf-nano-core/src/vm/machine/lower_leaf_special.rs`
-- `sf-nano-core/src/vm/machine/lower_boundary.rs`
+- `sf-nano-core/src/vm/machine/lower_call.rs`
+- `sf-nano-core/src/vm/machine/lower_const_pool.rs`
 - `sf-nano-core/src/vm/machine/gp32/lower_leaf.rs`
 - `sf-nano-core/src/vm/machine/lower_i64_gp64.rs`
 
@@ -863,10 +864,14 @@ steps that do not fit a single generic branch condition.
 Main code:
 
 - `sf-nano-core/src/vm/arch/common/pipeline.rs`
+- `sf-nano-core/src/vm/arch/common/scratch_pool.rs`
+- `sf-nano-core/src/vm/arch/abi.md`
 - `sf-nano-core/src/vm/arch/common/core.rs`
 - `sf-nano-core/src/vm/arch/arm64/*`
 - `sf-nano-core/src/vm/arch/armv7a/*`
 - `sf-nano-core/src/vm/arch/x86_64/*`
+- `sf-nano-core/src/vm/runtime/external/*`
+- `sf-nano-core/src/vm/runtime/preserved/*`
 
 This stage is late by design. The shared pipeline keeps enough semantic shape
 alive so each backend can choose the best encoding at the last responsible
@@ -879,6 +884,169 @@ The prologue loads the pinned runtime state (`ctx`, `fp`, `mem0_base`,
 
 That makes subsequent memory and runtime access cheaper without repeating setup
 inside the body.
+
+### Native lowering invariants
+
+This stage is also where the backend ownership rules matter most. These rules
+exist to keep native lowering honest: the backend is selecting encodings, not
+reinterpreting MachineIR liveness or inventing a second register allocator.
+
+Shared ABI background lives in `sf-nano-core/src/vm/arch/abi.md`. The rules
+below are the practical coding invariants that current native backends are
+expected to follow.
+
+#### 1. MachineIR register classes are not interchangeable
+
+- Fixed MachineIR registers (`ctx`, `fp`, `mem0_base`, `mem0_size`) are always
+  live machine state. They are never free temporaries.
+- Cached-local registers are register views of canonical frame-slot locals.
+  They are an optimization, not disposable scratch.
+- Transient registers are MachineIR-owned SSA values. If the backend clobbers
+  them outside the agreed boundary protocol, it is corrupting JIT state.
+- Scratch-only registers are the backend's real temp pool. If an operation
+  needs an ad hoc temporary, it must come from scratch allocation rather than
+  from a mapped transient or cached-local register.
+
+The practical consequence is simple: backend lowering must not treat "any
+caller-saved physical register" as free. Only registers that the backend's
+`abi.rs` marks as scratch are free backend temps.
+
+#### 2. Frame slots remain the canonical state
+
+Frame slots are the source of truth for:
+
+- locals
+- spilled deep-stack values
+- call arguments and results
+- local call-link records
+
+Registers are only execution caches over that frame state. This is what makes
+the boundary rules safe:
+
+- MachineIR can publish cached locals before a boundary
+- local calls can reuse the caller operand region as callee frame prefix
+- external calls can read and write frame spans directly
+- preserved helpers can save caller-clobbered JIT state and then operate on a
+  native-stack I/O window
+
+If a backend ever relies on a cached local or transient being the only copy of
+some value at a boundary, the design has already been violated.
+
+#### 3. Scratch registers must come from the scratch pool
+
+`sf-nano-core/src/vm/arch/common/scratch_pool.rs` is the ownership mechanism
+for backend scratch use.
+
+Use it this way:
+
+- Prefer `scoped_alloc()` for local, lexical scratch use.
+- Use `detach()` when a scratch reservation must survive later `&mut self`
+  emission calls but should still free itself by RAII.
+- Use `alloc()` / `reg()` / `free_index()` only for the rare cases that
+  genuinely need manual protocol-scoped ownership.
+
+The important invariant is that "keep using this register after the lexical
+guard ends" must still keep the pool slot reserved somehow. That is exactly
+what `detach()` and the explicit `alloc/free_index()` path are for.
+
+Backends should also keep the pool honest by calling `assert_all_free()`
+between instructions, so leaks or accidental long-lived scratch capture fail
+early in debug builds.
+
+#### 4. Regular lowering must not spell physical registers directly
+
+Higher-level backend lowering should work in terms of:
+
+- mapped MachineIR registers
+- scratch-pool allocations
+- semantic encoder helpers
+
+not in terms of hard-coded physical register names.
+
+ARM64 is the current example of the intended structure:
+
+- the physical register plan lives in `sf-nano-core/src/vm/arch/arm64/abi.rs`
+- raw register construction is hidden there
+- lowering code gets temps from the scratch pool
+- zero/SP-like forms are expressed through semantic helpers instead of raw
+  register spellings
+
+This rule prevents a subtle but recurring class of bugs where backend code
+"borrows" a register that is actually part of the mapped MachineIR register
+file.
+
+#### 5. Foreign ABI registers are boundary-only
+
+Registers such as `C_ARG*` and `C_RET*` are foreign ABI facts, not extra
+MachineIR register classes.
+
+They may overlap caller-saved transient or scratch registers, but that overlap
+is only safe at the actual foreign boundary, after MachineIR has already made
+dynamic state unavailable there.
+
+That means:
+
+- regular lowering must not use `C_ARG*` / `C_RET*` as general temps
+- external-call lowering may use them while entering the runtime external-call
+  entry
+- preserved-helper lowering may use them while entering the preserved runtime
+  entry
+- once the boundary sequence ends, those registers go back to being ordinary
+  physical registers with no special backend privilege
+
+This is why ARM64 `X0` / `X1` / `X2` are dangerous outside real runtime-call
+glue even though the ISA itself would let the backend use them freely.
+
+#### 6. External calls and preserved helpers are different boundary systems
+
+The current JIT intentionally keeps two runtime boundary systems:
+
+- External-call system:
+  - triggered only by Wasm `call` / `call_indirect` that resolve to external
+    handlers
+  - lowered by MachineIR as an inline runtime call
+  - uses frame slots as its argument/result transport
+  - implemented under `sf-nano-core/src/vm/runtime/external/`
+- Preserved-helper system:
+  - triggered by engine-internal helper-backed operations such as
+    `memory.grow`, `memory.copy`, `table.grow`, `table.init`, and similar ops
+  - owned by native backends rather than MachineIR
+  - uses a fixed native-stack I/O layout
+  - implemented under `sf-nano-core/src/vm/runtime/preserved/`
+
+They share some low-level status/error plumbing, but they are not one generic
+"helper" mechanism. The JIT should keep those boundaries explicit so readers do
+not confuse host callbacks with engine-internal preserved operations.
+
+#### 7. Boundary-specific safety rules
+
+The safe register/use policy is different at each boundary:
+
+| Context | Safe backend-owned temps | What must already be true |
+| --- | --- | --- |
+| Regular instruction lowering | scratch-pool regs only | mapped fixed/cache/transient regs keep their MachineIR meaning |
+| Local JIT-to-JIT call transfer | scratch-pool regs only | MachineIR already prepared frame setup and call-link state |
+| External call entry sequence | scratch-pool regs plus foreign `C_ARG*`/`C_RET*` as part of the ABI sequence | transients are dead, cached locals published, fixed regs remain live |
+| Preserved-helper entry sequence | scratch-pool regs plus foreign `C_ARG*`/`C_RET*` inside the preserved-helper protocol | preserved wrapper saves the caller-clobbered JIT state it needs before reusing those registers |
+
+One subtle consequence is that "caller-saved" does not mean "free right now".
+The backend may only treat a caller-saved physical register as disposable if it
+is either:
+
+- a dedicated scratch register, or
+- being used inside a boundary protocol that has already made the relevant
+  MachineIR state unavailable there
+
+#### 8. Delicate paths should document why they are delicate
+
+Some control-flow glue is sensitive because of overlapping frame regions. A
+good example is local return lowering: the backend may need to capture
+continuation and caller-frame information before copying results back, because
+the caller result window can overlap and clobber call-link slots.
+
+Those cases are exactly where the backend should use comments and explicit
+scratch ownership rather than "obvious" rewrites. The goal is to make the
+correctness condition visible to the next person touching the code.
 
 ### Optimization: backend immediate selection
 

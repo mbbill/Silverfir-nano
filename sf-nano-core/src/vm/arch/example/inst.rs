@@ -138,7 +138,7 @@ fn prepare_fp<'p>(
     }
     let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
-    text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, gp.reg()));
+    text.emit_u32(enc::fmov_d_from_gp(*fp_scratch, *gp));
     // gp dropped here — GP scratch slot freed immediately
     Ok(PreparedFp::Scratch(fp_scratch))
 }
@@ -202,7 +202,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
                 width, src,
             )?;
-            self.core.text.emit_u32(enc::fmov_d(dst_fp, src_fp.reg()));
+            self.core.text.emit_u32(enc::fmov_d(dst_fp, *src_fp));
             self.core.set_fp_reg_width(dst, width)?;
             return Ok(());
         }
@@ -212,8 +212,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
             self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, src,
         )?;
-        if dst_gp != src_gp.reg() {
-            self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp.reg()));
+        if dst_gp != *src_gp {
+            self.core.text.emit_u32(enc::mov_reg_64(dst_gp, *src_gp));
         }
         Ok(())
     }
@@ -245,7 +245,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
             self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
         )?;
-        let (l, r) = (lhs.reg(), rhs.reg());
+        let (l, r) = (*lhs, *rhs);
         let inst = match (width, op) {
             (MachineIntWidth::I32, MachineIntBinaryOp::Add) => enc::add_reg_32(dst, l, r),
             (MachineIntWidth::I64, MachineIntBinaryOp::Add) => enc::add_reg_64(dst, l, r),
@@ -312,7 +312,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
             self.core.compiled.backend(), &self.core.fp_reg_widths,
             &mut self.core.text, &self.gp_scratch, rhs,
         )?;
-        self.core.text.emit_u32(enc::cmp_reg_64(lhs.reg(), rhs.reg()));
+        self.core.text.emit_u32(enc::cmp_reg_64(*lhs, *rhs));
         Ok(())
     }
 
@@ -358,13 +358,13 @@ impl<'a> super::backend::ExampleBackend<'a> {
         )?;
 
         if slot < 4096 {
-            self.core.text.emit_u32(enc::str_64(src.reg(), base, slot as u16));
+            self.core.text.emit_u32(enc::str_64(*src, base, slot as u16));
         } else {
             // Large offset: allocate a second scratch for the address.
             let off = self.gp_scratch.scoped_alloc();
             materialize_u64_into(&mut self.core.text, *off, addr.offset as u64);
             self.core.text.emit_u32(enc::add_reg_64(*off, base, *off));
-            self.core.text.emit_u32(enc::str_64(src.reg(), *off, 0));
+            self.core.text.emit_u32(enc::str_64(*src, *off, 0));
         }
         Ok(())
     }

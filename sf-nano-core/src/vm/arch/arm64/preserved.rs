@@ -36,8 +36,10 @@ pub(super) fn emit_io_store_value(&mut self, slot: usize, value: MachineValue) -
     let gp = prepare_gp(
         self.core.compiled.backend(), &self.core.fp_reg_widths,
         &mut self.core.text, &self.gp_scratch, value,
-    )?.release();
-    self.core.text.emit_u32(enc::str_64(gp, abi::stack_reg(), slot as u32));
+    )?;
+    self.core
+        .text
+        .emit_u32(enc::str_64(*gp, abi::stack_reg(), slot as u32));
     Ok(())
 }
 

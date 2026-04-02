@@ -7,6 +7,7 @@
 use core::cell::Cell;
 use core::fmt;
 use core::ops::Deref;
+use core::marker::PhantomData;
 
 /// A pool of `N` scratch registers of type `R`.
 ///
@@ -119,7 +120,7 @@ impl<R: Copy, const N: usize> ScratchPool<R, N> {
 }
 
 /// RAII guard for an allocated scratch register. Derefs to `R`.
-/// Frees the pool slot on drop, or explicitly via `release()`.
+/// Frees the pool slot on drop.
 pub(crate) struct ScratchGuard<'a, R: Copy, const N: usize> {
     pool: &'a ScratchPool<R, N>,
     idx: u8,
@@ -144,24 +145,64 @@ impl<R: Copy, const N: usize> Deref for ScratchGuard<'_, R, N> {
     }
 }
 
-impl<R: Copy, const N: usize> ScratchGuard<'_, R, N> {
-    /// Consume the guard, free the pool slot, return the register value.
-    ///
-    /// Use when you need the register value to outlive the guard
-    /// (e.g. for patching a previously-emitted instruction).
-    #[inline]
-    pub(crate) fn release(self) -> R {
-        let reg = self.reg;
-        // Free before forgetting so drop doesn't double-free.
-        self.pool.free(self.idx);
-        core::mem::forget(self);
-        reg
-    }
-}
-
 impl<R: Copy, const N: usize> Drop for ScratchGuard<'_, R, N> {
     fn drop(&mut self) {
         self.pool.free(self.idx);
+    }
+}
+
+/// Owned scratch reservation that no longer borrows the pool.
+///
+/// This is the escape hatch for protocol-scoped temps that still want RAII
+/// cleanup without keeping a Rust borrow of the backend field alive.
+pub(crate) struct DetachedScratch<R: Copy, const N: usize> {
+    pool: *const ScratchPool<R, N>,
+    idx: u8,
+    reg: R,
+    _marker: PhantomData<ScratchPool<R, N>>,
+}
+
+impl<R: Copy + fmt::Debug, const N: usize> fmt::Debug for DetachedScratch<R, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DetachedScratch")
+            .field("idx", &self.idx)
+            .field("reg", &self.reg)
+            .finish()
+    }
+}
+
+impl<R: Copy, const N: usize> Deref for DetachedScratch<R, N> {
+    type Target = R;
+
+    #[inline]
+    fn deref(&self) -> &R {
+        &self.reg
+    }
+}
+
+impl<R: Copy, const N: usize> Drop for DetachedScratch<R, N> {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.pool).free(self.idx);
+        }
+    }
+}
+
+impl<R: Copy, const N: usize> ScratchGuard<'_, R, N> {
+    /// Convert a lexical guard into an owned reservation.
+    ///
+    /// Unlike the old `release()` pattern, this keeps the pool slot reserved
+    /// until the returned token is dropped.
+    #[inline]
+    pub(crate) fn detach(self) -> DetachedScratch<R, N> {
+        let detached = DetachedScratch {
+            pool: self.pool as *const ScratchPool<R, N>,
+            idx: self.idx,
+            reg: self.reg,
+            _marker: PhantomData,
+        };
+        core::mem::forget(self);
+        detached
     }
 }
 
@@ -211,11 +252,25 @@ mod tests {
     }
 
     #[test]
-    fn release_returns_reg_and_frees_slot() {
+    fn dropping_guard_frees_slot() {
         let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
         let g = pool.scoped_alloc();
-        let reg = g.release();
-        assert_eq!(reg, TestReg(10));
+        assert_eq!(*g, TestReg(10));
+        drop(g);
+        pool.assert_all_free();
+    }
+
+    #[test]
+    fn detached_guard_keeps_slot_reserved_until_drop() {
+        let pool = ScratchPool::new([TestReg(10), TestReg(11)]);
+        let g = pool.scoped_alloc().detach();
+        assert_eq!(*g, TestReg(10));
+
+        let g2 = pool.scoped_alloc();
+        assert_eq!(*g2, TestReg(11));
+        drop(g2);
+
+        drop(g);
         pool.assert_all_free();
     }
 
