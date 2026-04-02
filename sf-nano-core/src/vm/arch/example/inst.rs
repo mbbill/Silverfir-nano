@@ -27,17 +27,15 @@ use crate::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
         backend::BackendConfig,
         machine::machine_ir::{
-            is_fp_reg, fp_reg_index,
-            MachineAddr, MachineBlockParam, MachineFloatWidth,
-            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
-            MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
+            fp_reg_index, is_fp_reg, MachineAddr, MachineBlockParam, MachineFloatWidth,
+            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineMemWidth,
+            MachineReg, MachineStorageType, MachineValue,
         },
     },
 };
 
 use super::{
-    abi,
-    enc,
+    abi, enc,
     operands::{PreparedFp, PreparedGp},
     reg::{FpReg, GpReg},
     select,
@@ -64,7 +62,8 @@ pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: GpReg, value: u6
 fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<GpReg, WasmError> {
     if is_fp_reg(reg, config) {
         return Err(WasmError::invalid(alloc::format!(
-            "expected GP register, got FP machine reg {}", reg.0
+            "expected GP register, got FP machine reg {}",
+            reg.0
         )));
     }
     abi::map_gp(reg)
@@ -72,13 +71,16 @@ fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<GpReg, WasmError> {
 
 /// Map a MachineReg to a physical FP register.
 fn map_fp(config: BackendConfig, reg: MachineReg) -> Result<FpReg, WasmError> {
-    let index = fp_reg_index(reg, config)
-        .ok_or_else(|| WasmError::invalid(alloc::format!(
-            "expected FP register, got machine reg {}", reg.0
-        )))?;
+    let index = fp_reg_index(reg, config).ok_or_else(|| {
+        WasmError::invalid(alloc::format!(
+            "expected FP register, got machine reg {}",
+            reg.0
+        ))
+    })?;
     abi::map_fp(index).ok_or_else(|| {
         WasmError::invalid(alloc::format!(
-            "example backend has no FP mapping for machine reg {}", reg.0
+            "example backend has no FP mapping for machine reg {}",
+            reg.0
         ))
     })
 }
@@ -102,7 +104,8 @@ fn prepare_gp<'p>(
             let index = fp_reg_index(reg, config).unwrap();
             let _width = fp_widths.get(index).and_then(|w| *w).ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
-                    "missing float-width for machine reg {}", reg.0
+                    "missing float-width for machine reg {}",
+                    reg.0
                 ))
             })?;
             text.emit_u32(enc::fmov_gp_from_d(*scratch, src_fp));
@@ -146,7 +149,6 @@ fn prepare_fp<'p>(
 // ── Backend methods ──────────────────────────────────────────────────────────
 
 impl<'a> super::backend::ExampleBackend<'a> {
-
     // ── Register mapping (thin wrappers for convenience) ─────────────────
 
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<GpReg, WasmError> {
@@ -165,21 +167,21 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { dst, src, ty } => {
-                self.lower_move(*ty, *dst, *src)
-            }
-            MachineInstKind::IntBinary { width, op, dst, lhs, rhs } => {
-                self.lower_int_binary(*width, *op, *dst, *lhs, *rhs)
-            }
-            MachineInstKind::Load { dst, addr, width, .. } => {
-                self.lower_load(*dst, *addr, *width)
-            }
-            MachineInstKind::Store { addr, width, src, .. } => {
-                self.lower_store(*addr, *width, *src)
-            }
-            MachineInstKind::TrapIf { kind, cond } => {
-                self.lower_trap_if(*kind, cond)
-            }
+            MachineInstKind::Move { dst, src, ty } => self.lower_move(*ty, *dst, *src),
+            MachineInstKind::IntBinary {
+                width,
+                op,
+                dst,
+                lhs,
+                rhs,
+            } => self.lower_int_binary(*width, *op, *dst, *lhs, *rhs),
+            MachineInstKind::Load {
+                dst, addr, width, ..
+            } => self.lower_load(*dst, *addr, *width),
+            MachineInstKind::Store {
+                addr, width, src, ..
+            } => self.lower_store(*addr, *width, *src),
+            MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
             MachineInstKind::CallExternal(call) => {
                 self.lower_call_external(call.metadata.0 as usize)
             }
@@ -198,9 +200,13 @@ impl<'a> super::backend::ExampleBackend<'a> {
         if let Some(width) = ty.float_width() {
             let dst_fp = self.map_fp_reg(dst)?;
             let src_fp = prepare_fp(
-                self.core.compiled.backend(), &self.core.fp_reg_widths,
-                &mut self.core.text, &self.gp_scratch, &self.fp_scratch,
-                width, src,
+                self.core.compiled.backend(),
+                &self.core.fp_reg_widths,
+                &mut self.core.text,
+                &self.gp_scratch,
+                &self.fp_scratch,
+                width,
+                src,
             )?;
             self.core.text.emit_u32(enc::fmov_d(dst_fp, *src_fp));
             self.core.set_fp_reg_width(dst, width)?;
@@ -209,8 +215,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         let dst_gp = self.map_gp_reg(dst)?;
         let src_gp = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, src,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            src,
         )?;
         if dst_gp != *src_gp {
             self.core.text.emit_u32(enc::mov_reg_64(dst_gp, *src_gp));
@@ -238,12 +247,18 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Register fallback: prepare both operands (may allocate scratches).
         let lhs = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, lhs,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            lhs,
         )?;
         let rhs = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, rhs,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            rhs,
         )?;
         let (l, r) = (*lhs, *rhs);
         let inst = match (width, op) {
@@ -270,16 +285,20 @@ impl<'a> super::backend::ExampleBackend<'a> {
     ) -> Result<Option<u32>, WasmError> {
         match op {
             MachineIntBinaryOp::Add => match (lhs, rhs) {
-                (MachineValue::Reg(r), MachineValue::Imm64(imm)) |
-                (MachineValue::Imm64(imm), MachineValue::Reg(r)) => {
-                    Ok(select::add_imm_inst(dst, map_gp(self.core.compiled.backend(), r)?, imm))
-                }
+                (MachineValue::Reg(r), MachineValue::Imm64(imm))
+                | (MachineValue::Imm64(imm), MachineValue::Reg(r)) => Ok(select::add_imm_inst(
+                    dst,
+                    map_gp(self.core.compiled.backend(), r)?,
+                    imm,
+                )),
                 _ => Ok(None),
             },
             MachineIntBinaryOp::Sub => match (lhs, rhs) {
-                (MachineValue::Reg(r), MachineValue::Imm64(imm)) => {
-                    Ok(select::sub_imm_inst(dst, map_gp(self.core.compiled.backend(), r)?, imm))
-                }
+                (MachineValue::Reg(r), MachineValue::Imm64(imm)) => Ok(select::sub_imm_inst(
+                    dst,
+                    map_gp(self.core.compiled.backend(), r)?,
+                    imm,
+                )),
                 _ => Ok(None),
             },
             _ => Ok(None),
@@ -305,12 +324,18 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Register fallback.
         let lhs = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, lhs,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            lhs,
         )?;
         let rhs = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, rhs,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            rhs,
         )?;
         self.core.text.emit_u32(enc::cmp_reg_64(*lhs, *rhs));
         Ok(())
@@ -353,12 +378,17 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
         // Prepare the source value (may allocate one scratch).
         let src = prepare_gp(
-            self.core.compiled.backend(), &self.core.fp_reg_widths,
-            &mut self.core.text, &self.gp_scratch, src,
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            src,
         )?;
 
         if slot < 4096 {
-            self.core.text.emit_u32(enc::str_64(*src, base, slot as u16));
+            self.core
+                .text
+                .emit_u32(enc::str_64(*src, base, slot as u16));
         } else {
             // Large offset: allocate a second scratch for the address.
             let off = self.gp_scratch.scoped_alloc();

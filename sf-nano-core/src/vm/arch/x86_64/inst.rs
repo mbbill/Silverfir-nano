@@ -6,16 +6,16 @@ use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
         MachineAddr, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
-        MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst,
-        MachineInstKind, MachineIntBinaryOp,
-        MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-        MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+        MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
+        MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+        MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
+        MachineTrapKind, MachineValue,
     },
 };
 
-use super::abi::{C_ARG0, C_ARG1, C_ARG2};
 #[cfg(target_os = "windows")]
 use super::abi::C_ARG3;
+use super::abi::{C_ARG0, C_ARG1, C_ARG2};
 #[cfg(target_os = "windows")]
 use super::helpers::x86_64_trapping_trunc_win;
 
@@ -191,8 +191,12 @@ impl<'a> X86_64Backend<'a> {
                     }
                     if dst_fp != src_fp {
                         match width {
-                            MachineFloatWidth::F32 => enc::movss_rr(&mut self.core.text, dst_fp, src_fp),
-                            MachineFloatWidth::F64 => enc::movsd_rr(&mut self.core.text, dst_fp, src_fp),
+                            MachineFloatWidth::F32 => {
+                                enc::movss_rr(&mut self.core.text, dst_fp, src_fp)
+                            }
+                            MachineFloatWidth::F64 => {
+                                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp)
+                            }
                         };
                     }
                     self.core.set_fp_reg_width(dst, width)?;
@@ -201,8 +205,12 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Reg(src_reg) => {
                     let src_gp = self.map_gp_reg(src_reg)?;
                     match width {
-                        MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp),
-                        MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp),
+                        MachineFloatWidth::F32 => {
+                            enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp)
+                        }
+                        MachineFloatWidth::F64 => {
+                            enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp)
+                        }
                     };
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
@@ -227,8 +235,12 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Reg(src_reg) if self.core.is_fp_reg(src_reg) => {
                     let src_fp = self.map_fp_reg(src_reg)? as u8;
                     match self.core.fp_reg_width(src_reg)? {
-                        MachineFloatWidth::F32 => enc::movd_r32_xmm(&mut self.core.text, dst_gp, src_fp),
-                        MachineFloatWidth::F64 => enc::movq_r64_xmm(&mut self.core.text, dst_gp, src_fp),
+                        MachineFloatWidth::F32 => {
+                            enc::movd_r32_xmm(&mut self.core.text, dst_gp, src_fp)
+                        }
+                        MachineFloatWidth::F64 => {
+                            enc::movq_r64_xmm(&mut self.core.text, dst_gp, src_fp)
+                        }
                     };
                     Ok(())
                 }
@@ -273,8 +285,12 @@ impl<'a> X86_64Backend<'a> {
         } else {
             self.materialize_u64(self.gp_scratch.reg(0), imm);
             match width {
-                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, self.gp_scratch.reg(0)),
-                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, self.gp_scratch.reg(0)),
+                MachineFloatWidth::F32 => {
+                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, self.gp_scratch.reg(0))
+                }
+                MachineFloatWidth::F64 => {
+                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, self.gp_scratch.reg(0))
+                }
             };
         }
         self.core.set_fp_reg_width(dst, width)?;
@@ -283,7 +299,11 @@ impl<'a> X86_64Backend<'a> {
 
     // ── LEA / Load / Store ───────────────────────────────────────────────────
 
-    pub(super) fn lower_lea(&mut self, dst: MachineReg, addr: MachineAddr) -> Result<(), WasmError> {
+    pub(super) fn lower_lea(
+        &mut self,
+        dst: MachineReg,
+        addr: MachineAddr,
+    ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
         let base = self.map_gp_reg(addr.base)?;
         if addr.offset == 0 {
@@ -395,8 +415,12 @@ impl<'a> X86_64Backend<'a> {
             if self.core.is_fp_reg(src_reg) {
                 let src_fp = self.map_fp_reg(src_reg)? as u8;
                 match width {
-                    MachineMemWidth::U32 => enc::movss_store(&mut self.core.text, base, disp, src_fp),
-                    MachineMemWidth::U64 => enc::movsd_store(&mut self.core.text, base, disp, src_fp),
+                    MachineMemWidth::U32 => {
+                        enc::movss_store(&mut self.core.text, base, disp, src_fp)
+                    }
+                    MachineMemWidth::U64 => {
+                        enc::movsd_store(&mut self.core.text, base, disp, src_fp)
+                    }
                     _ => {
                         return Err(WasmError::invalid(
                             "x86_64 MachineIR backend does not support narrow FP stores".into(),
@@ -808,16 +832,36 @@ impl<'a> X86_64Backend<'a> {
             }
         }
         match (width, op) {
-            (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => enc::shl_cl_64(&mut self.core.text, dst),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => enc::shl_cl_32(&mut self.core.text, dst),
-            (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => enc::sar_cl_64(&mut self.core.text, dst),
-            (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => enc::sar_cl_32(&mut self.core.text, dst),
-            (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => enc::shr_cl_64(&mut self.core.text, dst),
-            (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => enc::shr_cl_32(&mut self.core.text, dst),
-            (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => enc::rol_cl_64(&mut self.core.text, dst),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => enc::rol_cl_32(&mut self.core.text, dst),
-            (MachineIntWidth::I64, MachineIntBinaryOp::Rotr) => enc::ror_cl_64(&mut self.core.text, dst),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => enc::ror_cl_32(&mut self.core.text, dst),
+            (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => {
+                enc::shl_cl_64(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => {
+                enc::shl_cl_32(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => {
+                enc::sar_cl_64(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => {
+                enc::sar_cl_32(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => {
+                enc::shr_cl_64(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => {
+                enc::shr_cl_32(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
+                enc::rol_cl_64(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
+                enc::rol_cl_32(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::Rotr) => {
+                enc::ror_cl_64(&mut self.core.text, dst)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => {
+                enc::ror_cl_32(&mut self.core.text, dst)
+            }
             _ => unreachable!(),
         };
         if need_save_rcx {
@@ -861,7 +905,9 @@ impl<'a> X86_64Backend<'a> {
 
         // Division-by-zero check: divisor == 0 => trap
         enc::test_rr_64(&mut self.core.text, divisor, divisor);
-        let div_zero_label = self.core.ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
+        let div_zero_label = self
+            .core
+            .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
         self.emit_jcc(Cc::E, div_zero_label);
 
         match op {
@@ -883,7 +929,9 @@ impl<'a> X86_64Backend<'a> {
                     MachineIntWidth::I32 => enc::cmp_ri_32(&mut self.core.text, divisor, -1),
                     MachineIntWidth::I64 => enc::cmp_ri_64(&mut self.core.text, divisor, -1),
                 };
-                let overflow_label = self.core.ensure_trap_label(MachineTrapKind::IntegerOverflow);
+                let overflow_label = self
+                    .core
+                    .ensure_trap_label(MachineTrapKind::IntegerOverflow);
                 self.emit_jcc(Cc::E, overflow_label);
                 self.core.bind_label(not_min);
                 // Sign-extend RAX → RDX:RAX, then IDIV
@@ -1027,10 +1075,15 @@ impl<'a> X86_64Backend<'a> {
                         MachineIntWidth::I32 => enc::test_ri_32(&mut self.core.text, src_gp, imm),
                     }
                 } else {
-                    let mask_gp = self.materialize_value(self.gp_scratch.reg(1), MachineValue::Imm64(imm_val))?;
+                    let mask_gp = self
+                        .materialize_value(self.gp_scratch.reg(1), MachineValue::Imm64(imm_val))?;
                     match width {
-                        MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src_gp, mask_gp),
-                        MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
+                        MachineIntWidth::I64 => {
+                            enc::test_rr_64(&mut self.core.text, src_gp, mask_gp)
+                        }
+                        MachineIntWidth::I32 => {
+                            enc::test_rr_32(&mut self.core.text, src_gp, mask_gp)
+                        }
                     }
                 }
             }
@@ -1099,31 +1152,66 @@ impl<'a> X86_64Backend<'a> {
             enc::mov_rr_64(&mut self.core.text, scratch, rhs);
         }
         match (width, shift) {
-            (MachineIntWidth::I64, MachineShiftOp::Lsl) => enc::shl_imm_64(&mut self.core.text, scratch, amount),
-            (MachineIntWidth::I32, MachineShiftOp::Lsl) => enc::shl_imm_32(&mut self.core.text, scratch, amount),
-            (MachineIntWidth::I64, MachineShiftOp::Lsr) => enc::shr_imm_64(&mut self.core.text, scratch, amount),
-            (MachineIntWidth::I32, MachineShiftOp::Lsr) => enc::shr_imm_32(&mut self.core.text, scratch, amount),
-            (MachineIntWidth::I64, MachineShiftOp::Asr) => enc::sar_imm_64(&mut self.core.text, scratch, amount),
-            (MachineIntWidth::I32, MachineShiftOp::Asr) => enc::sar_imm_32(&mut self.core.text, scratch, amount),
+            (MachineIntWidth::I64, MachineShiftOp::Lsl) => {
+                enc::shl_imm_64(&mut self.core.text, scratch, amount)
+            }
+            (MachineIntWidth::I32, MachineShiftOp::Lsl) => {
+                enc::shl_imm_32(&mut self.core.text, scratch, amount)
+            }
+            (MachineIntWidth::I64, MachineShiftOp::Lsr) => {
+                enc::shr_imm_64(&mut self.core.text, scratch, amount)
+            }
+            (MachineIntWidth::I32, MachineShiftOp::Lsr) => {
+                enc::shr_imm_32(&mut self.core.text, scratch, amount)
+            }
+            (MachineIntWidth::I64, MachineShiftOp::Asr) => {
+                enc::sar_imm_64(&mut self.core.text, scratch, amount)
+            }
+            (MachineIntWidth::I32, MachineShiftOp::Asr) => {
+                enc::sar_imm_32(&mut self.core.text, scratch, amount)
+            }
         }
         // Step 2: dst = lhs OP scratch
         if dst != lhs {
             enc::mov_rr_64(&mut self.core.text, dst, lhs);
         }
         match (width, op) {
-            (MachineIntWidth::I64, MachineIntBinaryOp::Add) => enc::add_rr_64(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Add) => enc::add_rr_32(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => enc::sub_rr_64(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => enc::sub_rr_32(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I64, MachineIntBinaryOp::And) => enc::and_rr_64(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I32, MachineIntBinaryOp::And) => enc::and_rr_32(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I64, MachineIntBinaryOp::Or) => enc::or_rr_64(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Or) => enc::or_rr_32(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => enc::xor_rr_64(&mut self.core.text, dst, scratch),
-            (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => enc::xor_rr_32(&mut self.core.text, dst, scratch),
-            _ => return Err(WasmError::internal(
-                alloc::format!("IntBinaryShifted: unsupported op {:?}", op),
-            )),
+            (MachineIntWidth::I64, MachineIntBinaryOp::Add) => {
+                enc::add_rr_64(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
+                enc::add_rr_32(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => {
+                enc::sub_rr_64(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
+                enc::sub_rr_32(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::And) => {
+                enc::and_rr_64(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::And) => {
+                enc::and_rr_32(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::Or) => {
+                enc::or_rr_64(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Or) => {
+                enc::or_rr_32(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => {
+                enc::xor_rr_64(&mut self.core.text, dst, scratch)
+            }
+            (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => {
+                enc::xor_rr_32(&mut self.core.text, dst, scratch)
+            }
+            _ => {
+                return Err(WasmError::internal(alloc::format!(
+                    "IntBinaryShifted: unsupported op {:?}",
+                    op
+                )))
+            }
         }
         Ok(())
     }
@@ -1173,9 +1261,12 @@ impl<'a> X86_64Backend<'a> {
         let cc = match kind {
             MachineCompareKind::Eq => Cc::E,
             MachineCompareKind::Ne => Cc::Ne,
-            _ => return Err(WasmError::internal(
-                alloc::format!("TestBits: unsupported compare kind {:?}", kind),
-            )),
+            _ => {
+                return Err(WasmError::internal(alloc::format!(
+                    "TestBits: unsupported compare kind {:?}",
+                    kind
+                )))
+            }
         };
         enc::setcc(&mut self.core.text, cc, dst);
         enc::movzx_r32_r8(&mut self.core.text, dst, dst);
@@ -1205,8 +1296,12 @@ impl<'a> X86_64Backend<'a> {
                     let done = self.core.new_label();
                     enc::test_rr_64(&mut self.core.text, cond_gp, cond_gp);
                     self.emit_jcc(Cc::E, false_label);
-                    let true_fp =
-                        self.prepare_float_operand(width, on_true, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+                    let true_fp = self.prepare_float_operand(
+                        width,
+                        on_true,
+                        self.gp_scratch.reg(0),
+                        self.fp_scratch.reg(0),
+                    )?;
                     if dst_fp != true_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
@@ -1219,8 +1314,12 @@ impl<'a> X86_64Backend<'a> {
                     }
                     self.emit_jmp(done);
                     self.core.bind_label(false_label);
-                    let false_fp =
-                        self.prepare_float_operand(width, on_false, self.gp_scratch.reg(1), self.fp_scratch.reg(1))?;
+                    let false_fp = self.prepare_float_operand(
+                        width,
+                        on_false,
+                        self.gp_scratch.reg(1),
+                        self.fp_scratch.reg(1),
+                    )?;
                     if dst_fp != false_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
@@ -1299,8 +1398,12 @@ impl<'a> X86_64Backend<'a> {
                 if self.core.is_fp_reg(dst) {
                     let dst_fp = self.map_fp_reg(dst)? as u8;
                     match width {
-                        MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp),
-                        MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp),
+                        MachineFloatWidth::F32 => {
+                            enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp)
+                        }
+                        MachineFloatWidth::F64 => {
+                            enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp)
+                        }
                     };
                     self.core.set_fp_reg_width(dst, width)?;
                 } else {
@@ -1312,27 +1415,43 @@ impl<'a> X86_64Backend<'a> {
             }
             // Float promotion / demotion
             MachineConvertOp::F64PromoteF32 => {
-                let src_fp =
-                    self.prepare_float_operand(MachineFloatWidth::F32, src, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+                let src_fp = self.prepare_float_operand(
+                    MachineFloatWidth::F32,
+                    src,
+                    self.gp_scratch.reg(0),
+                    self.fp_scratch.reg(0),
+                )?;
                 if self.core.is_fp_reg(dst) {
                     let dst_fp = self.map_fp_reg(dst)? as u8;
                     self.core.set_fp_reg_width(dst, MachineFloatWidth::F64)?;
                     enc::cvtss2sd(&mut self.core.text, dst_fp, src_fp as u8);
                 } else {
-                    enc::cvtss2sd(&mut self.core.text, self.fp_scratch.reg(1) as u8, src_fp as u8);
+                    enc::cvtss2sd(
+                        &mut self.core.text,
+                        self.fp_scratch.reg(1) as u8,
+                        src_fp as u8,
+                    );
                     let dst_gp = self.map_gp_reg(dst)?;
                     enc::movq_r64_xmm(&mut self.core.text, dst_gp, self.fp_scratch.reg(1) as u8);
                 }
             }
             MachineConvertOp::F32DemoteF64 => {
-                let src_fp =
-                    self.prepare_float_operand(MachineFloatWidth::F64, src, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+                let src_fp = self.prepare_float_operand(
+                    MachineFloatWidth::F64,
+                    src,
+                    self.gp_scratch.reg(0),
+                    self.fp_scratch.reg(0),
+                )?;
                 if self.core.is_fp_reg(dst) {
                     let dst_fp = self.map_fp_reg(dst)? as u8;
                     self.core.set_fp_reg_width(dst, MachineFloatWidth::F32)?;
                     enc::cvtsd2ss(&mut self.core.text, dst_fp, src_fp as u8);
                 } else {
-                    enc::cvtsd2ss(&mut self.core.text, self.fp_scratch.reg(1) as u8, src_fp as u8);
+                    enc::cvtsd2ss(
+                        &mut self.core.text,
+                        self.fp_scratch.reg(1) as u8,
+                        src_fp as u8,
+                    );
                     let dst_gp = self.map_gp_reg(dst)?;
                     enc::movd_r32_xmm(&mut self.core.text, dst_gp, self.fp_scratch.reg(1) as u8);
                 }
@@ -1374,7 +1493,11 @@ impl<'a> X86_64Backend<'a> {
                 enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), src_gp);
                 enc::shr_imm_64(&mut self.core.text, self.gp_scratch.reg(0), 1); // src >> 1
                 enc::and_ri_32(&mut self.core.text, self.gp_scratch.reg(1), 1); // src & 1 (preserve LSB)
-                enc::or_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1)); // (src >> 1) | (src & 1)
+                enc::or_rr_64(
+                    &mut self.core.text,
+                    self.gp_scratch.reg(0),
+                    self.gp_scratch.reg(1),
+                ); // (src >> 1) | (src & 1)
                 enc::cvtsi2ss_r64(&mut self.core.text, dst_fp, self.gp_scratch.reg(0));
                 enc::addss(&mut self.core.text, dst_fp, dst_fp); // double it
                 self.core.bind_label(done);
@@ -1409,7 +1532,11 @@ impl<'a> X86_64Backend<'a> {
                 enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), src_gp);
                 enc::shr_imm_64(&mut self.core.text, self.gp_scratch.reg(0), 1);
                 enc::and_ri_32(&mut self.core.text, self.gp_scratch.reg(1), 1);
-                enc::or_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1));
+                enc::or_rr_64(
+                    &mut self.core.text,
+                    self.gp_scratch.reg(0),
+                    self.gp_scratch.reg(1),
+                );
                 enc::cvtsi2sd_r64(&mut self.core.text, dst_fp, self.gp_scratch.reg(0));
                 enc::addsd(&mut self.core.text, dst_fp, dst_fp);
                 self.core.bind_label(done);
@@ -1452,7 +1579,8 @@ impl<'a> X86_64Backend<'a> {
         dst: MachineReg,
         src: MachineValue,
     ) -> Result<(), WasmError> {
-        let src_fp = self.prepare_float_operand(width, src, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+        let src_fp =
+            self.prepare_float_operand(width, src, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
         let result_fp = if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)? as u8;
             self.core.set_fp_reg_width(dst, width)?;
@@ -1463,48 +1591,76 @@ impl<'a> X86_64Backend<'a> {
         match op {
             MachineFloatUnaryOp::Sqrt => {
                 match width {
-                    MachineFloatWidth::F32 => enc::sqrtss(&mut self.core.text, result_fp, src_fp as u8),
-                    MachineFloatWidth::F64 => enc::sqrtsd(&mut self.core.text, result_fp, src_fp as u8),
+                    MachineFloatWidth::F32 => {
+                        enc::sqrtss(&mut self.core.text, result_fp, src_fp as u8)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::sqrtsd(&mut self.core.text, result_fp, src_fp as u8)
+                    }
                 };
             }
             MachineFloatUnaryOp::Ceil => {
                 match width {
-                    MachineFloatWidth::F32 => {
-                        enc::roundss(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_CEIL)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::roundsd(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_CEIL)
-                    }
+                    MachineFloatWidth::F32 => enc::roundss(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_CEIL,
+                    ),
+                    MachineFloatWidth::F64 => enc::roundsd(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_CEIL,
+                    ),
                 };
             }
             MachineFloatUnaryOp::Floor => {
                 match width {
-                    MachineFloatWidth::F32 => {
-                        enc::roundss(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_FLOOR)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::roundsd(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_FLOOR)
-                    }
+                    MachineFloatWidth::F32 => enc::roundss(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_FLOOR,
+                    ),
+                    MachineFloatWidth::F64 => enc::roundsd(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_FLOOR,
+                    ),
                 };
             }
             MachineFloatUnaryOp::Trunc => {
                 match width {
-                    MachineFloatWidth::F32 => {
-                        enc::roundss(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_TRUNC)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::roundsd(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_TRUNC)
-                    }
+                    MachineFloatWidth::F32 => enc::roundss(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_TRUNC,
+                    ),
+                    MachineFloatWidth::F64 => enc::roundsd(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_TRUNC,
+                    ),
                 };
             }
             MachineFloatUnaryOp::Nearest => {
                 match width {
-                    MachineFloatWidth::F32 => {
-                        enc::roundss(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_NEAREST)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::roundsd(&mut self.core.text, result_fp, src_fp as u8, enc::ROUND_NEAREST)
-                    }
+                    MachineFloatWidth::F32 => enc::roundss(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_NEAREST,
+                    ),
+                    MachineFloatWidth::F64 => enc::roundsd(
+                        &mut self.core.text,
+                        result_fp,
+                        src_fp as u8,
+                        enc::ROUND_NEAREST,
+                    ),
                 };
             }
             MachineFloatUnaryOp::Abs => {
@@ -1576,8 +1732,10 @@ impl<'a> X86_64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        let lhs_fp = self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
-        let rhs_fp = self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), self.fp_scratch.reg(1))?;
+        let lhs_fp =
+            self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+        let rhs_fp =
+            self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), self.fp_scratch.reg(1))?;
         let result_fp = if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)? as u8;
             self.core.set_fp_reg_width(dst, width)?;
@@ -1675,8 +1833,12 @@ impl<'a> X86_64Backend<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::minss(&mut self.core.text, result_fp, actual_rhs),
-                    MachineFloatWidth::F64 => enc::minsd(&mut self.core.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F32 => {
+                        enc::minss(&mut self.core.text, result_fp, actual_rhs)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::minsd(&mut self.core.text, result_fp, actual_rhs)
+                    }
                 };
                 // Compare for NaN: ucomisd lhs, rhs sets PF=1 if unordered (NaN)
                 match width {
@@ -1701,8 +1863,12 @@ impl<'a> X86_64Backend<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::addss(&mut self.core.text, result_fp, actual_rhs),
-                    MachineFloatWidth::F64 => enc::addsd(&mut self.core.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F32 => {
+                        enc::addss(&mut self.core.text, result_fp, actual_rhs)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::addsd(&mut self.core.text, result_fp, actual_rhs)
+                    }
                 };
                 self.core.bind_label(done);
             }
@@ -1734,8 +1900,12 @@ impl<'a> X86_64Backend<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::maxss(&mut self.core.text, result_fp, actual_rhs),
-                    MachineFloatWidth::F64 => enc::maxsd(&mut self.core.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F32 => {
+                        enc::maxss(&mut self.core.text, result_fp, actual_rhs)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::maxsd(&mut self.core.text, result_fp, actual_rhs)
+                    }
                 };
                 match width {
                     MachineFloatWidth::F32 => {
@@ -1758,8 +1928,12 @@ impl<'a> X86_64Backend<'a> {
                     };
                 }
                 match width {
-                    MachineFloatWidth::F32 => enc::addss(&mut self.core.text, result_fp, actual_rhs),
-                    MachineFloatWidth::F64 => enc::addsd(&mut self.core.text, result_fp, actual_rhs),
+                    MachineFloatWidth::F32 => {
+                        enc::addss(&mut self.core.text, result_fp, actual_rhs)
+                    }
+                    MachineFloatWidth::F64 => {
+                        enc::addsd(&mut self.core.text, result_fp, actual_rhs)
+                    }
                 };
                 self.core.bind_label(done);
             }
@@ -1767,12 +1941,13 @@ impl<'a> X86_64Backend<'a> {
                 // magnitude of lhs, sign of rhs.
                 // Strategy: clear sign of lhs (abs), extract sign of rhs, OR them.
                 // Use a mask scratch that doesn't conflict with result_fp or rhs_fp.
-                let mask_xmm =
-                    if result_fp != self.fp_scratch.reg(0) as u8 && rhs_fp as u8 != self.fp_scratch.reg(0) as u8 {
-                        self.fp_scratch.reg(0) as u8
-                    } else {
-                        self.fp_scratch.reg(2) as u8
-                    };
+                let mask_xmm = if result_fp != self.fp_scratch.reg(0) as u8
+                    && rhs_fp as u8 != self.fp_scratch.reg(0) as u8
+                {
+                    self.fp_scratch.reg(0) as u8
+                } else {
+                    self.fp_scratch.reg(2) as u8
+                };
                 let sign_mask = match width {
                     MachineFloatWidth::F32 => 0x8000_0000u64,
                     MachineFloatWidth::F64 => 0x8000_0000_0000_0000u64,
@@ -1822,7 +1997,8 @@ impl<'a> X86_64Backend<'a> {
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
         let dst_gp = self.map_gp_reg(dst)?;
-        let lhs_fp = self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+        let lhs_fp =
+            self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
         // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
         // already lives in a mapped FP register (not self.fp_scratch.reg(0)), reuse
         // self.fp_scratch.reg(0) for rhs to avoid clobbering live FP transients in
@@ -1833,7 +2009,11 @@ impl<'a> X86_64Backend<'a> {
             self.fp_scratch.reg(2)
         };
         if matches!(rhs, MachineValue::Imm64(0)) {
-            enc::xorpd(&mut self.core.text, rhs_fp_scratch as u8, rhs_fp_scratch as u8);
+            enc::xorpd(
+                &mut self.core.text,
+                rhs_fp_scratch as u8,
+                rhs_fp_scratch as u8,
+            );
             match width {
                 MachineFloatWidth::F32 => {
                     enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
@@ -1843,10 +2023,15 @@ impl<'a> X86_64Backend<'a> {
                 }
             };
         } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), rhs_fp_scratch)?;
+            let rhs_fp =
+                self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), rhs_fp_scratch)?;
             match width {
-                MachineFloatWidth::F32 => enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8),
-                MachineFloatWidth::F64 => enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp as u8),
+                MachineFloatWidth::F32 => {
+                    enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
+                }
+                MachineFloatWidth::F64 => {
+                    enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
+                }
             };
         }
         // Wasm float comparisons: unordered (NaN) => 0 for all except Ne.
@@ -1903,17 +2088,21 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Helper calls ──────────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_external(
-        &mut self,
-        const_idx: usize,
-    ) -> Result<(), WasmError> {
+    pub(super) fn lower_call_external(&mut self, const_idx: usize) -> Result<(), WasmError> {
         let metadata = self
-            .core.compiled
+            .core
+            .compiled
             .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
                 const_idx as u32,
             ))
-            .ok_or_else(|| WasmError::internal("x86_64 external-call metadata is out of range".into()))?;
-        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+            .ok_or_else(|| {
+                WasmError::internal("x86_64 external-call metadata is out of range".into())
+            })?;
+        enc::mov_rr_64(
+            &mut self.core.text,
+            C_ARG0,
+            map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
+        );
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
         self.materialize_u64(
@@ -1997,10 +2186,17 @@ impl<'a> X86_64Backend<'a> {
         self.save_gp_transients();
         #[cfg(not(target_os = "windows"))]
         {
-            enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+            enc::mov_rr_64(
+                &mut self.core.text,
+                C_ARG0,
+                map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
+            );
             enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
             self.materialize_u64(C_ARG2, convert_op_code(op));
-            self.materialize_u64(self.gp_scratch.reg(1), x86_64_trapping_trunc as usize as u64);
+            self.materialize_u64(
+                self.gp_scratch.reg(1),
+                x86_64_trapping_trunc as usize as u64,
+            );
             enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
             enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX);
             self.restore_gp_transients();
@@ -2009,11 +2205,18 @@ impl<'a> X86_64Backend<'a> {
         }
         #[cfg(target_os = "windows")]
         {
-            enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG));
+            enc::mov_rr_64(
+                &mut self.core.text,
+                C_ARG0,
+                map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
+            );
             enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
             self.materialize_u64(C_ARG2, convert_op_code(op));
             enc::mov_rr_64(&mut self.core.text, C_ARG3, X86Reg::RSP);
-            self.materialize_u64(self.gp_scratch.reg(1), x86_64_trapping_trunc_win as usize as u64);
+            self.materialize_u64(
+                self.gp_scratch.reg(1),
+                x86_64_trapping_trunc_win as usize as u64,
+            );
             enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
             enc::load_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RSP, 0);
             self.restore_gp_transients();
@@ -2036,7 +2239,10 @@ impl<'a> X86_64Backend<'a> {
         self.save_gp_transients();
         enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
         self.materialize_u64(C_ARG1, convert_op_code(op));
-        self.materialize_u64(self.gp_scratch.reg(1), x86_64_saturating_trunc as usize as u64);
+        self.materialize_u64(
+            self.gp_scratch.reg(1),
+            x86_64_saturating_trunc as usize as u64,
+        );
         enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
         // Save result before restoring transients
         enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RAX);
@@ -2099,11 +2305,6 @@ impl<'a> X86_64Backend<'a> {
             enc::add_ri_64(&mut self.core.text, self.gp_scratch.reg(0), offset);
         }
         enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), base_x86);
-        self.lower_store_to(
-            self.gp_scratch.reg(0),
-            0,
-            width,
-            src,
-        )
+        self.lower_store_to(self.gp_scratch.reg(0), 0, width, src)
     }
 }

@@ -15,8 +15,10 @@ use crate::{
 };
 
 use super::super::{
-    lower_leaf_arith::{machine_convert, machine_int_binary, machine_int_compare, machine_int_unary},
     lower_context::BlockLowerContext,
+    lower_leaf_arith::{
+        machine_convert, machine_int_binary, machine_int_compare, machine_int_unary,
+    },
     lower_util::{single_arg, single_result, two_args},
 };
 
@@ -182,10 +184,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (lhs_lo, lhs_hi) = self.use_i64_operand_pair(&a)?;
                 let (rhs_lo, rhs_hi) = self.use_i64_operand_pair(&b)?;
                 let dead = dead_input_values(&[a, b]);
-                let dst = self.alloc_value_reusing_dead_inputs(
-                    single_result(results)?,
-                    &dead,
-                )?;
+                let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let (_, kind, sign) = machine_int_compare(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 compare lowering".into()))?;
                 self.emit_machine_inst(MachineInst {
@@ -205,8 +204,7 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
                 let dead = dead_input_values(&[arg]);
-                let dst =
-                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+                let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairCompare {
                         kind: Cmp::Eq,
@@ -229,10 +227,8 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let (src_lo, src_hi) = self.use_i64_operand_pair(&arg)?;
                 let dead = dead_input_values(&[arg]);
-                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
-                    single_result(results)?,
-                    &dead,
-                )?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_unary(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 unary lowering".into()))?
                     .1;
@@ -251,8 +247,7 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let (src_lo, _) = self.use_i64_operand_pair(&arg)?;
                 let dead = dead_input_values(&[arg]);
-                let dst =
-                    self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+                let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
                         ty: Ty::GpWord,
@@ -266,10 +261,8 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let src = self.use_operand(arg)?;
                 let dead = dead_input_values(&[arg]);
-                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
-                    single_result(results)?,
-                    &dead,
-                )?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
                         ty: Ty::GpWord,
@@ -340,10 +333,8 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let src = self.use_operand(arg)?;
                 let dead = dead_input_values(&[arg]);
-                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
-                    single_result(results)?,
-                    &dead,
-                )?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_convert(primitive)
                     .ok_or_else(|| WasmError::internal("missing i64 trunc lowering".into()))?;
                 self.emit_machine_inst(MachineInst {
@@ -360,10 +351,8 @@ impl<'a> BlockLowerContext<'a> {
                 let arg = single_arg(args)?;
                 let src = self.use_operand(arg)?;
                 let dead = dead_input_values(&[arg]);
-                let (dst_lo, dst_hi) = self.alloc_i64_value_pair_reusing_dead_inputs(
-                    single_result(results)?,
-                    &dead,
-                )?;
+                let (dst_lo, dst_hi) =
+                    self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::ReinterpretF64ToI64Pair {
                         dst_lo,

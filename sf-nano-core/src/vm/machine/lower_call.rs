@@ -2,19 +2,20 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal, MachineCompareKind,
-            MachineConstId, MachineFuncId, MachineFrameRegion, MachineInst, MachineInstKind, MachineIntBinaryOp,
-            MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue,
+            MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal,
+            MachineCompareKind, MachineConstId, MachineFrameRegion, MachineFuncId, MachineInst,
+            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
-        runtime::{
-            external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
-        },
+        runtime::external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
     },
 };
 
-use super::{lower_const_pool::ConstPoolBuilder, lower_context::BlockLowerContext, lower_module::slot_offset_bytes};
+use super::{
+    lower_const_pool::ConstPoolBuilder, lower_context::BlockLowerContext,
+    lower_module::slot_offset_bytes,
+};
 
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn lower_call_internal(
@@ -90,7 +91,9 @@ impl<'a> BlockLowerContext<'a> {
                 op: MachineIntBinaryOp::Add,
                 dst: call_link_base,
                 lhs: MachineValue::Reg(callee_frame_base),
-                rhs: MachineValue::Imm64(slot_offset_bytes(FrameSlot(call_scratch.base_slot))? as u64),
+                rhs: MachineValue::Imm64(
+                    slot_offset_bytes(FrameSlot(call_scratch.base_slot))? as u64
+                ),
             },
         });
 
@@ -219,7 +222,10 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    pub(super) fn build_external_call_ops(&self, metadata: MachineConstId) -> alloc::vec::Vec<MachineInst> {
+    pub(super) fn build_external_call_ops(
+        &self,
+        metadata: MachineConstId,
+    ) -> alloc::vec::Vec<MachineInst> {
         // The external-call instruction itself is the foreign-call boundary.
         // The reloads that follow repair machine-visible runtime state that may
         // have changed while the host callback executed, most importantly the

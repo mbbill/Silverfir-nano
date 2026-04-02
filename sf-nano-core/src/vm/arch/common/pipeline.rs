@@ -12,11 +12,10 @@ use crate::{
 };
 
 use super::backend::ArchBackend;
-use super::types::{
-    DebugRegion, FunctionArtifact, NativeFunctionInfo, ParallelSource,
-    NATIVE_FUNCTION_INFO_SIZE,
-};
 use super::helpers::page_align_function;
+use super::types::{
+    DebugRegion, FunctionArtifact, NativeFunctionInfo, ParallelSource, NATIVE_FUNCTION_INFO_SIZE,
+};
 
 // ── compile_function ─────────────────────────────────────────────────────────
 
@@ -54,9 +53,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
             .program
             .blocks
             .get(block_id.as_usize())
-            .ok_or_else(|| {
-                WasmError::internal("block layout references missing block".into())
-            })?;
+            .ok_or_else(|| WasmError::internal("block layout references missing block".into()))?;
         let label = b.core().block_label(block.id)?;
         b.core_mut().bind_label(label);
         let block_start = b.core().text.len();
@@ -290,8 +287,7 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     for (index, artifact) in artifacts.iter_mut().enumerate() {
         let function_base = base_offsets[index];
         for patch in &artifact.local_ptr_patches {
-            let target_addr =
-                unsafe { base_ptr.add(function_base + patch.target_offset) } as u64;
+            let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as u64;
             artifact.text.patch_u64(patch.literal_offset, target_addr);
         }
         for patch in &artifact.direct_call_patches {
@@ -305,13 +301,13 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     }
 
     // Build function info table.
-    let mut function_info_bytes =
-        Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO_SIZE);
+    let mut function_info_bytes = Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = NativeFunctionInfo {
-            entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
-                WasmError::internal("function entry is out of range".into())
-            })? as u64,
+            entry: *internal_entry_addrs
+                .get(func_idx)
+                .ok_or_else(|| WasmError::internal("function entry is out of range".into()))?
+                as u64,
             total_frame_bytes: u64::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u64::from(runtime.frame_prefix_slots),
             call_scratch_base_slot: u64::from(
@@ -378,10 +374,8 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
         for region in &ef.debug_regions {
             if region.len > 0 {
                 let region_start = unsafe { func_base.add(region.offset) };
-                let code_bytes =
-                    unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                let symbol =
-                    format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
+                let code_bytes = unsafe { core::slice::from_raw_parts(region_start, region.len) };
+                let symbol = format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
                 crate::vm::runtime::profiler::record_function(region_start, code_bytes, &symbol);
             }
         }

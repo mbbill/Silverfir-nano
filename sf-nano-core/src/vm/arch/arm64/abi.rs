@@ -145,16 +145,7 @@ const REG_PLAN: RegPlan = RegPlan {
         (gp(27), gp(28)),
         (gp(29), gp(30)),
     ],
-    callee_saved_fp: &[
-        fp(8),
-        fp(9),
-        fp(10),
-        fp(11),
-        fp(12),
-        fp(13),
-        fp(14),
-        fp(15),
-    ],
+    callee_saved_fp: &[fp(8), fp(9), fp(10), fp(11), fp(12), fp(13), fp(14), fp(15)],
 
     stack_alignment_bytes: 16,
 };
@@ -322,7 +313,9 @@ pub(super) fn fp_machine_reg(index: usize) -> Option<Arm64FpReg> {
 //   FP: all transients + caller-saved local-cache
 
 /// All GP transient registers (all caller-saved).
-pub(super) fn gp_transient_regs() -> &'static [Arm64Reg] { REG_PLAN.gp_transient }
+pub(super) fn gp_transient_regs() -> &'static [Arm64Reg] {
+    REG_PLAN.gp_transient
+}
 
 /// Caller-saved portion of the GP local cache (after the callee-saved prefix).
 pub(super) fn gp_caller_saved_cache() -> &'static [Arm64Reg] {
@@ -330,7 +323,9 @@ pub(super) fn gp_caller_saved_cache() -> &'static [Arm64Reg] {
 }
 
 /// All FP transient registers (all caller-saved).
-pub(super) fn fp_transient_regs() -> &'static [Arm64FpReg] { REG_PLAN.fp_transient }
+pub(super) fn fp_transient_regs() -> &'static [Arm64FpReg] {
+    REG_PLAN.fp_transient
+}
 
 /// Caller-saved portion of the FP local cache (after the callee-saved prefix).
 pub(super) fn fp_caller_saved_cache() -> &'static [Arm64FpReg] {
@@ -338,14 +333,12 @@ pub(super) fn fp_caller_saved_cache() -> &'static [Arm64FpReg] {
 }
 
 /// Total number of GP registers saved by the preserved-helper.
-const PRESERVED_GP_COUNT: usize =
-    REG_PLAN.gp_transient.len()
-    + REG_PLAN.gp_local_cache.len() - REG_PLAN.gp_local_cache_callee_saved;
+const PRESERVED_GP_COUNT: usize = REG_PLAN.gp_transient.len() + REG_PLAN.gp_local_cache.len()
+    - REG_PLAN.gp_local_cache_callee_saved;
 
 /// Total number of FP registers saved by the preserved-helper.
-const PRESERVED_FP_COUNT: usize =
-    REG_PLAN.fp_transient.len()
-    + REG_PLAN.fp_local_cache.len() - REG_PLAN.fp_local_cache_callee_saved;
+const PRESERVED_FP_COUNT: usize = REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len()
+    - REG_PLAN.fp_local_cache_callee_saved;
 
 const fn preserved_io_size() -> u32 {
     crate::vm::runtime::preserved::io::SLOT_COUNT as u32 * 8

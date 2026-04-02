@@ -14,10 +14,10 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCompareKind,
-            MachineConvertOp, MachineEdge, MachineFloatBinaryOp, MachineFloatUnaryOp,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionAbi,
-            MachineCallExternal, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCallExternal,
+            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatBinaryOp,
+            MachineFloatUnaryOp, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
+            MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineProgram, MachineReg, MachineShiftOp, MachineSign,
             MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
@@ -29,8 +29,8 @@ use crate::{
         result_buffer::ResultBuffer,
         runtime::{
             code::{CompiledNativeModule, NativeCode},
-            context::NativeContext,
             common::NativeCallStatus,
+            context::NativeContext,
         },
         store::Store,
         value::Value,
@@ -243,11 +243,7 @@ impl<'a> Emulator<'a> {
                     callee_frame_base,
                     call_link_base: _,
                     continuation,
-                } => self.enter_indirect_call(
-                    *callee_target,
-                    *callee_frame_base,
-                    *continuation,
-                ),
+                } => self.enter_indirect_call(*callee_target, *callee_frame_base, *continuation),
                 MachineTerminator::Return => {
                     if self.handle_return()? {
                         return Ok(());
@@ -707,12 +703,9 @@ impl<'a> Emulator<'a> {
     }
 
     fn execute_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
-        let metadata = self
-            .compiled
-            .const_ptr(call.metadata)
-            .ok_or_else(|| {
-                WasmError::internal("machine external-call metadata is out of range".into())
-            })?;
+        let metadata = self.compiled.const_ptr(call.metadata).ok_or_else(|| {
+            WasmError::internal("machine external-call metadata is out of range".into())
+        })?;
         let entry = crate::vm::runtime::external::call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeCallStatus::Ok as u32 {
@@ -774,8 +767,8 @@ impl<'a> Emulator<'a> {
         let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("indirect local call requires callee call scratch".into())
         })?;
-        let continuation_slot = call_scratch.base_slot
-            + (self.compiled.abi().call_link.continuation_offset / 8) as u16;
+        let continuation_slot =
+            call_scratch.base_slot + (self.compiled.abi().call_link.continuation_offset / 8) as u16;
         let stored = unsafe { *callee_fp.add(continuation_slot as usize) } as u32;
         if stored != continuation.0 {
             return Err(WasmError::internal(
@@ -1368,7 +1361,9 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         }
         MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::InvalidConversion => WasmError::trap("invalid conversion to integer".into()),
+        MachineTrapKind::InvalidConversion => {
+            WasmError::trap("invalid conversion to integer".into())
+        }
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
     }
@@ -2198,7 +2193,7 @@ mod tests {
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
                 MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
                 MachineIndexExtend, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
-                MachineModule, MachineProgram, MachineReg, MachineModuleAbi, MachineSign,
+                MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineSign,
                 MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
                 MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },

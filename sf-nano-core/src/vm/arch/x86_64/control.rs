@@ -61,12 +61,9 @@ impl<'a> X86_64Backend<'a> {
                 callee_frame_base,
                 call_link_base,
                 continuation,
-            } => self.lower_call_direct(
-                *callee,
-                *callee_frame_base,
-                *call_link_base,
-                *continuation,
-            ),
+            } => {
+                self.lower_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation)
+            }
             MachineTerminator::CallIndirect {
                 callee_target,
                 callee_entry,
@@ -164,9 +161,12 @@ impl<'a> X86_64Backend<'a> {
                 let cc = match kind {
                     MachineCompareKind::Eq => Cc::E,
                     MachineCompareKind::Ne => Cc::NE,
-                    _ => return Err(WasmError::internal(
-                        alloc::format!("TestBits branch: unsupported compare kind {:?}", kind),
-                    )),
+                    _ => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "TestBits branch: unsupported compare kind {:?}",
+                            kind
+                        )))
+                    }
                 };
                 if else_fallthrough {
                     if let Some(label) = then_label {
@@ -220,9 +220,12 @@ impl<'a> X86_64Backend<'a> {
                 let cc = match kind {
                     MachineCompareKind::Eq => Cc::E,
                     MachineCompareKind::Ne => Cc::NE,
-                    _ => return Err(WasmError::internal(
-                        alloc::format!("TestBits branch_if: unsupported compare kind {:?}", kind),
-                    )),
+                    _ => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "TestBits branch_if: unsupported compare kind {:?}",
+                            kind
+                        )))
+                    }
                 };
                 self.emit_jcc(cc, trap_label);
             }
@@ -241,14 +244,19 @@ impl<'a> X86_64Backend<'a> {
         then_fallthrough: bool,
         else_fallthrough: bool,
     ) -> Result<(), WasmError> {
-        let lhs_fp = self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
+        let lhs_fp =
+            self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
         let rhs_fp_scratch = if lhs_fp != self.fp_scratch.reg(0) as u32 {
             self.fp_scratch.reg(0)
         } else {
             self.fp_scratch.reg(2)
         };
         if matches!(rhs, MachineValue::Imm64(0)) {
-            enc::xorpd(&mut self.core.text, rhs_fp_scratch as u8, rhs_fp_scratch as u8);
+            enc::xorpd(
+                &mut self.core.text,
+                rhs_fp_scratch as u8,
+                rhs_fp_scratch as u8,
+            );
             match width {
                 MachineFloatWidth::F32 => {
                     enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
@@ -258,7 +266,8 @@ impl<'a> X86_64Backend<'a> {
                 }
             };
         } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), rhs_fp_scratch)?;
+            let rhs_fp =
+                self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), rhs_fp_scratch)?;
             match width {
                 MachineFloatWidth::F32 => {
                     enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
@@ -321,11 +330,25 @@ impl<'a> X86_64Backend<'a> {
         // Load continuation address into RDI (caller-saved, not self.gp_scratch.reg(0)=RAX)
         enc::load_64(&mut self.core.text, X86Reg::RDI, fp, continuation_offset);
         // Load caller frame pointer
-        enc::load_64(&mut self.core.text, self.gp_scratch.reg(1), fp, caller_frame_offset);
+        enc::load_64(
+            &mut self.core.text,
+            self.gp_scratch.reg(1),
+            fp,
+            caller_frame_offset,
+        );
         // Load caller result base offset
-        enc::load_64(&mut self.core.text, self.gp_scratch.reg(0), fp, caller_result_base_offset);
+        enc::load_64(
+            &mut self.core.text,
+            self.gp_scratch.reg(0),
+            fp,
+            caller_result_base_offset,
+        );
         // result_ptr = caller_fp + result_base
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1));
+        enc::add_rr_64(
+            &mut self.core.text,
+            self.gp_scratch.reg(0),
+            self.gp_scratch.reg(1),
+        );
 
         // Copy results
         if let Some(results) = runtime.return_results {
@@ -336,7 +359,12 @@ impl<'a> X86_64Backend<'a> {
                     fp,
                     (results.base_slot as i32 + index) * 8,
                 );
-                enc::store_64(&mut self.core.text, self.gp_scratch.reg(0), index * 8, X86Reg::RCX);
+                enc::store_64(
+                    &mut self.core.text,
+                    self.gp_scratch.reg(0),
+                    index * 8,
+                    X86Reg::RCX,
+                );
             }
         }
 
@@ -386,7 +414,11 @@ impl<'a> X86_64Backend<'a> {
         });
 
         // Set FP to callee frame
-        enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), callee_fp);
+        enc::mov_rr_64(
+            &mut self.core.text,
+            map_fixed_reg(MACHINE_FP_REG),
+            callee_fp,
+        );
         // Jump to callee
         enc::jmp_reg(&mut self.core.text, self.gp_scratch.reg(0));
         Ok(())
@@ -425,7 +457,11 @@ impl<'a> X86_64Backend<'a> {
         );
 
         let callee_entry = self.map_gp_reg(callee_entry)?;
-        enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), callee_fp);
+        enc::mov_rr_64(
+            &mut self.core.text,
+            map_fixed_reg(MACHINE_FP_REG),
+            callee_fp,
+        );
         enc::jmp_reg(&mut self.core.text, callee_entry);
         Ok(())
     }
@@ -452,10 +488,20 @@ impl<'a> X86_64Backend<'a> {
         // Clamp index to (entries.len() - 1)
         self.materialize_u64(X86Reg::RAX, (entries.len() - 1) as u64);
         enc::cmp_rr_64(&mut self.core.text, index_reg, X86Reg::RAX);
-        enc::cmovcc_rr_64(&mut self.core.text, Cc::A, self.gp_scratch.reg(1), X86Reg::RAX);
+        enc::cmovcc_rr_64(
+            &mut self.core.text,
+            Cc::A,
+            self.gp_scratch.reg(1),
+            X86Reg::RAX,
+        );
         if index_reg != self.gp_scratch.reg(1) {
             enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), index_reg);
-            enc::cmovcc_rr_64(&mut self.core.text, Cc::A, self.gp_scratch.reg(1), X86Reg::RAX);
+            enc::cmovcc_rr_64(
+                &mut self.core.text,
+                Cc::A,
+                self.gp_scratch.reg(1),
+                X86Reg::RAX,
+            );
         }
 
         // Load table base address (absolute, patched later)
@@ -464,9 +510,18 @@ impl<'a> X86_64Backend<'a> {
 
         // index * 8 for table entry
         enc::shl_imm_64(&mut self.core.text, self.gp_scratch.reg(1), 3);
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(1));
+        enc::add_rr_64(
+            &mut self.core.text,
+            self.gp_scratch.reg(0),
+            self.gp_scratch.reg(1),
+        );
         // Load target address from table
-        enc::load_64(&mut self.core.text, self.gp_scratch.reg(0), self.gp_scratch.reg(0), 0);
+        enc::load_64(
+            &mut self.core.text,
+            self.gp_scratch.reg(0),
+            self.gp_scratch.reg(0),
+            0,
+        );
         enc::jmp_reg(&mut self.core.text, self.gp_scratch.reg(0));
 
         // Emit jump table entries (each is a u64 absolute address, patched later)

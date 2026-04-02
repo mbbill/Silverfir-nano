@@ -2,9 +2,7 @@ use alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
-    vm::middle::ssa_ir::ir::{
-        SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue,
-    },
+    vm::middle::ssa_ir::ir::{SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
 };
 
 fn count_operand_use(operand: &SsaOperand, uses: &mut BTreeMap<SsaValue, u32>) {
@@ -118,7 +116,9 @@ pub(super) fn two_args(args: &[SsaOperand]) -> Result<(SsaOperand, SsaOperand), 
     }
 }
 
-pub(super) fn three_args(args: &[SsaOperand]) -> Result<(SsaOperand, SsaOperand, SsaOperand), WasmError> {
+pub(super) fn three_args(
+    args: &[SsaOperand],
+) -> Result<(SsaOperand, SsaOperand, SsaOperand), WasmError> {
     match args {
         [a, b, c] => Ok((*a, *b, *c)),
         _ => Err(WasmError::internal(

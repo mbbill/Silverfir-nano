@@ -20,11 +20,9 @@ use crate::{
 
 use super::{
     lower_ops::lower_block_body_op,
-    state::{BlockState, EntryState, ValueAlloc},
+    lower_term::{canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator},
     spill_plan::PreparedOp,
-    lower_term::{
-        canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator,
-    },
+    state::{BlockState, EntryState, ValueAlloc},
 };
 
 #[derive(Clone, Debug)]

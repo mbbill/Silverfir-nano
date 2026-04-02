@@ -2,10 +2,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::vm::middle::{
-    ssa_ir::ir::{SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
     frame::FrameLayoutPlan,
+    ssa_ir::ir::{SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
 };
-
 
 pub(super) fn optimize_ssa(program: &mut SsaProgram, frame: FrameLayoutPlan) {
     for block in &mut program.blocks {
@@ -76,8 +75,7 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
                     })
                     .collect();
                 if const_args.len() == args.len() {
-                    if let Some((result_bits, result_prim)) =
-                        try_eval(op.primitive(), &const_args)
+                    if let Some((result_bits, result_prim)) = try_eval(op.primitive(), &const_args)
                     {
                         if let Some(r) = results.first() {
                             if let Some(slot) = known_const.get_mut(r.0 as usize) {
@@ -219,17 +217,50 @@ fn try_eval(
 
     let bits = match kind {
         // --- i32 binary ---
-        P::I32Add => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_add(b) as u64 }
-        P::I32Sub => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_sub(b) as u64 }
-        P::I32Mul => { let (a, b) = (args[0] as u32, args[1] as u32); a.wrapping_mul(b) as u64 }
-        P::I32DivS => { let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32); if b == 0 || (a == i32::MIN && b == -1) { return None; } (a.wrapping_div(b) as u32) as u64 }
-        P::I32DivU => { let (a, b) = (args[0] as u32, args[1] as u32); if b == 0 { return None; } (a / b) as u64 }
-        P::I32RemS => { let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32); if b == 0 { return None; } (a.wrapping_rem(b) as u32) as u64 }
-        P::I32RemU => { let (a, b) = (args[0] as u32, args[1] as u32); if b == 0 { return None; } (a % b) as u64 }
+        P::I32Add => {
+            let (a, b) = (args[0] as u32, args[1] as u32);
+            a.wrapping_add(b) as u64
+        }
+        P::I32Sub => {
+            let (a, b) = (args[0] as u32, args[1] as u32);
+            a.wrapping_sub(b) as u64
+        }
+        P::I32Mul => {
+            let (a, b) = (args[0] as u32, args[1] as u32);
+            a.wrapping_mul(b) as u64
+        }
+        P::I32DivS => {
+            let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32);
+            if b == 0 || (a == i32::MIN && b == -1) {
+                return None;
+            }
+            (a.wrapping_div(b) as u32) as u64
+        }
+        P::I32DivU => {
+            let (a, b) = (args[0] as u32, args[1] as u32);
+            if b == 0 {
+                return None;
+            }
+            (a / b) as u64
+        }
+        P::I32RemS => {
+            let (a, b) = (args[0] as u32 as i32, args[1] as u32 as i32);
+            if b == 0 {
+                return None;
+            }
+            (a.wrapping_rem(b) as u32) as u64
+        }
+        P::I32RemU => {
+            let (a, b) = (args[0] as u32, args[1] as u32);
+            if b == 0 {
+                return None;
+            }
+            (a % b) as u64
+        }
         P::I32And => (args[0] as u32 & args[1] as u32) as u64,
-        P::I32Or  => (args[0] as u32 | args[1] as u32) as u64,
+        P::I32Or => (args[0] as u32 | args[1] as u32) as u64,
         P::I32Xor => (args[0] as u32 ^ args[1] as u32) as u64,
-        P::I32Shl  => ((args[0] as u32).wrapping_shl(args[1] as u32 & 31)) as u64,
+        P::I32Shl => ((args[0] as u32).wrapping_shl(args[1] as u32 & 31)) as u64,
         P::I32ShrS => ((args[0] as u32 as i32).wrapping_shr(args[1] as u32 & 31) as u32) as u64,
         P::I32ShrU => ((args[0] as u32).wrapping_shr(args[1] as u32 & 31)) as u64,
         P::I32Rotl => ((args[0] as u32).rotate_left(args[1] as u32 & 31)) as u64,
@@ -238,50 +269,102 @@ fn try_eval(
         P::I64Add => args[0].wrapping_add(args[1]),
         P::I64Sub => args[0].wrapping_sub(args[1]),
         P::I64Mul => args[0].wrapping_mul(args[1]),
-        P::I64DivS => { let (a, b) = (args[0] as i64, args[1] as i64); if b == 0 || (a == i64::MIN && b == -1) { return None; } a.wrapping_div(b) as u64 }
-        P::I64DivU => { if args[1] == 0 { return None; } args[0] / args[1] }
-        P::I64RemS => { let (a, b) = (args[0] as i64, args[1] as i64); if b == 0 { return None; } a.wrapping_rem(b) as u64 }
-        P::I64RemU => { if args[1] == 0 { return None; } args[0] % args[1] }
+        P::I64DivS => {
+            let (a, b) = (args[0] as i64, args[1] as i64);
+            if b == 0 || (a == i64::MIN && b == -1) {
+                return None;
+            }
+            a.wrapping_div(b) as u64
+        }
+        P::I64DivU => {
+            if args[1] == 0 {
+                return None;
+            }
+            args[0] / args[1]
+        }
+        P::I64RemS => {
+            let (a, b) = (args[0] as i64, args[1] as i64);
+            if b == 0 {
+                return None;
+            }
+            a.wrapping_rem(b) as u64
+        }
+        P::I64RemU => {
+            if args[1] == 0 {
+                return None;
+            }
+            args[0] % args[1]
+        }
         P::I64And => args[0] & args[1],
-        P::I64Or  => args[0] | args[1],
+        P::I64Or => args[0] | args[1],
         P::I64Xor => args[0] ^ args[1],
-        P::I64Shl  => args[0].wrapping_shl((args[1] & 63) as u32),
+        P::I64Shl => args[0].wrapping_shl((args[1] & 63) as u32),
         P::I64ShrS => (args[0] as i64).wrapping_shr((args[1] & 63) as u32) as u64,
         P::I64ShrU => args[0].wrapping_shr((args[1] & 63) as u32),
         P::I64Rotl => args[0].rotate_left((args[1] & 63) as u32),
         P::I64Rotr => args[0].rotate_right((args[1] & 63) as u32),
         // --- f32 binary ---
-        P::F32Add => { let r = f32::from_bits(args[0] as u32) + f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
-        P::F32Sub => { let r = f32::from_bits(args[0] as u32) - f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
-        P::F32Mul => { let r = f32::from_bits(args[0] as u32) * f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
-        P::F32Div => { let r = f32::from_bits(args[0] as u32) / f32::from_bits(args[1] as u32); canon_f32(r) as u64 }
-        P::F32Min => { wasm_f32_min(args[0] as u32, args[1] as u32) as u64 }
-        P::F32Max => { wasm_f32_max(args[0] as u32, args[1] as u32) as u64 }
-        P::F32Copysign => { let r = f32::from_bits(args[0] as u32).copysign(f32::from_bits(args[1] as u32)); r.to_bits() as u64 }
+        P::F32Add => {
+            let r = f32::from_bits(args[0] as u32) + f32::from_bits(args[1] as u32);
+            canon_f32(r) as u64
+        }
+        P::F32Sub => {
+            let r = f32::from_bits(args[0] as u32) - f32::from_bits(args[1] as u32);
+            canon_f32(r) as u64
+        }
+        P::F32Mul => {
+            let r = f32::from_bits(args[0] as u32) * f32::from_bits(args[1] as u32);
+            canon_f32(r) as u64
+        }
+        P::F32Div => {
+            let r = f32::from_bits(args[0] as u32) / f32::from_bits(args[1] as u32);
+            canon_f32(r) as u64
+        }
+        P::F32Min => wasm_f32_min(args[0] as u32, args[1] as u32) as u64,
+        P::F32Max => wasm_f32_max(args[0] as u32, args[1] as u32) as u64,
+        P::F32Copysign => {
+            let r = f32::from_bits(args[0] as u32).copysign(f32::from_bits(args[1] as u32));
+            r.to_bits() as u64
+        }
         // --- f64 binary ---
-        P::F64Add => { let r = f64::from_bits(args[0]) + f64::from_bits(args[1]); canon_f64(r) }
-        P::F64Sub => { let r = f64::from_bits(args[0]) - f64::from_bits(args[1]); canon_f64(r) }
-        P::F64Mul => { let r = f64::from_bits(args[0]) * f64::from_bits(args[1]); canon_f64(r) }
-        P::F64Div => { let r = f64::from_bits(args[0]) / f64::from_bits(args[1]); canon_f64(r) }
-        P::F64Min => { wasm_f64_min(args[0], args[1]) }
-        P::F64Max => { wasm_f64_max(args[0], args[1]) }
-        P::F64Copysign => { let r = f64::from_bits(args[0]).copysign(f64::from_bits(args[1])); r.to_bits() }
+        P::F64Add => {
+            let r = f64::from_bits(args[0]) + f64::from_bits(args[1]);
+            canon_f64(r)
+        }
+        P::F64Sub => {
+            let r = f64::from_bits(args[0]) - f64::from_bits(args[1]);
+            canon_f64(r)
+        }
+        P::F64Mul => {
+            let r = f64::from_bits(args[0]) * f64::from_bits(args[1]);
+            canon_f64(r)
+        }
+        P::F64Div => {
+            let r = f64::from_bits(args[0]) / f64::from_bits(args[1]);
+            canon_f64(r)
+        }
+        P::F64Min => wasm_f64_min(args[0], args[1]),
+        P::F64Max => wasm_f64_max(args[0], args[1]),
+        P::F64Copysign => {
+            let r = f64::from_bits(args[0]).copysign(f64::from_bits(args[1]));
+            r.to_bits()
+        }
         // --- i32/i64 compare ---
-        P::I32Eq  => bool32(args[0] as u32 == args[1] as u32),
-        P::I32Ne  => bool32(args[0] as u32 != args[1] as u32),
-        P::I32LtS => bool32((args[0] as u32 as i32) <  (args[1] as u32 as i32)),
+        P::I32Eq => bool32(args[0] as u32 == args[1] as u32),
+        P::I32Ne => bool32(args[0] as u32 != args[1] as u32),
+        P::I32LtS => bool32((args[0] as u32 as i32) < (args[1] as u32 as i32)),
         P::I32LtU => bool32((args[0] as u32) < (args[1] as u32)),
-        P::I32GtS => bool32((args[0] as u32 as i32) >  (args[1] as u32 as i32)),
+        P::I32GtS => bool32((args[0] as u32 as i32) > (args[1] as u32 as i32)),
         P::I32GtU => bool32((args[0] as u32) > (args[1] as u32)),
         P::I32LeS => bool32((args[0] as u32 as i32) <= (args[1] as u32 as i32)),
         P::I32LeU => bool32((args[0] as u32) <= (args[1] as u32)),
         P::I32GeS => bool32((args[0] as u32 as i32) >= (args[1] as u32 as i32)),
         P::I32GeU => bool32((args[0] as u32) >= (args[1] as u32)),
-        P::I64Eq  => bool32(args[0] == args[1]),
-        P::I64Ne  => bool32(args[0] != args[1]),
-        P::I64LtS => bool32((args[0] as i64) <  (args[1] as i64)),
+        P::I64Eq => bool32(args[0] == args[1]),
+        P::I64Ne => bool32(args[0] != args[1]),
+        P::I64LtS => bool32((args[0] as i64) < (args[1] as i64)),
         P::I64LtU => bool32(args[0] < args[1]),
-        P::I64GtS => bool32((args[0] as i64) >  (args[1] as i64)),
+        P::I64GtS => bool32((args[0] as i64) > (args[1] as i64)),
         P::I64GtU => bool32(args[0] > args[1]),
         P::I64LeS => bool32((args[0] as i64) <= (args[1] as i64)),
         P::I64LeU => bool32(args[0] <= args[1]),
@@ -290,14 +373,14 @@ fn try_eval(
         // --- f32/f64 compare ---
         P::F32Eq => bool32(f32::from_bits(args[0] as u32) == f32::from_bits(args[1] as u32)),
         P::F32Ne => bool32(f32::from_bits(args[0] as u32) != f32::from_bits(args[1] as u32)),
-        P::F32Lt => bool32(f32::from_bits(args[0] as u32) <  f32::from_bits(args[1] as u32)),
-        P::F32Gt => bool32(f32::from_bits(args[0] as u32) >  f32::from_bits(args[1] as u32)),
+        P::F32Lt => bool32(f32::from_bits(args[0] as u32) < f32::from_bits(args[1] as u32)),
+        P::F32Gt => bool32(f32::from_bits(args[0] as u32) > f32::from_bits(args[1] as u32)),
         P::F32Le => bool32(f32::from_bits(args[0] as u32) <= f32::from_bits(args[1] as u32)),
         P::F32Ge => bool32(f32::from_bits(args[0] as u32) >= f32::from_bits(args[1] as u32)),
         P::F64Eq => bool32(f64::from_bits(args[0]) == f64::from_bits(args[1])),
         P::F64Ne => bool32(f64::from_bits(args[0]) != f64::from_bits(args[1])),
-        P::F64Lt => bool32(f64::from_bits(args[0]) <  f64::from_bits(args[1])),
-        P::F64Gt => bool32(f64::from_bits(args[0]) >  f64::from_bits(args[1])),
+        P::F64Lt => bool32(f64::from_bits(args[0]) < f64::from_bits(args[1])),
+        P::F64Gt => bool32(f64::from_bits(args[0]) > f64::from_bits(args[1])),
         P::F64Le => bool32(f64::from_bits(args[0]) <= f64::from_bits(args[1])),
         P::F64Ge => bool32(f64::from_bits(args[0]) >= f64::from_bits(args[1])),
         // --- unary ---
@@ -309,30 +392,30 @@ fn try_eval(
         P::I64Clz => args[0].leading_zeros() as u64,
         P::I64Ctz => args[0].trailing_zeros() as u64,
         P::I64Popcnt => args[0].count_ones() as u64,
-        P::F32Abs     => f32::from_bits(args[0] as u32).abs().to_bits() as u64,
-        P::F32Neg     => (-f32::from_bits(args[0] as u32)).to_bits() as u64,
-        P::F32Ceil    => soft_f32_ceil(args[0] as u32) as u64,
-        P::F32Floor   => soft_f32_floor(args[0] as u32) as u64,
-        P::F32Trunc   => soft_f32_trunc(args[0] as u32) as u64,
+        P::F32Abs => f32::from_bits(args[0] as u32).abs().to_bits() as u64,
+        P::F32Neg => (-f32::from_bits(args[0] as u32)).to_bits() as u64,
+        P::F32Ceil => soft_f32_ceil(args[0] as u32) as u64,
+        P::F32Floor => soft_f32_floor(args[0] as u32) as u64,
+        P::F32Trunc => soft_f32_trunc(args[0] as u32) as u64,
         P::F32Nearest => soft_f32_nearest(args[0] as u32) as u64,
-        P::F32Sqrt    => return None, // no software sqrt in no_std
-        P::F64Abs     => f64::from_bits(args[0]).abs().to_bits(),
-        P::F64Neg     => (-f64::from_bits(args[0])).to_bits(),
-        P::F64Ceil    => soft_f64_ceil(args[0]),
-        P::F64Floor   => soft_f64_floor(args[0]),
-        P::F64Trunc   => soft_f64_trunc(args[0]),
+        P::F32Sqrt => return None, // no software sqrt in no_std
+        P::F64Abs => f64::from_bits(args[0]).abs().to_bits(),
+        P::F64Neg => (-f64::from_bits(args[0])).to_bits(),
+        P::F64Ceil => soft_f64_ceil(args[0]),
+        P::F64Floor => soft_f64_floor(args[0]),
+        P::F64Trunc => soft_f64_trunc(args[0]),
         P::F64Nearest => soft_f64_nearest(args[0]),
-        P::F64Sqrt    => return None, // no software sqrt in no_std
+        P::F64Sqrt => return None, // no software sqrt in no_std
         // --- extensions ---
-        P::I32Extend8S  => ((args[0] as u32 as i8)  as i32 as u32) as u64,
+        P::I32Extend8S => ((args[0] as u32 as i8) as i32 as u32) as u64,
         P::I32Extend16S => ((args[0] as u32 as i16) as i32 as u32) as u64,
-        P::I64Extend8S  => (args[0] as i8  as i64) as u64,
+        P::I64Extend8S => (args[0] as i8 as i64) as u64,
         P::I64Extend16S => (args[0] as i16 as i64) as u64,
         P::I64Extend32S => (args[0] as i32 as i64) as u64,
         // --- conversions ---
-        P::I32WrapI64     => (args[0] as u32) as u64,
-        P::I64ExtendI32S  => ((args[0] as u32 as i32) as i64) as u64,
-        P::I64ExtendI32U  => (args[0] as u32) as u64,
+        P::I32WrapI64 => (args[0] as u32) as u64,
+        P::I64ExtendI32S => ((args[0] as u32 as i32) as i64) as u64,
+        P::I64ExtendI32U => (args[0] as u32) as u64,
         P::I32ReinterpretF32 => args[0] & 0xFFFF_FFFF,
         P::I64ReinterpretF64 => args[0],
         P::F32ReinterpretI32 => args[0] & 0xFFFF_FFFF,
@@ -345,27 +428,151 @@ fn try_eval(
         P::F64ConvertI32U => ((args[0] as u32) as f64).to_bits(),
         P::F64ConvertI64S => ((args[0] as i64) as f64).to_bits(),
         P::F64ConvertI64U => (args[0] as f64).to_bits(),
-        P::F32DemoteF64   => canon_f32(f64::from_bits(args[0]) as f32) as u64,
-        P::F64PromoteF32  => canon_f64(f32::from_bits(args[0] as u32) as f64),
+        P::F32DemoteF64 => canon_f32(f64::from_bits(args[0]) as f32) as u64,
+        P::F64PromoteF32 => canon_f64(f32::from_bits(args[0] as u32) as f64),
         // Trapping truncations: fold only when in range, return None to
         // preserve the runtime trap otherwise.
-        P::I32TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i32::MIN as f32 || f > i32::MAX as f32 { return None; } (f as i32 as u32) as u64 }
-        P::I32TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f32 { return None; } (f as u32) as u64 }
-        P::I32TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i32::MIN as f64 || f > i32::MAX as f64 { return None; } (f as i32 as u32) as u64 }
-        P::I32TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u32::MAX as f64 { return None; } (f as u32) as u64 }
-        P::I64TruncF32S => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < i64::MIN as f32 || f > i64::MAX as f32 { return None; } f as i64 as u64 }
-        P::I64TruncF32U => { let t = soft_f32_trunc(args[0] as u32); let f = f32::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f32 { return None; } f as u64 }
-        P::I64TruncF64S => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < i64::MIN as f64 || f > i64::MAX as f64 { return None; } f as i64 as u64 }
-        P::I64TruncF64U => { let t = soft_f64_trunc(args[0]); let f = f64::from_bits(t); if f.is_nan() || f < 0.0 || f > u64::MAX as f64 { return None; } f as u64 }
+        P::I32TruncF32S => {
+            let t = soft_f32_trunc(args[0] as u32);
+            let f = f32::from_bits(t);
+            if f.is_nan() || f < i32::MIN as f32 || f > i32::MAX as f32 {
+                return None;
+            }
+            (f as i32 as u32) as u64
+        }
+        P::I32TruncF32U => {
+            let t = soft_f32_trunc(args[0] as u32);
+            let f = f32::from_bits(t);
+            if f.is_nan() || f < 0.0 || f > u32::MAX as f32 {
+                return None;
+            }
+            (f as u32) as u64
+        }
+        P::I32TruncF64S => {
+            let t = soft_f64_trunc(args[0]);
+            let f = f64::from_bits(t);
+            if f.is_nan() || f < i32::MIN as f64 || f > i32::MAX as f64 {
+                return None;
+            }
+            (f as i32 as u32) as u64
+        }
+        P::I32TruncF64U => {
+            let t = soft_f64_trunc(args[0]);
+            let f = f64::from_bits(t);
+            if f.is_nan() || f < 0.0 || f > u32::MAX as f64 {
+                return None;
+            }
+            (f as u32) as u64
+        }
+        P::I64TruncF32S => {
+            let t = soft_f32_trunc(args[0] as u32);
+            let f = f32::from_bits(t);
+            if f.is_nan() || f < i64::MIN as f32 || f > i64::MAX as f32 {
+                return None;
+            }
+            f as i64 as u64
+        }
+        P::I64TruncF32U => {
+            let t = soft_f32_trunc(args[0] as u32);
+            let f = f32::from_bits(t);
+            if f.is_nan() || f < 0.0 || f > u64::MAX as f32 {
+                return None;
+            }
+            f as u64
+        }
+        P::I64TruncF64S => {
+            let t = soft_f64_trunc(args[0]);
+            let f = f64::from_bits(t);
+            if f.is_nan() || f < i64::MIN as f64 || f > i64::MAX as f64 {
+                return None;
+            }
+            f as i64 as u64
+        }
+        P::I64TruncF64U => {
+            let t = soft_f64_trunc(args[0]);
+            let f = f64::from_bits(t);
+            if f.is_nan() || f < 0.0 || f > u64::MAX as f64 {
+                return None;
+            }
+            f as u64
+        }
         // Saturating truncations: always produce a defined result.
-        P::I32TruncSatF32S => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() { 0 } else { (f as i32).max(i32::MIN).min(i32::MAX) } as u32) as u64 }
-        P::I32TruncSatF32U => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() || f < 0.0 { 0u32 } else if f >= u32::MAX as f32 { u32::MAX } else { f as u32 }) as u64 }
-        P::I32TruncSatF64S => { let f = f64::from_bits(args[0]); (if f.is_nan() { 0 } else if f <= i32::MIN as f64 - 1.0 { i32::MIN } else if f >= i32::MAX as f64 + 1.0 { i32::MAX } else { f as i32 } as u32) as u64 }
-        P::I32TruncSatF64U => { let f = f64::from_bits(args[0]); (if f.is_nan() || f < 0.0 { 0u32 } else if f >= u32::MAX as f64 + 1.0 { u32::MAX } else { f as u32 }) as u64 }
-        P::I64TruncSatF32S => { let f = f32::from_bits(args[0] as u32); (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64 }
-        P::I64TruncSatF32U => { let f = f32::from_bits(args[0] as u32); if f.is_nan() || f < 0.0 { 0u64 } else if f >= u64::MAX as f32 { u64::MAX } else { f as u64 } }
-        P::I64TruncSatF64S => { let f = f64::from_bits(args[0]); (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64 }
-        P::I64TruncSatF64U => { let f = f64::from_bits(args[0]); if f.is_nan() || f < 0.0 { 0u64 } else if f >= u64::MAX as f64 { u64::MAX } else { f as u64 } }
+        P::I32TruncSatF32S => {
+            let f = f32::from_bits(args[0] as u32);
+            (if f.is_nan() {
+                0
+            } else {
+                (f as i32).max(i32::MIN).min(i32::MAX)
+            } as u32) as u64
+        }
+        P::I32TruncSatF32U => {
+            let f = f32::from_bits(args[0] as u32);
+            (if f.is_nan() || f < 0.0 {
+                0u32
+            } else if f >= u32::MAX as f32 {
+                u32::MAX
+            } else {
+                f as u32
+            }) as u64
+        }
+        P::I32TruncSatF64S => {
+            let f = f64::from_bits(args[0]);
+            (if f.is_nan() {
+                0
+            } else if f <= i32::MIN as f64 - 1.0 {
+                i32::MIN
+            } else if f >= i32::MAX as f64 + 1.0 {
+                i32::MAX
+            } else {
+                f as i32
+            } as u32) as u64
+        }
+        P::I32TruncSatF64U => {
+            let f = f64::from_bits(args[0]);
+            (if f.is_nan() || f < 0.0 {
+                0u32
+            } else if f >= u32::MAX as f64 + 1.0 {
+                u32::MAX
+            } else {
+                f as u32
+            }) as u64
+        }
+        P::I64TruncSatF32S => {
+            let f = f32::from_bits(args[0] as u32);
+            (if f.is_nan() {
+                0i64
+            } else {
+                (f as i64).max(i64::MIN).min(i64::MAX)
+            }) as u64
+        }
+        P::I64TruncSatF32U => {
+            let f = f32::from_bits(args[0] as u32);
+            if f.is_nan() || f < 0.0 {
+                0u64
+            } else if f >= u64::MAX as f32 {
+                u64::MAX
+            } else {
+                f as u64
+            }
+        }
+        P::I64TruncSatF64S => {
+            let f = f64::from_bits(args[0]);
+            (if f.is_nan() {
+                0i64
+            } else {
+                (f as i64).max(i64::MIN).min(i64::MAX)
+            }) as u64
+        }
+        P::I64TruncSatF64U => {
+            let f = f64::from_bits(args[0]);
+            if f.is_nan() || f < 0.0 {
+                0u64
+            } else if f >= u64::MAX as f64 {
+                u64::MAX
+            } else {
+                f as u64
+            }
+        }
         _ => return None,
     };
 
@@ -381,50 +588,88 @@ fn try_eval(
 }
 
 #[inline]
-fn bool32(b: bool) -> u64 { if b { 1 } else { 0 } }
+fn bool32(b: bool) -> u64 {
+    if b {
+        1
+    } else {
+        0
+    }
+}
 
 #[inline]
 fn canon_f32(v: f32) -> u32 {
-    if v.is_nan() { 0x7fc0_0000 } else { v.to_bits() }
+    if v.is_nan() {
+        0x7fc0_0000
+    } else {
+        v.to_bits()
+    }
 }
 
 #[inline]
 fn canon_f64(v: f64) -> u64 {
-    if v.is_nan() { 0x7ff8_0000_0000_0000 } else { v.to_bits() }
+    if v.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        v.to_bits()
+    }
 }
 
 fn wasm_f32_min(a: u32, b: u32) -> u32 {
     let (fa, fb) = (f32::from_bits(a), f32::from_bits(b));
-    if fa.is_nan() || fb.is_nan() { return 0x7fc0_0000; }
+    if fa.is_nan() || fb.is_nan() {
+        return 0x7fc0_0000;
+    }
     if fa == 0.0 && fb == 0.0 {
-        return if (a | b) & 0x8000_0000 != 0 { 0x8000_0000 } else { 0 };
+        return if (a | b) & 0x8000_0000 != 0 {
+            0x8000_0000
+        } else {
+            0
+        };
     }
     canon_f32(fa.min(fb))
 }
 
 fn wasm_f32_max(a: u32, b: u32) -> u32 {
     let (fa, fb) = (f32::from_bits(a), f32::from_bits(b));
-    if fa.is_nan() || fb.is_nan() { return 0x7fc0_0000; }
+    if fa.is_nan() || fb.is_nan() {
+        return 0x7fc0_0000;
+    }
     if fa == 0.0 && fb == 0.0 {
-        return if (a & b) & 0x8000_0000 != 0 { 0x8000_0000 } else { 0 };
+        return if (a & b) & 0x8000_0000 != 0 {
+            0x8000_0000
+        } else {
+            0
+        };
     }
     canon_f32(fa.max(fb))
 }
 
 fn wasm_f64_min(a: u64, b: u64) -> u64 {
     let (fa, fb) = (f64::from_bits(a), f64::from_bits(b));
-    if fa.is_nan() || fb.is_nan() { return 0x7ff8_0000_0000_0000; }
+    if fa.is_nan() || fb.is_nan() {
+        return 0x7ff8_0000_0000_0000;
+    }
     if fa == 0.0 && fb == 0.0 {
-        return if (a | b) & 0x8000_0000_0000_0000 != 0 { 0x8000_0000_0000_0000 } else { 0 };
+        return if (a | b) & 0x8000_0000_0000_0000 != 0 {
+            0x8000_0000_0000_0000
+        } else {
+            0
+        };
     }
     canon_f64(fa.min(fb))
 }
 
 fn wasm_f64_max(a: u64, b: u64) -> u64 {
     let (fa, fb) = (f64::from_bits(a), f64::from_bits(b));
-    if fa.is_nan() || fb.is_nan() { return 0x7ff8_0000_0000_0000; }
+    if fa.is_nan() || fb.is_nan() {
+        return 0x7ff8_0000_0000_0000;
+    }
     if fa == 0.0 && fb == 0.0 {
-        return if (a & b) & 0x8000_0000_0000_0000 != 0 { 0x8000_0000_0000_0000 } else { 0 };
+        return if (a & b) & 0x8000_0000_0000_0000 != 0 {
+            0x8000_0000_0000_0000
+        } else {
+            0
+        };
     }
     canon_f64(fa.max(fb))
 }
@@ -433,19 +678,31 @@ fn wasm_f64_max(a: u64, b: u64) -> u64 {
 
 fn soft_f32_trunc(bits: u32) -> u32 {
     let f = f32::from_bits(bits);
-    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    if f.is_nan() || f.is_infinite() || f == 0.0 {
+        return bits;
+    }
     let exp = ((bits >> 23) & 0xFF) as i32 - 127;
-    if exp < 0 { return bits & 0x8000_0000; } // |f| < 1 → ±0
-    if exp >= 23 { return bits; }
+    if exp < 0 {
+        return bits & 0x8000_0000;
+    } // |f| < 1 → ±0
+    if exp >= 23 {
+        return bits;
+    }
     f32::from_bits(bits & !(0x007F_FFFFu32 >> exp)).to_bits()
 }
 
 fn soft_f64_trunc(bits: u64) -> u64 {
     let f = f64::from_bits(bits);
-    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    if f.is_nan() || f.is_infinite() || f == 0.0 {
+        return bits;
+    }
     let exp = ((bits >> 52) & 0x7FF) as i32 - 1023;
-    if exp < 0 { return bits & 0x8000_0000_0000_0000; }
-    if exp >= 52 { return bits; }
+    if exp < 0 {
+        return bits & 0x8000_0000_0000_0000;
+    }
+    if exp >= 52 {
+        return bits;
+    }
     f64::from_bits(bits & !(0x000F_FFFF_FFFF_FFFFu64 >> exp)).to_bits()
 }
 
@@ -454,51 +711,87 @@ fn soft_f32_floor(bits: u32) -> u32 {
     let f = f32::from_bits(bits);
     let ft = f32::from_bits(t);
     // floor = trunc unless negative and fractional part exists
-    if f < ft { (ft - 1.0).to_bits() } else { t }
+    if f < ft {
+        (ft - 1.0).to_bits()
+    } else {
+        t
+    }
 }
 
 fn soft_f64_floor(bits: u64) -> u64 {
     let t = soft_f64_trunc(bits);
     let f = f64::from_bits(bits);
     let ft = f64::from_bits(t);
-    if f < ft { (ft - 1.0).to_bits() } else { t }
+    if f < ft {
+        (ft - 1.0).to_bits()
+    } else {
+        t
+    }
 }
 
 fn soft_f32_ceil(bits: u32) -> u32 {
     let t = soft_f32_trunc(bits);
     let f = f32::from_bits(bits);
     let ft = f32::from_bits(t);
-    if f > ft { (ft + 1.0).to_bits() } else { t }
+    if f > ft {
+        (ft + 1.0).to_bits()
+    } else {
+        t
+    }
 }
 
 fn soft_f64_ceil(bits: u64) -> u64 {
     let t = soft_f64_trunc(bits);
     let f = f64::from_bits(bits);
     let ft = f64::from_bits(t);
-    if f > ft { (ft + 1.0).to_bits() } else { t }
+    if f > ft {
+        (ft + 1.0).to_bits()
+    } else {
+        t
+    }
 }
 
 fn soft_f32_nearest(bits: u32) -> u32 {
     let f = f32::from_bits(bits);
-    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    if f.is_nan() || f.is_infinite() || f == 0.0 {
+        return bits;
+    }
     let t = f32::from_bits(soft_f32_trunc(bits));
     let d = (f - t).abs();
-    if d < 0.5 { return t.to_bits(); }
-    if d > 0.5 { return (t + f.signum()).to_bits(); }
+    if d < 0.5 {
+        return t.to_bits();
+    }
+    if d > 0.5 {
+        return (t + f.signum()).to_bits();
+    }
     // ties to even
     let r = t + f.signum();
-    if (r as i64) % 2 == 0 { r.to_bits() } else { t.to_bits() }
+    if (r as i64) % 2 == 0 {
+        r.to_bits()
+    } else {
+        t.to_bits()
+    }
 }
 
 fn soft_f64_nearest(bits: u64) -> u64 {
     let f = f64::from_bits(bits);
-    if f.is_nan() || f.is_infinite() || f == 0.0 { return bits; }
+    if f.is_nan() || f.is_infinite() || f == 0.0 {
+        return bits;
+    }
     let t = f64::from_bits(soft_f64_trunc(bits));
     let d = (f - t).abs();
-    if d < 0.5 { return t.to_bits(); }
-    if d > 0.5 { return (t + f.signum()).to_bits(); }
+    if d < 0.5 {
+        return t.to_bits();
+    }
+    if d > 0.5 {
+        return (t + f.signum()).to_bits();
+    }
     let r = t + f.signum();
-    if (r as i64) % 2 == 0 { r.to_bits() } else { t.to_bits() }
+    if (r as i64) % 2 == 0 {
+        r.to_bits()
+    } else {
+        t.to_bits()
+    }
 }
 
 /// Mark values that appear in terminator edge bindings or as branch/table
@@ -511,17 +804,29 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
     };
     match term {
         SsaTerminator::Goto(edge) => {
-            for b in &edge.bindings { mark(b.value); }
+            for b in &edge.bindings {
+                mark(b.value);
+            }
         }
-        SsaTerminator::Branch { cond, then_edge, else_edge } => {
+        SsaTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
             mark(*cond);
-            for b in &then_edge.bindings { mark(b.value); }
-            for b in &else_edge.bindings { mark(b.value); }
+            for b in &then_edge.bindings {
+                mark(b.value);
+            }
+            for b in &else_edge.bindings {
+                mark(b.value);
+            }
         }
         SsaTerminator::BrTable { index, entries } => {
             mark(*index);
             for edge in entries {
-                for b in &edge.bindings { mark(b.value); }
+                for b in &edge.bindings {
+                    mark(b.value);
+                }
             }
         }
         SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
@@ -762,6 +1067,7 @@ fn resolve_alias(value: SsaValue, aliases: &[Option<SsaValue>]) -> SsaValue {
 mod tests {
     use alloc::vec::Vec;
 
+    use super::optimize_ssa;
     use crate::value_type::ValueType;
     use crate::vm::{
         middle::{
@@ -774,7 +1080,6 @@ mod tests {
         },
         wasm::primitive_op::PrimitiveOpKind,
     };
-    use super::optimize_ssa;
 
     #[test]
     fn forwards_store_reload_when_source_already_lives_long_enough() {
@@ -809,7 +1114,10 @@ mod tests {
                     crate::vm::middle::ssa_ir::ir::SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                            args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1))],
+                            args: alloc::vec![
+                                SsaOperand::Value(SsaValue(0)),
+                                SsaOperand::Value(SsaValue(1))
+                            ],
                             results: alloc::vec![SsaValue(2)],
                         },
                     },
@@ -838,7 +1146,10 @@ mod tests {
         ));
         assert!(matches!(
             &block.ops[1].kind,
-            SsaInstKind::LocalSet { slot: FrameSlot(0), .. }
+            SsaInstKind::LocalSet {
+                slot: FrameSlot(0),
+                ..
+            }
         ));
     }
 
@@ -866,7 +1177,10 @@ mod tests {
                     crate::vm::middle::ssa_ir::ir::SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                            args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1))],
+                            args: alloc::vec![
+                                SsaOperand::Value(SsaValue(0)),
+                                SsaOperand::Value(SsaValue(1))
+                            ],
                             results: alloc::vec![SsaValue(2)],
                         },
                     },

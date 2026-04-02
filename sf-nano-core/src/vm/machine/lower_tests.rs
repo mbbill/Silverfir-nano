@@ -4,20 +4,20 @@ use crate::value_type::ValueType;
 use crate::vm::{
     backend::BackendConfig,
     machine::{
-        lower_module, LowerFunctionInput, LowerModuleInput,
+        lower_module,
         machine_ir::{
             MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
-            MachineInstKind, MachineIntBinaryOp, MachineMemWidth,
-            MachineModule, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
-            MACHINE_FIXED_REG_COUNT,
+            MachineInstKind, MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg,
+            MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
+        LowerFunctionInput, LowerModuleInput,
     },
     middle::{
         frame::plan_frame_layout,
         ssa_ir::{
             ir::{
-                CachedLocalInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst,
-                SsaInstKind, SsaLocalCachePrefs, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                CachedLocalInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaInstKind,
+                SsaLocalCachePrefs, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             leaf::SsaLeafOp,
             target::SsaTarget,
@@ -101,7 +101,10 @@ fn lowers_simple_slot_and_add_block() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Value(SsaValue(1))
+                        ],
                         results: alloc::vec![SsaValue(2)],
                     },
                 },
@@ -219,7 +222,11 @@ fn lowers_select_with_wasm_operand_order() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::Select).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1)), SsaOperand::Value(SsaValue(2))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Value(SsaValue(1)),
+                            SsaOperand::Value(SsaValue(2))
+                        ],
                         results: alloc::vec![SsaValue(3)],
                     },
                 },
@@ -266,7 +273,10 @@ fn lowers_select_with_wasm_operand_order() {
 #[test]
 fn native_backend_requires_at_least_one_gp_transient_register() {
     let panic = std::panic::catch_unwind(|| host_backend_config(0, 0, 0, 0));
-    assert!(panic.is_err(), "zero-budget native backend must be rejected");
+    assert!(
+        panic.is_err(),
+        "zero-budget native backend must be rejected"
+    );
 }
 
 #[test]
@@ -600,7 +610,10 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(1)), SsaOperand::Value(SsaValue(2))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(1)),
+                            SsaOperand::Value(SsaValue(2))
+                        ],
                         results: alloc::vec![SsaValue(3)],
                     },
                 },
@@ -738,7 +751,10 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Value(SsaValue(1))
+                        ],
                         results: alloc::vec![],
                     },
                 },
@@ -1768,10 +1784,10 @@ fn preserves_cached_locals_across_block_edges() {
                     },
                     SsaInst {
                         kind: SsaInstKind::LocalSet {
-                        slot: frame.local_slot(0),
-                        src: SsaValue(0),
-                        version: 0,
-                    },
+                            slot: frame.local_slot(0),
+                            src: SsaValue(0),
+                            version: 0,
+                        },
                     },
                 ],
                 terminator: SsaTerminator::Goto(SsaEdge {
@@ -1785,16 +1801,16 @@ fn preserves_cached_locals_across_block_edges() {
                 ops: alloc::vec![
                     SsaInst {
                         kind: SsaInstKind::LocalGet {
-                        slot: frame.local_slot(0),
-                        dst: SsaValue(1),
-                    },
+                            slot: frame.local_slot(0),
+                            dst: SsaValue(1),
+                        },
                     },
                     SsaInst {
                         kind: SsaInstKind::LocalSet {
-                        slot: frame.local_slot(0),
-                        src: SsaValue(1),
-                        version: 0,
-                    },
+                            slot: frame.local_slot(0),
+                            src: SsaValue(1),
+                            version: 0,
+                        },
                     },
                 ],
                 terminator: SsaTerminator::Return { results: None },
@@ -2300,9 +2316,18 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             ..
         }
     ));
-    assert!(matches!(program.blocks[10].ops[0].kind, MachineInstKind::CallExternal(_)));
-    assert!(matches!(program.blocks[10].ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(program.blocks[10].ops[2].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(
+        program.blocks[10].ops[0].kind,
+        MachineInstKind::CallExternal(_)
+    ));
+    assert!(matches!(
+        program.blocks[10].ops[1].kind,
+        MachineInstKind::Load { .. }
+    ));
+    assert!(matches!(
+        program.blocks[10].ops[2].kind,
+        MachineInstKind::Load { .. }
+    ));
     assert!(matches!(
         program.blocks[10].terminator,
         MachineTerminator::Jump(crate::vm::machine::machine_ir::MachineEdge {
@@ -2978,7 +3003,10 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(1))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Value(SsaValue(1))
+                        ],
                         results: alloc::vec![],
                     },
                 },
@@ -3204,7 +3232,10 @@ fn threads_live_transients_through_split_continuation_params() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(1)), SsaOperand::Value(SsaValue(2))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(1)),
+                            SsaOperand::Value(SsaValue(2))
+                        ],
                         results: alloc::vec![SsaValue(3)],
                     },
                 },
@@ -3304,7 +3335,10 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Value(SsaValue(2))],
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Value(SsaValue(2))
+                        ],
                         results: alloc::vec![],
                     },
                 },

@@ -3,15 +3,11 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType,
-        MachineValue,
+        MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType, MachineValue,
     },
 };
 
-use super::{
-    lower_context::BlockLowerContext,
-    lower_regalloc::canonical_cached_local_mem_width,
-};
+use super::{lower_context::BlockLowerContext, lower_regalloc::canonical_cached_local_mem_width};
 
 impl<'a> BlockLowerContext<'a> {
     /// Reload cached locals from the frame, optionally skipping locals that

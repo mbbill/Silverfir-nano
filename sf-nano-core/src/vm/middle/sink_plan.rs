@@ -180,9 +180,7 @@ mod tests {
     use crate::vm::middle::{
         frame::FrameSlot,
         ssa_ir::{
-            ir::{
-                SsaBlock, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
-            },
+            ir::{SsaBlock, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
             leaf::SsaLeafOp,
             target::SsaTarget,
         },
@@ -335,18 +333,18 @@ mod tests {
                 },
             },
             SsaInst {
-                kind: SsaInstKind::Call(
-                    crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
-                        callee: 0,
-                        args: crate::vm::middle::frame::FrameSpan::new(
-                            crate::vm::middle::frame::FrameSlot(0), 0,
-                        ),
-                        results: crate::vm::middle::frame::FrameSpan::new(
-                            crate::vm::middle::frame::FrameSlot(0), 0,
-                        ),
-                        skip_reload: Vec::new(),
-                    },
-                ),
+                kind: SsaInstKind::Call(crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
+                    callee: 0,
+                    args: crate::vm::middle::frame::FrameSpan::new(
+                        crate::vm::middle::frame::FrameSlot(0),
+                        0,
+                    ),
+                    results: crate::vm::middle::frame::FrameSpan::new(
+                        crate::vm::middle::frame::FrameSlot(0),
+                        0,
+                    ),
+                    skip_reload: Vec::new(),
+                }),
             },
             SsaInst {
                 kind: SsaInstKind::LocalSet {

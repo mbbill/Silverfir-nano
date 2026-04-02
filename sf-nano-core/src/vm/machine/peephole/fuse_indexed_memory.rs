@@ -99,7 +99,11 @@ fn try_fuse_uxtw_indexed(ops: &[MachineInst], term: &MachineTerminator) -> Optio
     };
 
     let mem_idx = base_idx + 1;
-    let later = if ops.len() > mem_idx + 1 { &ops[mem_idx + 1..] } else { &[] };
+    let later = if ops.len() > mem_idx + 1 {
+        &ops[mem_idx + 1..]
+    } else {
+        &[]
+    };
 
     // [mem_idx] load or store using ext_dst with addr.offset == 0
     match ops.get(mem_idx)?.kind {

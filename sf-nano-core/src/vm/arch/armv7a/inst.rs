@@ -14,8 +14,8 @@ use crate::{
     vm::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
         machine::machine_ir::{
-            MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineCallExternal,
+            MachineAddr, MachineBranchCond, MachineCallExternal, MachineCompareKind,
+            MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
@@ -982,9 +982,7 @@ impl<'a> Arm32Backend<'a> {
             },
             MachineIntBinaryOp::Mul => {
                 let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?;
-                self.core
-                    .text
-                    .emit_u32(enc::mul(dst_hw, lhs_hw, *rhs_gp));
+                self.core.text.emit_u32(enc::mul(dst_hw, lhs_hw, *rhs_gp));
                 drop(rhs_gp);
             }
             MachineIntBinaryOp::And => match rhs {
@@ -2058,16 +2056,24 @@ impl<'a> Arm32Backend<'a> {
                 self.core.text.emit_u32(enc::vdiv_d(dd, *dn, *dm));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
-                self.core.text.emit_u32(enc::vadd_s(dd * 2, *dn * 2, *dm * 2));
+                self.core
+                    .text
+                    .emit_u32(enc::vadd_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Sub) => {
-                self.core.text.emit_u32(enc::vsub_s(dd * 2, *dn * 2, *dm * 2));
+                self.core
+                    .text
+                    .emit_u32(enc::vsub_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Mul) => {
-                self.core.text.emit_u32(enc::vmul_s(dd * 2, *dn * 2, *dm * 2));
+                self.core
+                    .text
+                    .emit_u32(enc::vmul_s(dd * 2, *dn * 2, *dm * 2));
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Div) => {
-                self.core.text.emit_u32(enc::vdiv_s(dd * 2, *dn * 2, *dm * 2));
+                self.core
+                    .text
+                    .emit_u32(enc::vdiv_s(dd * 2, *dn * 2, *dm * 2));
             }
 
             // Min/Max: compare, handle NaN, select
@@ -2394,9 +2400,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core.text.emit_u32(enc::vcmp_d(*lhs_d, *rhs_d));
             }
             MachineFloatWidth::F32 => {
-                self.core
-                    .text
-                    .emit_u32(enc::vcmp_s(*lhs_d * 2, *rhs_d * 2));
+                self.core.text.emit_u32(enc::vcmp_s(*lhs_d * 2, *rhs_d * 2));
             }
         }
         self.core.text.emit_u32(enc::vmrs_apsr());
@@ -3049,10 +3053,9 @@ impl<'a> Arm32Backend<'a> {
     // ─── CallExternal ───────────────────────────────────────────────────────
 
     fn compile_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
-        let metadata =
-            self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
-                WasmError::internal("armv7a: external-call metadata is out of range".into())
-            })?;
+        let metadata = self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
+            WasmError::internal("armv7a: external-call metadata is out of range".into())
+        })?;
 
         let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;
 

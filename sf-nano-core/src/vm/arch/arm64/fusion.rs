@@ -9,7 +9,10 @@ use crate::vm::machine::machine_ir::{
     MachineReg, MachineValue,
 };
 
-use super::{enc::{self, Cond}, reg::Arm64Reg};
+use super::{
+    enc::{self, Cond},
+    reg::Arm64Reg,
+};
 
 // ── Immediate instruction selection ──────────────────────────────────────────
 
@@ -26,22 +29,40 @@ pub(super) fn int_binary_imm_inst(
     match (width, op) {
         (MachineIntWidth::I32, MachineIntBinaryOp::Add) => add_sub_imm_inst_32(true, dst, lhs, rhs),
         (MachineIntWidth::I64, MachineIntBinaryOp::Add) => add_sub_imm_inst_64(true, dst, lhs, rhs),
-        (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => add_sub_imm_inst_32(false, dst, lhs, rhs),
-        (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => add_sub_imm_inst_64(false, dst, lhs, rhs),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
+            add_sub_imm_inst_32(false, dst, lhs, rhs)
+        }
+        (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => {
+            add_sub_imm_inst_64(false, dst, lhs, rhs)
+        }
         (MachineIntWidth::I32, MachineIntBinaryOp::Mul) => mul_imm_inst_32(dst, lhs, rhs as u32),
         (MachineIntWidth::I64, MachineIntBinaryOp::Mul) => mul_imm_inst_64(dst, lhs, rhs),
-        (MachineIntWidth::I32, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor)) => {
-            logical_imm_inst_32(op, dst, lhs, rhs as u32)
+        (
+            MachineIntWidth::I32,
+            op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor),
+        ) => logical_imm_inst_32(op, dst, lhs, rhs as u32),
+        (
+            MachineIntWidth::I64,
+            op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor),
+        ) => logical_imm_inst_64(op, dst, lhs, rhs),
+        (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => {
+            Some(enc::lsl_imm_32(dst, lhs, (rhs as u32) & 31))
         }
-        (MachineIntWidth::I64, op @ (MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor)) => {
-            logical_imm_inst_64(op, dst, lhs, rhs)
+        (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => {
+            Some(enc::lsl_imm_64(dst, lhs, (rhs as u32) & 63))
         }
-        (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => Some(enc::lsl_imm_32(dst, lhs, (rhs as u32) & 31)),
-        (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => Some(enc::lsl_imm_64(dst, lhs, (rhs as u32) & 63)),
-        (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => Some(enc::lsr_imm_32(dst, lhs, (rhs as u32) & 31)),
-        (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => Some(enc::lsr_imm_64(dst, lhs, (rhs as u32) & 63)),
-        (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => Some(enc::asr_imm_32(dst, lhs, (rhs as u32) & 31)),
-        (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => Some(enc::asr_imm_64(dst, lhs, (rhs as u32) & 63)),
+        (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => {
+            Some(enc::lsr_imm_32(dst, lhs, (rhs as u32) & 31))
+        }
+        (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => {
+            Some(enc::lsr_imm_64(dst, lhs, (rhs as u32) & 63))
+        }
+        (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => {
+            Some(enc::asr_imm_32(dst, lhs, (rhs as u32) & 31))
+        }
+        (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => {
+            Some(enc::asr_imm_64(dst, lhs, (rhs as u32) & 63))
+        }
         _ => None,
     }
 }
@@ -105,7 +126,12 @@ fn mul_imm_inst_64(dst: Arm64Reg, lhs: Arm64Reg, imm: u64) -> Option<u32> {
         .then(|| enc::lsl_imm_64(dst, lhs, imm.trailing_zeros()))
 }
 
-fn logical_imm_inst_32(op: MachineIntBinaryOp, dst: Arm64Reg, lhs: Arm64Reg, imm: u32) -> Option<u32> {
+fn logical_imm_inst_32(
+    op: MachineIntBinaryOp,
+    dst: Arm64Reg,
+    lhs: Arm64Reg,
+    imm: u32,
+) -> Option<u32> {
     match op {
         MachineIntBinaryOp::And => {
             if imm == 0 {
@@ -136,7 +162,12 @@ fn logical_imm_inst_32(op: MachineIntBinaryOp, dst: Arm64Reg, lhs: Arm64Reg, imm
     }
 }
 
-fn logical_imm_inst_64(op: MachineIntBinaryOp, dst: Arm64Reg, lhs: Arm64Reg, imm: u64) -> Option<u32> {
+fn logical_imm_inst_64(
+    op: MachineIntBinaryOp,
+    dst: Arm64Reg,
+    lhs: Arm64Reg,
+    imm: u64,
+) -> Option<u32> {
     match op {
         MachineIntBinaryOp::And => {
             if imm == 0 {
@@ -169,11 +200,7 @@ fn logical_imm_inst_64(op: MachineIntBinaryOp, dst: Arm64Reg, lhs: Arm64Reg, imm
 
 // ── Compare immediate selection ──────────────────────────────────────────────
 
-pub(super) fn cmp_imm_inst(
-    width: MachineIntWidth,
-    lhs: Arm64Reg,
-    rhs: u64,
-) -> Option<u32> {
+pub(super) fn cmp_imm_inst(width: MachineIntWidth, lhs: Arm64Reg, rhs: u64) -> Option<u32> {
     match width {
         MachineIntWidth::I32 => try_imm12_u32(rhs as u32).map(|imm12| enc::cmp_imm_32(lhs, imm12)),
         MachineIntWidth::I64 => try_imm12_u64(rhs).map(|imm12| enc::cmp_imm_64(lhs, imm12)),

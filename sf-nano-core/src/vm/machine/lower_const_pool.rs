@@ -2,9 +2,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use core::mem::{align_of, size_of};
 
 use crate::vm::{
-    machine::machine_ir::{
-        MachineConstData, MachineConstId,
-    },
+    machine::machine_ir::{MachineConstData, MachineConstId},
     runtime::external::ExternalCallMeta,
 };
 

@@ -58,7 +58,9 @@ pub(crate) fn run_frame_call<T>(
     ctx.error = None;
 
     let result = if frame.is_null() {
-        Err(internal_error("native call entry received null frame pointer"))
+        Err(internal_error(
+            "native call entry received null frame pointer",
+        ))
     } else {
         unsafe { decode_metadata::<T>(metadata) }.and_then(|meta| body(ctx, frame, meta))
     };

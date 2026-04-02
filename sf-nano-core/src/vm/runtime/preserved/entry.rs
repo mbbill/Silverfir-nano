@@ -9,8 +9,7 @@ use crate::{
 use super::{
     abi::{io, op},
     ops::{
-        do_memory_copy, do_memory_grow, do_memory_init, do_table_copy, do_table_grow,
-        do_table_init,
+        do_memory_copy, do_memory_grow, do_memory_init, do_table_copy, do_table_grow, do_table_init,
     },
 };
 
@@ -48,7 +47,9 @@ unsafe fn dispatch_preserved(
             let mem_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
             let delta = unsafe { *io_ptr.add(io::ARG0) };
             let result = do_memory_grow(ctx, mem_idx, delta)?;
-            unsafe { *io_ptr.add(io::RET0) = result; }
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
             Ok(())
         }
         op::MEMORY_FILL => {
@@ -59,7 +60,9 @@ unsafe fn dispatch_preserved(
             let mem = super::ops::memory_mut(ctx, mem_idx)?;
             let mem_len = mem.memory_len();
             if dest.saturating_add(len) > mem_len {
-                return Err(crate::vm::runtime::common::trap_error("out of bounds memory access"));
+                return Err(crate::vm::runtime::common::trap_error(
+                    "out of bounds memory access",
+                ));
             }
             unsafe {
                 let slice = core::slice::from_raw_parts_mut(mem.memory_ptr(), mem_len);
@@ -98,7 +101,9 @@ unsafe fn dispatch_preserved(
             let init_val = unsafe { *io_ptr.add(io::ARG0) };
             let delta = unsafe { *io_ptr.add(io::ARG1) } as usize;
             let result = do_table_grow(ctx, table_idx, init_val, delta)?;
-            unsafe { *io_ptr.add(io::RET0) = result; }
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
             Ok(())
         }
         op::TABLE_FILL => {
@@ -108,7 +113,9 @@ unsafe fn dispatch_preserved(
             let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
             let table = super::ops::table_mut(ctx, table_idx)?;
             if start.saturating_add(len) > table.elements.len() {
-                return Err(crate::vm::runtime::common::trap_error("out of bounds table access"));
+                return Err(crate::vm::runtime::common::trap_error(
+                    "out of bounds table access",
+                ));
             }
             table.elements[start..start + len].fill(crate::vm::value::RefHandle::new(val as usize));
             Ok(())

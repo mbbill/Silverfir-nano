@@ -197,7 +197,6 @@ fn compare_selection_state(lhs: &(u64, Vec<u32>), rhs: &(u64, Vec<u32>)) -> core
         .then_with(|| rhs.1.cmp(&lhs.1))
 }
 
-
 /// For each local, determine whether its initial zero value may be observed
 /// on any execution path from function entry. Uses a structured must-set
 /// analysis that walks the wasm control flow.

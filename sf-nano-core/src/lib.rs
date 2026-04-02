@@ -23,14 +23,14 @@ pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::Limitable;
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
-pub use vm::entities::{Caller, ExternalFn, FunctionInst};
-pub use vm::instance::{Import, ImportValue, Instance};
 #[cfg(feature = "micro-jit")]
 pub use vm::build::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
+pub use vm::entities::{Caller, ExternalFn, FunctionInst};
+pub use vm::instance::{Import, ImportValue, Instance};
 pub use vm::runtime::{
     active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
     RuntimeEngine,

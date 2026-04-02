@@ -6,8 +6,8 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
-            MachineFuncId, MachineFunctionAbi, MachineFunction, MachineReg,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+            MachineFuncId, MachineFunction, MachineFunctionAbi, MachineReg, MachineTerminator,
+            MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
     },
 };
@@ -113,8 +113,7 @@ impl<'a> CompilerCore<'a> {
     ) -> Vec<Option<MachineFloatWidth>> {
         let mut widths = vec![None; fp_capacity];
         if function.program.fp_reg_init_widths.is_empty() {
-            let fp_bank_count =
-                (config.total_reg_count() - config.first_fp_reg()) as usize;
+            let fp_bank_count = (config.total_reg_count() - config.first_fp_reg()) as usize;
             let transient_count = defaulted_fp_transient_count(config);
             for i in transient_count..fp_bank_count.min(fp_capacity) {
                 widths[i] = Some(MachineFloatWidth::F64);
@@ -207,10 +206,7 @@ impl<'a> CompilerCore<'a> {
     /// Return the FP bank index for a machine register.
     pub(crate) fn fp_reg_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
         fp_reg_index(reg, self.compiled.backend()).ok_or_else(|| {
-            WasmError::invalid(format!(
-                "expected FP register, got machine reg {}",
-                reg.0
-            ))
+            WasmError::invalid(format!("expected FP register, got machine reg {}", reg.0))
         })
     }
 
@@ -221,10 +217,7 @@ impl<'a> CompilerCore<'a> {
     ) -> Result<(), WasmError> {
         let index = self.fp_reg_index(reg)?;
         let slot = self.fp_reg_widths.get_mut(index).ok_or_else(|| {
-            WasmError::invalid(format!(
-                "no tracked FP slot for machine reg {}",
-                reg.0
-            ))
+            WasmError::invalid(format!("no tracked FP slot for machine reg {}", reg.0))
         })?;
         *slot = Some(width);
         Ok(())
@@ -400,9 +393,7 @@ impl<'a> CompilerCore<'a> {
         let arg_float_widths = args
             .iter()
             .map(|arg| match arg {
-                MachineValue::Reg(reg) if self.is_fp_reg(*reg) => {
-                    self.fp_reg_width(*reg).map(Some)
-                }
+                MachineValue::Reg(reg) if self.is_fp_reg(*reg) => self.fp_reg_width(*reg).map(Some),
                 MachineValue::Reg(_) | MachineValue::Imm64(_) => Ok(None),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -432,18 +423,13 @@ impl<'a> CompilerCore<'a> {
         if reg_count as usize > max_total_regs {
             return Err(WasmError::invalid(format!(
                 "{} backend supports at most {} machine regs, got {} in function {}",
-                arch_name,
-                max_total_regs,
-                reg_count,
-                function.id.0
+                arch_name, max_total_regs, reg_count, function.id.0
             )));
         }
         if first_fp < MACHINE_FIXED_REG_COUNT || first_fp > reg_count {
             return Err(WasmError::invalid(format!(
                 "{} backend received invalid first_fp_reg {} for function {}",
-                arch_name,
-                first_fp,
-                function.id.0,
+                arch_name, first_fp, function.id.0,
             )));
         }
         if (reg_count - first_fp) as usize > max_fp_regs {

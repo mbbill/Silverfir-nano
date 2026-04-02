@@ -1,4 +1,7 @@
-use super::{abi, reg::{Arm64FpReg, Arm64Reg}};
+use super::{
+    abi,
+    reg::{Arm64FpReg, Arm64Reg},
+};
 
 /// ARM64 shift type for shifted-register operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +63,16 @@ fn add_sub_shifted_reg(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, rm:
         | rd.index()
 }
 
-fn add_sub_shifted_reg_ext(sf: u32, op: u32, s: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+fn add_sub_shifted_reg_ext(
+    sf: u32,
+    op: u32,
+    s: u32,
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     debug_assert!(amount < if sf == 0 { 32 } else { 64 });
     (sf << 31)
         | (op << 30)
@@ -83,7 +95,16 @@ fn logical_shifted_reg(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm
         | rd.index()
 }
 
-fn logical_shifted_reg_ext(sf: u32, opc: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+fn logical_shifted_reg_ext(
+    sf: u32,
+    opc: u32,
+    n: u32,
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     debug_assert!(amount < if sf == 0 { 32 } else { 64 });
     (sf << 31)
         | (opc << 29)
@@ -184,7 +205,13 @@ fn ldst_register_offset(base: u32, rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, sca
     base | ((scaled as u32) << 12) | (rm.index() << 16) | (rn.index() << 5) | rt.index()
 }
 
-fn fp_ldst_register_offset(base: u32, rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
+fn fp_ldst_register_offset(
+    base: u32,
+    rt: Arm64FpReg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    scaled: bool,
+) -> u32 {
     base | ((scaled as u32) << 12) | (rm.index() << 16) | (rn.index() << 5) | rt.index()
 }
 
@@ -200,8 +227,6 @@ pub(crate) fn add_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 pub(crate) fn add_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(1, 0, 0, rd, rn, rm)
 }
-
-
 
 pub(crate) fn sub_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(0, 1, 0, rd, rn, rm)
@@ -245,43 +270,103 @@ pub(crate) fn eor_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 
 // --- Shifted-register binary operations ---
 
-pub(crate) fn add_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn add_reg_shifted_32(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     add_sub_shifted_reg_ext(0, 0, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn add_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn add_reg_shifted_64(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     add_sub_shifted_reg_ext(1, 0, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn sub_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn sub_reg_shifted_32(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     add_sub_shifted_reg_ext(0, 1, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn sub_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn sub_reg_shifted_64(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     add_sub_shifted_reg_ext(1, 1, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn and_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn and_reg_shifted_32(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(0, 0b00, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn and_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn and_reg_shifted_64(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(1, 0b00, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn orr_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn orr_reg_shifted_32(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(0, 0b01, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn orr_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn orr_reg_shifted_64(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(1, 0b01, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn eor_reg_shifted_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn eor_reg_shifted_32(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(0, 0b10, 0, rd, rn, rm, shift, amount)
 }
 
-pub(crate) fn eor_reg_shifted_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg, shift: ShiftType, amount: u32) -> u32 {
+pub(crate) fn eor_reg_shifted_64(
+    rd: Arm64Reg,
+    rn: Arm64Reg,
+    rm: Arm64Reg,
+    shift: ShiftType,
+    amount: u32,
+) -> u32 {
     logical_shifted_reg_ext(1, 0b10, 0, rd, rn, rm, shift, amount)
 }
 
@@ -471,7 +556,6 @@ pub(crate) fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b01, rt, rn, imm12)
 }
 
-
 pub(crate) fn ldr_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xf860_6800, rt, rn, rm, false)
 }
@@ -538,7 +622,6 @@ pub(crate) fn ldr_reg_64_scaled(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32
 pub(crate) fn str_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b00, rt, rn, imm12)
 }
-
 
 pub(crate) fn ldr_reg_32(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xb860_6800, rt, rn, rm, false)
@@ -984,7 +1067,13 @@ pub(crate) fn eor_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
 // FP register index is just 0-31, same encoding slot as GP but in FP instruction formats.
 
 /// Scalar floating-point data-processing (2 source)
-fn fp_data_proc_2src(ftype: u32, opcode: u32, rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+fn fp_data_proc_2src(
+    ftype: u32,
+    opcode: u32,
+    rd: Arm64FpReg,
+    rn: Arm64FpReg,
+    rm: Arm64FpReg,
+) -> u32 {
     (0b0001_1110 << 24)
         | (ftype << 22)
         | (1 << 21)
@@ -1040,7 +1129,6 @@ fn fp_int_conv(sf: u32, ftype: u32, rmode: u32, opcode: u32, rd: u32, rn: u32) -
         | (rn << 5)
         | rd
 }
-
 
 // FMOV between GP and FP registers
 /// FMOV Wd, Sn (FP to GP, 32-bit)

@@ -3,21 +3,21 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineEdge, MachineTerminator,
-        MachineTrapKind, MachineValue,
+        MachineBlockId, MachineBranchCond, MachineEdge, MachineTerminator, MachineTrapKind,
+        MachineValue,
     },
 };
 
 use super::{enc, reg::GpReg, select};
 
 impl<'a> super::backend::ExampleBackend<'a> {
-
     // ── Branch primitives ────────────────────────────────────────────────
 
     pub(super) fn lower_b(&mut self, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::b(0));
         self.fixups.push(super::backend::BranchFixup {
-            inst_offset, label,
+            inst_offset,
+            label,
             kind: super::backend::BranchFixupKind::B,
         });
     }
@@ -25,7 +25,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
     pub(super) fn lower_b_cond(&mut self, cond: enc::Cond, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::b_cond(cond, 0));
         self.fixups.push(super::backend::BranchFixup {
-            inst_offset, label,
+            inst_offset,
+            label,
             kind: super::backend::BranchFixupKind::BCond(cond),
         });
     }
@@ -33,7 +34,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
     pub(super) fn lower_cbz(&mut self, reg: GpReg, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::cbz_64(reg, 0));
         self.fixups.push(super::backend::BranchFixup {
-            inst_offset, label,
+            inst_offset,
+            label,
             kind: super::backend::BranchFixupKind::Cbz(reg),
         });
     }
@@ -41,7 +43,8 @@ impl<'a> super::backend::ExampleBackend<'a> {
     pub(super) fn lower_cbnz(&mut self, reg: GpReg, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::cbnz_64(reg, 0));
         self.fixups.push(super::backend::BranchFixup {
-            inst_offset, label,
+            inst_offset,
+            label,
             kind: super::backend::BranchFixupKind::Cbnz(reg),
         });
     }
@@ -59,9 +62,11 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 self.lower_b(label);
                 Ok(())
             }
-            MachineTerminator::Branch { cond, then_edge, else_edge } => {
-                self.lower_branch_edges(cond, then_edge, else_edge)
-            }
+            MachineTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            } => self.lower_branch_edges(cond, then_edge, else_edge),
             MachineTerminator::Return => {
                 self.lower_return();
                 Ok(())
@@ -101,7 +106,13 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 self.lower_cbnz(reg, then_label);
                 self.lower_b(else_label);
             }
-            MachineBranchCond::IntCompare { width, kind, sign, lhs, rhs } => {
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
                 self.lower_cmp(width, lhs, rhs)?;
                 self.lower_b_cond(select::map_int_cond(kind, sign), then_label);
                 self.lower_b(else_label);
@@ -132,7 +143,13 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 let reg = self.map_gp_reg(reg)?;
                 self.lower_cbnz(reg, trap_label);
             }
-            MachineBranchCond::IntCompare { width, kind, sign, lhs, rhs } => {
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
                 self.lower_cmp(width, lhs, rhs)?;
                 self.lower_b_cond(select::map_int_cond(kind, sign), trap_label);
             }
@@ -147,10 +164,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     // ── Call external ────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_external(
-        &mut self,
-        _const_idx: usize,
-    ) -> Result<(), WasmError> {
+    pub(super) fn lower_call_external(&mut self, _const_idx: usize) -> Result<(), WasmError> {
         // A real backend would:
         // 1. MOV external-call helper args into HELPER_ARGS.arg0/arg1/arg2
         // 2. Materialize call_external_entry into TEMPS.call_target

@@ -24,7 +24,10 @@ pub(super) fn memory_mut(ctx: &mut NativeContext, mem_idx: u32) -> Result<&mut M
 }
 
 #[inline]
-pub(super) fn table_mut(ctx: &mut NativeContext, table_idx: u32) -> Result<&mut TableInst, WasmError> {
+pub(super) fn table_mut(
+    ctx: &mut NativeContext,
+    table_idx: u32,
+) -> Result<&mut TableInst, WasmError> {
     let store = ctx
         .store_mut()
         .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
@@ -127,7 +130,9 @@ pub(super) fn do_memory_copy(
     let di = dst_mem_idx as usize;
     let si = src_mem_idx as usize;
     if di >= store.module().memories.len() || si >= store.module().memories.len() {
-        return Err(internal_error("preserved helper referenced invalid memory index"));
+        return Err(internal_error(
+            "preserved helper referenced invalid memory index",
+        ));
     }
     if di == si {
         let mem = store.memory_mut(di);
@@ -173,7 +178,9 @@ pub(super) fn do_memory_init(
     let mi = mem_idx as usize;
     let di = data_idx as usize;
     if mi >= module.memories.len() {
-        return Err(internal_error("preserved helper referenced invalid memory index"));
+        return Err(internal_error(
+            "preserved helper referenced invalid memory index",
+        ));
     }
     if di >= module.data.len() {
         return Err(trap_error("out of bounds memory access"));
@@ -244,7 +251,9 @@ pub(super) fn do_table_copy(
     let di = dst_tbl as usize;
     let si = src_tbl as usize;
     if di >= store.module().tables.len() || si >= store.module().tables.len() {
-        return Err(internal_error("preserved helper referenced invalid table index"));
+        return Err(internal_error(
+            "preserved helper referenced invalid table index",
+        ));
     }
     if di == si {
         let table = store.table_mut(di);
@@ -268,8 +277,7 @@ pub(super) fn do_table_copy(
         {
             return Err(trap_error("out of bounds table access"));
         }
-        dst_table.elements[dest..dest + len]
-            .copy_from_slice(&src_table.elements[src..src + len]);
+        dst_table.elements[dest..dest + len].copy_from_slice(&src_table.elements[src..src + len]);
     }
     Ok(())
 }
@@ -289,7 +297,9 @@ pub(super) fn do_table_init(
     let ti = table_idx as usize;
     let ei = elem_idx as usize;
     if ti >= module.tables.len() {
-        return Err(internal_error("preserved helper referenced invalid table index"));
+        return Err(internal_error(
+            "preserved helper referenced invalid table index",
+        ));
     }
     if ei >= module.elements.len() {
         return Err(trap_error("out of bounds table access"));

@@ -94,18 +94,33 @@ pub(crate) unsafe extern "C" fn x86_64_trapping_trunc(
 
 #[cfg(target_os = "windows")]
 pub(crate) unsafe extern "C" fn x86_64_trapping_trunc_win(
-    ctx: *mut NativeContext, src_bits: u64, op_code: u64, out_value: *mut u64,
+    ctx: *mut NativeContext,
+    src_bits: u64,
+    op_code: u64,
+    out_value: *mut u64,
 ) -> u32 {
     let result = match op_code {
-        0 => trunc_f32_to_i32_s(src_bits as u32), 1 => trunc_f32_to_i32_u(src_bits as u32),
-        2 => trunc_f64_to_i32_s(src_bits), 3 => trunc_f64_to_i32_u(src_bits),
-        4 => trunc_f32_to_i64_s(src_bits as u32), 5 => trunc_f32_to_i64_u(src_bits as u32),
-        6 => trunc_f64_to_i64_s(src_bits), 7 => trunc_f64_to_i64_u(src_bits),
+        0 => trunc_f32_to_i32_s(src_bits as u32),
+        1 => trunc_f32_to_i32_u(src_bits as u32),
+        2 => trunc_f64_to_i32_s(src_bits),
+        3 => trunc_f64_to_i32_u(src_bits),
+        4 => trunc_f32_to_i64_s(src_bits as u32),
+        5 => trunc_f32_to_i64_u(src_bits as u32),
+        6 => trunc_f64_to_i64_s(src_bits),
+        7 => trunc_f64_to_i64_u(src_bits),
         _ => Err(WasmError::trap("invalid trunc op".into())),
     };
     match result {
-        Ok(value) => { unsafe { *out_value = value }; 0 }
-        Err(err) => { if let Some(ctx) = unsafe { ctx.as_mut() } { ctx.error = Some(err); } 1 }
+        Ok(value) => {
+            unsafe { *out_value = value };
+            0
+        }
+        Err(err) => {
+            if let Some(ctx) = unsafe { ctx.as_mut() } {
+                ctx.error = Some(err);
+            }
+            1
+        }
     }
 }
 

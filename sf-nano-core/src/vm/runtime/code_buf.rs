@@ -77,7 +77,6 @@ unsafe extern "C" {
     fn sys_icache_invalidate(addr: *const u8, len: usize);
 }
 
-
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     fn VirtualAlloc(addr: *mut u8, size: usize, alloc_type: u32, protect: u32) -> *mut u8;
@@ -86,11 +85,16 @@ unsafe extern "system" {
     fn FlushInstructionCache(process: *mut u8, base: *const u8, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut u8;
 }
-#[cfg(target_os = "windows")] const MEM_COMMIT: u32 = 0x1000;
-#[cfg(target_os = "windows")] const MEM_RESERVE: u32 = 0x2000;
-#[cfg(target_os = "windows")] const MEM_RELEASE: u32 = 0x8000;
-#[cfg(target_os = "windows")] const PAGE_READWRITE: u32 = 0x04;
-#[cfg(target_os = "windows")] const PAGE_EXECUTE_READ: u32 = 0x20;
+#[cfg(target_os = "windows")]
+const MEM_COMMIT: u32 = 0x1000;
+#[cfg(target_os = "windows")]
+const MEM_RESERVE: u32 = 0x2000;
+#[cfg(target_os = "windows")]
+const MEM_RELEASE: u32 = 0x8000;
+#[cfg(target_os = "windows")]
+const PAGE_READWRITE: u32 = 0x04;
+#[cfg(target_os = "windows")]
+const PAGE_EXECUTE_READ: u32 = 0x20;
 
 #[cfg(not(target_os = "windows"))]
 const PROT_READ: i32 = 0x01;
@@ -182,9 +186,22 @@ impl CodeBuffer {
 
     #[cfg(target_os = "windows")]
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
-        let base = unsafe { VirtualAlloc(ptr::null_mut(), capacity, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
-        if base.is_null() { return Err("VirtualAlloc failed for native code buffer"); }
-        Ok(Self { base, capacity, offset: 0 })
+        let base = unsafe {
+            VirtualAlloc(
+                ptr::null_mut(),
+                capacity,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if base.is_null() {
+            return Err("VirtualAlloc failed for native code buffer");
+        }
+        Ok(Self {
+            base,
+            capacity,
+            offset: 0,
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -205,7 +222,11 @@ impl CodeBuffer {
     #[cfg(target_os = "windows")]
     #[inline]
     pub fn begin_write(&mut self) {
-        unsafe { let mut old: u32 = 0; let rc = VirtualProtect(self.base, self.capacity, PAGE_READWRITE, &mut old); assert_ne!(rc, 0, "VirtualProtect RW failed"); }
+        unsafe {
+            let mut old: u32 = 0;
+            let rc = VirtualProtect(self.base, self.capacity, PAGE_READWRITE, &mut old);
+            assert_ne!(rc, 0, "VirtualProtect RW failed");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -232,7 +253,16 @@ impl CodeBuffer {
     #[cfg(target_os = "windows")]
     #[inline]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
-        unsafe { let mut old: u32 = 0; let rc = VirtualProtect(self.base, self.capacity, PAGE_EXECUTE_READ, &mut old); assert_ne!(rc, 0, "VirtualProtect RX failed"); FlushInstructionCache(GetCurrentProcess(), self.base.add(written_start), written_len); }
+        unsafe {
+            let mut old: u32 = 0;
+            let rc = VirtualProtect(self.base, self.capacity, PAGE_EXECUTE_READ, &mut old);
+            assert_ne!(rc, 0, "VirtualProtect RX failed");
+            FlushInstructionCache(
+                GetCurrentProcess(),
+                self.base.add(written_start),
+                written_len,
+            );
+        }
     }
 
     #[inline]
@@ -319,11 +349,23 @@ impl CodeBuffer {
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {
-        if self.base.is_null() { return; }
+        if self.base.is_null() {
+            return;
+        }
         #[cfg(not(target_os = "windows"))]
-        { if self.base != MAP_FAILED { unsafe { munmap(self.base, self.capacity); } } }
+        {
+            if self.base != MAP_FAILED {
+                unsafe {
+                    munmap(self.base, self.capacity);
+                }
+            }
+        }
         #[cfg(target_os = "windows")]
-        { unsafe { VirtualFree(self.base, 0, MEM_RELEASE); } }
+        {
+            unsafe {
+                VirtualFree(self.base, 0, MEM_RELEASE);
+            }
+        }
     }
 }
 

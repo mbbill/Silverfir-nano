@@ -9,7 +9,7 @@ use crate::{
             common::{internal_error, run_frame_call},
             context::NativeContext,
         },
-        value::{Value},
+        value::Value,
     },
 };
 
@@ -99,9 +99,8 @@ fn invoke_external_call(
     let func_idx = match meta.target_kind()? {
         ExternalCallTargetKind::Immediate => meta.func_idx_source,
         ExternalCallTargetKind::FrameSlot => {
-            let func_idx_slot = u16::try_from(meta.func_idx_source).map_err(|_| {
-                internal_error("external-call func_idx source slot exceeds u16")
-            })?;
+            let func_idx_slot = u16::try_from(meta.func_idx_source)
+                .map_err(|_| internal_error("external-call func_idx source slot exceeds u16"))?;
             unsafe { frame_read(frame, func_idx_slot) as u32 }
         }
     };

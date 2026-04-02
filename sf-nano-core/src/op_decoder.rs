@@ -737,9 +737,7 @@ pub struct OpcodePrinter {
 
 impl OpcodePrinter {
     pub fn new() -> Self {
-        OpcodePrinter {
-            indent: 1,
-        }
+        OpcodePrinter { indent: 1 }
     }
 }
 

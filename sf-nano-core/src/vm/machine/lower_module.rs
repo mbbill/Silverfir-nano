@@ -12,17 +12,16 @@ use crate::{
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCallLinkLayout, MachineCompareKind, MachineEdge, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi,
-            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
-            MachineMemWidth, MachineModule, MachineProgram, MachineReg, MachineModuleAbi,
-            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
+            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSpan},
             ssa_ir::{
                 ir::{
-                    SsaCallOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator,
-                    SsaValue,
+                    SsaCallOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue,
                 },
                 validate::validate_program,
             },
@@ -40,11 +39,11 @@ use crate::vm::middle::ssa_ir::target::SsaTarget;
 
 use super::{
     gp32::Gp32Lowering,
+    lower_const_pool::ConstPoolBuilder,
     lower_context::{BlockLowerContext, ValueRegs},
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
-    lower_const_pool::ConstPoolBuilder,
     lower_regalloc::{machine_block_params_for_value, MachineRegFile},
 };
 

@@ -28,8 +28,9 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. } => Some(*dst),
-        MachineInstKind::MemoryGrow { dst, .. }
-        | MachineInstKind::TableGrow { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
+            Some(*dst)
+        }
         MachineInstKind::MemoryFill { .. }
         | MachineInstKind::MemoryCopy { .. }
         | MachineInstKind::MemoryInit { .. }
@@ -92,8 +93,9 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. } => *dst == reg,
-        MachineInstKind::MemoryGrow { dst, .. }
-        | MachineInstKind::TableGrow { dst, .. } => *dst == reg,
+        MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
+            *dst == reg
+        }
         MachineInstKind::MemoryFill { .. }
         | MachineInstKind::MemoryCopy { .. }
         | MachineInstKind::MemoryInit { .. }
@@ -273,20 +275,31 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(delta);
         }
         MachineInstKind::MemoryFill { dest, val, len, .. }
-        | MachineInstKind::TableFill { start: dest, val, len, .. } => {
-            f(dest); f(val); f(len);
+        | MachineInstKind::TableFill {
+            start: dest,
+            val,
+            len,
+            ..
+        } => {
+            f(dest);
+            f(val);
+            f(len);
         }
         MachineInstKind::MemoryCopy { dest, src, len, .. }
         | MachineInstKind::MemoryInit { dest, src, len, .. }
         | MachineInstKind::TableCopy { dest, src, len, .. }
         | MachineInstKind::TableInit { dest, src, len, .. } => {
-            f(dest); f(src); f(len);
+            f(dest);
+            f(src);
+            f(len);
         }
-        MachineInstKind::TableGrow { init_val, delta, .. } => {
-            f(init_val); f(delta);
+        MachineInstKind::TableGrow {
+            init_val, delta, ..
+        } => {
+            f(init_val);
+            f(delta);
         }
-        MachineInstKind::DataDrop { .. }
-        | MachineInstKind::ElemDrop { .. } => {}
+        MachineInstKind::DataDrop { .. } | MachineInstKind::ElemDrop { .. } => {}
     }
 }
 

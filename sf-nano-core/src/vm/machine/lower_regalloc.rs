@@ -774,8 +774,9 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. } => Some(*dst),
-        MachineInstKind::MemoryGrow { dst, .. }
-        | MachineInstKind::TableGrow { dst, .. } => Some(*dst),
+        MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
+            Some(*dst)
+        }
         MachineInstKind::MemoryFill { .. }
         | MachineInstKind::MemoryCopy { .. }
         | MachineInstKind::MemoryInit { .. }
@@ -919,7 +920,12 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(delta, &mut visit);
         }
         MachineInstKind::MemoryFill { dest, val, len, .. }
-        | MachineInstKind::TableFill { start: dest, val, len, .. } => {
+        | MachineInstKind::TableFill {
+            start: dest,
+            val,
+            len,
+            ..
+        } => {
             visit_value_reg(dest, &mut visit);
             visit_value_reg(val, &mut visit);
             visit_value_reg(len, &mut visit);
@@ -932,12 +938,13 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(src, &mut visit);
             visit_value_reg(len, &mut visit);
         }
-        MachineInstKind::TableGrow { init_val, delta, .. } => {
+        MachineInstKind::TableGrow {
+            init_val, delta, ..
+        } => {
             visit_value_reg(init_val, &mut visit);
             visit_value_reg(delta, &mut visit);
         }
-        MachineInstKind::DataDrop { .. }
-        | MachineInstKind::ElemDrop { .. } => {}
+        MachineInstKind::DataDrop { .. } | MachineInstKind::ElemDrop { .. } => {}
     }
 }
 
@@ -1074,9 +1081,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             backend::BackendConfig,
-            machine::machine_ir::{
-                MachineCallLinkLayout, MachineFunctionAbi, MachineStorageType,
-            },
+            machine::machine_ir::{MachineCallLinkLayout, MachineFunctionAbi, MachineStorageType},
             middle::ssa_ir::{
                 ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
                 target::SsaTarget,

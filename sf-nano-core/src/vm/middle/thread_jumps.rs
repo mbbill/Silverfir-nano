@@ -24,8 +24,7 @@ use alloc::vec::Vec;
 
 use crate::vm::middle::ssa_ir::{
     ir::{
-        SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator,
-        SsaValue,
+        SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
     },
     target::SsaTarget,
 };
@@ -41,7 +40,6 @@ pub(super) fn simplify_cfg(program: &mut SsaProgram) {
     thread_jumps(program);
     merge_single_predecessor_blocks(program);
 }
-
 
 // ---------------------------------------------------------------------------
 // Pass 1: Jump Threading
@@ -183,7 +181,6 @@ fn thread_jumps(program: &mut SsaProgram) {
         return;
     }
 
-
     // Rewrite every edge in the program.
     for i in 0..block_count {
         rewrite_terminator_edges(&mut program.blocks[i].terminator, &redirects);
@@ -216,11 +213,8 @@ fn rewrite_terminator_edges(term: &mut SsaTerminator, redirects: &[Option<Redire
 
 fn rewrite_edge(edge: &mut SsaEdge, redirects: &[Option<Redirect>]) {
     if let Some(Some(r)) = redirects.get(edge.target.as_usize()) {
-        let new_bindings = compose_bindings(
-            &edge.bindings,
-            &r.intermediate_params,
-            &r.composed_bindings,
-        );
+        let new_bindings =
+            compose_bindings(&edge.bindings, &r.intermediate_params, &r.composed_bindings);
         edge.target = r.final_target;
         edge.bindings = new_bindings;
     }
@@ -508,11 +502,7 @@ mod tests {
         })
     }
 
-    fn make_branch(
-        cond: SsaValue,
-        then_target: u32,
-        else_target: u32,
-    ) -> SsaTerminator {
+    fn make_branch(cond: SsaValue, then_target: u32, else_target: u32) -> SsaTerminator {
         SsaTerminator::Branch {
             cond,
             then_edge: SsaEdge {

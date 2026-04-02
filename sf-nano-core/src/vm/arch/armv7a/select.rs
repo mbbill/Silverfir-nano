@@ -4,9 +4,7 @@
 //! constants and returns values. No MachineReg mapping, no scratch
 //! allocation, no mutable state.
 
-use crate::vm::machine::machine_ir::{
-    MachineConvertOp, MachineTrapKind,
-};
+use crate::vm::machine::machine_ir::{MachineConvertOp, MachineTrapKind};
 
 use super::enc::Cond;
 use super::reg::Arm32Reg;

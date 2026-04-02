@@ -1,7 +1,7 @@
 //! x86_64 condition-code mapping for integer and float comparisons.
 
-use crate::vm::machine::machine_ir::{MachineCompareKind, MachineSign};
 use super::enc::Cc;
+use crate::vm::machine::machine_ir::{MachineCompareKind, MachineSign};
 
 pub(super) fn map_int_cond(kind: MachineCompareKind, sign: MachineSign) -> Cc {
     match (kind, sign) {

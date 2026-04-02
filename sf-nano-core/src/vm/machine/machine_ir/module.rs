@@ -1,8 +1,8 @@
 use super::types::MachineFloatWidth;
 use alloc::vec::Vec;
 
-use crate::vm::backend::BackendConfig;
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
+use crate::vm::backend::BackendConfig;
 
 /// One read-only constant-pool record referenced from machine IR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -6,8 +6,8 @@
 
 use core::cell::Cell;
 use core::fmt;
-use core::ops::Deref;
 use core::marker::PhantomData;
+use core::ops::Deref;
 
 /// A pool of `N` scratch registers of type `R`.
 ///
@@ -283,5 +283,4 @@ mod tests {
             drop(g);
         }
     }
-
 }

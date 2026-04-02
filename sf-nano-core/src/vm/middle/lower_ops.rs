@@ -14,13 +14,16 @@ use crate::{
                 leaf::SsaLeafOp,
             },
         },
-        wasm::{primitive_op::{self, PrimitiveOpKind}, semantic_ir::SemanticOpKind},
+        wasm::{
+            primitive_op::{self, PrimitiveOpKind},
+            semantic_ir::SemanticOpKind,
+        },
     },
 };
 
 use super::{
-    state::{BlockState, ValueAlloc},
     spill_plan::{PrepAction, PreparedOp},
+    state::{BlockState, ValueAlloc},
 };
 
 use crate::vm::middle::ssa_ir::ir::ValueHome;
@@ -113,15 +116,13 @@ pub(super) fn lower_primitive(
     let results: alloc::vec::Vec<_> = (0..push).map(|_| values.fresh_typed(result_ty)).collect();
     state.ops.push(SsaInst {
         kind: SsaInstKind::Value {
-            op: SsaLeafOp::from_primitive(kind.clone())
-                .expect("primitive must lower as a leaf op"),
+            op: SsaLeafOp::from_primitive(kind.clone()).expect("primitive must lower as a leaf op"),
             args: args.into_iter().map(SsaOperand::Value).collect(),
             results: results.clone(),
         },
     });
     state.push_results(results, alloc::vec![result_ty; push as usize])
 }
-
 
 pub(super) fn lower_local_get(
     local_idx: u16,

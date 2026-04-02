@@ -88,10 +88,7 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 
 impl<'a> FunctionValidator<'a> {
     pub(super) fn new(module: &'a Module, function: &'a FunctionSpec) -> Result<Self, WasmError> {
-        let mut context = Context::new(
-            function.func_type().params(),
-            function.locals(),
-        );
+        let mut context = Context::new(function.func_type().params(), function.locals());
 
         context.push_ctrl(FrameType::Function, function.func_type_rc())?;
 
@@ -1007,10 +1004,7 @@ struct Context {
 }
 
 impl Context {
-    fn new(
-        params: &[ValueType],
-        locals: &[ValueType],
-    ) -> Self {
+    fn new(params: &[ValueType], locals: &[ValueType]) -> Self {
         let mut all_locals = Vec::new();
         all_locals.extend_from_slice(params);
         all_locals.extend_from_slice(locals);

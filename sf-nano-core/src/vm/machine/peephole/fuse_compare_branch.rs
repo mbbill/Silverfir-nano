@@ -9,13 +9,17 @@
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineBranchCond, MachineBlock, MachineBlockId, MachineEdge, MachineInstKind,
+    self, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind,
     MachineReg, MachineTerminator, MachineValue,
 };
 
 use super::helpers::{count_value_uses, inst_defines, terminator_uses_reg, value_is_reg};
 
-pub(super) fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8, config: BackendConfig) {
+pub(super) fn fuse_compare_branch(
+    blocks: &mut [MachineBlock],
+    gp_reg_width: u8,
+    config: BackendConfig,
+) {
     for idx in 0..blocks.len() {
         // Check the last op and the terminator of this block.
         let last_op = match blocks[idx].ops.last() {
@@ -50,10 +54,12 @@ pub(super) fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8,
         // correctly with a single B.cond, but since this is a shared pass
         // it must be safe for all backends.
         let fused_cond = match &last_op.kind {
-            MachineInstKind::IntCompare {
-                width,
-                ..
-            } if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
+            MachineInstKind::IntCompare { width, .. }
+                if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64
+                    && gp_reg_width == 4 =>
+            {
+                continue
+            }
             MachineInstKind::IntCompare {
                 width,
                 kind,
@@ -68,10 +74,12 @@ pub(super) fn fuse_compare_branch(blocks: &mut [MachineBlock], gp_reg_width: u8,
                 lhs: *lhs,
                 rhs: *rhs,
             },
-            MachineInstKind::TestBits {
-                width,
-                ..
-            } if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64 && gp_reg_width == 4 => continue,
+            MachineInstKind::TestBits { width, .. }
+                if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64
+                    && gp_reg_width == 4 =>
+            {
+                continue
+            }
             MachineInstKind::TestBits {
                 width,
                 kind,

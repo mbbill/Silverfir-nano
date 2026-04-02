@@ -442,8 +442,9 @@ impl Instance {
 
         #[cfg(feature = "interp")]
         {
-            let runtime_engine = runtime::active_runtime_engine()
-                .map_err(|err| WasmError::invalid(format!("runtime backend unavailable: {}", err)))?;
+            let runtime_engine = runtime::active_runtime_engine().map_err(|err| {
+                WasmError::invalid(format!("runtime backend unavailable: {}", err))
+            })?;
             if !runtime_engine.is_micro_jit() {
                 precompile::precompile_module_two_pass(&store)?;
             }

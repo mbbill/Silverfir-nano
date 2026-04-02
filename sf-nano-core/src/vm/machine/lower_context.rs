@@ -4,23 +4,14 @@ use core::mem;
 use crate::{
     error::WasmError,
     vm::{
-        machine::{
-            machine_ir::{
-                MachineAddr, MachineCallLinkLayout,
-                MachineFrameRegion, MachineFuncId, MachineFunctionAbi,
-                MachineInst, MachineInstKind,
-                MachineIntWidth, MachineMemWidth, MachineReg,
-                MachineStorageType, MachineValue,
-            },
+        machine::machine_ir::{
+            MachineAddr, MachineCallLinkLayout, MachineFrameRegion, MachineFuncId,
+            MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
+            MachineReg, MachineStorageType, MachineValue,
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::{
-                ir::{
-                    SsaBlock, SsaLocalCachePrefs, SsaProgram,
-                    SsaValue,
-                },
-            },
+            ssa_ir::ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaValue},
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -30,8 +21,8 @@ use super::{
     lower_i64::I64Lowering,
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
-        canonical_value_mem_width_for_value, gp_reg_int_width,
-        gp_reg_mem_width, lir_value_storage_type, value_type_storage_type, MachineRegFile,
+        canonical_value_mem_width_for_value, gp_reg_int_width, gp_reg_mem_width,
+        lir_value_storage_type, value_type_storage_type, MachineRegFile,
     },
     lower_util::compute_remaining_uses,
 };
@@ -509,11 +500,7 @@ impl<'a> BlockLowerContext<'a> {
         reg: MachineReg,
         hi_reg: Option<MachineReg>,
     ) {
-        self.values.push(ValueLocation {
-            value,
-            reg,
-            hi_reg,
-        });
+        self.values.push(ValueLocation { value, reg, hi_reg });
     }
 
     /// Free transient registers for values with no remaining uses.
@@ -562,8 +549,7 @@ impl<'a> BlockLowerContext<'a> {
             if vr == cache_reg && !except.contains(&vv) {
                 let Some(t) = self.first_free_transient(ty) else {
                     return Err(WasmError::internal(
-                        "transient budget exhausted during cache alias materialization"
-                            .into(),
+                        "transient budget exhausted during cache alias materialization".into(),
                     ));
                 };
                 self.emit_machine_inst(MachineInst {
@@ -662,9 +648,11 @@ impl<'a> BlockLowerContext<'a> {
         candidate: SsaValue,
         ty: MachineStorageType,
     ) -> Result<Option<MachineReg>, WasmError> {
-        if let Some(index) = self.values.iter().position(|entry| {
-            entry.value == candidate && self.is_fp_reg(entry.reg) == ty.is_fp()
-        }) {
+        if let Some(index) = self
+            .values
+            .iter()
+            .position(|entry| entry.value == candidate && self.is_fp_reg(entry.reg) == ty.is_fp())
+        {
             let reg = self.values[index].reg;
             // Cannot reuse non-transient registers (e.g. cache registers from
             // source aliasing) — they belong to cached locals.

@@ -32,9 +32,8 @@ use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineBlock, MachineCompareKind, MachineInst, MachineInstKind,
-    MachineIntBinaryOp, MachineIntWidth, MachineReg, MachineShiftOp,
-    MachineSign, MachineTerminator, MachineValue,
+    self, MachineBlock, MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp,
+    MachineIntWidth, MachineReg, MachineShiftOp, MachineSign, MachineTerminator, MachineValue,
 };
 
 use super::helpers::reg_live_after;
@@ -75,14 +74,18 @@ pub(super) fn fuse_isel(block: &mut MachineBlock, config: BackendConfig) {
             }
 
             // --- Pattern 2: Shifted operand (shift + binop -> IntBinaryShifted) ---
-            if let Some(fused) = try_fuse_shifted_binop(&ops[i], &ops[i + 1], &ops[i + 2..], term, config) {
+            if let Some(fused) =
+                try_fuse_shifted_binop(&ops[i], &ops[i + 1], &ops[i + 2..], term, config)
+            {
                 out.push(fused);
                 i += 2;
                 continue;
             }
 
             // --- Pattern 3: TST (And + IntCompare(0) -> TestBits) ---
-            if let Some(fused) = try_fuse_test_bits(&ops[i], &ops[i + 1], &ops[i + 2..], term, config) {
+            if let Some(fused) =
+                try_fuse_test_bits(&ops[i], &ops[i + 1], &ops[i + 2..], term, config)
+            {
                 out.push(fused);
                 i += 2;
                 continue;
@@ -323,7 +326,10 @@ fn try_fuse_test_bits(
             dst,
             lhs: MachineValue::Reg(lhs),
             rhs: MachineValue::Imm64(0),
-        } if w2 == width && lhs == and_dst && matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) => {
+        } if w2 == width
+            && lhs == and_dst
+            && matches!(kind, MachineCompareKind::Eq | MachineCompareKind::Ne) =>
+        {
             (kind, dst)
         }
         _ => return None,

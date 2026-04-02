@@ -240,17 +240,29 @@ fn monotonic_timestamp_nanos() -> u64 {
 
     #[cfg(target_os = "linux")]
     unsafe {
-        let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
+        let mut ts = timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
         clock_gettime(CLOCK_MONOTONIC, &mut ts);
-        (ts.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(ts.tv_nsec as u64)
+        (ts.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(ts.tv_nsec as u64)
     }
     #[cfg(target_os = "windows")]
     unsafe {
-        let mut freq: i64 = 0; let mut count: i64 = 0;
-        QueryPerformanceFrequency(&mut freq); QueryPerformanceCounter(&mut count);
-        if freq == 0 { return 0; }
-        let secs = count / freq; let rem = count % freq;
-        (secs as u64).saturating_mul(1_000_000_000).saturating_add((rem as u64).saturating_mul(1_000_000_000) / freq as u64)
+        let mut freq: i64 = 0;
+        let mut count: i64 = 0;
+        QueryPerformanceFrequency(&mut freq);
+        QueryPerformanceCounter(&mut count);
+        if freq == 0 {
+            return 0;
+        }
+        let secs = count / freq;
+        let rem = count % freq;
+        (secs as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add((rem as u64).saturating_mul(1_000_000_000) / freq as u64)
     }
 }
 

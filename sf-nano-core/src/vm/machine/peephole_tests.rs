@@ -1033,7 +1033,10 @@ fn preserves_transient_move_live_across_helper_barrier() {
             ..
         }
     ));
-    assert!(matches!(block.ops[1].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::CallExternal(_)
+    ));
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntUnary {

@@ -206,9 +206,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.core.current_op_index = Some(index);
             if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(block, index) {
                 let base_reg = self.map_gp_reg(base)?;
-                self.core
-                    .text
-                    .emit_u32(enc::stp_zero_64(base_reg, imm7));
+                self.core.text.emit_u32(enc::stp_zero_64(base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 index += 2;

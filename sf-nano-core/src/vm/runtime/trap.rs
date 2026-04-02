@@ -1,6 +1,9 @@
 use crate::error::WasmError;
 
-use super::{common::{set_ctx_error, NativeCallStatus}, context::NativeContext};
+use super::{
+    common::{set_ctx_error, NativeCallStatus},
+    context::NativeContext,
+};
 
 /// Trap entry point called from generated code. Sets `ctx.error` to the
 /// appropriate trap error and returns nonzero.

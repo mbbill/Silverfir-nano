@@ -356,4 +356,3 @@ impl Default for ModuleInst {
         }
     }
 }
-

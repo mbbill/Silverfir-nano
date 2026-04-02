@@ -16,9 +16,9 @@ use crate::{
             types::{DebugRegion, ParallelSource},
         },
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
-            MachineFunction, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
-            MACHINE_CTX_REG, MACHINE_FP_REG,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
+            MachineInst, MachineReg, MachineTerminator, MachineTrapKind, MACHINE_CTX_REG,
+            MACHINE_FP_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
@@ -86,8 +86,12 @@ pub(crate) struct ExampleBackend<'a> {
 impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
     const NAME: &'static str = "example";
 
-    fn max_total_regs() -> usize { abi::max_total_machine_regs() }
-    fn max_fp_regs() -> usize { abi::max_fp_machine_regs() }
+    fn max_total_regs() -> usize {
+        abi::max_total_machine_regs()
+    }
+    fn max_fp_regs() -> usize {
+        abi::max_fp_machine_regs()
+    }
 
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
@@ -98,32 +102,48 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         }
     }
 
-    fn core(&self) -> &CompilerCore<'a> { &self.core }
-    fn core_mut(&mut self) -> &mut CompilerCore<'a> { &mut self.core }
-    fn into_core(self) -> CompilerCore<'a> { self.core }
+    fn core(&self) -> &CompilerCore<'a> {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut CompilerCore<'a> {
+        &mut self.core
+    }
+    fn into_core(self) -> CompilerCore<'a> {
+        self.core
+    }
 
     fn lower_prologue(&mut self) {
         // Allocate frame and save callee-saved GP registers.
-        self.core.text.emit_u32(enc::sub_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
+        self.core
+            .text
+            .emit_u32(enc::sub_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
         for (i, reg) in abi::CALLEE_SAVED_GP.iter().copied().enumerate() {
-            self.core.text.emit_u32(enc::str_64(reg, GpReg::SP, i as u16));
+            self.core
+                .text
+                .emit_u32(enc::str_64(reg, GpReg::SP, i as u16));
         }
         // A real backend would also save CALLEE_SAVED_FP here.
 
         // Move C entry arguments into MachineIR fixed roles.
         self.core.text.emit_u32(enc::mov_reg_64(
-            abi::map_fixed_gp(MACHINE_CTX_REG), abi::C_ARG0,
+            abi::map_fixed_gp(MACHINE_CTX_REG),
+            abi::C_ARG0,
         ));
         self.core.text.emit_u32(enc::mov_reg_64(
-            abi::map_fixed_gp(MACHINE_FP_REG), abi::C_ARG1,
+            abi::map_fixed_gp(MACHINE_FP_REG),
+            abi::C_ARG1,
         ));
     }
 
     fn lower_epilogue(&mut self) {
         for (i, reg) in abi::CALLEE_SAVED_GP.iter().copied().enumerate().rev() {
-            self.core.text.emit_u32(enc::ldr_64(reg, GpReg::SP, i as u16));
+            self.core
+                .text
+                .emit_u32(enc::ldr_64(reg, GpReg::SP, i as u16));
         }
-        self.core.text.emit_u32(enc::add_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
+        self.core
+            .text
+            .emit_u32(enc::add_imm_64(GpReg::SP, GpReg::SP, FRAME_BYTES as u16));
         self.core.text.emit_u32(enc::ret());
     }
 
@@ -171,7 +191,9 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
 
     fn patch_fixups(&mut self) -> Result<(), WasmError> {
         for fixup in &self.fixups {
-            let target = self.core.labels
+            let target = self
+                .core
+                .labels
                 .get(fixup.label)
                 .and_then(|v| *v)
                 .ok_or_else(|| WasmError::internal("example branch label unresolved".into()))?;
@@ -189,10 +211,18 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
 
     // ── Scratch allocation for parallel-move protocol ────────────────────
 
-    fn alloc_gp_scratch(&mut self) -> u8 { self.gp_scratch.alloc() }
-    fn free_gp_scratch(&mut self, id: u8) { self.gp_scratch.free_index(id) }
-    fn alloc_fp_scratch(&mut self) -> u8 { self.fp_scratch.alloc() }
-    fn free_fp_scratch(&mut self, id: u8) { self.fp_scratch.free_index(id) }
+    fn alloc_gp_scratch(&mut self) -> u8 {
+        self.gp_scratch.alloc()
+    }
+    fn free_gp_scratch(&mut self, id: u8) {
+        self.gp_scratch.free_index(id)
+    }
+    fn alloc_fp_scratch(&mut self) -> u8 {
+        self.fp_scratch.alloc()
+    }
+    fn free_fp_scratch(&mut self, id: u8) {
+        self.fp_scratch.free_index(id)
+    }
 
     // ── Parallel move primitives ─────────────────────────────────────────
 

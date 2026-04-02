@@ -237,7 +237,6 @@ impl SemanticProgram {
     pub(crate) fn validate(&self) -> Result<(), WasmError> {
         Ok(())
     }
-
 }
 
 impl From<PrimitiveOpKind> for SemanticOpKind {

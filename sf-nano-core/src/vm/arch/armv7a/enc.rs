@@ -411,32 +411,107 @@ pub(super) fn ubfx(dst: Arm32Reg, src: Arm32Reg, lsb: u32, width: u32) -> u32 {
 
 /// ADD Rd, Rn, Rm, <shift> #imm5
 #[inline]
-pub(super) fn add_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    dp_imm_shift(Cond::Al, 0b0100, false, dst, lhs, rhs, shift_type, shift_imm)
+pub(super) fn add_reg_shifted(
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    rhs: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    dp_imm_shift(
+        Cond::Al,
+        0b0100,
+        false,
+        dst,
+        lhs,
+        rhs,
+        shift_type,
+        shift_imm,
+    )
 }
 
 /// SUB Rd, Rn, Rm, <shift> #imm5
 #[inline]
-pub(super) fn sub_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    dp_imm_shift(Cond::Al, 0b0010, false, dst, lhs, rhs, shift_type, shift_imm)
+pub(super) fn sub_reg_shifted(
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    rhs: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    dp_imm_shift(
+        Cond::Al,
+        0b0010,
+        false,
+        dst,
+        lhs,
+        rhs,
+        shift_type,
+        shift_imm,
+    )
 }
 
 /// AND Rd, Rn, Rm, <shift> #imm5
 #[inline]
-pub(super) fn and_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    dp_imm_shift(Cond::Al, 0b0000, false, dst, lhs, rhs, shift_type, shift_imm)
+pub(super) fn and_reg_shifted(
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    rhs: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    dp_imm_shift(
+        Cond::Al,
+        0b0000,
+        false,
+        dst,
+        lhs,
+        rhs,
+        shift_type,
+        shift_imm,
+    )
 }
 
 /// ORR Rd, Rn, Rm, <shift> #imm5
 #[inline]
-pub(super) fn orr_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    dp_imm_shift(Cond::Al, 0b1100, false, dst, lhs, rhs, shift_type, shift_imm)
+pub(super) fn orr_reg_shifted(
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    rhs: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    dp_imm_shift(
+        Cond::Al,
+        0b1100,
+        false,
+        dst,
+        lhs,
+        rhs,
+        shift_type,
+        shift_imm,
+    )
 }
 
 /// EOR Rd, Rn, Rm, <shift> #imm5
 #[inline]
-pub(super) fn eor_reg_shifted(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg, shift_type: u32, shift_imm: u32) -> u32 {
-    dp_imm_shift(Cond::Al, 0b0001, false, dst, lhs, rhs, shift_type, shift_imm)
+pub(super) fn eor_reg_shifted(
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    rhs: Arm32Reg,
+    shift_type: u32,
+    shift_imm: u32,
+) -> u32 {
+    dp_imm_shift(
+        Cond::Al,
+        0b0001,
+        false,
+        dst,
+        lhs,
+        rhs,
+        shift_type,
+        shift_imm,
+    )
 }
 
 // ─── Multiply ───────────────────────────────────────────────────────────────

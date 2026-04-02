@@ -1,8 +1,7 @@
 use crate::{
     error::WasmError,
     vm::{
-        arch,
-        build,
+        arch, build,
         entities::{Caller, FunctionInst},
         result_buffer::ResultBuffer,
         store::Store,
@@ -66,9 +65,13 @@ pub(super) fn eval(
             })?;
             match active_backend {
                 #[cfg(target_arch = "aarch64")]
-                arch::NativeBackend::Arm64 => {
-                    arch::common::eval::eval(spec, code, store, args, arch::NativeBackend::Arm64.as_str())
-                }
+                arch::NativeBackend::Arm64 => arch::common::eval::eval(
+                    spec,
+                    code,
+                    store,
+                    args,
+                    arch::NativeBackend::Arm64.as_str(),
+                ),
                 #[cfg(target_arch = "arm")]
                 arch::NativeBackend::Armv7a => arch::armv7a::eval(
                     spec,
@@ -78,9 +81,13 @@ pub(super) fn eval(
                     arch::NativeBackend::Armv7a.as_str(),
                 ),
                 #[cfg(target_arch = "x86_64")]
-                arch::NativeBackend::X86_64 => {
-                    arch::common::eval::eval(spec, code, store, args, arch::NativeBackend::X86_64.as_str())
-                }
+                arch::NativeBackend::X86_64 => arch::common::eval::eval(
+                    spec,
+                    code,
+                    store,
+                    args,
+                    arch::NativeBackend::X86_64.as_str(),
+                ),
                 arch::NativeBackend::Reference => {
                     arch::emulator::eval(spec, code, store, args, backend_name)
                 }

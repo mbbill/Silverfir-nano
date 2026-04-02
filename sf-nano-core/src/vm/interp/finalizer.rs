@@ -216,7 +216,10 @@ impl<'a> Finalizer<'a> {
         Ok(code)
     }
 
-    fn emit_block(&mut self, block: &crate::vm::middle::ssa_ir::ir::SsaBlock) -> Result<(), WasmError> {
+    fn emit_block(
+        &mut self,
+        block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
+    ) -> Result<(), WasmError> {
         self.block_starts[block.id.as_usize()] = Some(self.instructions.len());
 
         for op in &block.ops {

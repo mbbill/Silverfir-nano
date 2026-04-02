@@ -7,11 +7,10 @@ use crate::{
     vm::{
         entities::global_offset,
         machine::machine_ir::{
-            machine_ptr_width, MachineAddr, MachineBlockId,
-            MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
-            MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
-            MachineValue, MACHINE_MEM0_BASE_REG,
+            machine_ptr_width, MachineAddr, MachineBlockId, MachineBranchCond, MachineCompareKind,
+            MachineConvertOp, MachineEdge, MachineInst, MachineInstKind, MachineIntBinaryOp,
+            MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG,
         },
         middle::ssa_ir::ir::{SsaOperand, SsaValue},
         runtime::layout::native_runtime_abi_layout,
@@ -22,11 +21,15 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_inst::LeafLowering,
-    lower_util::{single_arg, single_result, two_args, three_args},
+    lower_util::{single_arg, single_result, three_args, two_args},
 };
 
 impl<'a> BlockLowerContext<'a> {
-    pub(super) fn lower_memory_size(&mut self, mem_idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
+    pub(super) fn lower_memory_size(
+        &mut self,
+        mem_idx: u32,
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
@@ -84,7 +87,11 @@ impl<'a> BlockLowerContext<'a> {
         let delta = self.lower_operand(single_arg(args)?)?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::MemoryGrow { mem_idx, dst, delta },
+            kind: MachineInstKind::MemoryGrow {
+                mem_idx,
+                dst,
+                delta,
+            },
         });
         self.emit_reload_mem0_cache_regs();
         Ok(())
@@ -100,7 +107,12 @@ impl<'a> BlockLowerContext<'a> {
         let val = self.lower_operand(val)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::MemoryFill { mem_idx, dest, val, len },
+            kind: MachineInstKind::MemoryFill {
+                mem_idx,
+                dest,
+                val,
+                len,
+            },
         });
         Ok(())
     }
@@ -116,7 +128,13 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::MemoryCopy { dst_mem, src_mem, dest, src, len },
+            kind: MachineInstKind::MemoryCopy {
+                dst_mem,
+                src_mem,
+                dest,
+                src,
+                len,
+            },
         });
         Ok(())
     }
@@ -132,7 +150,13 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::MemoryInit { mem_idx, data_idx, dest, src, len },
+            kind: MachineInstKind::MemoryInit {
+                mem_idx,
+                data_idx,
+                dest,
+                src,
+                len,
+            },
         });
         Ok(())
     }
@@ -155,7 +179,12 @@ impl<'a> BlockLowerContext<'a> {
         let delta = self.lower_operand(delta)?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TableGrow { table_idx, dst, init_val, delta },
+            kind: MachineInstKind::TableGrow {
+                table_idx,
+                dst,
+                init_val,
+                delta,
+            },
         });
         Ok(())
     }
@@ -170,7 +199,12 @@ impl<'a> BlockLowerContext<'a> {
         let val = self.lower_operand(val)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TableFill { table_idx, start, val, len },
+            kind: MachineInstKind::TableFill {
+                table_idx,
+                start,
+                val,
+                len,
+            },
         });
         Ok(())
     }
@@ -186,7 +220,13 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TableCopy { dst_tbl, src_tbl, dest, src, len },
+            kind: MachineInstKind::TableCopy {
+                dst_tbl,
+                src_tbl,
+                dest,
+                src,
+                len,
+            },
         });
         Ok(())
     }
@@ -202,7 +242,13 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src)?;
         let len = self.lower_operand(len)?;
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::TableInit { table_idx, elem_idx, dest, src, len },
+            kind: MachineInstKind::TableInit {
+                table_idx,
+                elem_idx,
+                dest,
+                src,
+                len,
+            },
         });
         Ok(())
     }
@@ -214,8 +260,11 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-
-    pub(super) fn lower_global_get(&mut self, idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
+    pub(super) fn lower_global_get(
+        &mut self,
+        idx: u32,
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let ty = self.value_storage_type(result);
         if matches!(ty, MachineStorageType::GpI64) {
@@ -227,7 +276,11 @@ impl<'a> BlockLowerContext<'a> {
 
     /// Scalar (non-i64-pair) global.get -- used by both Gp64Lowering and the
     /// non-i64 path above.
-    pub(super) fn lower_global_get_scalar(&mut self, idx: u32, result: SsaValue) -> Result<(), WasmError> {
+    pub(super) fn lower_global_get_scalar(
+        &mut self,
+        idx: u32,
+        result: SsaValue,
+    ) -> Result<(), WasmError> {
         let ty = self.value_storage_type(result);
         let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
@@ -260,7 +313,11 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// 32-bit i64 pair global.get -- called from Gp32Lowering.
-    pub(super) fn lower_global_get_i64_pair(&mut self, idx: u32, result: SsaValue) -> Result<(), WasmError> {
+    pub(super) fn lower_global_get_i64_pair(
+        &mut self,
+        idx: u32,
+        result: SsaValue,
+    ) -> Result<(), WasmError> {
         let runtime_layout = self.runtime_abi_layout();
         let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
         self.emit_machine_inst(MachineInst {
@@ -300,7 +357,11 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_global_set(&mut self, idx: u32, args: &[SsaOperand]) -> Result<(), WasmError> {
+    pub(super) fn lower_global_set(
+        &mut self,
+        idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?.unwrap_value();
         let ty = self.value_storage_type(src_value);
         if matches!(ty, MachineStorageType::GpI64) {
@@ -312,7 +373,11 @@ impl<'a> BlockLowerContext<'a> {
 
     /// Scalar (non-i64-pair) global.set -- used by both Gp64Lowering and the
     /// non-i64 path above.
-    pub(super) fn lower_global_set_scalar(&mut self, idx: u32, src_value: SsaValue) -> Result<(), WasmError> {
+    pub(super) fn lower_global_set_scalar(
+        &mut self,
+        idx: u32,
+        src_value: SsaValue,
+    ) -> Result<(), WasmError> {
         let ty = self.value_storage_type(src_value);
         let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
@@ -344,7 +409,11 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// 32-bit i64 pair global.set -- called from Gp32Lowering.
-    pub(super) fn lower_global_set_i64_pair(&mut self, idx: u32, src_value: SsaValue) -> Result<(), WasmError> {
+    pub(super) fn lower_global_set_i64_pair(
+        &mut self,
+        idx: u32,
+        src_value: SsaValue,
+    ) -> Result<(), WasmError> {
         let runtime_layout = self.runtime_abi_layout();
         let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
         let base = self.borrow_free_transients(1)?[0];
@@ -383,7 +452,11 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_table_size(&mut self, table_idx: u32, results: &[SsaValue]) -> Result<(), WasmError> {
+    pub(super) fn lower_table_size(
+        &mut self,
+        table_idx: u32,
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         let table_views = self.borrow_free_transients(1)?[0];
         let runtime_layout = self.runtime_abi_layout();
@@ -856,7 +929,12 @@ impl<'a> BlockLowerContext<'a> {
         // addr32 while the caller believes residual is 0 (untouched).
         // Filtering it out forces the in-place fallback path below,
         // which correctly reports the residual for later subtraction.
-        if let Some(check_reg) = self.borrow_free_transients(1).ok().map(|s| s[0]).filter(|r| *r != addr32) {
+        if let Some(check_reg) = self
+            .borrow_free_transients(1)
+            .ok()
+            .map(|s| s[0])
+            .filter(|r| *r != addr32)
+        {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
                     width: self.gp_word_int_width(),
@@ -914,7 +992,12 @@ impl<'a> BlockLowerContext<'a> {
         addr32: MachineReg,
         scratch: MachineReg,
         access_bytes: u32,
-        load_dst: Option<(MachineReg, MachineStorageType, MachineMemWidth, MachineLoadExtension)>,
+        load_dst: Option<(
+            MachineReg,
+            MachineStorageType,
+            MachineMemWidth,
+            MachineLoadExtension,
+        )>,
         store_src: Option<(MachineReg, MachineStorageType, MachineMemWidth)>,
     ) -> Result<Vec<MachineInst>, WasmError> {
         let mut ops = Vec::new();
@@ -1660,31 +1743,58 @@ pub(super) fn machine_store(primitive: &PrimitiveOpKind) -> Option<MemoryStoreSp
 
     Some(match primitive {
         P::I32Store { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpWord, width: MachineMemWidth::U32,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpWord,
+            width: MachineMemWidth::U32,
         },
         P::I64Store { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpI64, width: MachineMemWidth::U64,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpI64,
+            width: MachineMemWidth::U64,
         },
         P::F32Store { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::Fp32, width: MachineMemWidth::U32,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::Fp32,
+            width: MachineMemWidth::U32,
         },
         P::F64Store { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::Fp64, width: MachineMemWidth::U64,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::Fp64,
+            width: MachineMemWidth::U64,
         },
         P::I32Store8 { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpWord, width: MachineMemWidth::U8,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpWord,
+            width: MachineMemWidth::U8,
         },
         P::I32Store16 { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpWord, width: MachineMemWidth::U16,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpWord,
+            width: MachineMemWidth::U16,
         },
         P::I64Store8 { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpI64, width: MachineMemWidth::U8,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpI64,
+            width: MachineMemWidth::U8,
         },
         P::I64Store16 { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpI64, width: MachineMemWidth::U16,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpI64,
+            width: MachineMemWidth::U16,
         },
         P::I64Store32 { offset, memidx } => MemoryStoreSpec {
-            memidx: *memidx, offset: *offset, ty: MachineStorageType::GpI64, width: MachineMemWidth::U32,
+            memidx: *memidx,
+            offset: *offset,
+            ty: MachineStorageType::GpI64,
+            width: MachineMemWidth::U32,
         },
         _ => return None,
     })

@@ -7,9 +7,9 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBranchCond, MachineBlockId, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineLoadExtension, MachineReg,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
+            MachineInstKind, MachineLoadExtension, MachineReg, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::ssa_ir::{
             ir::{SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
@@ -428,8 +428,7 @@ impl<'a> BlockLowerContext<'a> {
                 {
                     return self.lower_float_compare(args, results, width, kind);
                 }
-                if let Some((width, op)) = super::lower_leaf_arith::machine_float_unary(primitive)
-                {
+                if let Some((width, op)) = super::lower_leaf_arith::machine_float_unary(primitive) {
                     return self.lower_float_unary(args, results, width, op);
                 }
                 if let Some(op) = super::lower_leaf_arith::machine_convert(primitive) {
@@ -461,7 +460,8 @@ impl<'a> BlockLowerContext<'a> {
                 .find(|binding| binding.param == *target_param)
                 .ok_or_else(|| {
                     WasmError::internal(
-                        "missing SSA-IR edge binding for target param during native lowering".into(),
+                        "missing SSA-IR edge binding for target param during native lowering"
+                            .into(),
                     )
                 })?;
             let regs = self.value_regs_for_edge(binding.value)?;

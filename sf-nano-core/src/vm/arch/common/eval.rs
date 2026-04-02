@@ -10,11 +10,11 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
+        result_buffer::ResultBuffer,
         runtime::{
             code::{CompiledNativeModule, NativeCode},
             context::NativeContext,
         },
-        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -51,12 +51,12 @@ pub(crate) fn eval(
         .ok_or_else(|| {
             WasmError::internal("native entry function is missing runtime metadata".into())
         })?;
-    let entry = code.native_entry().ok_or_else(|| {
-        WasmError::internal("native entry is missing finalized code".into())
-    })?;
-    let root_return = code.native_root_return().ok_or_else(|| {
-        WasmError::internal("native root return continuation is missing".into())
-    })?;
+    let entry = code
+        .native_entry()
+        .ok_or_else(|| WasmError::internal("native entry is missing finalized code".into()))?;
+    let root_return = code
+        .native_root_return()
+        .ok_or_else(|| WasmError::internal("native root return continuation is missing".into()))?;
 
     let mut stack = vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();

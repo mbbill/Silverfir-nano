@@ -22,17 +22,11 @@ pub(super) enum Cond {
 }
 
 fn encode_rrr(op: u32, rd: GpReg, rn: GpReg, rm: GpReg) -> u32 {
-    (op << 24)
-        | ((rd.index() as u32) << 16)
-        | ((rn.index() as u32) << 8)
-        | (rm.index() as u32)
+    (op << 24) | ((rd.index() as u32) << 16) | ((rn.index() as u32) << 8) | (rm.index() as u32)
 }
 
 fn encode_rri(op: u32, rd: GpReg, rn: GpReg, imm: u16) -> u32 {
-    (op << 24)
-        | ((rd.index() as u32) << 16)
-        | ((rn.index() as u32) << 8)
-        | (imm as u32)
+    (op << 24) | ((rd.index() as u32) << 16) | ((rn.index() as u32) << 8) | (imm as u32)
 }
 
 fn encode_frr(op: u32, rd: FpReg, rn: FpReg) -> u32 {
@@ -40,10 +34,7 @@ fn encode_frr(op: u32, rd: FpReg, rn: FpReg) -> u32 {
 }
 
 fn encode_frrr(op: u32, rd: FpReg, rn: FpReg, rm: FpReg) -> u32 {
-    (op << 24)
-        | ((rd.index() as u32) << 16)
-        | ((rn.index() as u32) << 8)
-        | (rm.index() as u32)
+    (op << 24) | ((rd.index() as u32) << 16) | ((rn.index() as u32) << 8) | (rm.index() as u32)
 }
 
 pub(super) fn mov_reg_64(rd: GpReg, rm: GpReg) -> u32 {
@@ -82,12 +73,7 @@ pub(super) fn cmp_imm_64(rn: GpReg, imm12: u16) -> u32 {
     encode_rri(0x07, GpReg::ZR, rn, imm12)
 }
 
-pub(super) fn csel_64(
-    rd: GpReg,
-    rn: GpReg,
-    rm: GpReg,
-    cond: Cond,
-) -> u32 {
+pub(super) fn csel_64(rd: GpReg, rn: GpReg, rm: GpReg, cond: Cond) -> u32 {
     encode_rrr(0x08 | ((cond as u32) << 4), rd, rn, rm)
 }
 

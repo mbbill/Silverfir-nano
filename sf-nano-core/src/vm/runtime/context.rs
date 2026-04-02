@@ -369,8 +369,10 @@ pub(crate) mod memory_view_offset {
 pub(crate) mod table_view_offset {
     use super::NativeTableView;
 
-    pub(crate) const ELEMENTS_BASE: u32 = core::mem::offset_of!(NativeTableView, elements_base) as u32;
-    pub(crate) const ELEMENTS_LEN: u32 = core::mem::offset_of!(NativeTableView, elements_len) as u32;
+    pub(crate) const ELEMENTS_BASE: u32 =
+        core::mem::offset_of!(NativeTableView, elements_base) as u32;
+    pub(crate) const ELEMENTS_LEN: u32 =
+        core::mem::offset_of!(NativeTableView, elements_len) as u32;
 }
 
 #[cfg(test)]
@@ -387,7 +389,8 @@ pub(crate) mod function_view_offset {
 
     pub(crate) const KIND: u32 = core::mem::offset_of!(NativeFunctionView, kind) as u32;
     pub(crate) const TYPE_CANON: u32 = core::mem::offset_of!(NativeFunctionView, type_canon) as u32;
-    pub(crate) const LOCAL_TARGET: u32 = core::mem::offset_of!(NativeFunctionView, local_target) as u32;
+    pub(crate) const LOCAL_TARGET: u32 =
+        core::mem::offset_of!(NativeFunctionView, local_target) as u32;
 }
 
 #[cfg(test)]

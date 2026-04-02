@@ -70,10 +70,13 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntUnary {
@@ -96,10 +99,13 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
@@ -124,10 +130,13 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
@@ -152,15 +161,15 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
-        let dst = self.alloc_float_value_reusing_dead_inputs(
-            single_result(results)?,
-            &dead,
-            width,
-        )?;
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
+        let dst =
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatBinary {
                 width,
@@ -183,12 +192,14 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
-        let dst =
-            self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatCompare {
                 width,
@@ -210,15 +221,15 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
-        let dst = self.alloc_float_value_reusing_dead_inputs(
-            single_result(results)?,
-            &dead,
-            width,
-        )?;
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
+        let dst =
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
@@ -238,25 +249,20 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
         let dst = if let Some(width) = convert_result_float_width(op) {
-            self.alloc_float_value_reusing_dead_inputs(
-                single_result(results)?,
-                &dead,
-                width,
-            )?
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?
         } else {
             self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?
         };
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Convert {
-                op,
-                dst,
-                src,
-            },
+            kind: MachineInstKind::Convert { op, dst, src },
         });
         Ok(())
     }
@@ -272,10 +278,13 @@ impl<'a> BlockLowerContext<'a> {
         let on_true = self.use_operand(args[0])?;
         let on_false = self.use_operand(args[1])?;
         let cond = self.use_operand(args[2])?;
-        let dead_inputs: Vec<_> = args.iter().filter_map(|a| match a {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
-        }).collect();
+        let dead_inputs: Vec<_> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead_inputs)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {

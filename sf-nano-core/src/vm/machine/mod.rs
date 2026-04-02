@@ -7,8 +7,9 @@
 //! - MachineIR transforms (peephole optimization, validation)
 
 mod gp32;
-mod lower_call;
 mod lower_cached;
+mod lower_call;
+mod lower_const_pool;
 mod lower_context;
 mod lower_i64;
 mod lower_i64_gp64;
@@ -17,10 +18,9 @@ mod lower_leaf_arith;
 mod lower_leaf_special;
 mod lower_module;
 mod lower_regalloc;
-mod optimize;
-mod lower_const_pool;
 mod lower_util;
 pub(crate) mod machine_ir;
+mod optimize;
 pub(crate) mod peephole;
 pub(crate) mod validate;
 

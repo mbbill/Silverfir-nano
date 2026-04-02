@@ -10,23 +10,21 @@ use crate::{
     error::WasmError,
     vm::{
         arch::common::{
-            helpers::page_align_function,
-            pipeline,
-            text_emitter::TextEmitter,
+            helpers::page_align_function, pipeline, text_emitter::TextEmitter,
             types::FunctionArtifact,
         },
         entities::ModuleInst,
         runtime::{
-            dispatch_view::NativeLocalCallInfo32,
             code::{CompiledNativeModule, NativeRootEntry},
+            dispatch_view::NativeLocalCallInfo32,
         },
     },
 };
 
-use crate::vm::arch::common::backend::ArchBackend;
 use super::backend::{Arm32Backend, CompiledArm32Entry};
 use super::enc;
 use super::reg::Arm32Reg;
+use crate::vm::arch::common::backend::ArchBackend;
 
 // ── ARM32-specific patch helper ──────────────────────────────────────────────
 
@@ -58,9 +56,12 @@ pub(crate) fn compile_module(
     compiled: &CompiledNativeModule,
 ) -> Result<Vec<Option<CompiledArm32Entry>>, WasmError> {
     // Pass 1: compile each function via common pipeline
-    let mut artifacts: Vec<FunctionArtifact> = Vec::with_capacity(compiled.module().functions.len());
+    let mut artifacts: Vec<FunctionArtifact> =
+        Vec::with_capacity(compiled.module().functions.len());
     for function in &compiled.module().functions {
-        artifacts.push(pipeline::compile_function::<Arm32Backend>(compiled, function)?);
+        artifacts.push(pipeline::compile_function::<Arm32Backend>(
+            compiled, function,
+        )?);
     }
 
     // Pass 2: compute page-aligned base offsets
@@ -184,7 +185,11 @@ pub(crate) fn compile_module(
                         unsafe { core::slice::from_raw_parts(region_start, region.len) };
                     let symbol =
                         alloc::format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
-                    crate::vm::runtime::profiler::record_function(region_start, code_bytes, &symbol);
+                    crate::vm::runtime::profiler::record_function(
+                        region_start,
+                        code_bytes,
+                        &symbol,
+                    );
                 }
             }
         }

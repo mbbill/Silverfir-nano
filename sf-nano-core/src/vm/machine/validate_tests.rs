@@ -3,8 +3,8 @@ use alloc::{vec, vec::Vec};
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineCallExternal, MachineConstData,
-    MachineConstId, MachineEdge, MachineFunction, MachineInst, MachineInstKind, MachineModule, MachineProgram,
-    MachineReg, MachineStorageType, MachineTerminator, MachineValue,
+    MachineConstId, MachineEdge, MachineFunction, MachineInst, MachineInstKind, MachineModule,
+    MachineProgram, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
 
 /// Minimal config for validate tests: no cache/transient budget beyond the minimum.

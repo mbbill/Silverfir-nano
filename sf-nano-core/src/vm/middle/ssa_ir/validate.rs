@@ -92,22 +92,14 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         }
     }
     for ty in &program.local_cache.gp_preferred_types {
-        if matches!(
-            ty,
-            ValueType::F32
-                | ValueType::F64
-        ) {
+        if matches!(ty, ValueType::F32 | ValueType::F64) {
             return Err(WasmError::internal(
                 "SSA-IR GP local-cache preferences must not contain float types".into(),
             ));
         }
     }
     for ty in &program.local_cache.fp_preferred_types {
-        if !matches!(
-            ty,
-            ValueType::F32
-                | ValueType::F64
-        ) {
+        if !matches!(ty, ValueType::F32 | ValueType::F64) {
             return Err(WasmError::internal(
                 "SSA-IR FP local-cache preferences must contain only float types".into(),
             ));
@@ -445,12 +437,10 @@ mod tests {
                     id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(
-                        SsaEdge {
-                            target: SsaTarget(1),
-                            bindings: Vec::new(),
-                        }
-                    ),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: Vec::new(),
+                    }),
                 },
                 SsaBlock {
                     id: SsaTarget(1),
@@ -481,21 +471,19 @@ mod tests {
                     id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(
-                        SsaEdge {
-                            target: SsaTarget(1),
-                            bindings: alloc::vec![
-                                SsaBinding {
-                                    param: param0,
-                                    value: SsaValue(1),
-                                },
-                                SsaBinding {
-                                    param: param0,
-                                    value: SsaValue(2),
-                                },
-                            ],
-                        }
-                    ),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: alloc::vec![
+                            SsaBinding {
+                                param: param0,
+                                value: SsaValue(1),
+                            },
+                            SsaBinding {
+                                param: param0,
+                                value: SsaValue(2),
+                            },
+                        ],
+                    }),
                 },
                 SsaBlock {
                     id: SsaTarget(1),
@@ -525,15 +513,13 @@ mod tests {
                     id: SsaTarget(0),
                     params: Vec::new(),
                     ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(
-                        SsaEdge {
-                            target: SsaTarget(1),
-                            bindings: alloc::vec![SsaBinding {
-                                param: param0,
-                                value: value1,
-                            }],
-                        }
-                    ),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: alloc::vec![SsaBinding {
+                            param: param0,
+                            value: value1,
+                        }],
+                    }),
                 },
                 SsaBlock {
                     id: SsaTarget(1),
@@ -542,10 +528,7 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            value_types: alloc::vec![
-                ValueType::I64,
-                ValueType::I32,
-            ],
+            value_types: alloc::vec![ValueType::I64, ValueType::I32,],
             value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };

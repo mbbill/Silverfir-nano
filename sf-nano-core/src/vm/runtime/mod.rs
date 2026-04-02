@@ -5,10 +5,10 @@ use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
 
-#[cfg(feature = "interp")]
-use crate::vm::interp;
 #[cfg(feature = "micro-jit")]
 pub use crate::vm::arch::ReferenceBackendMode;
+#[cfg(feature = "interp")]
+use crate::vm::interp;
 #[cfg(not(feature = "micro-jit"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceBackendMode {
@@ -28,11 +28,11 @@ impl ReferenceBackendMode {
 // --- Native runtime infrastructure (micro-jit only) ---
 
 #[cfg(feature = "micro-jit")]
-pub(crate) mod common;
-#[cfg(feature = "micro-jit")]
 pub(crate) mod code;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod code_buf;
+#[cfg(feature = "micro-jit")]
+pub(crate) mod common;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod context;
 #[cfg(feature = "micro-jit")]

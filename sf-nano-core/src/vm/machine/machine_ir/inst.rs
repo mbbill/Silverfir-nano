@@ -1,10 +1,9 @@
 use super::cfg::MachineBranchCond;
 use super::types::{
-    MachineTrapKind,
-    MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp,
-    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend,
-    MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-    MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineValue,
+    MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineFloatBinaryOp,
+    MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineIntBinaryOp,
+    MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+    MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
 };
 
 /// Inline external call that falls through in the same function.

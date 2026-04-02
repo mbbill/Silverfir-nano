@@ -182,11 +182,11 @@ mod tests {
         function_view_abi_layout, local_call_info_abi_layout, native_runtime_abi_layout,
         pointer_len_abi_layout,
     };
-    use crate::vm::runtime::dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64};
     use crate::vm::runtime::context::{
         ctx_offset, function_view_offset, globals_view_offset, memory_view_offset,
         table_view_offset,
     };
+    use crate::vm::runtime::dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64};
 
     #[test]
     fn host_width_runtime_layout_matches_host_struct_offsets() {
@@ -267,7 +267,10 @@ mod tests {
     #[test]
     fn thirty_two_bit_local_call_info_layout_matches_record() {
         let layout = local_call_info_abi_layout(4);
-        assert_eq!(layout.entry_offset, core::mem::offset_of!(NativeLocalCallInfo32, entry) as u32);
+        assert_eq!(
+            layout.entry_offset,
+            core::mem::offset_of!(NativeLocalCallInfo32, entry) as u32
+        );
         assert_eq!(
             layout.total_frame_bytes_offset,
             core::mem::offset_of!(NativeLocalCallInfo32, total_frame_bytes) as u32
@@ -280,13 +283,19 @@ mod tests {
             layout.call_scratch_base_slot_offset,
             core::mem::offset_of!(NativeLocalCallInfo32, call_scratch_base_slot) as u32
         );
-        assert_eq!(layout.stride, core::mem::size_of::<NativeLocalCallInfo32>() as u32);
+        assert_eq!(
+            layout.stride,
+            core::mem::size_of::<NativeLocalCallInfo32>() as u32
+        );
     }
 
     #[test]
     fn sixty_four_bit_local_call_info_layout_matches_record() {
         let layout = local_call_info_abi_layout(8);
-        assert_eq!(layout.entry_offset, core::mem::offset_of!(NativeLocalCallInfo64, entry) as u32);
+        assert_eq!(
+            layout.entry_offset,
+            core::mem::offset_of!(NativeLocalCallInfo64, entry) as u32
+        );
         assert_eq!(
             layout.total_frame_bytes_offset,
             core::mem::offset_of!(NativeLocalCallInfo64, total_frame_bytes) as u32
@@ -299,7 +308,10 @@ mod tests {
             layout.call_scratch_base_slot_offset,
             core::mem::offset_of!(NativeLocalCallInfo64, call_scratch_base_slot) as u32
         );
-        assert_eq!(layout.stride, core::mem::size_of::<NativeLocalCallInfo64>() as u32);
+        assert_eq!(
+            layout.stride,
+            core::mem::size_of::<NativeLocalCallInfo64>() as u32
+        );
     }
 
     #[test]

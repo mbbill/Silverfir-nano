@@ -10,7 +10,9 @@ use crate::{
         middle::{
             frame::FrameLayoutPlan,
             ssa_ir::{
-                ir::{SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaTerminator, SsaValue},
+                ir::{
+                    SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaTerminator, SsaValue,
+                },
                 target::SsaTarget,
             },
         },
@@ -26,11 +28,10 @@ use super::{
     lower_edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     lower_ops::{
         branch_payload, lower_call_direct, lower_call_indirect, lower_local_get, lower_local_set,
-        lower_local_tee,
-        lower_prefix_actions, lower_primitive, return_results,
+        lower_local_tee, lower_prefix_actions, lower_primitive, return_results,
     },
-    state::{BlockState, EntryState, ValueAlloc},
     spill_plan::PreparedOp,
+    state::{BlockState, EntryState, ValueAlloc},
 };
 
 pub(super) fn lower_block_terminator(
@@ -54,12 +55,7 @@ pub(super) fn lower_block_terminator(
     lower_prefix_actions(op, state, values)?;
 
     match &op.semantic.kind {
-        SemanticOpKind::Primitive(kind)
-            if matches!(
-                kind,
-                PrimitiveOpKind::Unreachable
-            ) =>
-        {
+        SemanticOpKind::Primitive(kind) if matches!(kind, PrimitiveOpKind::Unreachable) => {
             Ok(LoweredTerminator::new(SsaTerminator::TrapUnreachable))
         }
         SemanticOpKind::Primitive(kind) => {
@@ -245,9 +241,7 @@ pub(super) fn lower_block_terminator(
                         err
                     ))
                 })?;
-                let then_block_id = SsaTarget(
-                    (original_block_count + extra_blocks_len) as u32,
-                );
+                let then_block_id = SsaTarget((original_block_count + extra_blocks_len) as u32);
                 let payload_types: alloc::vec::Vec<_> =
                     payload.iter().map(|v| values.value_type(*v)).collect();
                 let then_params = values.many_typed(&payload_types);
