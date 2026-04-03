@@ -235,8 +235,7 @@ impl BlockState {
 
     fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
         let (gp_live, fp_live) = count_live_bank_budget_units(&self.live_types, self.gp_unit_bytes);
-        if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize
-        {
+        if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {
             return Err(WasmError::internal(alloc::format!(
                 "prepared SSA-IR exceeds configured dynamic bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
                 gp_live,

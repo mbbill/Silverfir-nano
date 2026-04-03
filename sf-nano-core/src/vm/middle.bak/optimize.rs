@@ -1123,7 +1123,8 @@ mod tests {
     fn forwards_store_reload_when_source_already_lives_long_enough() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: Default::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
@@ -1170,7 +1171,7 @@ mod tests {
 
         let block = &program.blocks[0];
         // Slot forwarding is intentionally not part of optimize_ssa() anymore
-        // because the late resource planner needs the original stack-shape
+        // because boundary-phase joint planning needs the original stack-shape
         // information. The local reload therefore remains explicit here.
         assert_eq!(block.ops.len(), 4);
         assert!(matches!(
@@ -1200,7 +1201,8 @@ mod tests {
     fn does_not_forward_duplicate_slot_loads_without_same_block_store() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: Default::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
@@ -1238,7 +1240,10 @@ mod tests {
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[1].kind, SsaInstKind::LocalGetSlot { .. }));
+        assert!(matches!(
+            block.ops[1].kind,
+            SsaInstKind::LocalGetSlot { .. }
+        ));
         assert!(matches!(
             &block.ops[2].kind,
             SsaInstKind::Value {
@@ -1252,7 +1257,8 @@ mod tests {
     fn keeps_reload_when_forwarding_would_extend_the_source_lifetime() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: Default::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
@@ -1294,7 +1300,10 @@ mod tests {
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGetSlot { .. }));
+        assert!(matches!(
+            block.ops[2].kind,
+            SsaInstKind::LocalGetSlot { .. }
+        ));
         assert!(matches!(
             &block.ops[3].kind,
             SsaInstKind::Value {
@@ -1308,7 +1317,8 @@ mod tests {
     fn does_not_forward_slot_reload_across_mismatched_value_types() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: Default::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
@@ -1351,7 +1361,10 @@ mod tests {
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGetSlot { .. }));
+        assert!(matches!(
+            block.ops[2].kind,
+            SsaInstKind::LocalGetSlot { .. }
+        ));
         assert!(matches!(
             &block.ops[3].kind,
             SsaInstKind::Value {

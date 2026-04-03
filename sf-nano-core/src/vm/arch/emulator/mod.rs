@@ -687,7 +687,11 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::CallExternal(call) => self.execute_call_external(call)?,
-            MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
+            MachineInstKind::MemoryGrow {
+                mem_idx,
+                dst,
+                delta,
+            } => {
                 let mut io = [0u64; preserved_io::SLOT_COUNT];
                 io[preserved_io::IMM0] = u64::from(*mem_idx);
                 io[preserved_io::ARG0] = self.read_value(*delta)?;
@@ -829,8 +833,9 @@ impl<'a> Emulator<'a> {
         op_code: u32,
         io: &mut [u64; preserved_io::SLOT_COUNT],
     ) -> Result<(), WasmError> {
-        let status =
-            unsafe { preserved::preserved_entry(self.ctx as *mut NativeContext, op_code, io.as_mut_ptr()) };
+        let status = unsafe {
+            preserved::preserved_entry(self.ctx as *mut NativeContext, op_code, io.as_mut_ptr())
+        };
         if status == NativeCallStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
             return Ok(());

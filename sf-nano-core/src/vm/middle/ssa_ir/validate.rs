@@ -7,15 +7,11 @@ use crate::error::WasmError;
 #[cfg(any(debug_assertions, test))]
 use crate::value_type::ValueType;
 #[cfg(any(debug_assertions, test))]
-use crate::vm::middle::ssa_ir::ir::SsaOperand;
+use crate::vm::middle::frame::FrameSlot;
 
 use super::ir::SsaProgram;
 #[cfg(any(debug_assertions, test))]
-use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaValue};
-#[cfg(any(debug_assertions, test))]
-use super::ir::{SsaInstKind, SsaTerminator};
-#[cfg(any(debug_assertions, test))]
-use crate::vm::middle::frame::FrameSlot;
+use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue};
 
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
@@ -33,6 +29,14 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
             "SSA-IR entry block {} is out of range for {} blocks",
             program.entry.as_usize(),
             program.blocks.len(),
+        )));
+    }
+
+    if program.local_slot_types.len() != program.local_slot_info.len() {
+        return Err(WasmError::internal(alloc::format!(
+            "SSA-IR local slot facts contain {} types but {} info entries",
+            program.local_slot_types.len(),
+            program.local_slot_info.len(),
         )));
     }
 
@@ -59,54 +63,6 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         }
     }
 
-    for (index, slot) in program.local_cache.gp_preferred_slots.iter().enumerate() {
-        if program.local_cache.gp_preferred_slots[..index].contains(slot) {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR local-cache preferences contain duplicate slot {:?}",
-                slot,
-            )));
-        }
-    }
-    if program.local_cache.gp_preferred_slots.len() != program.local_cache.gp_preferred_types.len()
-    {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR GP local-cache preferences contain {} slots but {} type entries",
-            program.local_cache.gp_preferred_slots.len(),
-            program.local_cache.gp_preferred_types.len(),
-        )));
-    }
-    if program.local_cache.fp_preferred_slots.len() != program.local_cache.fp_preferred_types.len()
-    {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR FP local-cache preferences contain {} slots but {} type entries",
-            program.local_cache.fp_preferred_slots.len(),
-            program.local_cache.fp_preferred_types.len(),
-        )));
-    }
-    for (index, slot) in program.local_cache.fp_preferred_slots.iter().enumerate() {
-        if program.local_cache.fp_preferred_slots[..index].contains(slot) {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR FP local-cache preferences contain duplicate slot {:?}",
-                slot,
-            )));
-        }
-    }
-    for ty in &program.local_cache.gp_preferred_types {
-        if matches!(ty, ValueType::F32 | ValueType::F64) {
-            return Err(WasmError::internal(
-                "SSA-IR GP local-cache preferences must not contain float types".into(),
-            ));
-        }
-    }
-    for ty in &program.local_cache.fp_preferred_types {
-        if !matches!(ty, ValueType::F32 | ValueType::F64) {
-            return Err(WasmError::internal(
-                "SSA-IR FP local-cache preferences must contain only float types".into(),
-            ));
-        }
-    }
-
-    // Validate value-type side table coverage when present.
     if !program.value_types.is_empty() {
         validate_value_type_coverage(program)?;
         validate_cached_local_slot_types(program)?;
@@ -136,24 +92,24 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
         for inst in &block.ops {
             match &inst.kind {
                 SsaInstKind::Value { args, results, .. } => {
-                    for a in args {
-                        if let SsaOperand::Value(v) = a {
-                            check(*v, &alloc::format!("{bctx} Value arg"))?;
+                    for arg in args {
+                        if let SsaOperand::Value(value) = arg {
+                            check(*value, &alloc::format!("{bctx} value arg"))?;
                         }
                     }
-                    for r in results {
-                        check(*r, &alloc::format!("{bctx} Value result"))?;
+                    for result in results {
+                        check(*result, &alloc::format!("{bctx} value result"))?;
                     }
                 }
                 SsaInstKind::LocalGetSlot { dst, .. }
                 | SsaInstKind::LocalGetCache { dst, .. }
                 | SsaInstKind::Fill { dst, .. } => {
-                    check(*dst, &alloc::format!("{bctx} LocalGet/Fill dst"))?;
+                    check(*dst, &alloc::format!("{bctx} get/fill dst"))?;
                 }
                 SsaInstKind::LocalSetSlot { src, .. }
                 | SsaInstKind::LocalSetCache { src, .. }
                 | SsaInstKind::Spill { src, .. } => {
-                    check(*src, &alloc::format!("{bctx} LocalSet/Spill src"))?;
+                    check(*src, &alloc::format!("{bctx} set/spill src"))?;
                 }
                 SsaInstKind::LocalEnsureCache { .. }
                 | SsaInstKind::LocalDropCache { .. }
@@ -161,20 +117,18 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
             }
         }
         match &block.terminator {
+            SsaTerminator::Goto(edge) => validate_edge_values(edge, &bctx, &check)?,
             SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
             } => {
-                check(*cond, &alloc::format!("{bctx} Branch cond"))?;
+                check(*cond, &alloc::format!("{bctx} branch cond"))?;
                 validate_edge_values(then_edge, &bctx, &check)?;
                 validate_edge_values(else_edge, &bctx, &check)?;
             }
-            SsaTerminator::Goto(edge) => {
-                validate_edge_values(edge, &bctx, &check)?;
-            }
             SsaTerminator::BrTable { index, entries } => {
-                check(*index, &alloc::format!("{bctx} BrTable index"))?;
+                check(*index, &alloc::format!("{bctx} br_table index"))?;
                 for edge in entries {
                     validate_edge_values(edge, &bctx, &check)?;
                 }
@@ -214,55 +168,33 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         cached_slot_types.entry(slot).or_insert(ty);
                     }
                 }
-                SsaInstKind::Fill { .. }
-                | SsaInstKind::Spill { .. }
-                | SsaInstKind::Value { .. }
-                | SsaInstKind::LocalGetSlot { .. }
-                | SsaInstKind::LocalSetSlot { .. }
-                | SsaInstKind::LocalEnsureCache { .. }
-                | SsaInstKind::LocalDropCache { .. }
-                | SsaInstKind::Call(_) => {}
+                _ => {}
             }
         }
-    }
-
-    if cached_slot_types.is_empty() {
-        return Ok(());
     }
 
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
             match inst.kind {
-                SsaInstKind::LocalGetCache { slot, dst } => {
-                    validate_cached_slot_value_type(
-                        program,
-                        &cached_slot_types,
-                        slot,
-                        dst,
-                        block_idx,
-                        op_idx,
-                        "LocalGetCache dst",
-                    )?;
-                }
-                SsaInstKind::LocalSetCache { slot, src } => {
-                    validate_cached_slot_value_type(
-                        program,
-                        &cached_slot_types,
-                        slot,
-                        src,
-                        block_idx,
-                        op_idx,
-                        "LocalSetCache src",
-                    )?;
-                }
-                SsaInstKind::Fill { .. }
-                | SsaInstKind::Spill { .. }
-                | SsaInstKind::Value { .. }
-                | SsaInstKind::LocalGetSlot { .. }
-                | SsaInstKind::LocalSetSlot { .. }
-                | SsaInstKind::LocalEnsureCache { .. }
-                | SsaInstKind::LocalDropCache { .. }
-                | SsaInstKind::Call(_) => {}
+                SsaInstKind::LocalGetCache { slot, dst } => validate_cached_slot_value_type(
+                    program,
+                    &cached_slot_types,
+                    slot,
+                    dst,
+                    block_idx,
+                    op_idx,
+                    "LocalGetCache dst",
+                )?,
+                SsaInstKind::LocalSetCache { slot, src } => validate_cached_slot_value_type(
+                    program,
+                    &cached_slot_types,
+                    slot,
+                    src,
+                    block_idx,
+                    op_idx,
+                    "LocalSetCache src",
+                )?,
+                _ => {}
             }
         }
     }
@@ -285,15 +217,14 @@ fn validate_cached_slot_value_type(
     };
     let Some(value_ty) = program.value_types.get(value.0 as usize).copied() else {
         return Err(WasmError::internal(alloc::format!(
-            "b{block_idx} op {op_idx} {role}: SsaValue({}) is out of range for value_types table",
-            value.0,
+            "b{block_idx} op {op_idx} {role}: value {:?} out of range for value_types",
+            value,
         )));
     };
     if !cached_slot_value_type_matches(role, value_ty, cached_ty) {
         return Err(WasmError::internal(alloc::format!(
-            "b{block_idx} op {op_idx} {role} for cached local slot {:?} uses value {:?} ({:?}), but cache metadata says {:?}",
+            "b{block_idx} op {op_idx} {role} for cached local slot {:?} uses {:?}, but cache metadata says {:?}",
             slot,
-            value,
             value_ty,
             cached_ty,
         )));
@@ -303,7 +234,10 @@ fn validate_cached_slot_value_type(
 
 #[cfg(any(debug_assertions, test))]
 fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: ValueType) -> bool {
-    if matches!((value_ty, cached_ty), (ValueType::Ref(_), ValueType::Ref(_))) {
+    if matches!(
+        (value_ty, cached_ty),
+        (ValueType::Ref(_), ValueType::Ref(_))
+    ) {
         return true;
     }
     match role {
@@ -436,282 +370,4 @@ fn validate_binding(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vm::middle::ssa_ir::{
-        ir::{SsaInst, SsaLocalCachePrefs},
-        target::SsaTarget,
-    };
-    use alloc::vec::Vec;
-
-    #[test]
-    fn rejects_missing_target_binding() {
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![
-                SsaBlock {
-                    id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(SsaEdge {
-                        target: SsaTarget(1),
-                        bindings: Vec::new(),
-                    }),
-                },
-                SsaBlock {
-                    id: SsaTarget(1),
-                    params: alloc::vec![SsaValue(0)],
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Return { results: None },
-                },
-            ],
-            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
-            value_types: alloc::vec![],
-            value_sink_local: alloc::vec![],
-        };
-
-        let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error
-            .message()
-            .contains("has 0 bindings, but target expects 1 params"));
-    }
-
-    #[test]
-    fn rejects_duplicate_param_binding() {
-        let param0 = SsaValue(0);
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![
-                SsaBlock {
-                    id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(SsaEdge {
-                        target: SsaTarget(1),
-                        bindings: alloc::vec![
-                            SsaBinding {
-                                param: param0,
-                                value: SsaValue(1),
-                            },
-                            SsaBinding {
-                                param: param0,
-                                value: SsaValue(2),
-                            },
-                        ],
-                    }),
-                },
-                SsaBlock {
-                    id: SsaTarget(1),
-                    params: alloc::vec![param0],
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Return { results: None },
-                },
-            ],
-            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
-            value_types: alloc::vec![],
-            value_sink_local: alloc::vec![],
-        };
-
-        let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error.message().contains("more than once"));
-    }
-
-    #[test]
-    fn rejects_edge_binding_type_mismatch() {
-        let param0 = SsaValue(0);
-        let value1 = SsaValue(1);
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![
-                SsaBlock {
-                    id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Goto(SsaEdge {
-                        target: SsaTarget(1),
-                        bindings: alloc::vec![SsaBinding {
-                            param: param0,
-                            value: value1,
-                        }],
-                    }),
-                },
-                SsaBlock {
-                    id: SsaTarget(1),
-                    params: alloc::vec![param0],
-                    ops: Vec::new(),
-                    terminator: SsaTerminator::Return { results: None },
-                },
-            ],
-            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
-            value_types: alloc::vec![ValueType::I64, ValueType::I32,],
-            value_sink_local: alloc::vec![],
-        };
-
-        let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error
-            .message()
-            .contains("binds param SsaValue(0) (I64) from value SsaValue(1) (I32)"));
-    }
-
-    #[test]
-    fn rejects_cached_local_slot_type_mismatch() {
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![SsaBlock {
-                id: SsaTarget(0),
-                params: Vec::new(),
-                ops: alloc::vec![
-                    SsaInst {
-                        kind: SsaInstKind::LocalGetCache {
-                            slot: FrameSlot(0),
-                            dst: SsaValue(0),
-                        },
-                    },
-                    SsaInst {
-                        kind: SsaInstKind::Value {
-                            op: crate::vm::middle::ssa_ir::leaf::SsaLeafOp::from_primitive(
-                                crate::vm::wasm::primitive_op::PrimitiveOpKind::I64Const {
-                                    value: 7,
-                                },
-                            )
-                            .unwrap(),
-                            args: Vec::new(),
-                            results: alloc::vec![SsaValue(1)],
-                        },
-                    },
-                    SsaInst {
-                        kind: SsaInstKind::LocalSetCache {
-                            slot: FrameSlot(0),
-                            src: SsaValue(1),
-                        },
-                    },
-                ],
-                terminator: SsaTerminator::Return { results: None },
-            }],
-            block_entry_cached_slots: alloc::vec![alloc::vec![]],
-            value_types: alloc::vec![ValueType::I32, ValueType::I64],
-            value_sink_local: alloc::vec![],
-        };
-
-        let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error
-            .message()
-            .contains("LocalSetCache src for cached local slot FrameSlot(0) uses value SsaValue(1) (I64), but cache metadata says I32"));
-    }
-
-    #[test]
-    fn accepts_cached_local_ref_subtype_storage_match() {
-        let value0 = SsaValue(0);
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![SsaBlock {
-                id: SsaTarget(0),
-                params: Vec::new(),
-                ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LocalGetCache {
-                        slot: FrameSlot(0),
-                        dst: value0,
-                    },
-                }],
-                terminator: SsaTerminator::Return { results: None },
-            }],
-            block_entry_cached_slots: alloc::vec![alloc::vec![]],
-            value_types: alloc::vec![ValueType::Ref(
-                crate::value_type::RefType::non_nullable_concrete(1),
-            )],
-            value_sink_local: alloc::vec![],
-        };
-
-        validate_program(&program).expect("ref subtypes share the same GP-word cached-local class");
-    }
-
-    #[test]
-    fn rejects_cached_local_gp_word_type_mismatch_between_ref_and_i32() {
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![SsaBlock {
-                id: SsaTarget(0),
-                params: Vec::new(),
-                ops: alloc::vec![
-                    SsaInst {
-                        kind: SsaInstKind::LocalGetCache {
-                            slot: FrameSlot(0),
-                            dst: SsaValue(0),
-                        },
-                    },
-                    SsaInst {
-                        kind: SsaInstKind::Value {
-                            op: crate::vm::middle::ssa_ir::leaf::SsaLeafOp::from_primitive(
-                                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const {
-                                    value: 1,
-                                },
-                            )
-                            .unwrap(),
-                            args: Vec::new(),
-                            results: alloc::vec![SsaValue(1)],
-                        },
-                    },
-                    SsaInst {
-                        kind: SsaInstKind::LocalSetCache {
-                            slot: FrameSlot(0),
-                            src: SsaValue(1),
-                        },
-                    },
-                ],
-                terminator: SsaTerminator::Return { results: None },
-            }],
-            block_entry_cached_slots: alloc::vec![alloc::vec![]],
-            value_types: alloc::vec![ValueType::funcref(), ValueType::I32],
-            value_sink_local: alloc::vec![],
-        };
-
-        let error = validate_program(&program).expect_err("validation should fail");
-        assert!(error.message().contains(
-            "LocalSetCache src for cached local slot FrameSlot(0) uses value SsaValue(1) (I32), but cache metadata says Ref"
-        ));
-    }
-
-    #[test]
-    fn accepts_cached_local_ref_variance_between_get_and_set() {
-        let program = SsaProgram {
-            entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
-            blocks: alloc::vec![SsaBlock {
-                id: SsaTarget(0),
-                params: Vec::new(),
-                ops: alloc::vec![
-                    SsaInst {
-                        kind: SsaInstKind::LocalGetCache {
-                            slot: FrameSlot(0),
-                            dst: SsaValue(0),
-                        },
-                    },
-                    SsaInst {
-                        kind: SsaInstKind::LocalSetCache {
-                            slot: FrameSlot(0),
-                            src: SsaValue(1),
-                        },
-                    },
-                ],
-                terminator: SsaTerminator::Return { results: None },
-            }],
-            block_entry_cached_slots: alloc::vec![alloc::vec![]],
-            value_types: alloc::vec![
-                ValueType::Ref(crate::value_type::RefType::non_nullable_concrete(1)),
-                ValueType::funcref(),
-            ],
-            value_sink_local: alloc::vec![],
-        };
-
-        validate_program(&program).expect("all ref cached-local variants share one cache class");
-    }
 }

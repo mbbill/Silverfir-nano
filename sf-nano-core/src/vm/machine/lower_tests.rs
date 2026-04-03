@@ -16,8 +16,8 @@ use crate::vm::{
         frame::plan_frame_layout,
         ssa_ir::{
             ir::{
-                CachedLocalInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaInstKind,
-                SsaLocalCachePrefs, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaInstKind,
+                SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             leaf::SsaLeafOp,
             target::SsaTarget,
@@ -79,7 +79,8 @@ fn lowers_simple_slot_and_add_block() {
     let frame = plan_frame_layout(1, 4, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -196,7 +197,8 @@ fn lowers_select_with_wasm_operand_order() {
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -281,7 +283,8 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -318,7 +321,8 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let result_span = crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -368,7 +372,8 @@ fn rejects_inconsistent_return_result_spans() {
     let frame = plan_frame_layout(0, 4, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -419,7 +424,8 @@ fn rejects_mixed_void_and_value_returns() {
     let frame = plan_frame_layout(0, 4, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -464,7 +470,8 @@ fn rejects_mixed_void_and_value_returns() {
 fn lowers_branch_edge_bindings_into_machine_edge_args() {
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -523,7 +530,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
 fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -602,7 +610,8 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(1, 4, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -694,7 +703,8 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -753,7 +763,8 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -846,7 +857,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -868,7 +880,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -914,17 +927,11 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1025,7 +1032,8 @@ fn local_set_cache_reuses_dying_source_transient_when_no_extra_reg_is_free() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1082,17 +1090,11 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: false,
-                reads_before_write: false,
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1151,7 +1153,8 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1196,7 +1199,8 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
     let frame = plan_frame_layout(0, 1, 1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1255,17 +1259,11 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1341,17 +1339,11 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1417,17 +1409,11 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1505,7 +1491,8 @@ fn lowers_direct_local_call_with_continuation_block() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1527,7 +1514,8 @@ fn lowers_direct_local_call_with_continuation_block() {
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1673,17 +1661,11 @@ fn flushes_cached_local_before_second_direct_call() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![caller_frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1740,7 +1722,8 @@ fn flushes_cached_local_before_second_direct_call() {
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -1810,17 +1793,11 @@ fn preserves_cached_locals_across_block_edges() {
     let frame = plan_frame_layout(1, 1, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -1899,7 +1876,10 @@ fn preserves_cached_locals_across_block_edges() {
         }
     ));
     // LocalDropCache — spill to frame before the edge
-    assert!(matches!(program.blocks[0].ops[1].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(
+        program.blocks[0].ops[1].kind,
+        MachineInstKind::Store { .. }
+    ));
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Jump(_)
@@ -1937,17 +1917,11 @@ fn threads_cached_locals_through_block_edge_params() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![slot],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true,
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -2054,17 +2028,11 @@ fn does_not_save_clean_carried_cache_before_external_call() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![slot],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true,
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -2109,7 +2077,10 @@ fn does_not_save_clean_carried_cache_before_external_call() {
     .expect("clean carried cache should not be saved before external call");
 
     let program = &lowered.module.functions[0].program;
-    assert!(matches!(&program.blocks[0].terminator, MachineTerminator::Jump(_)));
+    assert!(matches!(
+        &program.blocks[0].terminator,
+        MachineTerminator::Jump(_)
+    ));
     assert!(
         program.blocks[1]
             .ops
@@ -2133,17 +2104,11 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            gp_preferred_types: alloc::vec![ValueType::I32],
-            fp_preferred_slots: alloc::vec![],
-            fp_preferred_types: alloc::vec![],
-            gp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: false,
-                reads_before_write: false,
-            }],
-            fp_local_info: alloc::vec![],
-        },
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2204,7 +2169,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2226,7 +2192,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2286,7 +2253,8 @@ fn lowers_memory_size_without_helper_boundary() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2337,7 +2305,8 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2402,7 +2371,8 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     let call_base = frame.operand_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2608,7 +2578,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     let call_base = frame.operand_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2683,7 +2654,8 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2760,7 +2732,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2782,7 +2755,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2845,7 +2819,8 @@ fn lowers_global_get_and_set_without_helpers() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2915,7 +2890,8 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -2984,7 +2960,8 @@ fn lowers_i32_load_with_inline_trap_if() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3072,7 +3049,8 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3150,7 +3128,8 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3229,7 +3208,8 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     let frame = plan_frame_layout(0, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3329,7 +3309,8 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3393,7 +3374,8 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3456,7 +3438,8 @@ fn threads_live_transients_through_split_continuation_params() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3553,7 +3536,8 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3651,7 +3635,8 @@ fn lowers_f32_const_to_fp_machine_const() {
     let frame = plan_frame_layout(0, 1, 1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3726,7 +3711,8 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3791,7 +3777,8 @@ fn untyped_slot_load_stays_in_gp_bank() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3857,7 +3844,8 @@ fn f32_block_params_keep_f32_width() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs::default(),
+        local_slot_types: alloc::vec![],
+        local_slot_info: alloc::vec![],
         blocks: alloc::vec![
             SsaBlock {
                 id: SsaTarget(0),
@@ -3913,17 +3901,11 @@ fn f32_cached_locals_use_f32_slot_widths() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_cache: SsaLocalCachePrefs {
-            gp_preferred_slots: alloc::vec![],
-            gp_preferred_types: alloc::vec![],
-            fp_preferred_slots: alloc::vec![frame.local_slot(0)],
-            fp_preferred_types: alloc::vec![ValueType::F32],
-            gp_local_info: alloc::vec![],
-            fp_local_info: alloc::vec![CachedLocalInfo {
-                is_param: true,
-                reads_before_write: true
-            }],
-        },
+        local_slot_types: alloc::vec![ValueType::F32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true
+        }],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
             params: alloc::vec![],
@@ -3962,10 +3944,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
     .expect("typed f32 cached locals should lower");
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(
-        program.fp_reg_init_widths,
-        alloc::vec![None, None, None],
-    );
+    assert_eq!(program.fp_reg_init_widths, alloc::vec![None, None, None],);
 
     let ops = &program.blocks[0].ops;
     assert!(matches!(

@@ -22,12 +22,12 @@ use crate::{
 };
 
 use super::{
-    spill_plan::{PrepAction, PreparedLocalAccess, PreparedOp},
+    joint_plan::{OpPlan, PrepAction, PreparedLocalAccess},
     state::{BlockState, ValueAlloc},
 };
 
 pub(super) fn lower_prefix_actions(
-    op: &PreparedOp<'_>,
+    op: &OpPlan<'_>,
     state: &mut BlockState,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
@@ -284,7 +284,7 @@ pub(super) fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<Fra
 }
 
 pub(super) fn lower_block_body_op(
-    op: &PreparedOp<'_>,
+    op: &OpPlan<'_>,
     semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,

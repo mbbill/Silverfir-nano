@@ -138,7 +138,9 @@ impl MachineRegFile {
 
     #[inline]
     pub(super) fn fp_local_cache(&self, index: usize) -> Option<MachineReg> {
-        self.fp_dynamic.get(self.fp_transient_count + index).copied()
+        self.fp_dynamic
+            .get(self.fp_transient_count + index)
+            .copied()
     }
 
     #[inline]
@@ -1145,7 +1147,7 @@ mod tests {
             backend::BackendConfig,
             machine::machine_ir::{MachineCallLinkLayout, MachineFunctionAbi, MachineStorageType},
             middle::ssa_ir::{
-                ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue},
+                ir::{SsaBlock, SsaProgram, SsaTerminator, SsaValue},
                 target::SsaTarget,
             },
         },
@@ -1157,13 +1159,14 @@ mod tests {
     fn make_test_context(value_types: Vec<ValueType>) -> BlockLowerContext<'static> {
         let program = Box::leak(Box::new(SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            local_slot_types: Vec::new(),
+            local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types,
             value_sink_local: alloc::vec![],
@@ -1179,7 +1182,9 @@ mod tests {
             caller_result_base_offset: 16,
             slot_count: 3,
         };
-        let explicit_cache = Box::leak(Box::new(super::super::lower_context::explicit_cached_locals(program)));
+        let explicit_cache = Box::leak(Box::new(
+            super::super::lower_context::explicit_cached_locals(program),
+        ));
 
         BlockLowerContext::new(
             regfile,

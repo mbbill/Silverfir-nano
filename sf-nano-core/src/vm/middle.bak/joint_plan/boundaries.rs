@@ -1,14 +1,12 @@
-//! Late resource planning for explicit cached locals.
+//! Boundary-phase joint planning over the explicit SSA CFG.
 //!
-//! Early preparation picks transient spills/fills and initial cache accesses,
-//! but later SSA cleanup can change the final per-block live shape. This pass
-//! finalizes the explicit cache plan by:
-//! - choosing one canonical cached-local entry state per SSA block,
-//! - repairing incompatible edges with explicit `LocalEnsureCache` /
-//!   `LocalDropCache` bridge blocks,
+//! The exact-stack phase chooses per-path live-out behavior inside straight-line
+//! regions. This phase reconciles those path-local choices at merges by:
+//! - choosing one canonical entry boundary state per SSA block,
+//! - repairing incompatible edges with explicit transient/cache repair,
 //! - dropping resident cached locals when final transient pressure needs room,
-//! - demoting `LocalGetCache` / `LocalSetCache` back to slot ops if the final
-//!   block shape cannot keep that local resident.
+//! - demoting `LocalGetCache` / `LocalSetCache` back to slot ops if the chosen
+//!   boundary state cannot keep that local resident.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -74,8 +72,11 @@ pub(super) fn plan_resources(
     for _ in 0..max_iterations {
         let block_entry_cached_slots =
             canonical_block_entry_cached_slots(program, &entry_hints, &predecessors);
-        let wanted_exit_slots =
-            compute_wanted_exit_slots(&original_blocks, &block_entry_cached_slots, &cache_candidates);
+        let wanted_exit_slots = compute_wanted_exit_slots(
+            &original_blocks,
+            &block_entry_cached_slots,
+            &cache_candidates,
+        );
         let (desired_entry_slots, rewritten_exit_slots) = rewrite_blocks(
             &mut program.blocks,
             &original_blocks,
@@ -127,10 +128,7 @@ fn rewrite_blocks(
             .get(block_id)
             .cloned()
             .unwrap_or_default();
-        let wanted_exit = wanted_exit_slots
-            .get(block_id)
-            .cloned()
-            .unwrap_or_default();
+        let wanted_exit = wanted_exit_slots.get(block_id).cloned().unwrap_or_default();
         let mut remaining_uses = compute_remaining_uses(original_block);
         let mut remaining_cache_accesses = compute_remaining_cache_accesses(original_block);
         let mut live_values = BTreeMap::<SsaValue, ValueType>::new();
@@ -152,7 +150,13 @@ fn rewrite_blocks(
             match inst.kind {
                 SsaInstKind::Value { op, args, results } => {
                     for operand in &args {
-                        consume_operand(operand, &mut remaining_uses, &mut live_values, &mut live, gp_unit_bytes);
+                        consume_operand(
+                            operand,
+                            &mut remaining_uses,
+                            &mut live_values,
+                            &mut live,
+                            gp_unit_bytes,
+                        );
                     }
                     let result_types = result_types(value_types, &results);
                     let next_live = add_result_counts(live, &result_types, gp_unit_bytes);
@@ -167,13 +171,25 @@ fn rewrite_blocks(
                         None,
                     );
                     rewritten.push(SsaInst {
-                        kind: SsaInstKind::Value { op, args, results: results.clone() },
+                        kind: SsaInstKind::Value {
+                            op,
+                            args,
+                            results: results.clone(),
+                        },
                     });
-                    add_results(&results, &remaining_uses, &mut live_values, &mut live, value_types, gp_unit_bytes);
+                    add_results(
+                        &results,
+                        &remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        value_types,
+                        gp_unit_bytes,
+                    );
                 }
                 SsaInstKind::Fill { slot, dst } => {
                     let dst_ty = value_type_from_slice(value_types, dst);
-                    let next_live = add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
+                    let next_live =
+                        add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
                     drop_for_pressure(
                         &mut rewritten,
                         cache_candidates,
@@ -184,12 +200,22 @@ fn rewrite_blocks(
                         fp_dynamic_budget,
                         None,
                     );
-                    rewritten.push(SsaInst { kind: SsaInstKind::Fill { slot, dst } });
-                    add_result(dst, &remaining_uses, &mut live_values, &mut live, dst_ty, gp_unit_bytes);
+                    rewritten.push(SsaInst {
+                        kind: SsaInstKind::Fill { slot, dst },
+                    });
+                    add_result(
+                        dst,
+                        &remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        dst_ty,
+                        gp_unit_bytes,
+                    );
                 }
                 SsaInstKind::LocalGetSlot { slot, dst } => {
                     let dst_ty = value_type_from_slice(value_types, dst);
-                    let next_live = add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
+                    let next_live =
+                        add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
                     drop_for_pressure(
                         &mut rewritten,
                         cache_candidates,
@@ -200,18 +226,28 @@ fn rewrite_blocks(
                         fp_dynamic_budget,
                         None,
                     );
-                    rewritten.push(SsaInst { kind: SsaInstKind::LocalGetSlot { slot, dst } });
-                    add_result(dst, &remaining_uses, &mut live_values, &mut live, dst_ty, gp_unit_bytes);
+                    rewritten.push(SsaInst {
+                        kind: SsaInstKind::LocalGetSlot { slot, dst },
+                    });
+                    add_result(
+                        dst,
+                        &remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        dst_ty,
+                        gp_unit_bytes,
+                    );
                 }
                 SsaInstKind::LocalGetCache { slot, dst } => {
-                    let future_slot_accesses = decrement_cache_access(&mut remaining_cache_accesses, slot);
+                    let future_slot_accesses =
+                        decrement_cache_access(&mut remaining_cache_accesses, slot);
                     let dst_ty = value_type_from_slice(value_types, dst);
-                    let next_live = add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
-                    let keep_cache =
-                        resident.contains(&slot)
-                            || future_slot_accesses != 0
-                            || desired_entry_hint.contains(&slot)
-                            || wanted_exit.contains(&slot);
+                    let next_live =
+                        add_result_counts(live, core::slice::from_ref(&dst_ty), gp_unit_bytes);
+                    let keep_cache = resident.contains(&slot)
+                        || future_slot_accesses != 0
+                        || desired_entry_hint.contains(&slot)
+                        || wanted_exit.contains(&slot);
                     let keep_cache = if keep_cache {
                         ensure_cache_capacity(
                             &mut rewritten,
@@ -228,7 +264,9 @@ fn rewrite_blocks(
                     };
                     if keep_cache {
                         resident_add(slot, cache_candidates, &mut resident, &mut resident_counts);
-                        rewritten.push(SsaInst { kind: SsaInstKind::LocalGetCache { slot, dst } });
+                        rewritten.push(SsaInst {
+                            kind: SsaInstKind::LocalGetCache { slot, dst },
+                        });
                     } else {
                         emit_drop_slot(
                             &mut rewritten,
@@ -237,26 +275,57 @@ fn rewrite_blocks(
                             &mut resident_counts,
                             slot,
                         );
-                        rewritten.push(SsaInst { kind: SsaInstKind::LocalGetSlot { slot, dst } });
+                        rewritten.push(SsaInst {
+                            kind: SsaInstKind::LocalGetSlot { slot, dst },
+                        });
                     }
-                    add_result(dst, &remaining_uses, &mut live_values, &mut live, dst_ty, gp_unit_bytes);
+                    add_result(
+                        dst,
+                        &remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        dst_ty,
+                        gp_unit_bytes,
+                    );
                 }
                 SsaInstKind::Spill { slot, src } => {
-                    consume_value(src, &mut remaining_uses, &mut live_values, &mut live, gp_unit_bytes);
-                    rewritten.push(SsaInst { kind: SsaInstKind::Spill { slot, src } });
+                    consume_value(
+                        src,
+                        &mut remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        gp_unit_bytes,
+                    );
+                    rewritten.push(SsaInst {
+                        kind: SsaInstKind::Spill { slot, src },
+                    });
                 }
                 SsaInstKind::LocalSetSlot { slot, src } => {
-                    consume_value(src, &mut remaining_uses, &mut live_values, &mut live, gp_unit_bytes);
-                    rewritten.push(SsaInst { kind: SsaInstKind::LocalSetSlot { slot, src } });
+                    consume_value(
+                        src,
+                        &mut remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        gp_unit_bytes,
+                    );
+                    rewritten.push(SsaInst {
+                        kind: SsaInstKind::LocalSetSlot { slot, src },
+                    });
                 }
                 SsaInstKind::LocalSetCache { slot, src } => {
-                    let future_slot_accesses = decrement_cache_access(&mut remaining_cache_accesses, slot);
-                    consume_value(src, &mut remaining_uses, &mut live_values, &mut live, gp_unit_bytes);
-                    let keep_cache =
-                        resident.contains(&slot)
-                            || future_slot_accesses != 0
-                            || desired_entry_hint.contains(&slot)
-                            || wanted_exit.contains(&slot);
+                    let future_slot_accesses =
+                        decrement_cache_access(&mut remaining_cache_accesses, slot);
+                    consume_value(
+                        src,
+                        &mut remaining_uses,
+                        &mut live_values,
+                        &mut live,
+                        gp_unit_bytes,
+                    );
+                    let keep_cache = resident.contains(&slot)
+                        || future_slot_accesses != 0
+                        || desired_entry_hint.contains(&slot)
+                        || wanted_exit.contains(&slot);
                     let keep_cache = if keep_cache {
                         ensure_cache_capacity(
                             &mut rewritten,
@@ -273,7 +342,9 @@ fn rewrite_blocks(
                     };
                     if keep_cache {
                         resident_add(slot, cache_candidates, &mut resident, &mut resident_counts);
-                        rewritten.push(SsaInst { kind: SsaInstKind::LocalSetCache { slot, src } });
+                        rewritten.push(SsaInst {
+                            kind: SsaInstKind::LocalSetCache { slot, src },
+                        });
                     } else {
                         emit_drop_slot(
                             &mut rewritten,
@@ -282,7 +353,9 @@ fn rewrite_blocks(
                             &mut resident_counts,
                             slot,
                         );
-                        rewritten.push(SsaInst { kind: SsaInstKind::LocalSetSlot { slot, src } });
+                        rewritten.push(SsaInst {
+                            kind: SsaInstKind::LocalSetSlot { slot, src },
+                        });
                     }
                 }
                 SsaInstKind::LocalEnsureCache { slot } => {
@@ -298,12 +371,16 @@ fn rewrite_blocks(
                     ) {
                         resident_add(slot, cache_candidates, &mut resident, &mut resident_counts);
                     }
-                    rewritten.push(SsaInst { kind: SsaInstKind::LocalEnsureCache { slot } });
+                    rewritten.push(SsaInst {
+                        kind: SsaInstKind::LocalEnsureCache { slot },
+                    });
                 }
                 SsaInstKind::LocalDropCache { slot } => {
                     if resident.remove(&slot) {
                         resident_sub(slot, cache_candidates, &mut resident_counts);
-                        rewritten.push(SsaInst { kind: SsaInstKind::LocalDropCache { slot } });
+                        rewritten.push(SsaInst {
+                            kind: SsaInstKind::LocalDropCache { slot },
+                        });
                     }
                 }
                 SsaInstKind::Call(call) => {
@@ -345,11 +422,16 @@ fn canonical_block_entry_cached_slots(
         if block.id == program.entry {
             continue;
         }
-        if predecessors.get(block_id).is_some_and(|preds| preds.is_empty()) {
+        if predecessors
+            .get(block_id)
+            .is_some_and(|preds| preds.is_empty())
+        {
             continue;
         }
-        block_entry_cached_slots[block_id] =
-            desired_entry_slots.get(block_id).cloned().unwrap_or_default();
+        block_entry_cached_slots[block_id] = desired_entry_slots
+            .get(block_id)
+            .cloned()
+            .unwrap_or_default();
     }
     block_entry_cached_slots
 }
@@ -470,9 +552,7 @@ fn desired_entry_slots_for_block(
                     gp_unit_bytes,
                 );
             }
-            SsaInstKind::LocalEnsureCache { .. }
-            | SsaInstKind::LocalDropCache { .. }
-            | SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
         }
         peak.gp = peak.gp.max(live.gp);
         peak.fp = peak.fp.max(live.fp);
@@ -498,12 +578,8 @@ fn maybe_add_entry_slot(
         return;
     };
     let fits = match candidate.bank {
-        CacheBank::Gp => {
-            peak.gp + desired_counts.gp + candidate.cost <= gp_dynamic_budget as usize
-        }
-        CacheBank::Fp => {
-            peak.fp + desired_counts.fp + candidate.cost <= fp_dynamic_budget as usize
-        }
+        CacheBank::Gp => peak.gp + desired_counts.gp + candidate.cost <= gp_dynamic_budget as usize,
+        CacheBank::Fp => peak.fp + desired_counts.fp + candidate.cost <= fp_dynamic_budget as usize,
     };
     if !fits || !desired.insert(slot) {
         return;
@@ -525,13 +601,16 @@ fn sorted_slots_vec_by_rank(
     mut slots: Vec<FrameSlot>,
     cache_candidates: &BTreeMap<FrameSlot, CacheCandidate>,
 ) -> Vec<FrameSlot> {
-    slots.sort_by_key(|slot| cache_candidates.get(slot).map(|candidate| candidate.rank).unwrap_or(usize::MAX));
+    slots.sort_by_key(|slot| {
+        cache_candidates
+            .get(slot)
+            .map(|candidate| candidate.rank)
+            .unwrap_or(usize::MAX)
+    });
     slots
 }
 
-fn compute_predecessors(
-    blocks: &[crate::vm::middle::ssa_ir::ir::SsaBlock],
-) -> Vec<Vec<usize>> {
+fn compute_predecessors(blocks: &[crate::vm::middle::ssa_ir::ir::SsaBlock]) -> Vec<Vec<usize>> {
     let mut predecessors = vec![Vec::new(); blocks.len()];
     for block in blocks {
         let pred = block.id.as_usize();
@@ -691,7 +770,8 @@ fn maybe_repair_edge(
         return;
     }
 
-    let repair_id = crate::vm::middle::ssa_ir::target::SsaTarget((original_len + extra_blocks.len()) as u32);
+    let repair_id =
+        crate::vm::middle::ssa_ir::target::SsaTarget((original_len + extra_blocks.len()) as u32);
     let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
     let mut ops = Vec::new();
     for slot in pred_exit {
@@ -713,7 +793,10 @@ fn maybe_repair_edge(
         bindings: repair_params
             .iter()
             .copied()
-            .map(|param| crate::vm::middle::ssa_ir::ir::SsaBinding { param, value: param })
+            .map(|param| crate::vm::middle::ssa_ir::ir::SsaBinding {
+                param,
+                value: param,
+            })
             .collect(),
     };
     extra_blocks.push(crate::vm::middle::ssa_ir::ir::SsaBlock {
@@ -722,41 +805,38 @@ fn maybe_repair_edge(
         ops,
         terminator: SsaTerminator::Goto(repair_edge),
     });
-    block_entry_cached_slots.push(sorted_slots_vec_by_rank(pred_exit.to_vec(), cache_candidates));
+    block_entry_cached_slots.push(sorted_slots_vec_by_rank(
+        pred_exit.to_vec(),
+        cache_candidates,
+    ));
     edge.target = repair_id;
 }
 
-fn build_cache_candidates(program: &SsaProgram, gp_unit_bytes: u8) -> BTreeMap<FrameSlot, CacheCandidate> {
+fn build_cache_candidates(
+    program: &SsaProgram,
+    gp_unit_bytes: u8,
+) -> BTreeMap<FrameSlot, CacheCandidate> {
     let mut candidates = BTreeMap::new();
-    for (rank, slot) in program.local_cache.gp_preferred_slots.iter().copied().enumerate() {
-        let ty = program
-            .local_cache
-            .gp_preferred_types
-            .get(rank)
-            .copied()
-            .unwrap_or(ValueType::I64);
+    for (slot_index, ty) in program.local_slot_types.iter().copied().enumerate() {
+        let slot = FrameSlot(slot_index as u16);
         candidates.insert(
             slot,
             CacheCandidate {
-                bank: CacheBank::Gp,
-                cost: gp_value_budget_units(ty, gp_unit_bytes),
-                rank,
+                bank: if ty.is_float() {
+                    CacheBank::Fp
+                } else {
+                    CacheBank::Gp
+                },
+                cost: if ty.is_float() {
+                    1
+                } else {
+                    gp_value_budget_units(ty, gp_unit_bytes)
+                },
+                rank: slot_index,
             },
         );
     }
-
     let mut next_rank = candidates.len();
-    for (rank, slot) in program.local_cache.fp_preferred_slots.iter().copied().enumerate() {
-        candidates.insert(
-            slot,
-            CacheCandidate {
-                bank: CacheBank::Fp,
-                cost: 1,
-                rank: next_rank + rank,
-            },
-        );
-    }
-    next_rank = candidates.len();
 
     for block in &program.blocks {
         for inst in &block.ops {
@@ -767,8 +847,9 @@ fn build_cache_candidates(program: &SsaProgram, gp_unit_bytes: u8) -> BTreeMap<F
                 SsaInstKind::LocalSetCache { slot, src } => {
                     (slot, value_type_from_slice(&program.value_types, src))
                 }
-                SsaInstKind::LocalEnsureCache { slot }
-                | SsaInstKind::LocalDropCache { slot } => (slot, ValueType::I32),
+                SsaInstKind::LocalEnsureCache { slot } | SsaInstKind::LocalDropCache { slot } => {
+                    (slot, ValueType::I32)
+                }
                 _ => continue,
             };
             candidates.entry(slot).or_insert_with(|| {
@@ -777,7 +858,11 @@ fn build_cache_candidates(program: &SsaProgram, gp_unit_bytes: u8) -> BTreeMap<F
                 next_rank += 1;
                 CacheCandidate {
                     bank: if is_fp { CacheBank::Fp } else { CacheBank::Gp },
-                    cost: if is_fp { 1 } else { gp_value_budget_units(ty, gp_unit_bytes) },
+                    cost: if is_fp {
+                        1
+                    } else {
+                        gp_value_budget_units(ty, gp_unit_bytes)
+                    },
                     rank,
                 }
             });
@@ -787,7 +872,9 @@ fn build_cache_candidates(program: &SsaProgram, gp_unit_bytes: u8) -> BTreeMap<F
     candidates
 }
 
-fn compute_remaining_uses(block: &crate::vm::middle::ssa_ir::ir::SsaBlock) -> BTreeMap<SsaValue, u32> {
+fn compute_remaining_uses(
+    block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
+) -> BTreeMap<SsaValue, u32> {
     let mut uses = BTreeMap::new();
     for inst in &block.ops {
         match &inst.kind {
@@ -818,7 +905,11 @@ fn compute_remaining_uses(block: &crate::vm::middle::ssa_ir::ir::SsaBlock) -> BT
                 *uses.entry(binding.value).or_insert(0) += 1;
             }
         }
-        SsaTerminator::Branch { cond, then_edge, else_edge } => {
+        SsaTerminator::Branch {
+            cond,
+            then_edge,
+            else_edge,
+        } => {
             *uses.entry(*cond).or_insert(0) += 1;
             for binding in &then_edge.bindings {
                 *uses.entry(binding.value).or_insert(0) += 1;
@@ -922,10 +1013,17 @@ fn drop_for_pressure(
         if !need_gp && !need_fp {
             return true;
         }
-        let Some(victim) = choose_victim(cache_candidates, resident, preserve, need_gp, need_fp) else {
+        let Some(victim) = choose_victim(cache_candidates, resident, preserve, need_gp, need_fp)
+        else {
             return false;
         };
-        emit_drop_slot(rewritten, cache_candidates, resident, resident_counts, victim);
+        emit_drop_slot(
+            rewritten,
+            cache_candidates,
+            resident,
+            resident_counts,
+            victim,
+        );
     }
 }
 
@@ -944,10 +1042,15 @@ fn choose_victim(
         let Some(candidate) = cache_candidates.get(&slot).copied() else {
             continue;
         };
-        if (need_gp && candidate.bank != CacheBank::Gp) || (need_fp && candidate.bank != CacheBank::Fp) {
+        if (need_gp && candidate.bank != CacheBank::Gp)
+            || (need_fp && candidate.bank != CacheBank::Fp)
+        {
             continue;
         }
-        if best.map(|(_, current)| candidate.rank > current.rank).unwrap_or(true) {
+        if best
+            .map(|(_, current)| candidate.rank > current.rank)
+            .unwrap_or(true)
+        {
             best = Some((slot, candidate));
         }
     }
@@ -966,7 +1069,10 @@ fn choose_victim(
         let Some(candidate) = cache_candidates.get(&slot).copied() else {
             continue;
         };
-        if best.map(|(_, current)| candidate.rank > current.rank).unwrap_or(true) {
+        if best
+            .map(|(_, current)| candidate.rank > current.rank)
+            .unwrap_or(true)
+        {
             best = Some((slot, candidate));
         }
     }
@@ -1031,7 +1137,11 @@ fn resident_sub(
     }
 }
 
-fn add_result_counts(live: LiveCounts, result_types: &[ValueType], gp_unit_bytes: u8) -> LiveCounts {
+fn add_result_counts(
+    live: LiveCounts,
+    result_types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> LiveCounts {
     let mut next = live;
     for &ty in result_types {
         if ty.is_float() {
@@ -1126,7 +1236,9 @@ fn consume_value(
     if ty.is_float() {
         live.fp = live.fp.saturating_sub(1);
     } else {
-        live.gp = live.gp.saturating_sub(gp_value_budget_units(ty, gp_unit_bytes));
+        live.gp = live
+            .gp
+            .saturating_sub(gp_value_budget_units(ty, gp_unit_bytes));
     }
 }
 
@@ -1149,11 +1261,7 @@ mod tests {
     use super::*;
     use crate::vm::middle::{
         frame::plan_frame_layout,
-        ssa_ir::{
-            ir::{CachedLocalInfo, SsaLocalCachePrefs},
-            leaf::SsaLeafOp,
-            target::SsaTarget,
-        },
+        ssa_ir::{ir::LocalSlotInfo, leaf::SsaLeafOp, target::SsaTarget},
     };
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
@@ -1163,14 +1271,6 @@ mod tests {
         let slot = frame.local_slot(0);
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs {
-                gp_preferred_slots: alloc::vec![slot],
-                gp_preferred_types: alloc::vec![ValueType::I32],
-                fp_preferred_slots: alloc::vec![],
-                fp_preferred_types: alloc::vec![],
-                gp_local_info: alloc::vec![CachedLocalInfo::default()],
-                fp_local_info: alloc::vec![],
-            },
             blocks: alloc::vec![
                 crate::vm::middle::ssa_ir::ir::SsaBlock {
                     id: SsaTarget(0),
@@ -1193,6 +1293,8 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
+            local_slot_types: alloc::vec![ValueType::I32],
+            local_slot_info: alloc::vec![LocalSlotInfo::default()],
             block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
             value_types: alloc::vec![ValueType::I32],
             value_sink_local: alloc::vec![],
@@ -1227,14 +1329,6 @@ mod tests {
         let slot = frame.local_slot(0);
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs {
-                gp_preferred_slots: alloc::vec![slot],
-                gp_preferred_types: alloc::vec![ValueType::I32],
-                fp_preferred_slots: alloc::vec![],
-                fp_preferred_types: alloc::vec![],
-                gp_local_info: alloc::vec![CachedLocalInfo::default()],
-                fp_local_info: alloc::vec![],
-            },
             blocks: alloc::vec![
                 crate::vm::middle::ssa_ir::ir::SsaBlock {
                     id: SsaTarget(0),
@@ -1242,8 +1336,10 @@ mod tests {
                     ops: alloc::vec![
                         SsaInst {
                             kind: SsaInstKind::Value {
-                                op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
-                                    .unwrap(),
+                                op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const {
+                                    value: 9
+                                })
+                                .unwrap(),
                                 args: alloc::vec![],
                                 results: alloc::vec![SsaValue(0)],
                             },
@@ -1280,6 +1376,8 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
+            local_slot_types: alloc::vec![ValueType::I32],
+            local_slot_info: alloc::vec![LocalSlotInfo::default()],
             block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
             value_types: alloc::vec![ValueType::I32, ValueType::I32],
             value_sink_local: alloc::vec![],
@@ -1288,7 +1386,10 @@ mod tests {
         plan_resources(&mut program, 8, 2, 0);
 
         assert_eq!(program.blocks.len(), 2);
-        assert_eq!(program.block_entry_cached_slots, alloc::vec![alloc::vec![], alloc::vec![slot]]);
+        assert_eq!(
+            program.block_entry_cached_slots,
+            alloc::vec![alloc::vec![], alloc::vec![slot]]
+        );
         assert!(
             !program.blocks[0]
                 .ops

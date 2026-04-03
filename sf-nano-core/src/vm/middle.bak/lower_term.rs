@@ -25,18 +25,18 @@ use crate::{
 };
 
 use super::{
+    joint_plan::OpPlan,
     lower_edge::{br_table_edge, edge_to_target, goto_next, next_edge, EdgeMapping},
     lower_ops::{
         branch_payload, lower_call_direct, lower_call_indirect, lower_local_get, lower_local_set,
         lower_local_tee, lower_prefix_actions, lower_primitive, return_results,
     },
-    spill_plan::PreparedOp,
     state::{BlockState, EntryState, ValueAlloc},
 };
 
 pub(super) fn lower_block_terminator(
     semantic_index: usize,
-    op: &PreparedOp<'_>,
+    op: &OpPlan<'_>,
     semantic_len: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,

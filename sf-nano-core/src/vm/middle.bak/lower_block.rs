@@ -19,9 +19,9 @@ use crate::{
 };
 
 use super::{
+    joint_plan::OpPlan,
     lower_ops::lower_block_body_op,
     lower_term::{canonicalize_live_window_for_target, fallthrough_target, lower_block_terminator},
-    spill_plan::PreparedOp,
     state::{BlockState, EntryState, ValueAlloc},
 };
 
@@ -35,7 +35,7 @@ pub(super) struct LoweredBlock {
 pub(super) fn lower_block_range(
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
-    prepared: &[PreparedOp<'_>],
+    prepared: &[OpPlan<'_>],
     frame: FrameLayoutPlan,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<crate::vm::middle::ssa_ir::ir::SsaValue>],

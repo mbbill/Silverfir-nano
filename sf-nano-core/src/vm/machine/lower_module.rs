@@ -20,9 +20,7 @@ use crate::{
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             ssa_ir::{
-                ir::{
-                    SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
-                },
+                ir::{SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
                 validate::validate_program,
             },
         },
@@ -36,7 +34,9 @@ use crate::{
 use super::{
     gp32::Gp32Lowering,
     lower_const_pool::ConstPoolBuilder,
-    lower_context::{explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs},
+    lower_context::{
+        explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs,
+    },
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
@@ -225,7 +225,11 @@ fn lower_function(
                 program_value_storage_type(input.ssa, value),
             ));
         }
-        append_entry_cache_params(&mut current_params, lower.entry_cache_params(), &explicit_cache);
+        append_entry_cache_params(
+            &mut current_params,
+            lower.entry_cache_params(),
+            &explicit_cache,
+        );
 
         for inst in &block.ops {
             match &inst.kind {
@@ -869,7 +873,10 @@ fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineS
     }
 }
 
-pub(super) fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+pub(super) fn preferred_gp_dynamic_reg(
+    regfile: &MachineRegFile,
+    ordinal: usize,
+) -> Option<MachineReg> {
     if ordinal < regfile.gp_transient_count() {
         regfile.gp_transient(ordinal)
     } else {
@@ -877,7 +884,10 @@ pub(super) fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize)
     }
 }
 
-pub(super) fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+pub(super) fn preferred_fp_dynamic_reg(
+    regfile: &MachineRegFile,
+    ordinal: usize,
+) -> Option<MachineReg> {
     if ordinal < regfile.fp_transient_count() {
         regfile.fp_transient(ordinal)
     } else {
@@ -885,7 +895,9 @@ pub(super) fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize)
     }
 }
 
-fn fp_reg_init_widths(regfile: &MachineRegFile) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
+fn fp_reg_init_widths(
+    regfile: &MachineRegFile,
+) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
     Ok(vec![None; regfile.fp_dynamic_count()])
 }
 
@@ -1603,8 +1615,7 @@ fn simulate_block_cache_exit_state(
 
     for inst in &block.ops {
         match &inst.kind {
-            SsaInstKind::LocalGetCache { slot, .. }
-            | SsaInstKind::LocalEnsureCache { slot } => {
+            SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalEnsureCache { slot } => {
                 if let Some(&cached_index) = slot_to_index.get(slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;

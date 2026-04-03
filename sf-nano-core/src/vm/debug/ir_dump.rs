@@ -248,24 +248,7 @@ fn write_dump_impl(
 
 fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
-    let _ = writeln!(
-        out,
-        "  gp_local_cache=[{}] fp_local_cache=[{}]",
-        program
-            .local_cache
-            .gp_preferred_slots
-            .iter()
-            .map(|s| format!("fp[{}]", s.0))
-            .collect::<Vec<_>>()
-            .join(", "),
-        program
-            .local_cache
-            .fp_preferred_slots
-            .iter()
-            .map(|s| format!("fp[{}]", s.0))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let _ = writeln!(out, "  local_slots={}", program.local_slot_types.len());
     for block in &program.blocks {
         render_lir_block(out, block);
     }

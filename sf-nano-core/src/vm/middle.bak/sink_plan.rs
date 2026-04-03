@@ -208,7 +208,8 @@ mod tests {
         let n = max_val as usize;
         SsaProgram {
             entry: SsaTarget(0),
-            local_cache: Default::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),

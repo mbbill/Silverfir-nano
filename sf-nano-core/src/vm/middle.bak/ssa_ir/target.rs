@@ -1,4 +1,7 @@
 //! Backend-facing targets.
+//!
+//! Targets should refer to explicit lowered entries, not interpreter
+//! instruction descriptors.
 
 /// Lowered target id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

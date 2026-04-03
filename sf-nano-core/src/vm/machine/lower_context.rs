@@ -12,7 +12,7 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{CachedLocalInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
+            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -32,7 +32,7 @@ use super::{
 pub(super) struct CachedLocal {
     pub slot: FrameSlot,
     pub ty: MachineStorageType,
-    pub info: CachedLocalInfo,
+    pub info: LocalSlotInfo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub(super) struct BoundCachedLocal {
     pub reg: MachineReg,
     pub hi_reg: Option<MachineReg>,
     pub ty: MachineStorageType,
-    pub info: CachedLocalInfo,
+    pub info: LocalSlotInfo,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +104,7 @@ pub(super) struct BlockLowerContext<'a> {
 #[derive(Clone, Copy, Debug)]
 struct CachePrefEntry {
     ty: ValueType,
-    info: CachedLocalInfo,
+    info: LocalSlotInfo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -427,9 +427,10 @@ impl<'a> BlockLowerContext<'a> {
         reg: MachineReg,
         hi_reg: Option<MachineReg>,
     ) -> Result<BoundCachedLocal, WasmError> {
-        let slot = self.cache_bindings.get_mut(index).ok_or_else(|| {
-            WasmError::internal("cached local binding is out of range".into())
-        })?;
+        let slot = self
+            .cache_bindings
+            .get_mut(index)
+            .ok_or_else(|| WasmError::internal("cached local binding is out of range".into()))?;
         *slot = Some(CachedLocalBinding { reg, hi_reg });
         self.bound_cached_local(index).ok_or_else(|| {
             WasmError::internal("cached local binding missing after assignment".into())
@@ -591,7 +592,9 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 self.clear_transient(reg)?;
                 self.clear_transient(hi_reg)?;
-                return self.bind_cached_local_to_regs(index, reg, Some(hi_reg)).map(Some);
+                return self
+                    .bind_cached_local_to_regs(index, reg, Some(hi_reg))
+                    .map(Some);
             }
             _ => {
                 if hi_reg.is_some() {
@@ -871,8 +874,7 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
                         &mut order,
                     );
                 }
-                SsaInstKind::LocalEnsureCache { slot }
-                | SsaInstKind::LocalDropCache { slot } => {
+                SsaInstKind::LocalEnsureCache { slot } | SsaInstKind::LocalDropCache { slot } => {
                     record_explicit_cached_local(&mut explicit, &pref_map, *slot, None, &mut order);
                 }
                 _ => {}
@@ -969,39 +971,14 @@ fn target_entry_cache_params(
 
 fn explicit_cached_local_pref_map(program: &SsaProgram) -> BTreeMap<FrameSlot, CachePrefEntry> {
     let mut map = BTreeMap::new();
-    for (index, slot) in program.local_cache.gp_preferred_slots.iter().copied().enumerate() {
+    for (slot_index, ty) in program.local_slot_types.iter().copied().enumerate() {
         map.insert(
-            slot,
+            FrameSlot(slot_index as u16),
             CachePrefEntry {
-                ty: program
-                    .local_cache
-                    .gp_preferred_types
-                    .get(index)
-                    .copied()
-                    .unwrap_or(ValueType::I64),
+                ty,
                 info: program
-                    .local_cache
-                    .gp_local_info
-                    .get(index)
-                    .copied()
-                    .unwrap_or_default(),
-            },
-        );
-    }
-    for (index, slot) in program.local_cache.fp_preferred_slots.iter().copied().enumerate() {
-        map.insert(
-            slot,
-            CachePrefEntry {
-                ty: program
-                    .local_cache
-                    .fp_preferred_types
-                    .get(index)
-                    .copied()
-                    .unwrap_or(ValueType::F64),
-                info: program
-                    .local_cache
-                    .fp_local_info
-                    .get(index)
+                    .local_slot_info
+                    .get(slot_index)
                     .copied()
                     .unwrap_or_default(),
             },
@@ -1019,7 +996,7 @@ fn record_explicit_cached_local(
 ) {
     let pref = pref_map.get(&slot).copied().unwrap_or(CachePrefEntry {
         ty: ValueType::I32,
-        info: CachedLocalInfo::default(),
+        info: LocalSlotInfo::default(),
     });
     let typed = ty.is_some();
     let ty = value_type_storage_type(ty.unwrap_or(pref.ty));

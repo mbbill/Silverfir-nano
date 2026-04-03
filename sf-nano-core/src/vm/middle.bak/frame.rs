@@ -1,7 +1,7 @@
 //! Canonical frame layout planning.
 //!
-//! This remains the shared Wasm/native contract:
-//! - locals keep their canonical frame homes
+//! This is the shared Wasm/native contract:
+//! - locals keep their Wasm-relative frame homes
 //! - call scratch sits after locals
 //! - deep stack / call payloads live in operand slots after call scratch
 

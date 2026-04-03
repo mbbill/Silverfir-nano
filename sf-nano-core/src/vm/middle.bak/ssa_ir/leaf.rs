@@ -1,4 +1,6 @@
 //! SSA-IR leaf-op vocabulary.
+//!
+//! This wraps `PrimitiveOpKind` for use in prepared SSA-IR leaf instructions.
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 

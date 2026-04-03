@@ -488,13 +488,14 @@ fn rewrite_terminator_targets(term: &mut SsaTerminator, map: &[SsaTarget]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaLocalCachePrefs};
+    use crate::vm::middle::ssa_ir::ir::SsaInst;
     use alloc::vec;
 
     fn empty_program() -> SsaProgram {
         SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs::default(),
+            local_slot_types: alloc::vec![],
+            local_slot_info: alloc::vec![],
             blocks: Vec::new(),
             block_entry_cached_slots: Vec::new(),
             value_types: Vec::new(),

@@ -10,10 +10,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
-        middle::{
-            frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
-            ssa_ir::ir::SsaLocalCachePrefs,
-        },
+        middle::frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
         wasm::{
             primitive_op,
             primitive_op::PrimitiveOpKind,
@@ -22,35 +19,8 @@ use crate::{
     },
 };
 
+use super::{LinearPlan, OpPlan, PrepAction, PreparedLocalAccess};
 use crate::vm::middle::state::{count_live_bank_budget_units, gp_value_budget_units, EntryState};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum PrepAction {
-    Spill(FrameSpan),
-    /// Fill from frame slots, with the value type for each reloaded entry.
-    Fill(FrameSpan, Vec<ValueType>),
-    DropCache(FrameSlot),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum PreparedLocalAccess {
-    #[default]
-    Slot,
-    Cache,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct PreparedOp<'a> {
-    pub(super) semantic: &'a SemanticOp,
-    pub(super) prefix: Vec<PrepAction>,
-    pub(super) local_access: PreparedLocalAccess,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct PreparedStream<'a> {
-    pub(super) ops: Vec<PreparedOp<'a>>,
-    pub(super) entry_states: Vec<EntryState>,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ControlFrameKind {
@@ -200,18 +170,11 @@ pub(super) fn prepare_semantic_ops<'a>(
     semantic: &'a SemanticProgram,
     frame: FrameLayoutPlan,
     config: BackendConfig,
-    local_cache: &SsaLocalCachePrefs,
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
-) -> Result<PreparedStream<'a>, WasmError> {
-    let cache_plan = build_cache_plan(
-        semantic,
-        frame,
-        local_cache,
-        config.gp_unit_bytes,
-        config.gp_local_cache_budget,
-        config.fp_local_cache_budget,
-    );
+) -> Result<LinearPlan<'a>, WasmError> {
+    let cache_plan = build_cache_plan(semantic, frame, config.gp_unit_bytes);
+    let future_local_accesses = compute_future_local_accesses_in_region(semantic);
     let mut state = PrepareState::new(
         semantic.results,
         semantic.local_types.clone(),
@@ -245,13 +208,17 @@ pub(super) fn prepare_semantic_ops<'a>(
             gp_dynamic_budget,
             fp_dynamic_budget,
             &semantic.op_result_types,
+            future_local_accesses
+                .get(op_index)
+                .copied()
+                .unwrap_or_default(),
         );
         #[cfg(debug_assertions)]
         state.validate_type_stack(&alloc::format!(
             "prefix planning for semantic op {}",
             op_index
         ))?;
-        ops.push(PreparedOp {
+        ops.push(OpPlan {
             semantic: semantic_op,
             prefix,
             local_access,
@@ -261,7 +228,7 @@ pub(super) fn prepare_semantic_ops<'a>(
         state.validate_type_stack(&alloc::format!("effect of semantic op {}", op_index))?;
     }
 
-    Ok(PreparedStream { ops, entry_states })
+    Ok(LinearPlan { ops, entry_states })
 }
 
 fn plan_prefix(
@@ -274,6 +241,7 @@ fn plan_prefix(
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    has_future_local_access_in_region: bool,
 ) -> (Vec<PrepAction>, PreparedLocalAccess) {
     let mut prefix = Vec::new();
     let mut local_access = PreparedLocalAccess::Slot;
@@ -323,6 +291,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 0,
                 core::slice::from_ref(&push_ty),
+                has_future_local_access_in_region,
             );
         }
         SemanticOpKind::LocalSet { idx } => {
@@ -338,6 +307,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 1,
                 &[],
+                has_future_local_access_in_region,
             );
         }
         SemanticOpKind::LocalTee { idx } => {
@@ -354,6 +324,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 1,
                 core::slice::from_ref(&push_ty),
+                has_future_local_access_in_region,
             );
         }
         SemanticOpKind::Block { .. } => {}
@@ -427,49 +398,31 @@ fn plan_prefix(
 fn build_cache_plan(
     semantic: &SemanticProgram,
     frame: FrameLayoutPlan,
-    local_cache: &SsaLocalCachePrefs,
     gp_unit_bytes: u8,
-    _gp_cache_budget: u8,
-    _fp_cache_budget: u8,
 ) -> CachePlan {
     let mut candidates = Vec::new();
     let mut local_to_candidate = alloc::vec![None; semantic.local_count as usize];
 
-    let slot_to_local = (0..semantic.local_count as usize)
-        .map(|local_idx| (frame.local_slot(local_idx as u16), local_idx))
-        .collect::<BTreeMap<_, _>>();
-
-    for (rank, slot) in local_cache.gp_preferred_slots.iter().copied().enumerate() {
-        let Some(&local_idx) = slot_to_local.get(&slot) else {
-            continue;
-        };
+    for local_idx in 0..semantic.local_count as usize {
         let ty = semantic
             .local_types
             .get(local_idx)
             .copied()
             .unwrap_or(ValueType::I64);
-        let cost = gp_value_budget_units(ty, gp_unit_bytes);
         let index = candidates.len();
         candidates.push(CacheCandidate {
-            slot,
-            bank: CacheBank::Gp,
-            cost,
-            rank,
-        });
-        local_to_candidate[local_idx] = Some(index);
-    }
-
-    let fp_rank_base = candidates.len();
-    for (rank, slot) in local_cache.fp_preferred_slots.iter().copied().enumerate() {
-        let Some(&local_idx) = slot_to_local.get(&slot) else {
-            continue;
-        };
-        let index = candidates.len();
-        candidates.push(CacheCandidate {
-            slot,
-            bank: CacheBank::Fp,
-            cost: 1,
-            rank: fp_rank_base + rank,
+            slot: frame.local_slot(local_idx as u16),
+            bank: if ty.is_float() {
+                CacheBank::Fp
+            } else {
+                CacheBank::Gp
+            },
+            cost: if ty.is_float() {
+                1
+            } else {
+                gp_value_budget_units(ty, gp_unit_bytes)
+            },
+            rank: local_idx,
         });
         local_to_candidate[local_idx] = Some(index);
     }
@@ -491,6 +444,7 @@ fn plan_local_access(
     fp_dynamic_budget: u8,
     pop: u16,
     push_types: &[ValueType],
+    has_future_local_access_in_region: bool,
 ) -> PreparedLocalAccess {
     let Some(index) = cache_plan
         .local_to_candidate
@@ -512,6 +466,22 @@ fn plan_local_access(
         );
         return PreparedLocalAccess::Slot;
     };
+
+    if !state.resident_cache[index] && !has_future_local_access_in_region {
+        ensure_capacity(
+            prefix,
+            state,
+            cache_plan,
+            frame,
+            gp_unit_bytes,
+            gp_dynamic_budget,
+            fp_dynamic_budget,
+            pop,
+            push_types,
+            None,
+        );
+        return PreparedLocalAccess::Slot;
+    }
 
     if ensure_capacity(
         prefix,
@@ -551,6 +521,52 @@ fn plan_local_access(
         None,
     );
     PreparedLocalAccess::Slot
+}
+
+fn compute_future_local_accesses_in_region(semantic: &SemanticProgram) -> Vec<bool> {
+    let mut future_access = alloc::vec![false; semantic.ops.len()];
+    if semantic.local_count == 0 {
+        return future_access;
+    }
+
+    let mut future_counts = alloc::vec![0u32; semantic.local_count as usize];
+    for (op_index, op) in semantic.ops.iter().enumerate().rev() {
+        if clears_cache_region(&op.kind) {
+            future_counts.fill(0);
+        }
+        match op.kind {
+            SemanticOpKind::LocalGet { idx }
+            | SemanticOpKind::LocalSet { idx }
+            | SemanticOpKind::LocalTee { idx } => {
+                let local_idx = idx as usize;
+                if let Some(count) = future_counts.get_mut(local_idx) {
+                    future_access[op_index] = *count != 0;
+                    *count = count.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+    future_access
+}
+
+fn clears_cache_region(kind: &SemanticOpKind) -> bool {
+    matches!(
+        kind,
+        SemanticOpKind::Loop { .. }
+            | SemanticOpKind::If { .. }
+            | SemanticOpKind::Else { .. }
+            | SemanticOpKind::End
+            | SemanticOpKind::Br { .. }
+            | SemanticOpKind::BrIf { .. }
+            | SemanticOpKind::BrTable { .. }
+            | SemanticOpKind::CallDirect { .. }
+            | SemanticOpKind::CallIndirect { .. }
+            | SemanticOpKind::ReturnVoid
+            | SemanticOpKind::ReturnOne
+            | SemanticOpKind::Return { .. }
+            | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+    )
 }
 
 fn ensure_capacity(
@@ -633,11 +649,13 @@ fn choose_cache_victim(
 ) -> Option<usize> {
     let mut best = None;
     for (index, candidate) in cache_plan.candidates.iter().copied().enumerate() {
-        if Some(index) == preserve_cache || !state.resident_cache.get(index).copied().unwrap_or(false)
+        if Some(index) == preserve_cache
+            || !state.resident_cache.get(index).copied().unwrap_or(false)
         {
             continue;
         }
-        if (need_gp && candidate.bank != CacheBank::Gp) || (need_fp && candidate.bank != CacheBank::Fp)
+        if (need_gp && candidate.bank != CacheBank::Gp)
+            || (need_fp && candidate.bank != CacheBank::Fp)
         {
             continue;
         }
@@ -654,7 +672,8 @@ fn choose_cache_victim(
     }
 
     for (index, candidate) in cache_plan.candidates.iter().copied().enumerate() {
-        if Some(index) == preserve_cache || !state.resident_cache.get(index).copied().unwrap_or(false)
+        if Some(index) == preserve_cache
+            || !state.resident_cache.get(index).copied().unwrap_or(false)
         {
             continue;
         }
@@ -682,8 +701,12 @@ fn emit_drop_cache(
     prefix.push(PrepAction::DropCache(candidate.slot));
     state.resident_cache[index] = false;
     match candidate.bank {
-        CacheBank::Gp => state.resident_gp_units = state.resident_gp_units.saturating_sub(candidate.cost),
-        CacheBank::Fp => state.resident_fp_units = state.resident_fp_units.saturating_sub(candidate.cost),
+        CacheBank::Gp => {
+            state.resident_gp_units = state.resident_gp_units.saturating_sub(candidate.cost)
+        }
+        CacheBank::Fp => {
+            state.resident_fp_units = state.resident_fp_units.saturating_sub(candidate.cost)
+        }
     }
 }
 
