@@ -218,6 +218,60 @@ Recommended workflow:
 3. read the function’s SSA-IR and NativeIR sections
 4. if needed, query the assembly for the same symbol from the profile
 
+## Post-Processed Per-Function View
+
+For function-by-function debugging, use:
+
+```bash
+python3 scripts/postprocess_native_dump.py \
+  --wasm benchmarks/wasi/coremark/coremark.wasm \
+  --dump-dir /tmp/coremark-native-dump \
+  --out-dir /tmp/coremark-postprocessed
+```
+
+To restrict output to one function:
+
+```bash
+python3 scripts/postprocess_native_dump.py \
+  --wasm benchmarks/wasi/coremark/coremark.wasm \
+  --dump-dir /tmp/coremark-native-dump \
+  --out-dir /tmp/coremark-postprocessed \
+  --function 6
+```
+
+This writes:
+
+- `module.json`
+- `function_map.json`
+- `functions/<index>/summary.json`
+- `functions/<index>/overview.txt`
+- `functions/<index>/wasm_disasm.txt`
+- `functions/<index>/wasm_text.wat`
+- `functions/<index>/ssa_ir.txt`
+- `functions/<index>/machine_ir.txt`
+- `functions/<index>/native_disasm.txt`
+
+Recommended workflow:
+
+1. generate the native dump with `SF_NATIVE_DUMP_DIR`
+2. run `postprocess_native_dump.py`
+3. open `functions/0006/overview.txt` for one stitched view of:
+   - Wasm disassembly
+   - Wasm text
+   - native dump metadata
+   - SSA-IR
+   - MachineIR
+   - native disassembly
+4. if you want cleaner diffs, compare the individual files instead of the stitched overview
+
+Notes:
+
+- `wasm_disasm.txt` comes from `wasm-objdump -d`
+- `wasm_text.wat` comes from `wasm2wat --generate-names`
+- `native_disasm.txt` is generated from `native_code.bin` plus `code_file_off` / `code_size`
+- on macOS with Homebrew LLVM, the script wraps `native_code.bin` into a temporary ELF with `llvm-objcopy`, then disassembles per-function ranges with `llvm-objdump`
+- on systems with GNU `objdump` / `gobjdump`, the script can also use raw-binary disassembly directly
+
 Example symbols now look like:
 
 - `jit::main::func6::b80__helper_t_i32load_move_helper_t_i32load_branch`
