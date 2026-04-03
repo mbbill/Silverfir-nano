@@ -31,6 +31,7 @@ use crate::{
             code::{CompiledNativeModule, NativeCode},
             common::NativeCallStatus,
             context::NativeContext,
+            preserved::{self, io as preserved_io, op as preserved_op},
         },
         store::Store,
         value::Value,
@@ -686,17 +687,121 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::CallExternal(call) => self.execute_call_external(call)?,
-            MachineInstKind::MemoryGrow { .. }
-            | MachineInstKind::MemoryFill { .. }
-            | MachineInstKind::MemoryCopy { .. }
-            | MachineInstKind::MemoryInit { .. }
-            | MachineInstKind::DataDrop { .. }
-            | MachineInstKind::TableGrow { .. }
-            | MachineInstKind::TableFill { .. }
-            | MachineInstKind::TableCopy { .. }
-            | MachineInstKind::TableInit { .. }
-            | MachineInstKind::ElemDrop { .. } => {
-                unimplemented!("memory/table ops in emulator")
+            MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*mem_idx);
+                io[preserved_io::ARG0] = self.read_value(*delta)?;
+                self.execute_preserved_helper(preserved_op::MEMORY_GROW, &mut io)?;
+                self.write_reg_with_kind(*dst, io[preserved_io::RET0], fixed_reg_addr_kind(*dst))?;
+            }
+            MachineInstKind::MemoryFill {
+                mem_idx,
+                dest,
+                val,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*mem_idx);
+                io[preserved_io::ARG0] = self.read_value(*dest)?;
+                io[preserved_io::ARG1] = self.read_value(*val)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::MEMORY_FILL, &mut io)?;
+            }
+            MachineInstKind::MemoryCopy {
+                dst_mem,
+                src_mem,
+                dest,
+                src,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*dst_mem);
+                io[preserved_io::IMM1] = u64::from(*src_mem);
+                io[preserved_io::ARG0] = self.read_value(*dest)?;
+                io[preserved_io::ARG1] = self.read_value(*src)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::MEMORY_COPY, &mut io)?;
+            }
+            MachineInstKind::MemoryInit {
+                mem_idx,
+                data_idx,
+                dest,
+                src,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*mem_idx);
+                io[preserved_io::IMM1] = u64::from(*data_idx);
+                io[preserved_io::ARG0] = self.read_value(*dest)?;
+                io[preserved_io::ARG1] = self.read_value(*src)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::MEMORY_INIT, &mut io)?;
+            }
+            MachineInstKind::DataDrop { data_idx } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*data_idx);
+                self.execute_preserved_helper(preserved_op::DATA_DROP, &mut io)?;
+            }
+            MachineInstKind::TableGrow {
+                table_idx,
+                dst,
+                init_val,
+                delta,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*table_idx);
+                io[preserved_io::ARG0] = self.read_value(*init_val)?;
+                io[preserved_io::ARG1] = self.read_value(*delta)?;
+                self.execute_preserved_helper(preserved_op::TABLE_GROW, &mut io)?;
+                self.write_reg_with_kind(*dst, io[preserved_io::RET0], fixed_reg_addr_kind(*dst))?;
+            }
+            MachineInstKind::TableFill {
+                table_idx,
+                start,
+                val,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*table_idx);
+                io[preserved_io::ARG0] = self.read_value(*start)?;
+                io[preserved_io::ARG1] = self.read_value(*val)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::TABLE_FILL, &mut io)?;
+            }
+            MachineInstKind::TableCopy {
+                dst_tbl,
+                src_tbl,
+                dest,
+                src,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*dst_tbl);
+                io[preserved_io::IMM1] = u64::from(*src_tbl);
+                io[preserved_io::ARG0] = self.read_value(*dest)?;
+                io[preserved_io::ARG1] = self.read_value(*src)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::TABLE_COPY, &mut io)?;
+            }
+            MachineInstKind::TableInit {
+                table_idx,
+                elem_idx,
+                dest,
+                src,
+                len,
+            } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*table_idx);
+                io[preserved_io::IMM1] = u64::from(*elem_idx);
+                io[preserved_io::ARG0] = self.read_value(*dest)?;
+                io[preserved_io::ARG1] = self.read_value(*src)?;
+                io[preserved_io::ARG2] = self.read_value(*len)?;
+                self.execute_preserved_helper(preserved_op::TABLE_INIT, &mut io)?;
+            }
+            MachineInstKind::ElemDrop { elem_idx } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*elem_idx);
+                self.execute_preserved_helper(preserved_op::ELEM_DROP, &mut io)?;
             }
         }
         Ok(())
@@ -708,6 +813,24 @@ impl<'a> Emulator<'a> {
         })?;
         let entry = crate::vm::runtime::external::call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
+        if status == NativeCallStatus::Ok as u32 {
+            self.address_space.validate_runtime_shape(self.ctx)?;
+            return Ok(());
+        }
+        Err(self
+            .ctx
+            .error
+            .take()
+            .unwrap_or_else(|| trap_from_kind(MachineTrapKind::HelperFailure)))
+    }
+
+    fn execute_preserved_helper(
+        &mut self,
+        op_code: u32,
+        io: &mut [u64; preserved_io::SLOT_COUNT],
+    ) -> Result<(), WasmError> {
+        let status =
+            unsafe { preserved::preserved_entry(self.ctx as *mut NativeContext, op_code, io.as_mut_ptr()) };
         if status == NativeCallStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
             return Ok(());
@@ -2769,9 +2892,10 @@ mod tests {
         )
         .expect_err("emu32 should reject machine IR with a wrong 32-bit GP/FP bank boundary");
 
-        assert!(err
-            .message()
-            .contains("expected first_fp_reg 12 for 32-bit GP target MachineIR"));
+        assert!(err.message().contains(&alloc::format!(
+            "expected first_fp_reg {} for 32-bit GP target MachineIR",
+            backend.first_fp_reg()
+        )));
     }
 
     #[test]

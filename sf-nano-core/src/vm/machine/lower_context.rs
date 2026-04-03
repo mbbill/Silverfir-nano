@@ -1,8 +1,9 @@
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::mem;
 
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         machine::machine_ir::{
             MachineAddr, MachineCallLinkLayout, MachineFrameRegion, MachineFuncId,
@@ -11,7 +12,7 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{SsaBlock, SsaLocalCachePrefs, SsaProgram, SsaValue},
+            ssa_ir::ir::{CachedLocalInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -27,10 +28,21 @@ use super::{
     lower_util::compute_remaining_uses,
 };
 
-use crate::vm::middle::ssa_ir::ir::CachedLocalInfo;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CachedLocal {
+    pub slot: FrameSlot,
+    pub ty: MachineStorageType,
+    pub info: CachedLocalInfo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CachedLocalBinding {
+    pub reg: MachineReg,
+    pub hi_reg: Option<MachineReg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BoundCachedLocal {
     pub slot: FrameSlot,
     pub reg: MachineReg,
     pub hi_reg: Option<MachineReg>,
@@ -42,6 +54,12 @@ pub(super) struct CachedLocal {
 pub(super) struct ValueRegs {
     pub lo: MachineReg,
     pub hi: Option<MachineReg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EntryCacheParam {
+    pub cached_index: usize,
+    pub regs: ValueRegs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,14 +82,17 @@ pub(super) struct BlockLowerContext<'a> {
     all_runtime: &'a [MachineFunctionAbi],
     call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
+    entry_cache_params: Vec<EntryCacheParam>,
     gp_reg_width: u8,
     i64_ops: &'static dyn I64Lowering,
     ops: Vec<MachineInst>,
     cached_locals: Vec<CachedLocal>,
+    cache_bindings: Vec<Option<CachedLocalBinding>>,
     /// Per cached-local dirty bit: `true` means the register has been written
     /// since the last call save.  Only dirty locals need saving before the
     /// next call.  Starts all-dirty for non-entry blocks (conservative)
     /// and all-clean for the entry block.
+    cache_live: Vec<bool>,
     cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
@@ -80,116 +101,38 @@ pub(super) struct BlockLowerContext<'a> {
     guard_pages: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CachePrefEntry {
+    ty: ValueType,
+    info: CachedLocalInfo,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExplicitCachedLocalEntry {
+    order: usize,
+    cached: CachedLocal,
+    typed: bool,
+}
+
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn new(
         regfile: &'a MachineRegFile,
         program: &'a SsaProgram,
-        cache_prefs: &SsaLocalCachePrefs,
+        cached_locals: &'a [CachedLocal],
         block: &'a SsaBlock,
         all_runtime: &'a [MachineFunctionAbi],
         call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
-        is_entry: bool,
-        initial_cache_dirty: Option<&[bool]>,
+        _is_entry: bool,
+        _initial_cache_dirty: Option<&[bool]>,
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
-        if cache_prefs.gp_preferred_slots.len() != cache_prefs.gp_preferred_types.len() {
-            return Err(WasmError::internal(
-                "GP cached-local slot/type metadata length mismatch".into(),
-            ));
-        }
         let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
-        let mut cached_locals = Vec::new();
-        let mut gp_cache_index = 0usize;
-        for (index, slot) in cache_prefs.gp_preferred_slots.iter().copied().enumerate() {
-            let Some(reg) = regfile.gp_local_cache(gp_cache_index) else {
-                break;
-            };
-            let ty = cache_prefs
-                .gp_preferred_types
-                .get(index)
-                .copied()
-                .map(value_type_storage_type)
-                .ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "GP cached local {:?} is missing a type entry",
-                        slot
-                    ))
-                })?;
-            if ty.is_fp() {
-                return Err(WasmError::internal(alloc::format!(
-                    "GP cached local {:?} must not have float storage type {:?}",
-                    slot,
-                    ty
-                )));
-            }
-            let info = cache_prefs
-                .gp_local_info
-                .get(index)
-                .copied()
-                .unwrap_or_default();
-            let hi_reg = if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
-                Some(regfile.gp_local_cache(gp_cache_index + 1).ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "GP cached local {:?} requires a second cache register on 32-bit targets",
-                        slot
-                    ))
-                })?)
-            } else {
-                None
-            };
-            cached_locals.push(CachedLocal {
-                slot,
-                reg,
-                hi_reg,
-                ty,
-                info,
-            });
-            gp_cache_index += if hi_reg.is_some() { 2 } else { 1 };
-        }
-        for (index, slot) in cache_prefs.fp_preferred_slots.iter().copied().enumerate() {
-            let Some(reg) = regfile.fp_local_cache(index) else {
-                break;
-            };
-            let ty = cache_prefs
-                .fp_preferred_types
-                .get(index)
-                .copied()
-                .map(value_type_storage_type)
-                .ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "FP cached local {:?} is missing a float type entry",
-                        slot
-                    ))
-                })?;
-            let Some(_width) = ty.float_width() else {
-                return Err(WasmError::internal(alloc::format!(
-                    "FP cached local {:?} must have float storage type, got {:?}",
-                    slot,
-                    ty
-                )));
-            };
-            let info = cache_prefs
-                .fp_local_info
-                .get(index)
-                .copied()
-                .unwrap_or_default();
-            cached_locals.push(CachedLocal {
-                slot,
-                reg,
-                hi_reg: None,
-                ty,
-                info,
-            });
-        }
-
-        // Use CFG-computed dirty state when available; otherwise fall back to
-        // conservative defaults (entry = all-clean, non-entry = all-dirty).
-        let cache_dirty = match initial_cache_dirty {
-            Some(d) if d.len() == cached_locals.len() => d.to_vec(),
-            _ => alloc::vec![!is_entry; cached_locals.len()],
-        };
+        let entry_cache_params =
+            target_entry_cache_params(regfile, program, cached_locals, block, gp_reg_width)?;
+        let cache_live = alloc::vec![false; cached_locals.len()];
+        let cache_dirty = alloc::vec![false; cached_locals.len()];
         let mut lower = Self {
             regfile,
             program,
@@ -197,16 +140,19 @@ impl<'a> BlockLowerContext<'a> {
             all_runtime,
             call_link,
             machine_params,
+            entry_cache_params,
             gp_reg_width,
             i64_ops,
             ops: Vec::new(),
-            cached_locals,
+            cached_locals: cached_locals.to_vec(),
+            cache_bindings: alloc::vec![None; cache_live.len()],
+            cache_live,
             cache_dirty,
             values: Vec::new(),
             remaining_uses: compute_remaining_uses(block),
             transient_state: alloc::vec![
                 TransientState::default();
-                regfile.gp_transient_count() + regfile.fp_transient_count()
+                regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
             #[cfg(has_guard_pages)]
             guard_pages,
@@ -234,17 +180,23 @@ impl<'a> BlockLowerContext<'a> {
                 lower.set_transient(regs.lo, Some(param), Some(ty))?;
             }
         }
-        lower.release_dead_values()?;
-
-        if is_entry {
-            lower.emit_entry_cached_locals()?;
+        let entry_cache_params = lower.entry_cache_params.clone();
+        for entry in entry_cache_params {
+            lower.bind_cached_local_to_regs(entry.cached_index, entry.regs.lo, entry.regs.hi)?;
+            lower.set_cache_live(entry.cached_index, true);
+            lower.set_cache_dirty(entry.cached_index, true);
         }
+        lower.release_dead_values()?;
 
         Ok(lower)
     }
 
     pub(super) fn machine_params(&self) -> &[ValueRegs] {
         &self.machine_params
+    }
+
+    pub(super) fn entry_cache_params(&self) -> &[EntryCacheParam] {
+        &self.entry_cache_params
     }
 
     pub(super) fn take_ops(&mut self) -> Vec<MachineInst> {
@@ -437,10 +389,84 @@ impl<'a> BlockLowerContext<'a> {
         &self.cached_locals
     }
 
+    pub(super) fn bound_cached_local(&self, index: usize) -> Option<BoundCachedLocal> {
+        let cached = self.cached_locals.get(index).copied()?;
+        let binding = self.cache_bindings.get(index).copied().flatten()?;
+        Some(BoundCachedLocal {
+            slot: cached.slot,
+            reg: binding.reg,
+            hi_reg: binding.hi_reg,
+            ty: cached.ty,
+            info: cached.info,
+        })
+    }
+
+    pub(super) fn ensure_bound_cached_local(
+        &mut self,
+        index: usize,
+    ) -> Result<BoundCachedLocal, WasmError> {
+        if self.cache_bindings.get(index).copied().flatten().is_none() {
+            let preferred = self.allocate_cache_binding(index)?;
+            let slot = self.cache_bindings.get_mut(index).ok_or_else(|| {
+                WasmError::internal("cached local binding is out of range".into())
+            })?;
+            *slot = Some(preferred);
+        }
+        self.bound_cached_local(index).ok_or_else(|| {
+            WasmError::internal("cached local binding missing after assignment".into())
+        })
+    }
+
+    pub(super) fn bind_cached_local_to_regs(
+        &mut self,
+        index: usize,
+        reg: MachineReg,
+        hi_reg: Option<MachineReg>,
+    ) -> Result<BoundCachedLocal, WasmError> {
+        let slot = self.cache_bindings.get_mut(index).ok_or_else(|| {
+            WasmError::internal("cached local binding is out of range".into())
+        })?;
+        *slot = Some(CachedLocalBinding { reg, hi_reg });
+        self.bound_cached_local(index).ok_or_else(|| {
+            WasmError::internal("cached local binding missing after assignment".into())
+        })
+    }
+
+    pub(super) fn is_cache_live(&self, index: usize) -> bool {
+        self.cache_live.get(index).copied().unwrap_or(false)
+    }
+
+    pub(super) fn set_cache_live(&mut self, index: usize, live: bool) {
+        if index < self.cache_live.len() {
+            self.cache_live[index] = live;
+        }
+    }
+
+    pub(super) fn clear_cache_binding(&mut self, index: usize) {
+        if let Some(binding) = self.cache_bindings.get_mut(index) {
+            *binding = None;
+        }
+    }
+
+    pub(super) fn clear_cache_live(&mut self) {
+        for live in &mut self.cache_live {
+            *live = false;
+        }
+        for binding in &mut self.cache_bindings {
+            *binding = None;
+        }
+    }
+
     /// Mark a cached local as dirty (register was written by a LocalSet).
     pub(super) fn mark_cache_dirty(&mut self, index: usize) {
         if index < self.cache_dirty.len() {
             self.cache_dirty[index] = true;
+        }
+    }
+
+    pub(super) fn set_cache_dirty(&mut self, index: usize, dirty: bool) {
+        if index < self.cache_dirty.len() {
+            self.cache_dirty[index] = dirty;
         }
     }
 
@@ -531,6 +557,48 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn try_bind_cached_local_from_dying_value(
+        &mut self,
+        index: usize,
+        value: SsaValue,
+        ty: MachineStorageType,
+    ) -> Result<Option<BoundCachedLocal>, WasmError> {
+        if self.cache_bindings.get(index).copied().flatten().is_some() {
+            return self.bound_cached_local(index).map(Some).ok_or_else(|| {
+                WasmError::internal("cached local binding missing after assignment".into())
+            });
+        }
+        if self.remaining_use_count(value) != 1 {
+            return Ok(None);
+        }
+        let Some((reg, hi_reg)) = self.try_value_regs(value) else {
+            return Ok(None);
+        };
+        if !self.is_transient_reg(reg) || self.is_fp_reg(reg) != ty.is_fp() {
+            return Ok(None);
+        }
+        match ty {
+            MachineStorageType::GpI64 if self.gp_reg_width == 4 => {
+                let Some(hi_reg) = hi_reg else {
+                    return Ok(None);
+                };
+                if !self.is_transient_reg(hi_reg) || self.is_fp_reg(hi_reg) {
+                    return Ok(None);
+                }
+                self.clear_transient(reg)?;
+                self.clear_transient(hi_reg)?;
+                return self.bind_cached_local_to_regs(index, reg, Some(hi_reg)).map(Some);
+            }
+            _ => {
+                if hi_reg.is_some() {
+                    return Ok(None);
+                }
+            }
+        }
+        self.clear_transient(reg)?;
+        self.bind_cached_local_to_regs(index, reg, None).map(Some)
+    }
+
     /// Materialize all live values aliased to `cache_reg` into transient
     /// registers. Values in `except` are skipped — they are instruction args
     /// that will be consumed (read) before the cache register is overwritten.
@@ -571,17 +639,108 @@ impl<'a> BlockLowerContext<'a> {
         &self,
         reg: MachineReg,
     ) -> Option<MachineStorageType> {
-        self.cached_locals.iter().find_map(|cached| {
-            if cached.reg == reg || cached.hi_reg == Some(reg) {
-                Some(if cached.hi_reg.is_some() {
-                    MachineStorageType::GpWord
+        self.cached_locals
+            .iter()
+            .zip(self.cache_bindings.iter())
+            .find_map(|(cached, binding)| {
+                let binding = (*binding)?;
+                if binding.reg == reg || binding.hi_reg == Some(reg) {
+                    Some(if binding.hi_reg.is_some() {
+                        MachineStorageType::GpWord
+                    } else {
+                        cached.ty
+                    })
                 } else {
-                    cached.ty
-                })
-            } else {
-                None
+                    None
+                }
+            })
+    }
+
+    pub(super) fn is_bound_cache_reg(&self, reg: MachineReg) -> bool {
+        self.cache_bindings
+            .iter()
+            .flatten()
+            .any(|binding| binding.reg == reg || binding.hi_reg == Some(reg))
+    }
+
+    fn allocate_cache_binding(&self, index: usize) -> Result<CachedLocalBinding, WasmError> {
+        let cached = self.cached_locals.get(index).copied().ok_or_else(|| {
+            WasmError::internal("cached local binding request is out of range".into())
+        })?;
+
+        if cached.ty.is_fp() {
+            for fp_index in 0..self.regfile.fp_dynamic_count() {
+                let Some(reg) = self.regfile.fp_dynamic(fp_index) else {
+                    continue;
+                };
+                if self.dynamic_reg_unavailable(reg) {
+                    continue;
+                }
+                return Ok(CachedLocalBinding { reg, hi_reg: None });
             }
-        })
+            return Err(WasmError::internal(alloc::format!(
+                "no free FP cache register available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
+                cached.slot,
+                self.block.id.0,
+                self.values.len(),
+                self.cache_bindings.iter().flatten().count(),
+            )));
+        }
+
+        if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+            let dynamic_count = self.regfile.gp_dynamic_count();
+            for gp_index in 0..dynamic_count {
+                let Some(lo) = self.regfile.gp_dynamic(gp_index) else {
+                    continue;
+                };
+                if self.dynamic_reg_unavailable(lo) {
+                    continue;
+                }
+                let Some(hi) = self.regfile.gp_dynamic(gp_index + 1) else {
+                    break;
+                };
+                if self.dynamic_reg_unavailable(hi) {
+                    continue;
+                }
+                return Ok(CachedLocalBinding {
+                    reg: lo,
+                    hi_reg: Some(hi),
+                });
+            }
+            return Err(WasmError::internal(alloc::format!(
+                "no free GP cache register pair available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
+                cached.slot,
+                self.block.id.0,
+                self.values.len(),
+                self.cache_bindings.iter().flatten().count(),
+            )));
+        }
+
+        for gp_index in 0..self.regfile.gp_dynamic_count() {
+            let Some(reg) = self.regfile.gp_dynamic(gp_index) else {
+                continue;
+            };
+            if self.dynamic_reg_unavailable(reg) {
+                continue;
+            }
+            return Ok(CachedLocalBinding { reg, hi_reg: None });
+        }
+        Err(WasmError::internal(alloc::format!(
+            "no free GP cache register available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
+            cached.slot,
+            self.block.id.0,
+            self.values.len(),
+            self.cache_bindings.iter().flatten().count(),
+        )))
+    }
+
+    fn dynamic_reg_unavailable(&self, reg: MachineReg) -> bool {
+        self.is_bound_cache_reg(reg)
+            || self
+                .dynamic_index(reg)
+                .ok()
+                .map(|index| self.transient_occupied(index))
+                .unwrap_or(true)
     }
 
     /// Try to reuse a dead pair candidate's registers for a new i64 value.
@@ -680,4 +839,213 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn ops_pop(&mut self) -> Option<MachineInst> {
         self.ops.pop()
     }
+}
+
+pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
+    let pref_map = explicit_cached_local_pref_map(program);
+    let mut explicit = BTreeMap::<FrameSlot, ExplicitCachedLocalEntry>::new();
+    let mut order = 0usize;
+
+    for block in &program.blocks {
+        for inst in &block.ops {
+            match &inst.kind {
+                SsaInstKind::LocalGetCache { slot, dst } => {
+                    record_explicit_cached_local(
+                        &mut explicit,
+                        &pref_map,
+                        *slot,
+                        Some(value_type(program, *dst)),
+                        &mut order,
+                    );
+                }
+                SsaInstKind::LocalSetCache { slot, src } => {
+                    record_explicit_cached_local(
+                        &mut explicit,
+                        &pref_map,
+                        *slot,
+                        Some(value_type(program, *src)),
+                        &mut order,
+                    );
+                }
+                SsaInstKind::LocalDropCache { slot } => {
+                    record_explicit_cached_local(&mut explicit, &pref_map, *slot, None, &mut order);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut entries = explicit.into_values().collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.order);
+    entries.into_iter().map(|entry| entry.cached).collect()
+}
+
+fn target_entry_cache_params(
+    regfile: &MachineRegFile,
+    program: &SsaProgram,
+    cached_locals: &[CachedLocal],
+    block: &SsaBlock,
+    gp_reg_width: u8,
+) -> Result<Vec<EntryCacheParam>, WasmError> {
+    let mut gp_index = 0usize;
+    let mut fp_index = 0usize;
+    for &param in &block.params {
+        match lir_value_storage_type(program, param) {
+            MachineStorageType::Fp32 | MachineStorageType::Fp64 => fp_index += 1,
+            MachineStorageType::GpI64 if gp_reg_width == 4 => gp_index += 2,
+            _ => gp_index += 1,
+        }
+    }
+
+    let mut entry_cache_params = Vec::new();
+    for &slot in program
+        .block_entry_cached_slots
+        .get(block.id.as_usize())
+        .map(|slots| slots.as_slice())
+        .unwrap_or(&[])
+    {
+        let cached_index = cached_locals
+            .iter()
+            .position(|cached| cached.slot == slot)
+            .ok_or_else(|| {
+                WasmError::internal(alloc::format!(
+                    "missing cached-local metadata for carried entry slot {:?} in block b{}",
+                    slot,
+                    block.id.0,
+                ))
+            })?;
+        let regs = match cached_locals[cached_index].ty {
+            MachineStorageType::Fp32 | MachineStorageType::Fp64 => {
+                let reg = super::lower_module::preferred_fp_dynamic_reg(regfile, fp_index)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "block b{} entry cached locals exceed FP dynamic register budget",
+                            block.id.0,
+                        ))
+                    })?;
+                fp_index += 1;
+                ValueRegs { lo: reg, hi: None }
+            }
+            MachineStorageType::GpI64 if gp_reg_width == 4 => {
+                let lo = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "block b{} entry cached i64 locals exceed GP dynamic pair budget",
+                            block.id.0,
+                        ))
+                    })?;
+                let hi = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index + 1)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "block b{} entry cached i64 locals exceed GP dynamic pair budget",
+                            block.id.0,
+                        ))
+                    })?;
+                gp_index += 2;
+                ValueRegs { lo, hi: Some(hi) }
+            }
+            _ => {
+                let reg = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index)
+                    .ok_or_else(|| {
+                        WasmError::internal(alloc::format!(
+                            "block b{} entry cached locals exceed GP dynamic register budget",
+                            block.id.0,
+                        ))
+                    })?;
+                gp_index += 1;
+                ValueRegs { lo: reg, hi: None }
+            }
+        };
+        entry_cache_params.push(EntryCacheParam { cached_index, regs });
+    }
+
+    Ok(entry_cache_params)
+}
+
+fn explicit_cached_local_pref_map(program: &SsaProgram) -> BTreeMap<FrameSlot, CachePrefEntry> {
+    let mut map = BTreeMap::new();
+    for (index, slot) in program.local_cache.gp_preferred_slots.iter().copied().enumerate() {
+        map.insert(
+            slot,
+            CachePrefEntry {
+                ty: program
+                    .local_cache
+                    .gp_preferred_types
+                    .get(index)
+                    .copied()
+                    .unwrap_or(ValueType::I64),
+                info: program
+                    .local_cache
+                    .gp_local_info
+                    .get(index)
+                    .copied()
+                    .unwrap_or_default(),
+            },
+        );
+    }
+    for (index, slot) in program.local_cache.fp_preferred_slots.iter().copied().enumerate() {
+        map.insert(
+            slot,
+            CachePrefEntry {
+                ty: program
+                    .local_cache
+                    .fp_preferred_types
+                    .get(index)
+                    .copied()
+                    .unwrap_or(ValueType::F64),
+                info: program
+                    .local_cache
+                    .fp_local_info
+                    .get(index)
+                    .copied()
+                    .unwrap_or_default(),
+            },
+        );
+    }
+    map
+}
+
+fn record_explicit_cached_local(
+    explicit: &mut BTreeMap<FrameSlot, ExplicitCachedLocalEntry>,
+    pref_map: &BTreeMap<FrameSlot, CachePrefEntry>,
+    slot: FrameSlot,
+    ty: Option<ValueType>,
+    order: &mut usize,
+) {
+    let pref = pref_map.get(&slot).copied().unwrap_or(CachePrefEntry {
+        ty: ValueType::I32,
+        info: CachedLocalInfo::default(),
+    });
+    let typed = ty.is_some();
+    let ty = value_type_storage_type(ty.unwrap_or(pref.ty));
+
+    explicit
+        .entry(slot)
+        .and_modify(|entry| {
+            if typed && !entry.typed {
+                entry.cached.ty = ty;
+                entry.typed = true;
+            }
+        })
+        .or_insert_with(|| {
+            let entry = ExplicitCachedLocalEntry {
+                order: *order,
+                cached: CachedLocal {
+                    slot,
+                    ty,
+                    info: pref.info,
+                },
+                typed,
+            };
+            *order += 1;
+            entry
+        });
+}
+
+fn value_type(program: &SsaProgram, value: SsaValue) -> ValueType {
+    program
+        .value_types
+        .get(value.0 as usize)
+        .copied()
+        .unwrap_or(ValueType::I32)
 }

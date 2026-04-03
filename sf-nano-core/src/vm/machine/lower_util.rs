@@ -21,11 +21,15 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                     count_operand_use(operand, &mut uses);
                 }
             }
-            SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+            SsaInstKind::LocalSetSlot { src, .. }
+            | SsaInstKind::LocalSetCache { src, .. }
+            | SsaInstKind::Spill { src, .. } => {
                 *uses.entry(*src).or_insert(0) += 1;
             }
-            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } => {}
-            SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalGetSlot { .. }
+            | SsaInstKind::LocalGetCache { .. }
+            | SsaInstKind::Fill { .. } => {}
+            SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
         }
     }
 
@@ -65,7 +69,9 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
                         }
                     }
                 }
-                SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+                SsaInstKind::LocalSetSlot { src, .. }
+                | SsaInstKind::LocalSetCache { src, .. }
+                | SsaInstKind::Spill { src, .. } => {
                     *op_uses.entry(*src).or_insert(0) += 1;
                 }
                 _ => {}

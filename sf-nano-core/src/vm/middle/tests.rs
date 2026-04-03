@@ -1,7 +1,7 @@
 use crate::vm::{
     backend::BackendConfig,
     middle::{
-        ssa_ir::ir::{SsaInstKind, SsaTerminator},
+        ssa_ir::ir::{SsaCallOp, SsaInstKind, SsaTerminator},
         PrepareInput, PreparedFunction,
     },
     wasm::{
@@ -15,6 +15,21 @@ use super::prepare_function;
 fn test_backend_config() -> BackendConfig {
     BackendConfig::new(
         0,
+        4,
+        0,
+        2,
+        core::mem::size_of::<usize>() as u8,
+        if core::mem::size_of::<usize>() == 4 {
+            8
+        } else {
+            3
+        },
+    )
+}
+
+fn test_cache_backend_config() -> BackendConfig {
+    BackendConfig::new(
+        1,
         4,
         0,
         2,
@@ -1090,7 +1105,7 @@ fn typed_pipeline_assigns_float_types_to_float_values() {
     // Find LocalGet results (from local.get) — they should be F64.
     for block in &prepared.ssa.blocks {
         for inst in &block.ops {
-            if let SsaInstKind::LocalGet { dst, .. } = &inst.kind {
+            if let SsaInstKind::LocalGetSlot { dst, .. } = &inst.kind {
                 let ty = prepared.ssa.value_types.get(dst.0 as usize);
                 assert_eq!(
                     ty.copied(),
@@ -1594,4 +1609,134 @@ fn prepares_result_if_with_returning_arms_without_typed_stack_mismatch() {
         .blocks
         .iter()
         .any(|block| matches!(block.terminator, SsaTerminator::Return { .. })));
+}
+
+#[test]
+fn prepares_explicit_cached_local_drop_before_call() {
+    use crate::value_type::ValueType;
+
+    let semantic = SemanticProgram {
+        params: 1,
+        results: 0,
+        local_count: 1,
+        max_stack_height: 1,
+        ops: alloc::vec![
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalSet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::CallDirect {
+                    callee: 7,
+                    params: 1,
+                    results: 0,
+                },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::ReturnVoid,
+            },
+        ],
+        local_types: alloc::vec![ValueType::I32],
+        result_types: alloc::vec![],
+        op_result_types: alloc::collections::BTreeMap::new(),
+    };
+
+    let prepared = prepare_function(
+        PrepareInput {
+            config: test_cache_backend_config(),
+        },
+        &semantic,
+    )
+    .expect("call pipeline with cached locals should prepare cleanly");
+
+    assert_eq!(prepared.ssa.local_cache.gp_preferred_slots.len(), 1);
+    let has_cached_get = prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
+        matches!(inst.kind, SsaInstKind::LocalGetCache { .. })
+    });
+    assert!(has_cached_get, "expected LocalGetCache in prepared SSA");
+
+    let has_drop_before_call = prepared.ssa.blocks.iter().any(|block| {
+        block.ops
+            .iter()
+            .position(|inst| {
+                matches!(
+                    inst.kind,
+                    SsaInstKind::Call(SsaCallOp::CallDirect { ref skip_reload, .. })
+                        if skip_reload.is_empty()
+                )
+            })
+            .is_some_and(|call_index| {
+                block.ops[..call_index]
+                    .iter()
+                    .any(|inst| matches!(inst.kind, SsaInstKind::LocalDropCache { .. }))
+            })
+    });
+    assert!(
+        has_drop_before_call,
+        "expected explicit LocalDropCache before CallDirect"
+    );
+}
+
+#[test]
+fn fixed_cache_stage_limits_explicit_cache_ops_to_budgeted_slots() {
+    use crate::value_type::ValueType;
+
+    let semantic = SemanticProgram {
+        params: 0,
+        results: 0,
+        local_count: 2,
+        max_stack_height: 1,
+        ops: alloc::vec![
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalSet { idx: 0 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalGet { idx: 1 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::LocalSet { idx: 1 },
+            },
+            SemanticOp {
+                kind: SemanticOpKind::ReturnVoid,
+            },
+        ],
+        local_types: alloc::vec![ValueType::I32, ValueType::I32],
+        result_types: alloc::vec![],
+        op_result_types: alloc::collections::BTreeMap::new(),
+    };
+
+    let prepared = prepare_function(
+        PrepareInput {
+            config: test_cache_backend_config(),
+        },
+        &semantic,
+    )
+    .expect("fixed cache prepare should succeed");
+
+    let cached_slot = prepared.frame.local_slot(0);
+    let uncached_slot = prepared.frame.local_slot(1);
+
+    assert!(prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
+        matches!(
+            inst.kind,
+            SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalSetCache { slot, .. }
+                if slot == cached_slot
+        )
+    }));
+
+    assert!(!prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
+        matches!(
+            inst.kind,
+            SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalSetCache { slot, .. }
+                if slot == uncached_slot
+        )
+    }));
 }

@@ -301,14 +301,23 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
             operands(args),
             vals(results),
         ),
-        SsaInstKind::LocalGet { slot, dst } => {
-            format!("local.get v{} <- fp[{}]", dst.0, slot.0)
+        SsaInstKind::LocalGetSlot { slot, dst } => {
+            format!("local.get_slot v{} <- fp[{}]", dst.0, slot.0)
+        }
+        SsaInstKind::LocalGetCache { slot, dst } => {
+            format!("local.get_cache v{} <- fp[{}]", dst.0, slot.0)
         }
         SsaInstKind::Fill { slot, dst } => {
             format!("fill v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstKind::LocalSet { slot, src, .. } => {
-            format!("local.set fp[{}] <- v{}", slot.0, src.0)
+        SsaInstKind::LocalSetSlot { slot, src } => {
+            format!("local.set_slot fp[{}] <- v{}", slot.0, src.0)
+        }
+        SsaInstKind::LocalSetCache { slot, src } => {
+            format!("local.set_cache fp[{}] <- v{}", slot.0, src.0)
+        }
+        SsaInstKind::LocalDropCache { slot } => {
+            format!("local.drop_cache fp[{}]", slot.0)
         }
         SsaInstKind::Spill { slot, src } => {
             format!("spill fp[{}] <- v{}", slot.0, src.0)

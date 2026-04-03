@@ -323,7 +323,9 @@ mod tests {
         assert_eq!(layout.context.memory_views_base_offset, 24);
         assert_eq!(layout.context.table_views_base_offset, 32);
         assert_eq!(layout.context.function_views_base_offset, 40);
-        assert_eq!(layout.context.type_canon_base_offset, 48);
+        assert_eq!(layout.context.local_call_infos_base_offset, 48);
+        assert_eq!(layout.context.local_call_infos_len_offset, 52);
+        assert_eq!(layout.context.type_canon_base_offset, 56);
         assert_eq!(layout.ref_handle_stride, 4);
     }
 }

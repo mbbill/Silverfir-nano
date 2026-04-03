@@ -22,6 +22,7 @@ mod lower_edge;
 mod lower_ops;
 mod lower_term;
 mod optimize;
+mod resource_plan;
 mod sink_plan;
 mod spill_plan;
 mod state;
@@ -30,7 +31,7 @@ mod thread_jumps;
 #[cfg(test)]
 mod tests;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 use crate::{
     error::WasmError,
@@ -74,19 +75,35 @@ pub(crate) fn prepare_function(
 ) -> Result<PreparedFunction, WasmError> {
     semantic.validate()?;
 
+    let gp_dynamic_budget = input
+        .config
+        .gp_transient_budget
+        .saturating_add(input.config.gp_local_cache_budget);
+    let fp_dynamic_budget = input
+        .config
+        .fp_transient_budget
+        .saturating_add(input.config.fp_local_cache_budget);
+
     let frame = plan_frame_layout(
         semantic.local_count,
         semantic.max_stack_height,
         input.config.call_scratch_slots,
     );
-    let (local_cache, continuation_skip_reload) = analyze_local_cache_prefs(
+    let local_cache = analyze_local_cache_prefs(
         semantic,
         input.config.gp_unit_bytes,
         input.config.gp_local_cache_budget,
         input.config.fp_local_cache_budget,
         frame,
     );
-    let prepared = prepare_semantic_ops(semantic, frame, input.config)?;
+    let prepared = prepare_semantic_ops(
+        semantic,
+        frame,
+        input.config,
+        &local_cache,
+        gp_dynamic_budget,
+        fp_dynamic_budget,
+    )?;
 
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
@@ -95,8 +112,8 @@ pub(crate) fn prepare_function(
                 entry: SsaTarget(0),
                 local_cache,
                 blocks: Vec::new(),
+                block_entry_cached_slots: Vec::new(),
                 value_types: Vec::new(),
-                value_homes: Vec::new(),
                 value_sink_local: Vec::new(),
             },
         });
@@ -115,16 +132,14 @@ pub(crate) fn prepare_function(
     let original_block_count = block_ranges.len();
     let mut blocks = Vec::with_capacity(block_ranges.len());
     let mut extra_blocks = Vec::new();
-    let mut skip_reload_iter = continuation_skip_reload.into_iter();
-    let mut local_versions = alloc::vec![0u32; local_types.len()];
     for (block_index, semantic_range) in block_ranges.into_iter().enumerate() {
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
             &prepared.entry_states[semantic_range.start],
             &params,
             input.config.gp_unit_bytes,
-            input.config.gp_transient_budget,
-            input.config.fp_transient_budget,
+            gp_dynamic_budget,
+            fp_dynamic_budget,
         )?;
         let block = lower_block_range(
             semantic_range.clone(),
@@ -140,8 +155,6 @@ pub(crate) fn prepare_function(
             local_types,
             &semantic.result_types,
             op_result_types,
-            &mut skip_reload_iter,
-            &mut local_versions,
         )?;
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
@@ -156,15 +169,21 @@ pub(crate) fn prepare_function(
     let ssa = SsaProgram {
         entry: semantic_to_block[0],
         local_cache,
+        block_entry_cached_slots: vec![Vec::new(); blocks.len()],
         blocks,
         value_types: values.take_types(),
-        value_homes: values.take_homes(),
         value_sink_local: Vec::new(),
     };
     let mut ssa = ssa;
     thread_jumps::simplify_cfg(&mut ssa);
-    optimize::optimize_ssa(&mut ssa, frame);
     sink_plan::plan_sinks(&mut ssa);
+    optimize::optimize_ssa(&mut ssa, frame);
+    resource_plan::plan_resources(
+        &mut ssa,
+        input.config.gp_unit_bytes,
+        gp_dynamic_budget,
+        fp_dynamic_budget,
+    );
     validate_program(&ssa)?;
 
     Ok(PreparedFunction { frame, ssa })

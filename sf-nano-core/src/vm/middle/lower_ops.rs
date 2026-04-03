@@ -22,11 +22,9 @@ use crate::{
 };
 
 use super::{
-    spill_plan::{PrepAction, PreparedOp},
+    spill_plan::{PrepAction, PreparedLocalAccess, PreparedOp},
     state::{BlockState, ValueAlloc},
 };
-
-use crate::vm::middle::ssa_ir::ir::ValueHome;
 
 pub(super) fn lower_prefix_actions(
     op: &PreparedOp<'_>,
@@ -67,6 +65,11 @@ pub(super) fn lower_prefix_actions(
                     reloaded.push(dst);
                 }
                 state.fill_prefix(reloaded, fill_types.clone())?;
+            }
+            PrepAction::DropCache(slot) => {
+                state.ops.push(SsaInst {
+                    kind: SsaInstKind::LocalDropCache { slot: *slot },
+                });
             }
         }
     }
@@ -126,11 +129,11 @@ pub(super) fn lower_primitive(
 
 pub(super) fn lower_local_get(
     local_idx: u16,
+    access: PreparedLocalAccess,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
     local_types: &[ValueType],
-    local_versions: &[u32],
 ) -> Result<(), WasmError> {
     let ty = local_types.get(local_idx as usize).copied();
     debug_assert!(
@@ -142,60 +145,61 @@ pub(super) fn lower_local_get(
     let ty = ty.unwrap_or(ValueType::I64);
     let dst = values.fresh_typed(ty);
     let slot = frame.local_slot(local_idx);
-    let version = local_versions.get(local_idx as usize).copied().unwrap_or(0);
-    values.set_value_home(dst, ValueHome::LocalVersion { slot, version });
     state.ops.push(SsaInst {
-        kind: SsaInstKind::LocalGet { slot, dst },
+        kind: match access {
+            PreparedLocalAccess::Slot => SsaInstKind::LocalGetSlot { slot, dst },
+            PreparedLocalAccess::Cache => SsaInstKind::LocalGetCache { slot, dst },
+        },
     });
     state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
 
 pub(super) fn lower_local_set(
     local_idx: u16,
+    access: PreparedLocalAccess,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    local_versions: &mut [u32],
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
-    if let Some(v) = local_versions.get_mut(local_idx as usize) {
-        *v += 1;
-    }
-    let version = local_versions.get(local_idx as usize).copied().unwrap_or(0);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::LocalSet { slot, src, version },
+        kind: match access {
+            PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
+            PreparedLocalAccess::Cache => SsaInstKind::LocalSetCache { slot, src },
+        },
     });
     Ok(())
 }
 
 pub(super) fn lower_local_tee(
     local_idx: u16,
+    access: PreparedLocalAccess,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
     local_types: &[ValueType],
-    local_versions: &mut [u32],
 ) -> Result<(), WasmError> {
     // Pop the value, store it, then reload from the slot to produce a fresh
     // single-use value. This maintains the linear-SSA invariant: every SSA-IR
     // value is used exactly once.
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
-    if let Some(v) = local_versions.get_mut(local_idx as usize) {
-        *v += 1;
-    }
-    let version = local_versions.get(local_idx as usize).copied().unwrap_or(0);
     state.ops.push(SsaInst {
-        kind: SsaInstKind::LocalSet { slot, src, version },
+        kind: match access {
+            PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
+            PreparedLocalAccess::Cache => SsaInstKind::LocalSetCache { slot, src },
+        },
     });
     let ty = local_types
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
     let dst = values.fresh_typed(ty);
-    values.set_value_home(dst, ValueHome::LocalVersion { slot, version });
     state.ops.push(SsaInst {
-        kind: SsaInstKind::LocalGet { slot, dst },
+        kind: match access {
+            PreparedLocalAccess::Slot => SsaInstKind::LocalGetSlot { slot, dst },
+            PreparedLocalAccess::Cache => SsaInstKind::LocalGetCache { slot, dst },
+        },
     });
     state.push_results(alloc::vec![dst], alloc::vec![ty])
 }
@@ -206,7 +210,6 @@ pub(super) fn lower_call_direct(
     results: u16,
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    skip_reload: Vec<bool>,
 ) {
     let call_base = call_base_slot(frame, state.height(), params);
     state.ops.push(SsaInst {
@@ -214,7 +217,7 @@ pub(super) fn lower_call_direct(
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-            skip_reload,
+            skip_reload: Vec::new(),
         }),
     });
     state.finish_call(params, results);
@@ -227,7 +230,6 @@ pub(super) fn lower_call_indirect(
     results: u16,
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    skip_reload: Vec<bool>,
 ) {
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
@@ -238,7 +240,7 @@ pub(super) fn lower_call_indirect(
             index_slot: call_base.advance(params),
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-            skip_reload,
+            skip_reload: Vec::new(),
         }),
     });
     state.finish_call(consumed, results);
@@ -291,8 +293,6 @@ pub(super) fn lower_block_body_op(
     values: &mut ValueAlloc,
     local_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
-    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
-    local_versions: &mut [u32],
 ) -> Result<(), WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -311,19 +311,18 @@ pub(super) fn lower_block_body_op(
             lower_primitive(kind, semantic_index, state, values, op_result_types)
         }
         SemanticOpKind::LocalGet { idx } => {
-            lower_local_get(*idx, state, frame, values, local_types, local_versions)
+            lower_local_get(*idx, op.local_access, state, frame, values, local_types)
         }
-        SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, state, frame, local_versions),
+        SemanticOpKind::LocalSet { idx } => lower_local_set(*idx, op.local_access, state, frame),
         SemanticOpKind::LocalTee { idx } => {
-            lower_local_tee(*idx, state, frame, values, local_types, local_versions)
+            lower_local_tee(*idx, op.local_access, state, frame, values, local_types)
         }
         SemanticOpKind::CallDirect {
             callee,
             params,
             results,
         } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_direct(*callee, *params, *results, frame, state, skip);
+            lower_call_direct(*callee, *params, *results, frame, state);
             Ok(())
         }
         SemanticOpKind::CallIndirect {
@@ -332,8 +331,7 @@ pub(super) fn lower_block_body_op(
             params,
             results,
         } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state, skip);
+            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
             Ok(())
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),

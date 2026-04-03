@@ -6,9 +6,9 @@ use crate::vm::{
     machine::{
         lower_module,
         machine_ir::{
-            MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFunction,
-            MachineInstKind, MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg,
-            MachineStorageType, MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
+            MachineBlockId, MachineCompareKind, MachineFunction, MachineInstKind,
+            MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg, MachineStorageType,
+            MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
         LowerFunctionInput, LowerModuleInput,
     },
@@ -85,7 +85,7 @@ fn lowers_simple_slot_and_add_block() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetCache {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
                     },
@@ -109,18 +109,17 @@ fn lowers_simple_slot_and_add_block() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot: frame.local_slot(0),
                         src: SsaValue(2),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -160,7 +159,7 @@ fn lowers_simple_slot_and_add_block() {
         program.blocks[0].terminator,
         MachineTerminator::Return
     ));
-    assert_eq!(program.blocks[0].ops.len(), 4);
+    assert_eq!(program.blocks[0].ops.len(), 5);
     assert!(matches!(
         program.blocks[0].ops[0].kind,
         MachineInstKind::Load { .. }
@@ -168,19 +167,26 @@ fn lowers_simple_slot_and_add_block() {
     assert!(matches!(
         program.blocks[0].ops[1].kind,
         MachineInstKind::Move {
-            src: MachineValue::Imm64(1),
+            src: MachineValue::Reg(_),
             ..
         }
     ));
     assert!(matches!(
         program.blocks[0].ops[2].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Imm64(1),
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[0].ops[3].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[0].ops[3].kind,
+        program.blocks[0].ops[4].kind,
         MachineInstKind::Store { .. }
     ));
 }
@@ -234,8 +240,8 @@ fn lowers_select_with_wasm_operand_order() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -272,10 +278,37 @@ fn lowers_select_with_wasm_operand_order() {
 
 #[test]
 fn native_backend_requires_at_least_one_gp_transient_register() {
-    let panic = std::panic::catch_unwind(|| host_backend_config(0, 0, 0, 0));
+    let frame = plan_frame_layout(0, 0, 3);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
+    };
+
+    let err = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 0, 0, 0),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect_err("zero GP-transient native backend must be rejected");
+
     assert!(
-        panic.is_err(),
-        "zero-budget native backend must be rejected"
+        alloc::format!("{err}").contains("at least one GP transient register"),
+        "unexpected error: {err}"
     );
 }
 
@@ -295,8 +328,8 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -361,8 +394,8 @@ fn rejects_inconsistent_return_result_spans() {
             },
         ],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
@@ -407,8 +440,8 @@ fn rejects_mixed_void_and_value_returns() {
             },
         ],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
@@ -459,8 +492,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
             },
         ],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -512,8 +545,8 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
             },
         ],
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -585,14 +618,13 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(1),
                     },
@@ -626,8 +658,8 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
             ValueType::I64,
             ValueType::I64
         ],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -695,8 +727,8 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I64, ValueType::I64],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -786,8 +818,8 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
             ValueType::I32,
             ValueType::I64
         ],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -832,8 +864,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -850,8 +882,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -899,9 +931,16 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetCache {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
+                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
+                        results: alloc::vec![],
                     },
                 },
                 SsaInst {
@@ -913,18 +952,17 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
                         src: SsaValue(1),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -941,29 +979,99 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     .expect("lowering should succeed");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    // ops[0]: entry cache init — load param from frame into cache reg
+    let cache_reg = ops
+        .iter()
+        .find_map(|inst| match inst.kind {
+            MachineInstKind::Load { dst, .. } => Some(dst),
+            _ => None,
+        })
+        .expect("expected LocalGetCache to load the local into a cache reg");
+    let _snapshot_reg = ops
+        .iter()
+        .find_map(|inst| match inst.kind {
+            MachineInstKind::Move {
+                dst,
+                src: MachineValue::Reg(src),
+                ..
+            } if src == cache_reg => Some(dst),
+            _ => None,
+        })
+        .expect("expected LocalGetCache to snapshot the cached value into an SSA reg");
+    let const_reg = ops
+        .iter()
+        .find_map(|inst| match inst.kind {
+            MachineInstKind::Move {
+                dst,
+                src: MachineValue::Imm64(7),
+                ..
+            } => Some(dst),
+            _ => None,
+        })
+        .expect("expected i32.const 7 to materialize into a transient reg");
+    assert!(
+        ops.iter().any(|inst| matches!(
+            inst.kind,
+            MachineInstKind::Move {
+                dst,
+                src: MachineValue::Reg(src),
+                ..
+            } if dst == cache_reg && src == const_reg
+        )),
+        "expected LocalSetCache to write the new value back into the cache reg"
+    );
+}
+
+#[test]
+fn local_set_cache_reuses_dying_source_transient_when_no_extra_reg_is_free() {
+    let frame = plan_frame_layout(1, 1, 2);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs::default(),
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![SsaValue(0)],
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalSetCache {
+                        slot: frame.local_slot(0),
+                        src: SsaValue(0),
+                    },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 1, 0, 0),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("LocalSetCache should be able to bind the dying source reg as cache");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(ops.len(), 1, "no extra cache copy should be needed");
     assert!(matches!(
         ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
-    ));
-    // ops[1]: I32Const(7) into transient reg (dead LocalGet eliminated)
-    assert!(matches!(
-        ops[1].kind,
         MachineInstKind::Move {
-            dst: MachineReg(5),
             src: MachineValue::Imm64(7),
-            ..
-        }
-    ));
-    // ops[2]: LocalSet — copy transient into cache reg
-    assert!(matches!(
-        ops[2].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
@@ -999,18 +1107,17 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I32],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1029,22 +1136,12 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
     assert_valid_32bit_gp_target(&lowered.module, backend);
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 2);
-    // ops[0]: I32Const(9) into transient reg
+    assert_eq!(ops.len(), 1);
+    // LocalSetCache should be able to bind the dying const reg directly as the cache reg.
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
-            dst: MachineReg(5),
             src: MachineValue::Imm64(9),
-            ..
-        }
-    ));
-    // ops[1]: LocalSet — copy transient into cache reg
-    assert!(matches!(
-        ops[1].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
@@ -1070,8 +1167,8 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1117,18 +1214,17 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![ValueType::I64],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1185,10 +1281,14 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalDropCache {
+                        slot: frame.local_slot(0),
                     },
                 },
                 SsaInst {
@@ -1203,8 +1303,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1221,35 +1321,22 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     .expect("external helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 8);
-    // ops[0]: entry cache init — load param from frame
-    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
-    // ops[1]: I64Const(9) into transient reg
+    assert_eq!(ops.len(), 5);
+    // ops[0]: I64Const(9) into transient reg
     assert!(matches!(
-        ops[1].kind,
+        ops[0].kind,
         MachineInstKind::Move {
             src: MachineValue::Imm64(9),
             ..
         }
     ));
-    // ops[2]: LocalSet — copy transient into cache reg
-    assert!(matches!(
-        ops[2].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
-    // ops[3]: flush cache to frame before external call
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    // ops[4]: external call
-    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
-    // ops[5-6]: reload mem0 cache regs
-    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
-    // ops[7]: reload cached local after call
-    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
+    // ops[1]: explicit LocalDropCache flushes cache to frame before the call
+    assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
+    // ops[2]: external call
+    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    // ops[3-4]: mem0 cache reg refresh only; there is no implicit cached-local reload
+    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1281,10 +1368,14 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalDropCache {
+                        slot: frame.local_slot(0),
                     },
                 },
                 SsaInst {
@@ -1299,8 +1390,8 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1317,14 +1408,12 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
     .expect("direct external call lowering should honor skip_reload");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 7);
-    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[1].kind, MachineInstKind::Move { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Move { .. }));
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
-    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
+    assert_eq!(ops.len(), 5);
+    assert!(matches!(ops[0].kind, MachineInstKind::Move { .. }));
+    assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1356,10 +1445,14 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalDropCache {
+                        slot: frame.local_slot(0),
                     },
                 },
                 SsaInst {
@@ -1374,8 +1467,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1392,35 +1485,22 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     .expect("runtime helper lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 8);
-    // ops[0]: entry cache init — load param from frame
-    assert!(matches!(ops[0].kind, MachineInstKind::Load { .. }));
-    // ops[1]: I64Const(5) into transient reg
+    assert_eq!(ops.len(), 5);
+    // ops[0]: I64Const(5) into transient reg
     assert!(matches!(
-        ops[1].kind,
+        ops[0].kind,
         MachineInstKind::Move {
             src: MachineValue::Imm64(5),
             ..
         }
     ));
-    // ops[2]: LocalSet — copy transient into cache reg
-    assert!(matches!(
-        ops[2].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
-    // ops[3]: flush cache to frame before call helper
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
-    // ops[4]: call helper (call_external)
-    assert!(matches!(ops[4].kind, MachineInstKind::CallExternal(_)));
-    // ops[5-6]: reload mem0 cache regs
-    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
-    // ops[7]: reload cached local after call
-    assert!(matches!(ops[7].kind, MachineInstKind::Load { .. }));
+    // ops[1]: explicit LocalDropCache flushes before the runtime helper call
+    assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
+    // ops[2]: call helper (call_external)
+    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    // ops[3-4]: reload mem0 cache regs only
+    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
@@ -1448,8 +1528,8 @@ fn lowers_direct_local_call_with_continuation_block() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -1466,8 +1546,8 @@ fn lowers_direct_local_call_with_continuation_block() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1635,10 +1715,14 @@ fn flushes_cached_local_before_second_direct_call() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: caller_frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalDropCache {
+                        slot: caller_frame.local_slot(0),
                     },
                 },
                 SsaInst {
@@ -1659,8 +1743,8 @@ fn flushes_cached_local_before_second_direct_call() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -1677,8 +1761,8 @@ fn flushes_cached_local_before_second_direct_call() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1706,42 +1790,18 @@ fn flushes_cached_local_before_second_direct_call() {
     assert_eq!(caller_program.blocks.len(), 3);
 
     let second_call_block = &caller_program.blocks[1];
-    // ops[0]: reload cached local after first call
+    // ops[0]: Fill from frame into transient
     assert!(matches!(
         second_call_block.ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
-    ));
-    // ops[1]: Fill from frame into transient
-    assert!(matches!(
-        second_call_block.ops[1].kind,
         MachineInstKind::Load {
             dst: MachineReg(5),
             ..
         }
     ));
-    // ops[2]: LocalSet — copy transient into cache reg
+    // ops[1]: explicit LocalDropCache flushes before second call
     assert!(matches!(
-        second_call_block.ops[2].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
-    // ops[3]: flush cache to frame before second call
-    assert!(matches!(
-        second_call_block.ops[3].kind,
-        MachineInstKind::Store {
-            addr: crate::vm::machine::machine_ir::MachineAddr {
-                base: MachineReg(1),
-                offset: 0,
-            },
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
+        second_call_block.ops[1].kind,
+        MachineInstKind::Store { .. }
     ));
     assert!(matches!(
         second_call_block.terminator,
@@ -1783,10 +1843,14 @@ fn preserves_cached_locals_across_block_edges() {
                         },
                     },
                     SsaInst {
-                        kind: SsaInstKind::LocalSet {
+                        kind: SsaInstKind::LocalSetCache {
                             slot: frame.local_slot(0),
                             src: SsaValue(0),
-                            version: 0,
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalDropCache {
+                            slot: frame.local_slot(0),
                         },
                     },
                 ],
@@ -1800,16 +1864,15 @@ fn preserves_cached_locals_across_block_edges() {
                 params: alloc::vec![],
                 ops: alloc::vec![
                     SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetCache {
                             slot: frame.local_slot(0),
                             dst: SsaValue(1),
                         },
                     },
                     SsaInst {
-                        kind: SsaInstKind::LocalSet {
+                        kind: SsaInstKind::LocalSetCache {
                             slot: frame.local_slot(0),
                             src: SsaValue(1),
-                            version: 0,
                         },
                     },
                 ],
@@ -1817,8 +1880,8 @@ fn preserves_cached_locals_across_block_edges() {
             },
         ],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -1835,39 +1898,162 @@ fn preserves_cached_locals_across_block_edges() {
     .expect("block-edge cache preservation lowering should succeed");
 
     let program = &lowered.module.functions[0].program;
-    // Block 0: entry init + I64Const coalesced with LocalSet
     assert!(matches!(
         program.blocks[0].ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
-    ));
-    // I64Const(9) into transient reg
-    assert!(matches!(
-        program.blocks[0].ops[1].kind,
         MachineInstKind::Move {
             dst: MachineReg(5),
             src: MachineValue::Imm64(9),
             ..
         }
     ));
-    // LocalSet — copy transient into cache reg
+    // LocalDropCache — spill to frame before the edge
+    assert!(matches!(program.blocks[0].ops[1].kind, MachineInstKind::Store { .. }));
     assert!(matches!(
-        program.blocks[0].ops[2].kind,
+        program.blocks[0].terminator,
+        MachineTerminator::Jump(_)
+    ));
+    // Block 1: cache is re-established explicitly from the frame slot.
+    assert_eq!(program.blocks[1].ops.len(), 3);
+    assert!(matches!(
+        program.blocks[1].ops[0].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(4),
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[1].ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(5),
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[1].ops[2].kind,
         MachineInstKind::Move {
             dst: MachineReg(4),
             src: MachineValue::Reg(MachineReg(5)),
             ..
         }
     ));
+}
+
+#[test]
+fn threads_cached_locals_through_block_edge_params() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![slot],
+            gp_preferred_types: alloc::vec![ValueType::I32],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true,
+            }],
+            fp_local_info: alloc::vec![],
+        },
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(0)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot,
+                            src: SsaValue(0),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot,
+                            dst: SsaValue(1),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot,
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("block-edge cache carry lowering should succeed");
+
+    let program = &lowered.module.functions[0].program;
+    assert!(
+        program.blocks[0]
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        "carried cache edge should not spill the cached local to frame"
+    );
+    let carried_reg = match &program.blocks[0].terminator {
+        MachineTerminator::Jump(edge) => {
+            assert_eq!(edge.args.len(), 1, "expected one hidden cache edge arg");
+            match edge.args[0] {
+                MachineValue::Reg(reg) => reg,
+                other => panic!("expected carried cache edge arg register, got {other:?}"),
+            }
+        }
+        other => panic!("expected jump terminator, got {other:?}"),
+    };
+    assert_eq!(program.blocks[1].params.len(), 1);
+    let entry_param = program.blocks[1].params[0].reg;
     assert!(matches!(
-        program.blocks[0].terminator,
-        MachineTerminator::Jump(_)
+        program.blocks[1].ops[0].kind,
+        MachineInstKind::Move {
+            src: MachineValue::Reg(reg),
+            ..
+        } if reg == entry_param
     ));
-    // Block 1: cached local preserved — LocalGet/LocalSet pair is
-    // a no-op since value already lives in cache reg
-    assert_eq!(program.blocks[1].ops.len(), 0);
+    assert!(
+        program.blocks[1]
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "carried cache edge should not reload the cached local from frame"
+    );
+    assert_ne!(carried_reg.0, 0);
 }
 
 #[test]
@@ -1893,26 +2079,31 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
+                    kind: SsaInstKind::LocalGetCache {
+                        slot: frame.local_slot(0),
+                        dst: SsaValue(0),
+                    },
+                },
+                SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
                         args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        results: alloc::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetCache {
                         slot: frame.local_slot(0),
-                        src: SsaValue(0),
-                        version: 0,
+                        src: SsaValue(1),
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I64],
-        value_homes: alloc::vec![],
+        value_types: alloc::vec![ValueType::I32, ValueType::I64],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
@@ -1930,7 +2121,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
 
     let message = alloc::format!("{err}");
     assert!(
-        message.contains("LocalSet src for cached local slot FrameSlot(0)")
+        message.contains("LocalSetCache src for cached local slot FrameSlot(0)")
             || message.contains("typed SSA-IR store to cached local slot"),
         "unexpected error: {message}"
     );
@@ -1961,8 +2152,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -1979,8 +2170,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2041,8 +2232,8 @@ fn lowers_memory_size_without_helper_boundary() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2092,8 +2283,8 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2159,8 +2350,8 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2366,8 +2557,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2439,14 +2630,13 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot,
                         src: SsaValue(0),
-                        version: 0,
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot,
                         dst: SsaValue(1),
                     },
@@ -2462,8 +2652,8 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2521,8 +2711,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             terminator: SsaTerminator::TrapUnreachable,
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
@@ -2539,8 +2729,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2622,8 +2812,8 @@ fn lowers_global_get_and_set_without_helpers() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2684,8 +2874,8 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2756,8 +2946,8 @@ fn lowers_i32_load_with_inline_trap_if() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2844,8 +3034,8 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -2922,8 +3112,8 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3014,8 +3204,8 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3096,8 +3286,8 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3165,8 +3355,8 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3240,18 +3430,17 @@ fn threads_live_transients_through_split_continuation_params() {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot: frame.local_slot(0),
                         src: SsaValue(3),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3346,8 +3535,8 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3426,8 +3615,8 @@ fn lowers_f32_const_to_fp_machine_const() {
             },
         }],
         value_types: alloc::vec![ValueType::F32],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3477,7 +3666,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
                     },
@@ -3497,8 +3686,8 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
             },
         }],
         value_types: alloc::vec![ValueType::F64],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3542,7 +3731,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
                     },
@@ -3562,8 +3751,8 @@ fn untyped_slot_load_stays_in_gp_bank() {
             },
         }],
         value_types: alloc::vec![],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3608,7 +3797,7 @@ fn f32_block_params_keep_f32_width() {
                 id: SsaTarget(0),
                 params: alloc::vec![],
                 ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
                     },
@@ -3629,8 +3818,8 @@ fn f32_block_params_keep_f32_width() {
             },
         ],
         value_types: alloc::vec![ValueType::F32, ValueType::F32],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3674,24 +3863,23 @@ fn f32_cached_locals_use_f32_slot_widths() {
             params: alloc::vec![],
             ops: alloc::vec![
                 SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalSetSlot {
                         slot: frame.local_slot(0),
                         src: SsaValue(0),
-                        version: 0,
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
         value_types: alloc::vec![ValueType::F32],
-        value_homes: alloc::vec![],
         value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
@@ -3710,7 +3898,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
     let program = &lowered.module.functions[0].program;
     assert_eq!(
         program.fp_reg_init_widths,
-        alloc::vec![None, None, Some(MachineFloatWidth::F32)],
+        alloc::vec![None, None, None],
     );
 
     let ops = &program.blocks[0].ops;

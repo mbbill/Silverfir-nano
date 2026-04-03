@@ -46,8 +46,6 @@ pub(super) fn lower_block_range(
     local_types: &[ValueType],
     result_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
-    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
-    local_versions: &mut [u32],
 ) -> Result<LoweredBlock, WasmError> {
     let last_index = semantic_range
         .end
@@ -70,8 +68,6 @@ pub(super) fn lower_block_range(
             values,
             local_types,
             op_result_types,
-            skip_reload_iter,
-            local_versions,
         )?;
         state.validate_live_fit("block body")?;
     }
@@ -91,8 +87,6 @@ pub(super) fn lower_block_range(
         local_types,
         result_types,
         op_result_types,
-        skip_reload_iter,
-        local_versions,
     )?;
     state.validate_live_fit("block terminator")?;
 

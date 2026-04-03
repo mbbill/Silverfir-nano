@@ -49,8 +49,6 @@ pub(super) fn lower_block_terminator(
     local_types: &[ValueType],
     result_types: &[ValueType],
     op_result_types: &BTreeMap<usize, Vec<ValueType>>,
-    skip_reload_iter: &mut dyn Iterator<Item = Vec<bool>>,
-    local_versions: &mut [u32],
 ) -> Result<LoweredTerminator, WasmError> {
     lower_prefix_actions(op, state, values)?;
 
@@ -76,7 +74,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalGet { idx } => {
-            lower_local_get(*idx, state, frame, values, local_types, local_versions)?;
+            lower_local_get(*idx, op.local_access, state, frame, values, local_types)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -93,7 +91,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalSet { idx } => {
-            lower_local_set(*idx, state, frame, local_versions)?;
+            lower_local_set(*idx, op.local_access, state, frame)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -110,7 +108,7 @@ pub(super) fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalTee { idx } => {
-            lower_local_tee(*idx, state, frame, values, local_types, local_versions)?;
+            lower_local_tee(*idx, op.local_access, state, frame, values, local_types)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -372,8 +370,7 @@ pub(super) fn lower_block_terminator(
             params,
             results,
         } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_direct(*callee, *params, *results, frame, state, skip);
+            lower_call_direct(*callee, *params, *results, frame, state);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,
@@ -395,8 +392,7 @@ pub(super) fn lower_block_terminator(
             params,
             results,
         } => {
-            let skip = skip_reload_iter.next().unwrap_or_default();
-            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state, skip);
+            lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic_len)?],
                 state,

@@ -80,13 +80,15 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
-    /// Begin a continuation block after a call, selectively skipping reloads
-    /// for cached locals that are known to be written before read.
+    /// Continuation blocks start with no live cached locals in the explicit
+    /// cache model; any re-caching must already be present in SSA-IR.
     pub(super) fn begin_continuation_block_selective(
         &mut self,
-        skip_reload: Option<&[bool]>,
+        _skip_reload: Option<&[bool]>,
     ) -> Result<(), WasmError> {
-        self.emit_reload_cached_locals_selective(skip_reload)
+        self.clear_cache_live();
+        self.clear_cache_dirty();
+        Ok(())
     }
 
     /// Pre-map a sunk result to its cache register so the lowering
@@ -109,7 +111,7 @@ impl<'a> BlockLowerContext<'a> {
         let Some(cached_index) = self.cached_local_index(sink_slot) else {
             return Ok(());
         };
-        let cached = self.cached_locals()[cached_index];
+        let cached = self.ensure_bound_cached_local(cached_index)?;
         let cache_reg = cached.reg;
         let cache_hi_reg = cached.hi_reg;
         let mut arg_vals = [SsaValue(u32::MAX); 4];
@@ -132,35 +134,21 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_inst(&mut self, inst: &SsaInst) -> Result<(), WasmError> {
         match &inst.kind {
-            SsaInstKind::LocalGet { slot, dst } => {
-                let ty = lir_value_storage_type(self.program(), *dst);
-                if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
-                    let ops = self.i64_ops();
-                    ops.emit_load_slot_i64(self, *slot, *dst)?;
-                    return Ok(());
-                }
-                if let Some(cached_index) = self.cached_local_index(*slot) {
-                    let cached = self.cached_locals()[cached_index];
-                    if cached.ty != ty {
-                        return Err(WasmError::internal(alloc::format!(
-                            "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
-                            slot, ty, dst, cached.ty,
-                        )));
-                    }
-                    // Source-alias: map value to cache register, no emit.
-                    self.push_value_location(*dst, cached.reg, None);
-                } else {
-                    let dst_reg = self.alloc_slot_load_value(*dst)?;
-                    let width = canonical_value_mem_width_for_value(self.program(), *dst);
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Load {
-                            ty,
-                            dst: dst_reg,
-                            addr: self.frame_addr(*slot)?,
-                            width,
-                            extension: MachineLoadExtension::None,
-                        },
-                    });
+            SsaInstKind::LocalGetSlot { slot, dst } => {
+                self.lower_local_get_slot(*slot, *dst)?;
+            }
+            SsaInstKind::LocalGetCache { slot, dst } => {
+                self.lower_local_get_cache(*slot, *dst)?;
+            }
+            SsaInstKind::LocalSetSlot { slot, src } => {
+                self.lower_local_set_slot(*slot, *src)?;
+            }
+            SsaInstKind::LocalSetCache { slot, src } => {
+                self.lower_local_set_cache(*slot, *src)?;
+            }
+            SsaInstKind::LocalDropCache { slot } => {
+                if let Some(index) = self.cached_local_index(*slot) {
+                    self.emit_drop_cached_local(index)?;
                 }
             }
             SsaInstKind::Fill { slot, dst } => {
@@ -182,58 +170,6 @@ impl<'a> BlockLowerContext<'a> {
                         extension: MachineLoadExtension::None,
                     },
                 });
-            }
-            SsaInstKind::LocalSet { slot, src, .. } => {
-                let ty = lir_value_storage_type(self.program(), *src);
-                if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
-                    let ops = self.i64_ops();
-                    ops.emit_store_slot_i64(self, *slot, *src)?;
-                    return Ok(());
-                }
-                if let Some(cached_index) = self.cached_local_index(*slot) {
-                    self.mark_cache_dirty(cached_index);
-                    let cached = self.cached_locals()[cached_index];
-                    if cached.ty != ty {
-                        return Err(WasmError::internal(alloc::format!(
-                            "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                            slot, ty, src, cached.ty,
-                        )));
-                    }
-                    let cache_reg = cached.reg;
-                    // If src is already in cache_reg (sink or same-local tee),
-                    // just consume the value — no emit needed.
-                    if self.try_value_reg(*src) == Some(cache_reg) {
-                        let _ = self.use_value(*src)?;
-                        self.release_dead_values()?;
-                        return Ok(());
-                    }
-                    // Materialize any other values aliased to this cache reg
-                    // before overwriting it.
-                    self.materialize_cache_aliases(cache_reg, &[])?;
-                    let src_reg = self.use_value(*src)?;
-                    self.emit_machine_inst(MachineInst {
-                        kind: MachineInstKind::Move {
-                            ty: cached.ty,
-                            dst: cache_reg,
-                            src: MachineValue::Reg(src_reg),
-                        },
-                    });
-                } else {
-                    let src_reg = self.use_value(*src)?;
-                    let width = canonical_value_mem_width_for_value(self.program(), *src);
-                    let addr = self.frame_addr(*slot)?;
-                    if !self.try_coalesce_last_store_immediate(*src, src_reg, ty, addr, width) {
-                        self.emit_machine_inst(MachineInst {
-                            kind: MachineInstKind::Store {
-                                ty,
-                                addr,
-                                width,
-                                src: MachineValue::Reg(src_reg),
-                            },
-                        });
-                    }
-                }
-                self.release_dead_values()?;
             }
             SsaInstKind::Spill { slot, src } => {
                 let ty = lir_value_storage_type(self.program(), *src);
@@ -270,6 +206,227 @@ impl<'a> BlockLowerContext<'a> {
                 )));
             }
         }
+        Ok(())
+    }
+
+    fn ensure_cached_local_loaded(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+        cached_index: usize,
+        ty: MachineStorageType,
+    ) -> Result<(), WasmError> {
+        if self.is_cache_live(cached_index) {
+            return Ok(());
+        }
+        let cached = self.ensure_bound_cached_local(cached_index)?;
+        if cached.ty != ty {
+            return Err(WasmError::internal(alloc::format!(
+                "typed SSA-IR cache load from local slot {:?} expects {:?}, but cached local is {:?}",
+                slot, ty, cached.ty,
+            )));
+        }
+        if matches!(cached.ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            ops.emit_reload_cached_i64(self, &cached)?;
+        } else {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: cached.ty,
+                    dst: cached.reg,
+                    addr: self.frame_addr(cached.slot)?,
+                    width: super::lower_regalloc::canonical_cached_local_mem_width(cached.ty),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
+        self.set_cache_live(cached_index, true);
+        self.set_cache_dirty(cached_index, false);
+        Ok(())
+    }
+
+    fn lower_local_get_slot(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+        dst: SsaValue,
+    ) -> Result<(), WasmError> {
+        let ty = lir_value_storage_type(self.program(), dst);
+        if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
+            let ops = self.i64_ops();
+            ops.emit_load_slot_i64(self, slot, dst)?;
+            return Ok(());
+        }
+        let dst_reg = self.alloc_slot_load_value(dst)?;
+        let width = canonical_value_mem_width_for_value(self.program(), dst);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                ty,
+                dst: dst_reg,
+                addr: self.frame_addr(slot)?,
+                width,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_local_get_cache(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+        dst: SsaValue,
+    ) -> Result<(), WasmError> {
+        let ty = lir_value_storage_type(self.program(), dst);
+        let Some(cached_index) = self.cached_local_index(slot) else {
+            return Err(WasmError::internal(alloc::format!(
+                "LocalGetCache on non-cached local slot {:?}",
+                slot,
+            )));
+        };
+        self.ensure_cached_local_loaded(slot, cached_index, ty)
+            .map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "LocalGetCache(slot={:?}, dst={:?}) in block b{} failed: {}",
+                    slot,
+                    dst,
+                    self.block_id(),
+                    err.message(),
+                ))
+            })?;
+        let cached = self.ensure_bound_cached_local(cached_index)?;
+        if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
+            let cached_hi = cached.hi_reg.ok_or_else(|| {
+                WasmError::internal("cached i64 local is missing a high-half register".into())
+            })?;
+            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(dst)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_lo,
+                    src: MachineValue::Reg(cached.reg),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    src: MachineValue::Reg(cached_hi),
+                },
+            });
+            return Ok(());
+        }
+
+        let dst_reg = self.alloc_slot_load_value(dst)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Move {
+                ty: cached.ty,
+                dst: dst_reg,
+                src: MachineValue::Reg(cached.reg),
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_local_set_slot(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+        src: SsaValue,
+    ) -> Result<(), WasmError> {
+        let ty = lir_value_storage_type(self.program(), src);
+        if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
+            let ops = self.i64_ops();
+            ops.emit_store_slot_i64(self, slot, src)?;
+            return Ok(());
+        }
+        let src_reg = self.use_value(src)?;
+        let width = canonical_value_mem_width_for_value(self.program(), src);
+        let addr = self.frame_addr(slot)?;
+        if !self.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty,
+                    addr,
+                    width,
+                    src: MachineValue::Reg(src_reg),
+                },
+            });
+        }
+        self.release_dead_values()?;
+        Ok(())
+    }
+
+    fn lower_local_set_cache(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+        src: SsaValue,
+    ) -> Result<(), WasmError> {
+        let ty = lir_value_storage_type(self.program(), src);
+        let Some(cached_index) = self.cached_local_index(slot) else {
+            return Err(WasmError::internal(alloc::format!(
+                "LocalSetCache on non-cached local slot {:?}",
+                slot,
+            )));
+        };
+        let cached = self
+            .try_bind_cached_local_from_dying_value(cached_index, src, ty)?
+            .unwrap_or(
+                self.ensure_bound_cached_local(cached_index).map_err(|err| {
+                    WasmError::internal(alloc::format!(
+                        "LocalSetCache(slot={:?}, src={:?}, remaining_uses={}) in block b{} failed: {}",
+                        slot,
+                        src,
+                        self.remaining_use_count(src),
+                        self.block_id(),
+                        err.message(),
+                    ))
+                })?,
+            );
+        if cached.ty != ty {
+            return Err(WasmError::internal(alloc::format!(
+                "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
+                slot, ty, src, cached.ty,
+            )));
+        }
+        self.set_cache_live(cached_index, true);
+        self.mark_cache_dirty(cached_index);
+
+        if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
+            let cached_hi = cached.hi_reg.ok_or_else(|| {
+                WasmError::internal("cached i64 local is missing a high-half register".into())
+            })?;
+            let (src_lo, src_hi) = self.use_i64_value_pair(src)?;
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: cached.reg,
+                    src: MachineValue::Reg(src_lo),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    ty: MachineStorageType::GpWord,
+                    dst: cached_hi,
+                    src: MachineValue::Reg(src_hi),
+                },
+            });
+            self.release_dead_values()?;
+            return Ok(());
+        }
+
+        let cache_reg = cached.reg;
+        if self.try_value_reg(src) == Some(cache_reg) {
+            let _ = self.use_value(src)?;
+            self.release_dead_values()?;
+            return Ok(());
+        }
+        self.materialize_cache_aliases(cache_reg, &[])?;
+        let src_reg = self.use_value(src)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Move {
+                ty: cached.ty,
+                dst: cache_reg,
+                src: MachineValue::Reg(src_reg),
+            },
+        });
+        self.release_dead_values()?;
         Ok(())
     }
 
@@ -468,6 +625,41 @@ impl<'a> BlockLowerContext<'a> {
             args.push(MachineValue::Reg(regs.0));
             if let Some(hi) = regs.1 {
                 args.push(MachineValue::Reg(hi));
+            }
+        }
+        if let Some(cached_slots) = self
+            .program()
+            .block_entry_cached_slots
+            .get(edge.target.as_usize())
+        {
+            for &slot in cached_slots {
+                let cached_index = self.cached_local_index(slot).ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "missing cached-local metadata for carried entry slot {:?} on edge to b{}",
+                        slot,
+                        edge.target.as_u32(),
+                    ))
+                })?;
+                let cached = self.bound_cached_local(cached_index).ok_or_else(|| {
+                    WasmError::internal(alloc::format!(
+                        "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} has no binding",
+                        edge.target.as_u32(),
+                        slot,
+                        self.block_id(),
+                    ))
+                })?;
+                if !self.is_cache_live(cached_index) {
+                    return Err(WasmError::internal(alloc::format!(
+                        "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} marked it dead",
+                        edge.target.as_u32(),
+                        slot,
+                        self.block_id(),
+                    )));
+                }
+                args.push(MachineValue::Reg(cached.reg));
+                if let Some(hi) = cached.hi_reg {
+                    args.push(MachineValue::Reg(hi));
+                }
             }
         }
         Ok(MachineEdge {

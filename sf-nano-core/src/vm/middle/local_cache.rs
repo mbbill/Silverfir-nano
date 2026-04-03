@@ -1,7 +1,9 @@
 //! Per-bank local-cache preference analysis.
 //!
-//! Selects ranked lists of canonical local slots for GP and FP cached-local
-//! registers. GP cache holds i32/i64/ref locals; FP cache holds f32/f64 locals.
+//! Produces ranked lists of canonical local slots for late resource planning.
+//! This pass no longer decides the final cached-local set; it only supplies
+//! ordered candidates. GP candidates hold i32/i64/ref locals; FP candidates
+//! hold f32/f64 locals.
 
 use alloc::vec::Vec;
 
@@ -17,30 +19,22 @@ use crate::vm::{
 use super::frame::FrameLayoutPlan;
 use super::state::gp_value_budget_units;
 
-/// Returns `(cache_prefs, continuation_skip_reload)`.
-///
-/// `continuation_skip_reload` is a temporary consumed during prepare: one
-/// `Vec<bool>` per call site in SemanticProgram op order, parallel to the
-/// cached-local ordering (GP then FP).  Each entry is moved onto the
-/// corresponding `SsaCallOp::skip_reload` field and never stored
-/// persistently.
 pub(super) fn analyze_local_cache_prefs(
     semantic: &SemanticProgram,
     gp_unit_bytes: u8,
-    gp_budget_units: u8,
-    fp_budget_units: u8,
+    _gp_budget_units: u8,
+    _fp_budget_units: u8,
     frame: FrameLayoutPlan,
-) -> (SsaLocalCachePrefs, Vec<Vec<bool>>) {
+) -> SsaLocalCachePrefs {
     if semantic.local_count == 0 {
-        return (SsaLocalCachePrefs::default(), Vec::new());
+        return SsaLocalCachePrefs::default();
     }
 
     let weights = local_weights(semantic);
     let entry_reads_before_write = entry_scope_reads_before_write(semantic);
 
-    let gp = select_with_budget(
+    let gp = rank_all(
         &weights,
-        gp_budget_units as usize,
         |idx| {
             semantic
                 .local_types
@@ -55,12 +49,12 @@ pub(super) fn analyze_local_cache_prefs(
                 .map_or(1, |ty| gp_value_budget_units(ty, gp_unit_bytes))
         },
     );
-    let fp = select_top_n(&weights, fp_budget_units as usize, |idx| {
+    let fp = rank_all(&weights, |idx| {
         semantic
             .local_types
             .get(idx)
             .map_or(false, |ty| ty.is_float())
-    });
+    }, |_| 1);
 
     let local_info = |idx: u32| CachedLocalInfo {
         is_param: (idx as u16) < semantic.params,
@@ -70,12 +64,7 @@ pub(super) fn analyze_local_cache_prefs(
             .unwrap_or(true),
     };
 
-    // Compute per-call-site reload-skip sets.  The cached-local indices are
-    // GP then FP, matching the order used everywhere else.
-    let cached_local_indices: Vec<u32> = gp.iter().chain(fp.iter()).copied().collect();
-    let skip_reload = continuation_skip_reload(semantic, &cached_local_indices);
-
-    let prefs = SsaLocalCachePrefs {
+    SsaLocalCachePrefs {
         gp_local_info: gp.iter().map(|idx| local_info(*idx)).collect(),
         gp_preferred_slots: gp.iter().map(|idx| frame.local_slot(*idx as u16)).collect(),
         gp_preferred_types: gp
@@ -85,7 +74,7 @@ pub(super) fn analyze_local_cache_prefs(
                     .local_types
                     .get(*idx as usize)
                     .copied()
-                    .unwrap_or(ValueType::I32)
+                    .unwrap_or(ValueType::I64)
             })
             .collect(),
         fp_local_info: fp.iter().map(|idx| local_info(*idx)).collect(),
@@ -94,107 +83,26 @@ pub(super) fn analyze_local_cache_prefs(
             .into_iter()
             .map(|idx| semantic.local_types[idx as usize])
             .collect(),
-    };
-    (prefs, skip_reload)
+    }
 }
 
-fn select_top_n(weights: &[u64], count: usize, eligible: impl Fn(usize) -> bool) -> Vec<u32> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let mut best: Vec<Option<(u32, u64)>> = alloc::vec![None; count];
-    let mut found = 0usize;
-
-    for (idx, &weight) in weights.iter().enumerate() {
-        if weight == 0 || !eligible(idx) {
-            continue;
-        }
-
-        let mut insert_at = found.min(count);
-        for pos in 0..found.min(count) {
-            let (best_idx, best_weight) = best[pos].expect("filled prefix");
-            if weight > best_weight || (weight == best_weight && idx < best_idx as usize) {
-                insert_at = pos;
-                break;
-            }
-        }
-
-        if insert_at < count {
-            let mut pos = found.min(count.saturating_sub(1));
-            while pos > insert_at {
-                best[pos] = best[pos - 1];
-                pos -= 1;
-            }
-            best[insert_at] = Some((idx as u32, weight));
-            found += 1;
-        }
-    }
-
-    best.into_iter()
-        .filter_map(|entry| entry.map(|(idx, _)| idx))
-        .collect()
-}
-
-fn select_with_budget(
+fn rank_all(
     weights: &[u64],
-    budget: usize,
     eligible: impl Fn(usize) -> bool,
     cost: impl Fn(usize) -> usize,
 ) -> Vec<u32> {
-    if budget == 0 {
-        return Vec::new();
-    }
-
-    let mut best: Vec<Option<(u64, Vec<u32>)>> = alloc::vec![None; budget + 1];
-    best[0] = Some((0, Vec::new()));
-
-    for (idx, &weight) in weights.iter().enumerate() {
-        if weight == 0 || !eligible(idx) {
-            continue;
-        }
-        let item_cost = cost(idx);
-        if item_cost == 0 || item_cost > budget {
-            continue;
-        }
-
-        for used in (item_cost..=budget).rev() {
-            let Some((base_weight, base_items)) = best[used - item_cost].clone() else {
-                continue;
-            };
-            let mut candidate_items = base_items;
-            candidate_items.push(idx as u32);
-            let candidate = (base_weight + weight, candidate_items);
-            if select_state_better(&candidate, best[used].as_ref()) {
-                best[used] = Some(candidate);
-            }
-        }
-    }
-
-    let selected = best
+    let mut ranked = weights
         .iter()
-        .filter_map(|entry| entry.as_ref())
-        .max_by(|lhs, rhs| compare_selection_state(lhs, rhs))
-        .map(|(_, items)| items.clone())
-        .unwrap_or_default();
-
-    let mut ranked = selected;
+        .enumerate()
+        .filter(|(idx, weight)| **weight != 0 && eligible(*idx) && cost(*idx) != 0)
+        .map(|(idx, _)| idx as u32)
+        .collect::<Vec<_>>();
     ranked.sort_by(|lhs, rhs| {
         let lhs_weight = weights[*lhs as usize];
         let rhs_weight = weights[*rhs as usize];
         rhs_weight.cmp(&lhs_weight).then_with(|| lhs.cmp(rhs))
     });
     ranked
-}
-
-fn select_state_better(candidate: &(u64, Vec<u32>), current: Option<&(u64, Vec<u32>)>) -> bool {
-    current.is_none_or(|existing| compare_selection_state(candidate, existing).is_gt())
-}
-
-fn compare_selection_state(lhs: &(u64, Vec<u32>), rhs: &(u64, Vec<u32>)) -> core::cmp::Ordering {
-    lhs.0
-        .cmp(&rhs.0)
-        .then_with(|| rhs.1.len().cmp(&lhs.1.len()))
-        .then_with(|| rhs.1.cmp(&lhs.1))
 }
 
 /// For each local, determine whether its initial zero value may be observed
@@ -407,104 +315,6 @@ fn entry_scope_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
 /// locals are *definitely written before read* on the straight-line path
 /// immediately following the call.  Those locals do not need reloading at the
 /// continuation because their cached-register value will be overwritten before
-/// anyone reads it.
-///
-/// The scan is intentionally conservative: it walks forward from the call site
-/// until it hits a branch, another call, a loop, or end-of-function, recording
-/// `LocalSet`/`LocalTee` as writes and `LocalGet` as reads.  Any cached local
-/// that is written before being read in that window gets `skip_reload = true`.
-///
-/// Returns one `Vec<bool>` per call site (in SemanticProgram op order), with
-/// one entry per cached local (GP then FP, same order as the preferred-slots
-/// vectors).  `true` = skip reload.
-fn continuation_skip_reload(
-    semantic: &SemanticProgram,
-    cached_local_indices: &[u32],
-) -> Vec<Vec<bool>> {
-    let n = cached_local_indices.len();
-    if n == 0 {
-        // No cached locals at all — return an empty skip set per call site.
-        let call_count = semantic
-            .ops
-            .iter()
-            .filter(|op| {
-                matches!(
-                    op.kind,
-                    SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. }
-                )
-            })
-            .count();
-        return alloc::vec![Vec::new(); call_count];
-    }
-
-    // Build a reverse map: wasm local index → position in cached_local_indices.
-    let max_local = cached_local_indices.iter().copied().max().unwrap_or(0) as usize;
-    let mut local_to_cache = alloc::vec![usize::MAX; max_local + 1];
-    for (pos, &idx) in cached_local_indices.iter().enumerate() {
-        local_to_cache[idx as usize] = pos;
-    }
-
-    let mut results = Vec::new();
-
-    for (op_index, op) in semantic.ops.iter().enumerate() {
-        let is_call = matches!(
-            op.kind,
-            SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. }
-        );
-        if !is_call {
-            continue;
-        }
-
-        // Walk forward from the op after this call.
-        let mut written = alloc::vec![false; n];
-        let mut read = alloc::vec![false; n];
-
-        for subsequent in &semantic.ops[op_index + 1..] {
-            match subsequent.kind {
-                // Stop at control flow or another call — we can't see past these.
-                SemanticOpKind::Block { .. }
-                | SemanticOpKind::Loop { .. }
-                | SemanticOpKind::If { .. }
-                | SemanticOpKind::Else { .. }
-                | SemanticOpKind::End
-                | SemanticOpKind::Br { .. }
-                | SemanticOpKind::BrIf { .. }
-                | SemanticOpKind::BrTable { .. }
-                | SemanticOpKind::CallDirect { .. }
-                | SemanticOpKind::CallIndirect { .. }
-                | SemanticOpKind::ReturnVoid
-                | SemanticOpKind::ReturnOne
-                | SemanticOpKind::Return { .. }
-                | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => break,
-
-                SemanticOpKind::LocalGet { idx } => {
-                    let i = idx as usize;
-                    if i <= max_local {
-                        let pos = local_to_cache[i];
-                        if pos != usize::MAX && !written[pos] {
-                            read[pos] = true;
-                        }
-                    }
-                }
-                SemanticOpKind::LocalSet { idx } | SemanticOpKind::LocalTee { idx } => {
-                    let i = idx as usize;
-                    if i <= max_local {
-                        let pos = local_to_cache[i];
-                        if pos != usize::MAX && !read[pos] {
-                            written[pos] = true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        results.push(written);
-    }
-
-    results
-}
-
 /// Intersect two def_set vecs element-wise (AND).
 fn intersect_vecs(a: &[bool], b: &[bool]) -> Vec<bool> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x && y).collect()
@@ -607,7 +417,7 @@ mod tests {
         };
 
         let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 0);
-        let (prefs, _skip_reload) = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
+        let prefs = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
         assert_eq!(
             prefs.gp_preferred_slots,
             alloc::vec![frame.local_slot(1), frame.local_slot(0)],
@@ -615,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn i64_locals_consume_two_gp_cache_units_on_32_bit() {
+    fn i64_locals_remain_ranked_on_32_bit() {
         let semantic = SemanticProgram {
             params: 0,
             results: 0,
@@ -638,8 +448,8 @@ mod tests {
         };
 
         let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 0);
-        let (prefs_64, _skip_reload) = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
-        let (prefs_32, _skip_reload) = analyze_local_cache_prefs(&semantic, 4, 2, 0, frame);
+        let prefs_64 = analyze_local_cache_prefs(&semantic, 8, 2, 0, frame);
+        let prefs_32 = analyze_local_cache_prefs(&semantic, 4, 2, 0, frame);
 
         assert_eq!(
             prefs_64.gp_preferred_slots,
@@ -647,7 +457,7 @@ mod tests {
         );
         assert_eq!(
             prefs_32.gp_preferred_slots,
-            alloc::vec![frame.local_slot(1)]
+            alloc::vec![frame.local_slot(1), frame.local_slot(0)]
         );
     }
 }

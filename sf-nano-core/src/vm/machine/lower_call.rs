@@ -167,7 +167,7 @@ impl<'a> BlockLowerContext<'a> {
         func_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
-        skip_reload: &[bool],
+        _skip_reload: &[bool],
         const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
@@ -184,7 +184,7 @@ impl<'a> BlockLowerContext<'a> {
         // emitting cached-local save/reload and mem0 cache refresh around the
         // external-call instruction sequence.
         let metadata = self.build_call_external_meta_direct(func_idx, args, results, const_pool);
-        self.emit_call_external(metadata, Some(skip_reload))
+        self.emit_call_external(metadata)
     }
 
     pub(super) fn build_call_external_meta_direct(
@@ -255,18 +255,14 @@ impl<'a> BlockLowerContext<'a> {
         ]
     }
 
-    fn emit_call_external(
-        &mut self,
-        metadata: MachineConstId,
-        skip_reload: Option<&[bool]>,
-    ) -> Result<(), WasmError> {
+    fn emit_call_external(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {
         // External calls are frame-slot based and return inline in the same
         // MIR block. Because the runtime call may clobber every machine
         // register, cached locals must be published to their canonical frame
-        // slots before the call and selectively reloaded after it.
+        // slots before the call. Re-caching after the call is explicit in
+        // SSA-IR.
         self.emit_save_dirty_cached_locals()?;
         self.emit_machine_ops(self.build_external_call_ops(metadata));
-        self.emit_reload_cached_locals_selective(skip_reload)?;
         Ok(())
     }
 

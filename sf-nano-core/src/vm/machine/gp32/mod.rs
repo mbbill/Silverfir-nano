@@ -11,7 +11,7 @@ use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
-    lower_context::{BlockLowerContext, CachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedLocal},
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
@@ -35,7 +35,7 @@ impl I64Lowering for Gp32Lowering {
         let ty = lir_value_storage_type(ctx.program(), dst);
         let (dst_lo, dst_hi) = ctx.alloc_i64_value_pair(dst)?;
         if let Some(cached_index) = ctx.cached_local_index(slot) {
-            let cached = ctx.cached_locals()[cached_index];
+            let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
                     "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
@@ -92,7 +92,7 @@ impl I64Lowering for Gp32Lowering {
         let (src_lo, src_hi) = ctx.use_i64_value_pair(src)?;
         if let Some(cached_index) = ctx.cached_local_index(slot) {
             ctx.mark_cache_dirty(cached_index);
-            let cached = ctx.cached_locals()[cached_index];
+            let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
                     "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
@@ -151,7 +151,7 @@ impl I64Lowering for Gp32Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
             WasmError::internal("cached i64 local is missing a high-half register".into())
@@ -180,7 +180,7 @@ impl I64Lowering for Gp32Lowering {
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
             WasmError::internal("cached i64 local is missing a high-half register".into())
@@ -201,54 +201,6 @@ impl I64Lowering for Gp32Lowering {
                 src: MachineValue::Reg(cached_hi),
             },
         });
-        Ok(())
-    }
-
-    fn emit_entry_cached_i64(
-        &self,
-        ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
-        is_param: bool,
-    ) -> Result<(), WasmError> {
-        let cached_hi = cached.hi_reg.ok_or_else(|| {
-            WasmError::internal("cached i64 local is missing a high-half register".into())
-        })?;
-        if is_param {
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: cached.reg,
-                    addr: ctx.frame_addr_offset(cached.slot, 0)?,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: MachineStorageType::GpWord,
-                    dst: cached_hi,
-                    addr: ctx.frame_addr_offset(cached.slot, 4)?,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-        } else {
-            // Zero-init both halves (Wasm locals start at zero).
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    ty: MachineStorageType::GpWord,
-                    dst: cached.reg,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    ty: MachineStorageType::GpWord,
-                    dst: cached_hi,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-        }
         Ok(())
     }
 

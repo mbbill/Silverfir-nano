@@ -11,7 +11,7 @@ use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
-    lower_context::{BlockLowerContext, CachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedLocal},
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
@@ -35,7 +35,7 @@ impl I64Lowering for Gp64Lowering {
         let dst_reg = ctx.alloc_slot_load_value(dst)?;
         let width = canonical_value_mem_width_for_value(ctx.program(), dst);
         if let Some(cached_index) = ctx.cached_local_index(slot) {
-            let cached = ctx.cached_locals()[cached_index];
+            let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
                     "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
@@ -73,7 +73,7 @@ impl I64Lowering for Gp64Lowering {
         let src_reg = ctx.use_value(src)?;
         let width = canonical_value_mem_width_for_value(ctx.program(), src);
         if let Some(cached_index) = ctx.cached_local_index(slot) {
-            let cached = ctx.cached_locals()[cached_index];
+            let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(
                     "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
@@ -120,7 +120,7 @@ impl I64Lowering for Gp64Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -137,7 +137,7 @@ impl I64Lowering for Gp64Lowering {
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
@@ -147,35 +147,6 @@ impl I64Lowering for Gp64Lowering {
                 src: MachineValue::Reg(cached.reg),
             },
         });
-        Ok(())
-    }
-
-    fn emit_entry_cached_i64(
-        &self,
-        ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
-        is_param: bool,
-    ) -> Result<(), WasmError> {
-        if is_param {
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    ty: cached.ty,
-                    dst: cached.reg,
-                    addr: ctx.frame_addr(cached.slot)?,
-                    width: canonical_cached_local_mem_width(cached.ty),
-                    extension: MachineLoadExtension::None,
-                },
-            });
-        } else {
-            // Zero-init: Wasm locals start at zero.
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    ty: cached.ty,
-                    dst: cached.reg,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-        }
         Ok(())
     }
 

@@ -4,15 +4,13 @@ use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaValue, ValueHome};
+use crate::vm::middle::ssa_ir::ir::{SsaInst, SsaValue};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
     next: u32,
     /// Per-value type table indexed by `SsaValue.0`.
     types: Vec<ValueType>,
-    /// Per-value local-home metadata indexed by `SsaValue.0`.
-    homes: Vec<ValueHome>,
 }
 
 impl ValueAlloc {
@@ -21,7 +19,6 @@ impl ValueAlloc {
         let value = SsaValue(self.next);
         self.next += 1;
         self.types.push(ty);
-        self.homes.push(ValueHome::None);
         value
     }
 
@@ -39,24 +36,8 @@ impl ValueAlloc {
         ty.unwrap_or(ValueType::I64)
     }
 
-    pub(super) fn set_value_home(&mut self, value: SsaValue, home: ValueHome) {
-        let slot = self.homes.get_mut(value.0 as usize);
-        debug_assert!(
-            slot.is_some(),
-            "SsaValue({}) has no entry in the value-home table",
-            value.0,
-        );
-        if let Some(slot) = slot {
-            *slot = home;
-        }
-    }
-
     pub(super) fn take_types(&mut self) -> Vec<ValueType> {
         core::mem::take(&mut self.types)
-    }
-
-    pub(super) fn take_homes(&mut self) -> Vec<ValueHome> {
-        core::mem::take(&mut self.homes)
     }
 }
 
@@ -79,8 +60,8 @@ impl EntryState {
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
     gp_unit_bytes: u8,
-    gp_transient_budget: u8,
-    fp_transient_budget: u8,
+    gp_live_budget: u8,
+    fp_live_budget: u8,
     stack_height: u16,
     spill_depth: u16,
     live: Vec<SsaValue>,
@@ -93,8 +74,8 @@ impl BlockState {
         entry: &EntryState,
         params: &[SsaValue],
         gp_unit_bytes: u8,
-        gp_transient_budget: u8,
-        fp_transient_budget: u8,
+        gp_live_budget: u8,
+        fp_live_budget: u8,
     ) -> Result<Self, WasmError> {
         debug_assert_eq!(
             entry.live_types.len(),
@@ -103,8 +84,8 @@ impl BlockState {
         );
         let state = Self {
             gp_unit_bytes,
-            gp_transient_budget,
-            fp_transient_budget,
+            gp_live_budget,
+            fp_live_budget,
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
             live: params.to_vec(),
@@ -254,15 +235,14 @@ impl BlockState {
 
     fn ensure_live_fit(&self, context: &'static str) -> Result<(), WasmError> {
         let (gp_live, fp_live) = count_live_bank_budget_units(&self.live_types, self.gp_unit_bytes);
-        if gp_live > self.gp_transient_budget as usize
-            || fp_live > self.fp_transient_budget as usize
+        if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize
         {
             return Err(WasmError::internal(alloc::format!(
-                "prepared SSA-IR exceeds configured transient bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
+                "prepared SSA-IR exceeds configured dynamic bank budget during {context}: gp units {} > {} or fp live {} > {} (stack_height={}, spill_depth={})",
                 gp_live,
-                self.gp_transient_budget,
+                self.gp_live_budget,
                 fp_live,
-                self.fp_transient_budget,
+                self.fp_live_budget,
                 self.stack_height,
                 self.spill_depth,
             )));

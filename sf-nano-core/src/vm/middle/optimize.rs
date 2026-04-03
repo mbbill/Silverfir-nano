@@ -7,9 +7,7 @@ use crate::vm::middle::{
 };
 
 pub(super) fn optimize_ssa(program: &mut SsaProgram, frame: FrameLayoutPlan) {
-    for block in &mut program.blocks {
-        forward_slot_values(block, frame, &program.value_types);
-    }
+    let _ = frame;
     for block in &mut program.blocks {
         fold_constants_into_operands(block);
     }
@@ -124,12 +122,18 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
                     }
                 }
             }
-            SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+            SsaInstKind::LocalSetSlot { src, .. }
+            | SsaInstKind::LocalSetCache { src, .. }
+            | SsaInstKind::Spill { src, .. } => {
                 if let Some(slot) = still_used.get_mut(src.0 as usize) {
                     *slot = true;
                 }
             }
-            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalGetSlot { .. }
+            | SsaInstKind::LocalGetCache { .. }
+            | SsaInstKind::Fill { .. }
+            | SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Call(_) => {}
         }
     }
     // Terminator uses also keep the const alive.
@@ -833,6 +837,7 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
     }
 }
 
+#[allow(dead_code)]
 fn forward_slot_values(
     block: &mut SsaBlock,
     frame: FrameLayoutPlan,
@@ -855,7 +860,7 @@ fn forward_slot_values(
         rewrite_inst_uses(&mut inst.kind, &aliases);
 
         match &inst.kind {
-            SsaInstKind::LocalGet { slot, dst } => {
+            SsaInstKind::LocalGetSlot { slot, dst } => {
                 if let Some(src) = slot_values.get(slot.0 as usize).copied().flatten() {
                     let resolved_src = resolve_alias(src, &aliases);
                     if can_forward_load(resolved_src, *dst, &last_uses)
@@ -866,11 +871,14 @@ fn forward_slot_values(
                     }
                 }
             }
-            SsaInstKind::LocalSet { slot, src, .. } => {
+            SsaInstKind::LocalSetSlot { slot, src } => {
                 slot_values[slot.0 as usize] = Some(*src);
             }
             SsaInstKind::Fill { .. } | SsaInstKind::Spill { .. } => {}
-            SsaInstKind::Call(_) => {
+            SsaInstKind::LocalGetCache { .. }
+            | SsaInstKind::LocalSetCache { .. }
+            | SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Call(_) => {
                 slot_values.fill(None);
             }
             SsaInstKind::Value { .. } => {}
@@ -899,13 +907,17 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
                 );
                 max_value = max_value.max(results.iter().copied().max());
             }
-            SsaInstKind::LocalGet { dst, .. } | SsaInstKind::Fill { dst, .. } => {
+            SsaInstKind::LocalGetSlot { dst, .. }
+            | SsaInstKind::LocalGetCache { dst, .. }
+            | SsaInstKind::Fill { dst, .. } => {
                 max_value = max_value.max(Some(*dst));
             }
-            SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+            SsaInstKind::LocalSetSlot { src, .. }
+            | SsaInstKind::LocalSetCache { src, .. }
+            | SsaInstKind::Spill { src, .. } => {
                 max_value = max_value.max(Some(*src));
             }
-            SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
         }
     }
 
@@ -934,6 +946,7 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
     max_value
 }
 
+#[allow(dead_code)]
 fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
     let mut last_uses = vec![None; len];
 
@@ -947,10 +960,16 @@ fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
                     }
                 }
             }
-            SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+            SsaInstKind::LocalSetSlot { src, .. }
+            | SsaInstKind::LocalSetCache { src, .. }
+            | SsaInstKind::Spill { src, .. } => {
                 last_uses[src.0 as usize] = Some(pos);
             }
-            SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalGetSlot { .. }
+            | SsaInstKind::LocalGetCache { .. }
+            | SsaInstKind::Fill { .. }
+            | SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Call(_) => {}
         }
     }
 
@@ -978,12 +997,14 @@ fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
     last_uses
 }
 
+#[allow(dead_code)]
 fn mark_edge_uses(edge: &SsaEdge, pos: u32, last_uses: &mut [Option<u32>]) {
     for binding in &edge.bindings {
         last_uses[binding.value.0 as usize] = Some(pos);
     }
 }
 
+#[allow(dead_code)]
 fn can_forward_load(src: SsaValue, dst: SsaValue, last_uses: &[Option<u32>]) -> bool {
     let Some(dst_last_use) = last_uses.get(dst.0 as usize).copied().flatten() else {
         return false;
@@ -994,6 +1015,7 @@ fn can_forward_load(src: SsaValue, dst: SsaValue, last_uses: &[Option<u32>]) -> 
     dst_last_use <= src_last_use
 }
 
+#[allow(dead_code)]
 fn can_forward_load_type(
     src: SsaValue,
     dst: SsaValue,
@@ -1008,6 +1030,7 @@ fn can_forward_load_type(
     }
 }
 
+#[allow(dead_code)]
 fn rewrite_inst_uses(kind: &mut SsaInstKind, aliases: &[Option<SsaValue>]) {
     match kind {
         SsaInstKind::Value { args, .. } => {
@@ -1017,13 +1040,20 @@ fn rewrite_inst_uses(kind: &mut SsaInstKind, aliases: &[Option<SsaValue>]) {
                 }
             }
         }
-        SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+        SsaInstKind::LocalSetSlot { src, .. }
+        | SsaInstKind::LocalSetCache { src, .. }
+        | SsaInstKind::Spill { src, .. } => {
             *src = resolve_alias(*src, aliases);
         }
-        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
+        SsaInstKind::LocalGetSlot { .. }
+        | SsaInstKind::LocalGetCache { .. }
+        | SsaInstKind::Fill { .. }
+        | SsaInstKind::LocalDropCache { .. }
+        | SsaInstKind::Call(_) => {}
     }
 }
 
+#[allow(dead_code)]
 fn rewrite_terminator_uses(term: &mut SsaTerminator, aliases: &[Option<SsaValue>]) {
     match term {
         SsaTerminator::Goto(edge) => rewrite_edge_uses(edge, aliases),
@@ -1046,12 +1076,14 @@ fn rewrite_terminator_uses(term: &mut SsaTerminator, aliases: &[Option<SsaValue>
     }
 }
 
+#[allow(dead_code)]
 fn rewrite_edge_uses(edge: &mut SsaEdge, aliases: &[Option<SsaValue>]) {
     for binding in &mut edge.bindings {
         binding.value = resolve_alias(binding.value, aliases);
     }
 }
 
+#[allow(dead_code)]
 fn resolve_alias(value: SsaValue, aliases: &[Option<SsaValue>]) -> SsaValue {
     let mut resolved = value;
     while let Some(Some(next)) = aliases.get(resolved.0 as usize) {
@@ -1099,14 +1131,13 @@ mod tests {
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalSet {
+                        kind: SsaInstKind::LocalSetSlot {
                             slot: FrameSlot(0),
                             src: SsaValue(0),
-                            version: 0,
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(1),
                         },
@@ -1124,19 +1155,18 @@ mod tests {
                 ],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types: alloc::vec![],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        // After forwarding, LocalGet is aliased to SsaValue(0).
-        // Then constant folding evaluates i32.add(7, 7) = 14, but
-        // the result SsaValue(2) is unused (Return has no results),
-        // so the dead const is removed. Only const def + LocalSet remain.
-        assert_eq!(block.ops.len(), 2);
+        // Slot forwarding is intentionally not part of optimize_ssa() anymore
+        // because the late resource planner needs the original stack-shape
+        // information. The local reload therefore remains explicit here.
+        assert_eq!(block.ops.len(), 4);
         assert!(matches!(
             &block.ops[0].kind,
             SsaInstKind::Value {
@@ -1146,9 +1176,16 @@ mod tests {
         ));
         assert!(matches!(
             &block.ops[1].kind,
-            SsaInstKind::LocalSet {
+            SsaInstKind::LocalSetSlot {
                 slot: FrameSlot(0),
                 ..
+            }
+        ));
+        assert!(matches!(
+            &block.ops[2].kind,
+            SsaInstKind::LocalGetSlot {
+                slot: FrameSlot(0),
+                dst: SsaValue(1),
             }
         ));
     }
@@ -1163,13 +1200,13 @@ mod tests {
                 params: Vec::new(),
                 ops: alloc::vec![
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(0),
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(1),
                         },
@@ -1187,15 +1224,15 @@ mod tests {
                 ],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types: alloc::vec![],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[1].kind, SsaInstKind::LocalGet { .. }));
+        assert!(matches!(block.ops[1].kind, SsaInstKind::LocalGetSlot { .. }));
         assert!(matches!(
             &block.ops[2].kind,
             SsaInstKind::Value {
@@ -1215,7 +1252,7 @@ mod tests {
                 params: Vec::new(),
                 ops: alloc::vec![
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(0),
                         },
@@ -1228,7 +1265,7 @@ mod tests {
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(1),
                         },
@@ -1243,15 +1280,15 @@ mod tests {
                 ],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types: alloc::vec![],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGet { .. }));
+        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGetSlot { .. }));
         assert!(matches!(
             &block.ops[3].kind,
             SsaInstKind::Value {
@@ -1279,14 +1316,13 @@ mod tests {
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalSet {
+                        kind: SsaInstKind::LocalSetSlot {
                             slot: FrameSlot(0),
                             src: SsaValue(0),
-                            version: 0,
                         },
                     },
                     crate::vm::middle::ssa_ir::ir::SsaInst {
-                        kind: SsaInstKind::LocalGet {
+                        kind: SsaInstKind::LocalGetSlot {
                             slot: FrameSlot(0),
                             dst: SsaValue(1),
                         },
@@ -1301,15 +1337,15 @@ mod tests {
                 ],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types: alloc::vec![ValueType::I32, ValueType::I64],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
         optimize_ssa(&mut program, plan_frame_layout(1, 2, 0));
 
         let block = &program.blocks[0];
-        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGet { .. }));
+        assert!(matches!(block.ops[2].kind, SsaInstKind::LocalGetSlot { .. }));
         assert!(matches!(
             &block.ops[3].kind,
             SsaInstKind::Value {

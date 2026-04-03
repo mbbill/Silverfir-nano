@@ -27,16 +27,17 @@ use super::lower_context::BlockLowerContext;
 /// Fixed machine-register partition used by lowering.
 ///
 /// `ctx`, `fp`, and the pinned `mem0` view regs are fixed MachineIR roles.
-/// The remaining cache and transient partitions are part of the shared
-/// lowering contract. Cached locals stay owned by the cache layer; transient
-/// registers may only be borrowed for non-SSA work through explicit helpers
-/// that prove the use is short-lived and non-overlapping.
+/// The remaining GP/FP dynamic banks are currently partitioned into cache and
+/// transient subranges, but the regfile keeps them as unified dynamic banks so
+/// later stages can relax that split without rewriting every lowering caller.
+/// Transient registers may only be borrowed for non-SSA work through explicit
+/// helpers that prove the use is short-lived and non-overlapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
-    gp_local_cache: Vec<MachineReg>,
-    gp_transient: Vec<MachineReg>,
-    fp_transient: Vec<MachineReg>,
-    fp_local_cache: Vec<MachineReg>,
+    gp_dynamic: Vec<MachineReg>,
+    gp_cache_count: usize,
+    fp_dynamic: Vec<MachineReg>,
+    fp_transient_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
 }
@@ -50,19 +51,23 @@ impl MachineRegFile {
         }
 
         let mut next = MACHINE_FIXED_REG_COUNT;
-        let gp_local_cache = collect_regs(&mut next, config.gp_local_cache_budget);
-        let gp_transient = collect_regs(&mut next, config.gp_transient_budget);
+        let gp_dynamic = collect_regs(
+            &mut next,
+            config.gp_local_cache_budget + config.gp_transient_budget,
+        );
         let first_fp_reg = next;
-        let fp_transient = collect_regs(&mut next, config.fp_transient_budget);
-        let fp_local_cache = collect_regs(&mut next, config.fp_local_cache_budget);
+        let fp_dynamic = collect_regs(
+            &mut next,
+            config.fp_transient_budget + config.fp_local_cache_budget,
+        );
 
         // Layout: [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
         //                                                              ^ first_fp_reg
         Ok(Self {
-            gp_local_cache,
-            gp_transient,
-            fp_transient,
-            fp_local_cache,
+            gp_dynamic,
+            gp_cache_count: config.gp_local_cache_budget as usize,
+            fp_dynamic,
+            fp_transient_count: config.fp_transient_budget as usize,
             first_fp_reg,
             reg_count: next,
         })
@@ -89,35 +94,51 @@ impl MachineRegFile {
     }
 
     #[inline]
+    pub(super) fn gp_dynamic(&self, index: usize) -> Option<MachineReg> {
+        self.gp_dynamic.get(index).copied()
+    }
+
+    #[inline]
+    pub(super) fn gp_dynamic_count(&self) -> usize {
+        self.gp_dynamic.len()
+    }
+
+    #[inline]
     pub(super) fn gp_local_cache(&self, index: usize) -> Option<MachineReg> {
-        self.gp_local_cache.get(index).copied()
+        self.gp_dynamic.get(index).copied()
     }
 
     #[inline]
     pub(super) fn gp_transient(&self, index: usize) -> Option<MachineReg> {
-        self.gp_transient.get(index).copied()
+        self.gp_dynamic.get(self.gp_cache_count + index).copied()
     }
 
     pub(super) fn gp_transient_count(&self) -> usize {
-        self.gp_transient.len()
+        self.gp_dynamic.len().saturating_sub(self.gp_cache_count)
+    }
+
+    #[inline]
+    pub(super) fn fp_dynamic(&self, index: usize) -> Option<MachineReg> {
+        self.fp_dynamic.get(index).copied()
+    }
+
+    #[inline]
+    pub(super) fn fp_dynamic_count(&self) -> usize {
+        self.fp_dynamic.len()
     }
 
     #[inline]
     pub(super) fn fp_transient(&self, index: usize) -> Option<MachineReg> {
-        self.fp_transient.get(index).copied()
+        self.fp_dynamic.get(index).copied()
     }
 
     pub(super) fn fp_transient_count(&self) -> usize {
-        self.fp_transient.len()
+        self.fp_transient_count
     }
 
     #[inline]
     pub(super) fn fp_local_cache(&self, index: usize) -> Option<MachineReg> {
-        self.fp_local_cache.get(index).copied()
-    }
-
-    pub(super) fn fp_local_cache_count(&self) -> usize {
-        self.fp_local_cache.len()
+        self.fp_dynamic.get(self.fp_transient_count + index).copied()
     }
 
     #[inline]
@@ -346,6 +367,25 @@ impl<'a> BlockLowerContext<'a> {
             }
         });
 
+        for index in 0..self.cached_locals().len() {
+            if !self.is_cache_live(index) {
+                continue;
+            }
+            let Some(bound) = self.bound_cached_local(index) else {
+                continue;
+            };
+            push_unique_param(
+                &mut params,
+                machine_block_param(bound.reg, self.storage_type_for_reg(bound.reg)),
+            );
+            if let Some(hi_reg) = bound.hi_reg {
+                push_unique_param(
+                    &mut params,
+                    machine_block_param(hi_reg, self.storage_type_for_reg(hi_reg)),
+                );
+            }
+        }
+
         params.sort_by_key(|param| param.reg.0);
         params
     }
@@ -499,23 +539,19 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn first_free_transient(&self, ty: MachineStorageType) -> Option<MachineReg> {
         let regfile = self.regfile();
-        let start = if ty.is_fp() {
-            regfile.gp_transient_count()
-        } else {
-            0
-        };
         let count = if ty.is_fp() {
-            regfile.fp_transient_count()
+            regfile.fp_dynamic_count()
         } else {
-            regfile.gp_transient_count()
+            regfile.gp_dynamic_count()
         };
-        for index in start..start + count {
-            if !self.transient_occupied(index) {
-                return if ty.is_fp() {
-                    regfile.fp_transient(index - start)
-                } else {
-                    regfile.gp_transient(index - start)
-                };
+        for ordinal in 0..count {
+            let reg = if ty.is_fp() {
+                preferred_fp_dynamic_reg(regfile, ordinal)?
+            } else {
+                preferred_gp_dynamic_reg(regfile, ordinal)?
+            };
+            if self.dynamic_reg_available(reg) {
+                return Some(reg);
             }
         }
         None
@@ -524,11 +560,11 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn first_free_gp_pair_transient(&self) -> Option<(MachineReg, MachineReg)> {
         let regfile = self.regfile();
         let mut first = None;
-        for index in 0..regfile.gp_transient_count() {
-            if self.transient_occupied(index) {
+        for ordinal in 0..regfile.gp_dynamic_count() {
+            let reg = preferred_gp_dynamic_reg(regfile, ordinal)?;
+            if !self.dynamic_reg_available(reg) {
                 continue;
             }
-            let reg = regfile.gp_transient(index)?;
             if let Some(first_reg) = first {
                 return Some((first_reg, reg));
             }
@@ -543,7 +579,7 @@ impl<'a> BlockLowerContext<'a> {
         value: Option<SsaValue>,
         ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
-        let index = self.transient_index(reg)?;
+        let index = self.dynamic_index(reg)?;
         self.set_transient_state(index, value, ty)
     }
 
@@ -552,7 +588,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn is_transient_reg(&self, reg: MachineReg) -> bool {
-        self.transient_index(reg).is_ok()
+        self.dynamic_index(reg).is_ok() && !self.is_bound_cache_reg(reg)
     }
 
     pub(super) fn is_fp_reg(&self, reg: MachineReg) -> bool {
@@ -560,31 +596,31 @@ impl<'a> BlockLowerContext<'a> {
         reg.0 >= regfile.first_fp_reg() && reg.0 < regfile.reg_count()
     }
 
-    pub(super) fn transient_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
+    pub(super) fn dynamic_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
         let regfile = self.regfile();
-        if let Some(first) = regfile.gp_transient(0) {
+        if let Some(first) = regfile.gp_dynamic(0) {
             let start = first.0;
-            let end = start + regfile.gp_transient_count() as u16;
+            let end = start + regfile.gp_dynamic_count() as u16;
             if reg.0 >= start && reg.0 < end {
                 return Ok((reg.0 - start) as usize);
             }
         }
 
-        if let Some(first) = regfile.fp_transient(0) {
+        if let Some(first) = regfile.fp_dynamic(0) {
             let start = first.0;
-            let end = start + regfile.fp_transient_count() as u16;
+            let end = start + regfile.fp_dynamic_count() as u16;
             if reg.0 >= start && reg.0 < end {
-                return Ok(regfile.gp_transient_count() + (reg.0 - start) as usize);
+                return Ok(regfile.gp_dynamic_count() + (reg.0 - start) as usize);
             }
         }
 
         Err(WasmError::internal(
-            "machine register is not in transient partition".into(),
+            "machine register is not in the dynamic bank".into(),
         ))
     }
 
     pub(super) fn storage_type_for_reg(&self, reg: MachineReg) -> MachineStorageType {
-        if let Ok(index) = self.transient_index(reg) {
+        if let Ok(index) = self.dynamic_index(reg) {
             return self
                 .transient_state_ty(index)
                 .unwrap_or(MachineStorageType::GpWord);
@@ -615,11 +651,12 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<Vec<MachineReg>, WasmError> {
         let regfile = self.regfile();
         let mut regs = Vec::with_capacity(count);
-        for index in 0..regfile.gp_transient_count() {
-            if !self.transient_occupied(index) {
-                regs.push(regfile.gp_transient(index).ok_or_else(|| {
-                    WasmError::internal("free transient register index is out of range".into())
-                })?);
+        for ordinal in 0..regfile.gp_dynamic_count() {
+            let Some(reg) = preferred_gp_dynamic_reg(regfile, ordinal) else {
+                continue;
+            };
+            if self.dynamic_reg_available(reg) {
+                regs.push(reg);
                 if regs.len() == count {
                     return Ok(regs);
                 }
@@ -684,6 +721,15 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
+impl<'a> BlockLowerContext<'a> {
+    fn dynamic_reg_available(&self, reg: MachineReg) -> bool {
+        self.dynamic_index(reg)
+            .ok()
+            .map(|index| !self.transient_occupied(index) && !self.is_bound_cache_reg(reg))
+            .unwrap_or(false)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Free functions used by register allocation
 // ---------------------------------------------------------------------------
@@ -694,6 +740,22 @@ pub(super) fn canonical_storage_mem_width(ty: MachineStorageType) -> MachineMemW
             MachineMemWidth::U64
         }
         MachineStorageType::Fp32 => MachineMemWidth::U32,
+    }
+}
+
+fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+    if ordinal < regfile.gp_transient_count() {
+        regfile.gp_transient(ordinal)
+    } else {
+        regfile.gp_local_cache(ordinal - regfile.gp_transient_count())
+    }
+}
+
+fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+    if ordinal < regfile.fp_transient_count() {
+        regfile.fp_transient(ordinal)
+    } else {
+        regfile.fp_local_cache(ordinal - regfile.fp_transient_count())
     }
 }
 
@@ -1102,8 +1164,8 @@ mod tests {
                 ops: alloc::vec![],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types,
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
@@ -1117,11 +1179,12 @@ mod tests {
             caller_result_base_offset: 16,
             slot_count: 3,
         };
+        let explicit_cache = Box::leak(Box::new(super::super::lower_context::explicit_cached_locals(program)));
 
         BlockLowerContext::new(
             regfile,
             program,
-            &program.local_cache,
+            explicit_cache,
             &program.blocks[0],
             all_runtime,
             call_link,
@@ -1147,8 +1210,8 @@ mod tests {
         assert_eq!(lower.storage_type_for_reg(lo), MachineStorageType::GpWord);
         assert_eq!(lower.storage_type_for_reg(hi), MachineStorageType::GpWord);
 
-        let lo_index = lower.transient_index(lo).expect("lo transient");
-        let hi_index = lower.transient_index(hi).expect("hi transient");
+        let lo_index = lower.dynamic_index(lo).expect("lo transient");
+        let hi_index = lower.dynamic_index(hi).expect("hi transient");
         assert!(lower.transient_occupied(lo_index));
         assert!(lower.transient_occupied(hi_index));
 
@@ -1173,7 +1236,7 @@ mod tests {
         assert_eq!(scalar, pair_lo);
         assert_eq!(lower.try_value_regs(SsaValue(0)), None);
         assert_eq!(lower.try_value_regs(SsaValue(1)), Some((pair_lo, None)));
-        let hi_index = lower.transient_index(pair_hi).expect("hi transient");
+        let hi_index = lower.dynamic_index(pair_hi).expect("hi transient");
         assert!(!lower.transient_occupied(hi_index));
     }
 

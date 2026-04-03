@@ -222,7 +222,7 @@ mod tests {
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 4);
         assert_eq!(config.gp_local_cache_budget, 4);
-        assert_eq!(config.gp_transient_budget, 4);
+        assert_eq!(config.gp_transient_budget, 5);
         assert_eq!(config.fp_local_cache_budget, 8);
         assert_eq!(config.fp_transient_budget, 5);
         assert_eq!(backend_display_name(NativeBackend::Reference), "emu32");

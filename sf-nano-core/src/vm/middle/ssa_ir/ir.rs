@@ -75,27 +75,23 @@ pub(crate) struct SsaLocalCachePrefs {
 }
 
 /// Full prepared SSA-IR program for one function.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ValueHome {
-    #[default]
-    None,
-    /// This value is the current version of a canonical local slot.
-    LocalVersion { slot: FrameSlot, version: u32 },
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
     pub local_cache: SsaLocalCachePrefs,
     pub blocks: Vec<SsaBlock>,
+    /// Per-block canonical cached-local entry state, indexed by block id.
+    ///
+    /// Each entry lists the local frame slots that must already be resident
+    /// when control enters that SSA block. The order is canonical and is used
+    /// by machine lowering to thread cache-carry state through edge args.
+    pub block_entry_cached_slots: Vec<Vec<FrameSlot>>,
     /// Per-value type information indexed by `SsaValue.0`.
     ///
     /// When non-empty, every allocated SsaValue has a corresponding entry.
     /// Float values (F32, F64) should be placed in FP transients; all others
     /// in GP transients.
     pub value_types: Vec<ValueType>,
-    /// Per-value local-home metadata indexed by `SsaValue.0`.
-    pub value_homes: Vec<ValueHome>,
     /// Per-value optional sink-local annotation indexed by `SsaValue.0`.
     /// When `Some(slot)`, the producer of this value may write directly to
     /// that local's home, and the subsequent `LocalSet` is elidable.
@@ -155,16 +151,16 @@ pub(crate) enum SsaInstKind {
     Fill { slot: FrameSlot, dst: SsaValue },
     /// Publish a live stack/TOS value into an operand slot.
     Spill { slot: FrameSlot, src: SsaValue },
-    /// Read a canonical local slot.
-    LocalGet { slot: FrameSlot, dst: SsaValue },
-    /// Write a canonical local slot.
-    ///
-    /// `version` is the semantic local version created by this write.
-    LocalSet {
-        slot: FrameSlot,
-        src: SsaValue,
-        version: u32,
-    },
+    /// Read a canonical local slot in frame memory.
+    LocalGetSlot { slot: FrameSlot, dst: SsaValue },
+    /// Read a cached local, loading it into the cache first if needed.
+    LocalGetCache { slot: FrameSlot, dst: SsaValue },
+    /// Write a canonical local slot in frame memory.
+    LocalSetSlot { slot: FrameSlot, src: SsaValue },
+    /// Write a cached local, allocating cache residency first if needed.
+    LocalSetCache { slot: FrameSlot, src: SsaValue },
+    /// Explicitly evict a cached local. If dirty, this writes back first.
+    LocalDropCache { slot: FrameSlot },
     /// Slot-based function call (args/results passed via frame slots, not SSA values).
     Call(SsaCallOp),
 }

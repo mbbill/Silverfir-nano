@@ -21,7 +21,7 @@ use crate::{
             frame::{FrameLayoutPlan, FrameSpan},
             ssa_ir::{
                 ir::{
-                    SsaCallOp, SsaInstKind, SsaLocalCachePrefs, SsaProgram, SsaTerminator, SsaValue,
+                    SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
                 },
                 validate::validate_program,
             },
@@ -33,14 +33,10 @@ use crate::{
     },
 };
 
-use crate::vm::middle::frame::FrameSlot;
-use crate::vm::middle::ssa_ir::ir::{SsaBlock, SsaTerminator as SsaTerm};
-use crate::vm::middle::ssa_ir::target::SsaTarget;
-
 use super::{
     gp32::Gp32Lowering,
     lower_const_pool::ConstPoolBuilder,
-    lower_context::{BlockLowerContext, ValueRegs},
+    lower_context::{explicit_cached_locals, BlockLowerContext, EntryCacheParam, ValueRegs},
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
@@ -195,26 +191,21 @@ fn lower_function(
     } else {
         &Gp64Lowering
     };
-
-    let block_entry_dirty =
-        compute_block_entry_dirty(&input.ssa.blocks, input.ssa.entry, &input.ssa.local_cache);
+    let explicit_cache = explicit_cached_locals(input.ssa);
 
     for block in &input.ssa.blocks {
         let target = block.id;
-        let entry_dirty = block_entry_dirty
-            .get(target.as_u32() as usize)
-            .map(|v| v.as_slice());
         let mut lower = BlockLowerContext::new(
             regfile,
             input.ssa,
-            &input.ssa.local_cache,
+            &explicit_cache,
             block,
             runtime,
             call_link,
             gp_reg_width,
             i64_ops,
             target == input.ssa.entry,
-            entry_dirty,
+            None,
             #[cfg(has_guard_pages)]
             guard_pages,
         )?;
@@ -231,6 +222,7 @@ fn lower_function(
                 program_value_storage_type(input.ssa, value),
             ));
         }
+        append_entry_cache_params(&mut current_params, lower.entry_cache_params(), &explicit_cache);
 
         for inst in &block.ops {
             match &inst.kind {
@@ -677,7 +669,7 @@ fn lower_function(
 
     let program = MachineProgram {
         entry: MachineBlockId(input.ssa.entry.as_u32()),
-        fp_reg_init_widths: fp_reg_init_widths(&regfile, &input.ssa.local_cache)?,
+        fp_reg_init_widths: fp_reg_init_widths(&regfile)?,
         blocks,
     };
     program.validate(config)?;
@@ -846,25 +838,25 @@ pub(super) fn target_param_regs(
         let ty = program_value_storage_type(program, *param);
         if ty.is_fp() {
             regs.push(ValueRegs {
-                lo: regfile.fp_transient(fp_index).ok_or_else(|| {
-                    WasmError::internal("target params exceed FP transient register budget".into())
+                lo: preferred_fp_dynamic_reg(regfile, fp_index).ok_or_else(|| {
+                    WasmError::internal("target params exceed FP dynamic register budget".into())
                 })?,
                 hi: None,
             });
             fp_index += 1;
         } else if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
-            let lo = regfile.gp_transient(gp_index).ok_or_else(|| {
-                WasmError::internal("target params exceed GP transient register budget".into())
+            let lo = preferred_gp_dynamic_reg(regfile, gp_index).ok_or_else(|| {
+                WasmError::internal("target params exceed GP dynamic register budget".into())
             })?;
-            let hi = regfile.gp_transient(gp_index + 1).ok_or_else(|| {
-                WasmError::internal("target i64 params exceed GP transient pair budget".into())
+            let hi = preferred_gp_dynamic_reg(regfile, gp_index + 1).ok_or_else(|| {
+                WasmError::internal("target i64 params exceed GP dynamic pair budget".into())
             })?;
             regs.push(ValueRegs { lo, hi: Some(hi) });
             gp_index += 2;
         } else {
             regs.push(ValueRegs {
-                lo: regfile.gp_transient(gp_index).ok_or_else(|| {
-                    WasmError::internal("target params exceed GP transient register budget".into())
+                lo: preferred_gp_dynamic_reg(regfile, gp_index).ok_or_else(|| {
+                    WasmError::internal("target params exceed GP dynamic register budget".into())
                 })?,
                 hi: None,
             });
@@ -883,35 +875,36 @@ fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineS
     }
 }
 
-fn fp_reg_init_widths(
-    regfile: &MachineRegFile,
-    cache_prefs: &SsaLocalCachePrefs,
-) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
-    let mut widths = vec![None; regfile.fp_transient_count() + regfile.fp_local_cache_count()];
-    if cache_prefs.fp_preferred_slots.len() != cache_prefs.fp_preferred_types.len() {
-        return Err(WasmError::internal(
-            "FP cached-local slot/type metadata length mismatch".into(),
-        ));
+pub(super) fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+    if ordinal < regfile.gp_transient_count() {
+        regfile.gp_transient(ordinal)
+    } else {
+        regfile.gp_local_cache(ordinal - regfile.gp_transient_count())
     }
-    for (index, ty) in cache_prefs.fp_preferred_types.iter().copied().enumerate() {
-        let width = match ty {
-            ValueType::F32 => MachineFloatWidth::F32,
-            ValueType::F64 => MachineFloatWidth::F64,
-            _ => {
-                return Err(WasmError::internal(
-                    "FP cached-local preference contains a non-float type".into(),
-                ))
-            }
-        };
-        let slot = regfile.fp_transient_count() + index;
-        let Some(entry) = widths.get_mut(slot) else {
-            return Err(WasmError::internal(
-                "FP cached-local preferences exceed declared FP cache register count".into(),
-            ));
-        };
-        *entry = Some(width);
+}
+
+pub(super) fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
+    if ordinal < regfile.fp_transient_count() {
+        regfile.fp_transient(ordinal)
+    } else {
+        regfile.fp_local_cache(ordinal - regfile.fp_transient_count())
     }
-    Ok(widths)
+}
+
+fn fp_reg_init_widths(regfile: &MachineRegFile) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
+    Ok(vec![None; regfile.fp_dynamic_count()])
+}
+
+fn append_entry_cache_params(
+    params: &mut Vec<MachineBlockParam>,
+    entry_cache_params: &[EntryCacheParam],
+    cached_locals: &[super::lower_context::CachedLocal],
+) {
+    for entry in entry_cache_params {
+        if let Some(cached) = cached_locals.get(entry.cached_index) {
+            params.extend(machine_block_params_for_value(entry.regs, cached.ty));
+        }
+    }
 }
 
 struct ExtraBlockAllocator {
@@ -1491,143 +1484,3 @@ fn indexed_const_addr(
 // Cross-block dirty-flag dataflow analysis
 // ---------------------------------------------------------------------------
 //
-// Computes, for each SSA-IR block, which cached locals are dirty (register !=
-// frame slot) at block entry.  A cached local becomes dirty when a `LocalSet`
-// writes to it and becomes clean at every `Call` op (which saves all dirty
-// locals to frame).
-//
-// The analysis is a forward dataflow with join = OR (dirty if ANY predecessor
-// leaves it dirty).  Initialized optimistically (all-clean) and iterated to
-// fixpoint.  Entry block is always all-clean.
-
-fn compute_block_entry_dirty(
-    blocks: &[SsaBlock],
-    entry: SsaTarget,
-    cache_prefs: &SsaLocalCachePrefs,
-) -> Vec<Vec<bool>> {
-    let n_blocks = blocks.len();
-    let n_cached = cache_prefs.gp_preferred_slots.len() + cache_prefs.fp_preferred_slots.len();
-
-    if n_cached == 0 || n_blocks == 0 {
-        return vec![vec![]; n_blocks];
-    }
-
-    // Map FrameSlot → cached-local index (GP then FP order).
-    let all_slots: Vec<FrameSlot> = cache_prefs
-        .gp_preferred_slots
-        .iter()
-        .chain(cache_prefs.fp_preferred_slots.iter())
-        .copied()
-        .collect();
-    let max_slot = all_slots.iter().map(|s| s.0).max().unwrap_or(0) as usize;
-    let mut slot_to_index = vec![usize::MAX; max_slot + 1];
-    for (i, slot) in all_slots.iter().enumerate() {
-        slot_to_index[slot.0 as usize] = i;
-    }
-
-    // Build predecessor map.
-    let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); n_blocks];
-    for (idx, block) in blocks.iter().enumerate() {
-        let succs = terminator_successors(&block.terminator);
-        for succ in succs {
-            let si = succ.0 as usize;
-            if si < n_blocks {
-                predecessors[si].push(idx);
-            }
-        }
-    }
-
-    // Precompute per-block transfer summaries.
-    //
-    // If a block has any Call op:
-    //   exit_dirty = locals written AFTER the last Call (entry state irrelevant)
-    // If no Call:
-    //   exit_dirty[i] = entry_dirty[i] OR written_in_block[i]
-    let mut has_call = vec![false; n_blocks];
-    let mut written_after_last_call = vec![vec![false; n_cached]; n_blocks];
-    let mut written_anywhere = vec![vec![false; n_cached]; n_blocks];
-
-    for (idx, block) in blocks.iter().enumerate() {
-        for op in &block.ops {
-            match &op.kind {
-                SsaInstKind::LocalSet { slot, .. } => {
-                    let si = slot.0 as usize;
-                    if si <= max_slot {
-                        let ci = slot_to_index[si];
-                        if ci != usize::MAX {
-                            written_after_last_call[idx][ci] = true;
-                            written_anywhere[idx][ci] = true;
-                        }
-                    }
-                }
-                SsaInstKind::Call(_) => {
-                    has_call[idx] = true;
-                    for w in &mut written_after_last_call[idx] {
-                        *w = false;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Forward dataflow to fixpoint.
-    let entry_idx = entry.0 as usize;
-    let mut entry_dirty = vec![vec![false; n_cached]; n_blocks];
-    let mut exit_dirty = vec![vec![false; n_cached]; n_blocks];
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for idx in 0..n_blocks {
-            // Join: entry_dirty = OR of predecessor exit_dirty values.
-            if idx != entry_idx {
-                for &pred in &predecessors[idx] {
-                    for i in 0..n_cached {
-                        if exit_dirty[pred][i] && !entry_dirty[idx][i] {
-                            entry_dirty[idx][i] = true;
-                            changed = true;
-                        }
-                    }
-                }
-            }
-
-            // Transfer: compute exit_dirty.
-            if has_call[idx] {
-                // Last call cleared everything; only subsequent writes
-                // contribute to exit state.
-                for i in 0..n_cached {
-                    let new = written_after_last_call[idx][i];
-                    if new != exit_dirty[idx][i] {
-                        exit_dirty[idx][i] = new;
-                        changed = true;
-                    }
-                }
-            } else {
-                // No call: exit = entry OR written_anywhere.
-                for i in 0..n_cached {
-                    let new = entry_dirty[idx][i] || written_anywhere[idx][i];
-                    if new != exit_dirty[idx][i] {
-                        exit_dirty[idx][i] = new;
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    entry_dirty
-}
-
-fn terminator_successors(term: &SsaTerm) -> Vec<SsaTarget> {
-    match term {
-        SsaTerm::Goto(edge) => vec![edge.target],
-        SsaTerm::Branch {
-            then_edge,
-            else_edge,
-            ..
-        } => vec![then_edge.target, else_edge.target],
-        SsaTerm::BrTable { entries, .. } => entries.iter().map(|e| e.target).collect(),
-        SsaTerm::Return { .. } | SsaTerm::TrapUnreachable => vec![],
-    }
-}

@@ -40,7 +40,7 @@ pub const fn normalize_interpreter_backend(_requested: BackendKind) -> BackendKi
 
 #[inline]
 pub const fn interpreter_backend_config() -> BackendConfig {
-    BackendConfig::new(3, 4, 0, 0, core::mem::size_of::<usize>() as u8, 3)
+    BackendConfig::new(0, 7, 0, 0, core::mem::size_of::<usize>() as u8, 3)
 }
 
 #[inline]

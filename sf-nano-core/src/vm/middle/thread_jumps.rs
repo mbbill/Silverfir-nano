@@ -13,11 +13,11 @@
 //! ## Entry block invariant
 //!
 //! `program.entry` is never changed.  Machine lowering (`lower_context.rs`)
-//! checks `block.id == program.entry` and calls `emit_entry_cached_locals()`
-//! on that block, which loads function parameters from frame slots and zeros
-//! non-parameter locals.  If the entry were redirected to a loop body, those
-//! initializations would re-execute every iteration, resetting locals to zero
-//! and causing infinite loops.
+//! treats the original entry block as the semantic function entry. With the
+//! explicit-cache pipeline, cache state starts empty at block entry and is
+//! rebuilt only by explicit SSA ops. Redirecting `program.entry` into a loop
+//! body would still violate entry semantics by skipping the original frontend
+//! prologue shape and reinterpreting loop entry as function entry.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -338,10 +338,16 @@ fn substitute_inst_uses(kind: &mut SsaInstKind, subst: &[(SsaValue, SsaValue)]) 
                 }
             }
         }
-        SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+        SsaInstKind::LocalSetSlot { src, .. }
+        | SsaInstKind::LocalSetCache { src, .. }
+        | SsaInstKind::Spill { src, .. } => {
             *src = substitute_value(*src, subst);
         }
-        SsaInstKind::LocalGet { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Call(_) => {}
+        SsaInstKind::LocalGetSlot { .. }
+        | SsaInstKind::LocalGetCache { .. }
+        | SsaInstKind::Fill { .. }
+        | SsaInstKind::LocalDropCache { .. }
+        | SsaInstKind::Call(_) => {}
     }
 }
 
@@ -489,8 +495,8 @@ mod tests {
             entry: SsaTarget(0),
             local_cache: SsaLocalCachePrefs::default(),
             blocks: Vec::new(),
+            block_entry_cached_slots: Vec::new(),
             value_types: Vec::new(),
-            value_homes: Vec::new(),
             value_sink_local: Vec::new(),
         }
     }
@@ -684,7 +690,7 @@ mod tests {
                 id: SsaTarget(0),
                 params: Vec::new(),
                 ops: vec![SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: FrameSlot(0),
                         dst: SsaValue(0),
                     },
@@ -695,7 +701,7 @@ mod tests {
                 id: SsaTarget(1),
                 params: Vec::new(),
                 ops: vec![SsaInst {
-                    kind: SsaInstKind::LocalGet {
+                    kind: SsaInstKind::LocalGetSlot {
                         slot: FrameSlot(1),
                         dst: SsaValue(1),
                     },

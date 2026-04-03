@@ -7,7 +7,7 @@
 use crate::error::WasmError;
 
 use super::{
-    lower_context::{BlockLowerContext, CachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedLocal},
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
 };
 
@@ -48,24 +48,14 @@ pub(super) trait I64Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError>;
 
     /// Save a cached i64 local from cache register(s) to its frame slot.
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
-    ) -> Result<(), WasmError>;
-
-    /// Initialize a cached i64 local at function entry.
-    /// `is_param` == true: load from frame (caller wrote a value).
-    /// `is_param` == false: zero-init (Wasm locals start at zero).
-    fn emit_entry_cached_i64(
-        &self,
-        ctx: &mut BlockLowerContext,
-        cached: &CachedLocal,
-        is_param: bool,
+        cached: &BoundCachedLocal,
     ) -> Result<(), WasmError>;
 
     /// Load an i64 global value (global.get).

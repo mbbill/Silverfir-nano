@@ -1262,11 +1262,11 @@ mod tests {
     }
 
     fn instantiate_first_module(path: &str) -> WastTestRunner {
-        instantiate_first_module_with_backend(path, BackendMode::Base)
+        instantiate_first_module_with_backend(path, BackendMode::Auto)
     }
 
     fn run_wast_fixture(path: &str) -> TestResult {
-        set_backend_mode(BackendMode::Base);
+        set_backend_mode(BackendMode::Auto);
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")

@@ -145,13 +145,17 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                         check(*r, &alloc::format!("{bctx} Value result"))?;
                     }
                 }
-                SsaInstKind::LocalGet { dst, .. } | SsaInstKind::Fill { dst, .. } => {
+                SsaInstKind::LocalGetSlot { dst, .. }
+                | SsaInstKind::LocalGetCache { dst, .. }
+                | SsaInstKind::Fill { dst, .. } => {
                     check(*dst, &alloc::format!("{bctx} LocalGet/Fill dst"))?;
                 }
-                SsaInstKind::LocalSet { src, .. } | SsaInstKind::Spill { src, .. } => {
+                SsaInstKind::LocalSetSlot { src, .. }
+                | SsaInstKind::LocalSetCache { src, .. }
+                | SsaInstKind::Spill { src, .. } => {
                     check(*src, &alloc::format!("{bctx} LocalSet/Spill src"))?;
                 }
-                SsaInstKind::Call(_) => {}
+                SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
             }
         }
         match &block.terminator {
@@ -195,22 +199,28 @@ fn validate_edge_values(
 #[cfg(any(debug_assertions, test))]
 fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmError> {
     let mut cached_slot_types = BTreeMap::<FrameSlot, ValueType>::new();
-    for (slot, ty) in program
-        .local_cache
-        .gp_preferred_slots
-        .iter()
-        .copied()
-        .zip(program.local_cache.gp_preferred_types.iter().copied())
-        .chain(
-            program
-                .local_cache
-                .fp_preferred_slots
-                .iter()
-                .copied()
-                .zip(program.local_cache.fp_preferred_types.iter().copied()),
-        )
-    {
-        cached_slot_types.insert(slot, ty);
+    for block in &program.blocks {
+        for inst in &block.ops {
+            match inst.kind {
+                SsaInstKind::LocalGetCache { slot, dst } => {
+                    if let Some(ty) = program.value_types.get(dst.0 as usize).copied() {
+                        cached_slot_types.entry(slot).or_insert(ty);
+                    }
+                }
+                SsaInstKind::LocalSetCache { slot, src } => {
+                    if let Some(ty) = program.value_types.get(src.0 as usize).copied() {
+                        cached_slot_types.entry(slot).or_insert(ty);
+                    }
+                }
+                SsaInstKind::Fill { .. }
+                | SsaInstKind::Spill { .. }
+                | SsaInstKind::Value { .. }
+                | SsaInstKind::LocalGetSlot { .. }
+                | SsaInstKind::LocalSetSlot { .. }
+                | SsaInstKind::LocalDropCache { .. }
+                | SsaInstKind::Call(_) => {}
+            }
+        }
     }
 
     if cached_slot_types.is_empty() {
@@ -220,7 +230,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
             match inst.kind {
-                SsaInstKind::LocalGet { slot, dst } => {
+                SsaInstKind::LocalGetCache { slot, dst } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -228,10 +238,10 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         dst,
                         block_idx,
                         op_idx,
-                        "LocalGet dst",
+                        "LocalGetCache dst",
                     )?;
                 }
-                SsaInstKind::LocalSet { slot, src, .. } => {
+                SsaInstKind::LocalSetCache { slot, src } => {
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -239,12 +249,15 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         src,
                         block_idx,
                         op_idx,
-                        "LocalSet src",
+                        "LocalSetCache src",
                     )?;
                 }
                 SsaInstKind::Fill { .. }
                 | SsaInstKind::Spill { .. }
                 | SsaInstKind::Value { .. }
+                | SsaInstKind::LocalGetSlot { .. }
+                | SsaInstKind::LocalSetSlot { .. }
+                | SsaInstKind::LocalDropCache { .. }
                 | SsaInstKind::Call(_) => {}
             }
         }
@@ -286,9 +299,12 @@ fn validate_cached_slot_value_type(
 
 #[cfg(any(debug_assertions, test))]
 fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: ValueType) -> bool {
+    if matches!((value_ty, cached_ty), (ValueType::Ref(_), ValueType::Ref(_))) {
+        return true;
+    }
     match role {
-        "LocalSet src" => value_ty.is_compatible_with(&cached_ty),
-        "LocalGet dst" => cached_ty.is_compatible_with(&value_ty),
+        "LocalSetCache src" => value_ty.is_compatible_with(&cached_ty),
+        "LocalGetCache dst" => cached_ty.is_compatible_with(&value_ty),
         _ => value_ty == cached_ty,
     }
 }
@@ -449,8 +465,8 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
+            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
             value_types: alloc::vec![],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
@@ -492,8 +508,8 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
+            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
             value_types: alloc::vec![],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
@@ -528,8 +544,8 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
+            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
             value_types: alloc::vec![ValueType::I64, ValueType::I32,],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
@@ -541,37 +557,49 @@ mod tests {
 
     #[test]
     fn rejects_cached_local_slot_type_mismatch() {
-        let value0 = SsaValue(0);
         let program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs {
-                gp_preferred_slots: alloc::vec![FrameSlot(0)],
-                gp_preferred_types: alloc::vec![ValueType::I32],
-                fp_preferred_slots: Vec::new(),
-                fp_preferred_types: Vec::new(),
-                gp_local_info: Vec::new(),
-                fp_local_info: Vec::new(),
-            },
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
-                ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LocalGet {
-                        slot: FrameSlot(0),
-                        dst: value0,
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot: FrameSlot(0),
+                            dst: SsaValue(0),
+                        },
                     },
-                }],
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: crate::vm::middle::ssa_ir::leaf::SsaLeafOp::from_primitive(
+                                crate::vm::wasm::primitive_op::PrimitiveOpKind::I64Const {
+                                    value: 7,
+                                },
+                            )
+                            .unwrap(),
+                            args: Vec::new(),
+                            results: alloc::vec![SsaValue(1)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: FrameSlot(0),
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
                 terminator: SsaTerminator::Return { results: None },
             }],
-            value_types: alloc::vec![ValueType::I64],
-            value_homes: alloc::vec![],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
+            value_types: alloc::vec![ValueType::I32, ValueType::I64],
             value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error
             .message()
-            .contains("LocalGet dst for cached local slot FrameSlot(0) uses value SsaValue(0) (I64), but cache metadata says I32"));
+            .contains("LocalSetCache src for cached local slot FrameSlot(0) uses value SsaValue(1) (I64), but cache metadata says I32"));
     }
 
     #[test]
@@ -579,30 +607,22 @@ mod tests {
         let value0 = SsaValue(0);
         let program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs {
-                gp_preferred_slots: alloc::vec![FrameSlot(0)],
-                gp_preferred_types: alloc::vec![ValueType::funcref()],
-                fp_preferred_slots: Vec::new(),
-                fp_preferred_types: Vec::new(),
-                gp_local_info: Vec::new(),
-                fp_local_info: Vec::new(),
-            },
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
                 ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LocalSet {
+                    kind: SsaInstKind::LocalGetCache {
                         slot: FrameSlot(0),
-                        src: value0,
-                        version: 0,
+                        dst: value0,
                     },
                 }],
                 terminator: SsaTerminator::Return { results: None },
             }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
             value_types: alloc::vec![ValueType::Ref(
                 crate::value_type::RefType::non_nullable_concrete(1),
             )],
-            value_homes: alloc::vec![],
             value_sink_local: alloc::vec![],
         };
 
@@ -611,37 +631,83 @@ mod tests {
 
     #[test]
     fn rejects_cached_local_gp_word_type_mismatch_between_ref_and_i32() {
-        let value0 = SsaValue(0);
         let program = SsaProgram {
             entry: SsaTarget(0),
-            local_cache: SsaLocalCachePrefs {
-                gp_preferred_slots: alloc::vec![FrameSlot(0)],
-                gp_preferred_types: alloc::vec![ValueType::funcref()],
-                fp_preferred_slots: Vec::new(),
-                fp_preferred_types: Vec::new(),
-                gp_local_info: Vec::new(),
-                fp_local_info: Vec::new(),
-            },
+            local_cache: SsaLocalCachePrefs::default(),
             blocks: alloc::vec![SsaBlock {
                 id: SsaTarget(0),
                 params: Vec::new(),
-                ops: alloc::vec![SsaInst {
-                    kind: SsaInstKind::LocalSet {
-                        slot: FrameSlot(0),
-                        src: value0,
-                        version: 0,
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot: FrameSlot(0),
+                            dst: SsaValue(0),
+                        },
                     },
-                }],
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: crate::vm::middle::ssa_ir::leaf::SsaLeafOp::from_primitive(
+                                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const {
+                                    value: 1,
+                                },
+                            )
+                            .unwrap(),
+                            args: Vec::new(),
+                            results: alloc::vec![SsaValue(1)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: FrameSlot(0),
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
                 terminator: SsaTerminator::Return { results: None },
             }],
-            value_types: alloc::vec![ValueType::I32],
-            value_homes: alloc::vec![],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
+            value_types: alloc::vec![ValueType::funcref(), ValueType::I32],
             value_sink_local: alloc::vec![],
         };
 
         let error = validate_program(&program).expect_err("validation should fail");
         assert!(error.message().contains(
-            "LocalSet src for cached local slot FrameSlot(0) uses value SsaValue(0) (I32), but cache metadata says Ref"
+            "LocalSetCache src for cached local slot FrameSlot(0) uses value SsaValue(1) (I32), but cache metadata says Ref"
         ));
+    }
+
+    #[test]
+    fn accepts_cached_local_ref_variance_between_get_and_set() {
+        let program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs::default(),
+            blocks: alloc::vec![SsaBlock {
+                id: SsaTarget(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot: FrameSlot(0),
+                            dst: SsaValue(0),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: FrameSlot(0),
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Return { results: None },
+            }],
+            block_entry_cached_slots: alloc::vec![alloc::vec![]],
+            value_types: alloc::vec![
+                ValueType::Ref(crate::value_type::RefType::non_nullable_concrete(1)),
+                ValueType::funcref(),
+            ],
+            value_sink_local: alloc::vec![],
+        };
+
+        validate_program(&program).expect("all ref cached-local variants share one cache class");
     }
 }

@@ -61,14 +61,6 @@ impl BackendConfig {
         gp_unit_bytes: u8,
         call_scratch_slots: u16,
     ) -> Self {
-        // Minimum GP transient budget: the worst-case simultaneous GP
-        // unit pressure comes from `select(i64, i64, i32)` — two i64
-        // operands (each 8/gp_unit_bytes units) plus one i32 condition
-        // (1 unit).  No wasm instruction takes more than 3 operands.
-        debug_assert!(
-            gp_transient_budget as usize >= (8 / gp_unit_bytes as usize) * 2 + 1,
-            "GP transient budget too small for target GP unit width"
-        );
         Self {
             gp_unit_bytes,
             gp_local_cache_budget,
