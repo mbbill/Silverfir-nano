@@ -386,6 +386,7 @@ fn lower_prefix_actions(
     op: &OpPlan,
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     for action in &op.prefix {
@@ -402,6 +403,14 @@ fn lower_prefix_actions(
                 }
             }
             PrepAction::Fill(frame, fill_types) => {
+                ensure_capacity_for_state(
+                    state,
+                    resident_cache,
+                    local_slot_types,
+                    fill_types,
+                    None,
+                    None,
+                )?;
                 let mut reloaded = Vec::with_capacity(frame.count as usize);
                 for offset in 0..frame.count as usize {
                     let ty = fill_types.get(offset).copied().unwrap_or(ValueType::I64);
@@ -436,13 +445,13 @@ fn lower_block_body_op(
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
-    lower_prefix_actions(op, state, resident_cache, values)?;
+    lower_prefix_actions(op, state, resident_cache, &semantic.local_types, values)?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
             Err(WasmError::internal("unreachable must end a block".into()))
         }
         SemanticOpKind::Primitive(kind) => {
-            lower_primitive(semantic, kind, semantic_index, state, values)
+            lower_primitive(semantic, kind, semantic_index, state, resident_cache, values)
         }
         SemanticOpKind::LocalGet { idx } => lower_local_get(
             semantic,
@@ -459,6 +468,7 @@ fn lower_block_body_op(
             state,
             frame,
             resident_cache,
+            &semantic.local_types,
         ),
         SemanticOpKind::LocalTee { idx } => lower_local_tee(
             semantic,
@@ -507,6 +517,7 @@ fn lower_primitive(
     kind: &PrimitiveOpKind,
     semantic_index: usize,
     state: &mut BlockState,
+    resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
@@ -527,6 +538,14 @@ fn lower_primitive(
             .unwrap_or(ValueType::I64)
     };
     state.consume_top(pop as usize)?;
+    ensure_capacity_for_state(
+        state,
+        resident_cache,
+        &semantic.local_types,
+        &alloc::vec![result_ty; push as usize],
+        None,
+        None,
+    )?;
     let results = (0..push)
         .map(|_| values.fresh_typed(result_ty))
         .collect::<Vec<_>>();
@@ -554,8 +573,32 @@ fn lower_local_get(
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
-    let dst = values.fresh_typed(ty);
     let slot = frame.local_slot(local_idx);
+    let mut access = access;
+    if access == PreparedLocalAccess::Cache
+        && ensure_capacity_for_state(
+            state,
+            resident_cache,
+            &semantic.local_types,
+            core::slice::from_ref(&ty),
+            Some(slot),
+            Some(slot),
+        )
+        .is_err()
+    {
+        access = PreparedLocalAccess::Slot;
+    }
+    if access == PreparedLocalAccess::Slot {
+        ensure_capacity_for_state(
+            state,
+            resident_cache,
+            &semantic.local_types,
+            core::slice::from_ref(&ty),
+            None,
+            None,
+        )?;
+    }
+    let dst = values.fresh_typed(ty);
     state.ops.push(SsaInst {
         kind: match access {
             PreparedLocalAccess::Slot => SsaInstKind::LocalGetSlot { slot, dst },
@@ -574,9 +617,24 @@ fn lower_local_set(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     resident_cache: &mut BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
+    let mut access = access;
+    if access == PreparedLocalAccess::Cache
+        && ensure_capacity_for_state(
+            state,
+            resident_cache,
+            local_slot_types,
+            &[],
+            Some(slot),
+            Some(slot),
+        )
+        .is_err()
+    {
+        access = PreparedLocalAccess::Slot;
+    }
     state.ops.push(SsaInst {
         kind: match access {
             PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
@@ -600,6 +658,35 @@ fn lower_local_tee(
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
+    let ty = semantic
+        .local_types
+        .get(local_idx as usize)
+        .copied()
+        .unwrap_or(ValueType::I64);
+    let mut access = access;
+    if access == PreparedLocalAccess::Cache
+        && ensure_capacity_for_state(
+            state,
+            resident_cache,
+            &semantic.local_types,
+            core::slice::from_ref(&ty),
+            Some(slot),
+            Some(slot),
+        )
+        .is_err()
+    {
+        access = PreparedLocalAccess::Slot;
+    }
+    if access == PreparedLocalAccess::Slot {
+        ensure_capacity_for_state(
+            state,
+            resident_cache,
+            &semantic.local_types,
+            core::slice::from_ref(&ty),
+            None,
+            None,
+        )?;
+    }
     state.ops.push(SsaInst {
         kind: match access {
             PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
@@ -609,11 +696,6 @@ fn lower_local_tee(
             }
         },
     });
-    let ty = semantic
-        .local_types
-        .get(local_idx as usize)
-        .copied()
-        .unwrap_or(ValueType::I64);
     let dst = values.fresh_typed(ty);
     state.ops.push(SsaInst {
         kind: match access {
@@ -720,13 +802,20 @@ fn lower_block_terminator(
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredTerminator, WasmError> {
-    lower_prefix_actions(op, state, resident_cache, values)?;
+    lower_prefix_actions(op, state, resident_cache, &semantic.local_types, values)?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
             Ok(LoweredTerminator::new(SsaTerminator::TrapUnreachable))
         }
         SemanticOpKind::Primitive(kind) => {
-            lower_primitive(semantic, kind, semantic_index, state, values)?;
+            lower_primitive(
+                semantic,
+                kind,
+                semantic_index,
+                state,
+                resident_cache,
+                values,
+            )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -774,6 +863,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 resident_cache,
+                &semantic.local_types,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1053,6 +1143,7 @@ fn lower_block_terminator(
         } => {
             lower_call_direct(*callee, *params, *results, frame, state);
             resident_cache.clear();
+            resident_cache.clear();
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -1075,6 +1166,7 @@ fn lower_block_terminator(
             results,
         } => {
             lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
+            resident_cache.clear();
             resident_cache.clear();
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1161,6 +1253,111 @@ fn effective_local_access(
         PreparedLocalAccess::Cache
     } else {
         planned
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheBank {
+    Gp,
+    Fp,
+}
+
+fn ensure_capacity_for_state(
+    state: &mut BlockState,
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    push_types: &[ValueType],
+    add_cache_slot: Option<FrameSlot>,
+    preserve_slot: Option<FrameSlot>,
+) -> Result<(), WasmError> {
+    loop {
+        let (mut gp_live, mut fp_live) =
+            count_live_bank_budget_units(&state.live_types, state.gp_unit_bytes);
+        let (push_gp, push_fp) = count_live_bank_budget_units(push_types, state.gp_unit_bytes);
+        gp_live += push_gp;
+        fp_live += push_fp;
+        let (mut gp_cache, mut fp_cache) =
+            resident_cache_counts(resident_cache, local_slot_types, state.gp_unit_bytes);
+        if let Some(slot) = add_cache_slot {
+            if !resident_cache.contains(&slot) {
+                let (bank, cost) = cache_slot_bank_cost(slot, local_slot_types, state.gp_unit_bytes);
+                match bank {
+                    CacheBank::Gp => gp_cache += cost,
+                    CacheBank::Fp => fp_cache += cost,
+                }
+            }
+        }
+
+        let fits = gp_live + gp_cache <= state.gp_live_budget as usize
+            && fp_live + fp_cache <= state.fp_live_budget as usize;
+        if fits {
+            return Ok(());
+        }
+
+        let Some(victim) = choose_cache_drop_victim(resident_cache, local_slot_types, preserve_slot) else {
+            return Err(WasmError::internal(
+                "cached locals plus live transient values exceed dynamic bank budget".into(),
+            ));
+        };
+        resident_cache.remove(&victim);
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::LocalDropCache { slot: victim },
+        });
+    }
+}
+
+fn choose_cache_drop_victim(
+    resident_cache: &BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    preserve_slot: Option<FrameSlot>,
+) -> Option<FrameSlot> {
+    let mut gp_victim = None;
+    let mut fp_victim = None;
+    for &slot in resident_cache.iter().rev() {
+        if Some(slot) == preserve_slot {
+            continue;
+        }
+        let (bank, _) = cache_slot_bank_cost(slot, local_slot_types, 8);
+        match bank {
+            CacheBank::Gp if gp_victim.is_none() => gp_victim = Some(slot),
+            CacheBank::Fp if fp_victim.is_none() => fp_victim = Some(slot),
+            _ => {}
+        }
+    }
+    gp_victim.or(fp_victim)
+}
+
+fn resident_cache_counts(
+    resident_cache: &BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> (usize, usize) {
+    let mut gp = 0usize;
+    let mut fp = 0usize;
+    for &slot in resident_cache {
+        let (bank, cost) = cache_slot_bank_cost(slot, local_slot_types, gp_unit_bytes);
+        match bank {
+            CacheBank::Gp => gp += cost,
+            CacheBank::Fp => fp += cost,
+        }
+    }
+    (gp, fp)
+}
+
+fn cache_slot_bank_cost(
+    slot: FrameSlot,
+    local_slot_types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> (CacheBank, usize) {
+    let ty = local_slot_types
+        .get(slot.0 as usize)
+        .copied()
+        .unwrap_or(ValueType::I64);
+    if ty.is_float() {
+        (CacheBank::Fp, 1)
+    } else {
+        let (gp, _) = count_live_bank_budget_units(core::slice::from_ref(&ty), gp_unit_bytes);
+        (CacheBank::Gp, gp)
     }
 }
 
