@@ -155,7 +155,9 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                 | SsaInstKind::Spill { src, .. } => {
                     check(*src, &alloc::format!("{bctx} LocalSet/Spill src"))?;
                 }
-                SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
+                SsaInstKind::LocalEnsureCache { .. }
+                | SsaInstKind::LocalDropCache { .. }
+                | SsaInstKind::Call(_) => {}
             }
         }
         match &block.terminator {
@@ -217,6 +219,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                 | SsaInstKind::Value { .. }
                 | SsaInstKind::LocalGetSlot { .. }
                 | SsaInstKind::LocalSetSlot { .. }
+                | SsaInstKind::LocalEnsureCache { .. }
                 | SsaInstKind::LocalDropCache { .. }
                 | SsaInstKind::Call(_) => {}
             }
@@ -257,6 +260,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                 | SsaInstKind::Value { .. }
                 | SsaInstKind::LocalGetSlot { .. }
                 | SsaInstKind::LocalSetSlot { .. }
+                | SsaInstKind::LocalEnsureCache { .. }
                 | SsaInstKind::LocalDropCache { .. }
                 | SsaInstKind::Call(_) => {}
             }

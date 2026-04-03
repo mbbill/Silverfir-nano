@@ -7,7 +7,7 @@
 //! The sink is legal when:
 //! - `src` is produced by a single-result `Value` instruction in the same block
 //! - The producer is "targetable" (not a call, not already sunk)
-//! - No barrier (Call) exists between the producer and the `LocalSetSlot`
+//! - No barrier (Call) exists between the producer and the final local store
 //! - No intervening local read observes the old slot contents between the
 //!   producer and the local set
 //!
@@ -101,7 +101,9 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     // between the producer and the store we want to sink into.
     for (set_pos, inst) in ops.iter().enumerate() {
         let (slot, src) = match &inst.kind {
-            SsaInstKind::LocalSetSlot { slot, src } => (*slot, *src),
+            SsaInstKind::LocalSetSlot { slot, src } | SsaInstKind::LocalSetCache { slot, src } => {
+                (*slot, *src)
+            }
             _ => continue,
         };
 
@@ -137,7 +139,8 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
             matches!(
                 &i.kind,
                 SsaInstKind::LocalGetSlot { slot: s, .. }
-                    | SsaInstKind::LocalGetCache { slot: s, .. } if *s == slot
+                    | SsaInstKind::LocalGetCache { slot: s, .. }
+                    | SsaInstKind::LocalEnsureCache { slot: s } if *s == slot
             )
         });
         if old_version_live {
@@ -197,7 +200,9 @@ mod tests {
                 | SsaInstKind::Spill { src, .. } => {
                     max_val = max_val.max(src.0 + 1);
                 }
-                SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
+                SsaInstKind::LocalEnsureCache { .. }
+                | SsaInstKind::LocalDropCache { .. }
+                | SsaInstKind::Call(_) => {}
             }
         }
         let n = max_val as usize;
@@ -260,6 +265,37 @@ mod tests {
 
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[2], Some(FrameSlot(0)));
+    }
+
+    #[test]
+    fn sinks_into_cached_local_store() {
+        let mut program = make_program(vec![
+            SsaInst {
+                kind: SsaInstKind::LocalGetCache {
+                    slot: FrameSlot(0),
+                    dst: SsaValue(0),
+                },
+            },
+            SsaInst {
+                kind: SsaInstKind::Value {
+                    op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                    args: vec![
+                        SsaOperand::Value(SsaValue(0)),
+                        SsaOperand::Value(SsaValue(0)),
+                    ],
+                    results: vec![SsaValue(1)],
+                },
+            },
+            SsaInst {
+                kind: SsaInstKind::LocalSetCache {
+                    slot: FrameSlot(0),
+                    src: SsaValue(1),
+                },
+            },
+        ]);
+
+        plan_sinks(&mut program);
+        assert_eq!(program.value_sink_local[1], Some(FrameSlot(0)));
     }
 
     #[test]
@@ -328,7 +364,6 @@ mod tests {
                         crate::vm::middle::frame::FrameSlot(0),
                         0,
                     ),
-                    skip_reload: Vec::new(),
                 }),
             },
             SsaInst {

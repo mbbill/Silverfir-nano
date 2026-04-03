@@ -7,8 +7,6 @@
 //! - explicit slot traffic publishes and reloads transient values through
 //!   operand slots so the backend never needs general register allocation
 
-use alloc::vec::Vec;
-
 use crate::value_type::ValueType;
 
 use super::{leaf::SsaLeafOp, target::SsaTarget};
@@ -159,6 +157,9 @@ pub(crate) enum SsaInstKind {
     LocalSetSlot { slot: FrameSlot, src: SsaValue },
     /// Write a cached local, allocating cache residency first if needed.
     LocalSetCache { slot: FrameSlot, src: SsaValue },
+    /// Ensure a local is resident in the cache, loading from the canonical
+    /// frame slot if needed. Does not produce an SSA value.
+    LocalEnsureCache { slot: FrameSlot },
     /// Explicitly evict a cached local. If dirty, this writes back first.
     LocalDropCache { slot: FrameSlot },
     /// Slot-based function call (args/results passed via frame slots, not SSA values).
@@ -172,10 +173,6 @@ pub(crate) enum SsaCallOp {
         callee: u32,
         args: FrameSpan,
         results: FrameSpan,
-        /// Per cached-local flag: `true` = skip reload at continuation.
-        /// Parallel to `gp_preferred_slots ++ fp_preferred_slots` in cache prefs.
-        /// Empty if no analysis was performed.
-        skip_reload: Vec<bool>,
     },
     CallIndirect {
         type_idx: u32,
@@ -183,8 +180,6 @@ pub(crate) enum SsaCallOp {
         index_slot: FrameSlot,
         args: FrameSpan,
         results: FrameSpan,
-        /// Per cached-local flag: `true` = skip reload at continuation.
-        skip_reload: Vec<bool>,
     },
 }
 

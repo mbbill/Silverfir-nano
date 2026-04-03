@@ -346,6 +346,7 @@ fn substitute_inst_uses(kind: &mut SsaInstKind, subst: &[(SsaValue, SsaValue)]) 
         SsaInstKind::LocalGetSlot { .. }
         | SsaInstKind::LocalGetCache { .. }
         | SsaInstKind::Fill { .. }
+        | SsaInstKind::LocalEnsureCache { .. }
         | SsaInstKind::LocalDropCache { .. }
         | SsaInstKind::Call(_) => {}
     }

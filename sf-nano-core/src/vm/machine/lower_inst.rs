@@ -82,10 +82,7 @@ impl<'a> BlockLowerContext<'a> {
 
     /// Continuation blocks start with no live cached locals in the explicit
     /// cache model; any re-caching must already be present in SSA-IR.
-    pub(super) fn begin_continuation_block_selective(
-        &mut self,
-        _skip_reload: Option<&[bool]>,
-    ) -> Result<(), WasmError> {
+    pub(super) fn begin_continuation_block_selective(&mut self) -> Result<(), WasmError> {
         self.clear_cache_live();
         self.clear_cache_dirty();
         Ok(())
@@ -145,6 +142,9 @@ impl<'a> BlockLowerContext<'a> {
             }
             SsaInstKind::LocalSetCache { slot, src } => {
                 self.lower_local_set_cache(*slot, *src)?;
+            }
+            SsaInstKind::LocalEnsureCache { slot } => {
+                self.lower_local_ensure_cache(*slot)?;
             }
             SsaInstKind::LocalDropCache { slot } => {
                 if let Some(index) = self.cached_local_index(*slot) {
@@ -323,6 +323,31 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    fn lower_local_ensure_cache(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+    ) -> Result<(), WasmError> {
+        let Some(cached_index) = self.cached_local_index(slot) else {
+            return Err(WasmError::internal(alloc::format!(
+                "LocalEnsureCache on non-cached local slot {:?}",
+                slot,
+            )));
+        };
+        let ty = self
+            .bound_cached_local(cached_index)
+            .map(|cached| cached.ty)
+            .unwrap_or_else(|| self.cached_locals()[cached_index].ty);
+        self.ensure_cached_local_loaded(slot, cached_index, ty)
+            .map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "LocalEnsureCache(slot={:?}) in block b{} failed: {}",
+                    slot,
+                    self.block_id(),
+                    err.message(),
+                ))
+            })
     }
 
     fn lower_local_set_slot(

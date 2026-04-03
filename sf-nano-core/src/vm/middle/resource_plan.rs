@@ -1,12 +1,14 @@
-//! Late resource repair for explicit cached locals.
+//! Late resource planning for explicit cached locals.
 //!
 //! Early preparation picks transient spills/fills and initial cache accesses,
 //! but later SSA cleanup can change the final per-block live shape. This pass
-//! repairs the final SSA by:
-//! - dropping cached locals before calls / CFG exits
-//! - dropping resident cached locals when final transient pressure needs room
+//! finalizes the explicit cache plan by:
+//! - choosing one canonical cached-local entry state per SSA block,
+//! - repairing incompatible edges with explicit `LocalEnsureCache` /
+//!   `LocalDropCache` bridge blocks,
+//! - dropping resident cached locals when final transient pressure needs room,
 //! - demoting `LocalGetCache` / `LocalSetCache` back to slot ops if the final
-//!   block shape cannot keep that local resident
+//!   block shape cannot keep that local resident.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -18,7 +20,7 @@ use crate::{
     value_type::ValueType,
     vm::middle::{
         frame::FrameSlot,
-        ssa_ir::ir::{SsaCallOp, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
+        ssa_ir::ir::{SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
         state::gp_value_budget_units,
     },
 };
@@ -51,7 +53,8 @@ pub(super) fn plan_resources(
     let cache_candidates = build_cache_candidates(program, gp_unit_bytes);
     let value_types = program.value_types.clone();
     let original_blocks = program.blocks.clone();
-    let rough_desired_entry_slots = original_blocks
+    let predecessors = compute_predecessors(&program.blocks);
+    let mut entry_hints = original_blocks
         .iter()
         .map(|block| {
             desired_entry_slots_for_block(
@@ -64,29 +67,16 @@ pub(super) fn plan_resources(
             )
         })
         .collect::<Vec<_>>();
-    let mut wanted_exit_slots =
-        compute_wanted_exit_slots(&original_blocks, &rough_desired_entry_slots, &cache_candidates);
-    let (mut desired_entry_slots, mut exit_cached_slots) = rewrite_blocks(
-        &mut program.blocks,
-        &original_blocks,
-        &cache_candidates,
-        &value_types,
-        gp_unit_bytes,
-        gp_dynamic_budget,
-        fp_dynamic_budget,
-        &rough_desired_entry_slots,
-        &wanted_exit_slots,
-    );
+    let mut exit_cached_slots = vec![Vec::new(); original_blocks.len()];
+    let max_iterations = original_blocks.len().max(1) * cache_candidates.len().max(1) * 4;
+    let mut converged = false;
 
-    let predecessors = compute_predecessors(&program.blocks);
-    let mut block_entry_cached_slots =
-        compute_block_entry_cached_slots(program, &desired_entry_slots, &exit_cached_slots, &predecessors, &cache_candidates);
-
-    let refined_wanted_exit_slots =
-        compute_wanted_exit_slots(&program.blocks, &block_entry_cached_slots, &cache_candidates);
-    if refined_wanted_exit_slots != wanted_exit_slots {
-        wanted_exit_slots = refined_wanted_exit_slots;
-        (desired_entry_slots, exit_cached_slots) = rewrite_blocks(
+    for _ in 0..max_iterations {
+        let block_entry_cached_slots =
+            canonical_block_entry_cached_slots(program, &entry_hints, &predecessors);
+        let wanted_exit_slots =
+            compute_wanted_exit_slots(&original_blocks, &block_entry_cached_slots, &cache_candidates);
+        let (desired_entry_slots, rewritten_exit_slots) = rewrite_blocks(
             &mut program.blocks,
             &original_blocks,
             &cache_candidates,
@@ -97,11 +87,22 @@ pub(super) fn plan_resources(
             &block_entry_cached_slots,
             &wanted_exit_slots,
         );
-        block_entry_cached_slots =
-            compute_block_entry_cached_slots(program, &desired_entry_slots, &exit_cached_slots, &predecessors, &cache_candidates);
+        exit_cached_slots = rewritten_exit_slots;
+        if desired_entry_slots == entry_hints {
+            entry_hints = desired_entry_slots;
+            converged = true;
+            break;
+        }
+        entry_hints = desired_entry_slots;
     }
 
-    program.block_entry_cached_slots = block_entry_cached_slots;
+    debug_assert!(
+        converged,
+        "resource plan canonical entry iteration did not converge"
+    );
+
+    program.block_entry_cached_slots =
+        canonical_block_entry_cached_slots(program, &entry_hints, &predecessors);
     insert_boundary_repair_blocks(program, &cache_candidates, &exit_cached_slots);
 }
 
@@ -284,6 +285,21 @@ fn rewrite_blocks(
                         rewritten.push(SsaInst { kind: SsaInstKind::LocalSetSlot { slot, src } });
                     }
                 }
+                SsaInstKind::LocalEnsureCache { slot } => {
+                    if ensure_cache_capacity(
+                        &mut rewritten,
+                        cache_candidates,
+                        &mut resident,
+                        &mut resident_counts,
+                        slot,
+                        live,
+                        gp_dynamic_budget,
+                        fp_dynamic_budget,
+                    ) {
+                        resident_add(slot, cache_candidates, &mut resident, &mut resident_counts);
+                    }
+                    rewritten.push(SsaInst { kind: SsaInstKind::LocalEnsureCache { slot } });
+                }
                 SsaInstKind::LocalDropCache { slot } => {
                     if resident.remove(&slot) {
                         resident_sub(slot, cache_candidates, &mut resident_counts);
@@ -298,7 +314,7 @@ fn rewrite_blocks(
                         &mut resident_counts,
                     );
                     rewritten.push(SsaInst {
-                        kind: SsaInstKind::Call(clear_skip_reload(call)),
+                        kind: SsaInstKind::Call(call),
                     });
                 }
             }
@@ -318,12 +334,10 @@ fn rewrite_blocks(
     (desired_entry_slots, exit_cached_slots)
 }
 
-fn compute_block_entry_cached_slots(
+fn canonical_block_entry_cached_slots(
     program: &SsaProgram,
     desired_entry_slots: &[Vec<FrameSlot>],
-    exit_cached_slots: &[Vec<FrameSlot>],
     predecessors: &[Vec<usize>],
-    cache_candidates: &BTreeMap<FrameSlot, CacheCandidate>,
 ) -> Vec<Vec<FrameSlot>> {
     let mut block_entry_cached_slots = vec![Vec::new(); program.blocks.len()];
     for block in &program.blocks {
@@ -331,17 +345,11 @@ fn compute_block_entry_cached_slots(
         if block.id == program.entry {
             continue;
         }
-        let wanted = &desired_entry_slots[block_id];
-        if wanted.is_empty() {
+        if predecessors.get(block_id).is_some_and(|preds| preds.is_empty()) {
             continue;
         }
-        let preds = &predecessors[block_id];
-        if preds.is_empty() {
-            continue;
-        }
-        let mut entry = wanted.clone();
-        entry.retain(|slot| preds.iter().all(|pred| exit_cached_slots[*pred].contains(slot)));
-        block_entry_cached_slots[block_id] = sorted_slots_vec_by_rank(entry, cache_candidates);
+        block_entry_cached_slots[block_id] =
+            desired_entry_slots.get(block_id).cloned().unwrap_or_default();
     }
     block_entry_cached_slots
 }
@@ -412,6 +420,18 @@ fn desired_entry_slots_for_block(
                     gp_unit_bytes,
                 );
             }
+            SsaInstKind::LocalEnsureCache { slot } => {
+                maybe_add_entry_slot(
+                    *slot,
+                    cache_candidates,
+                    &mut seen_cache_slots,
+                    &mut desired,
+                    &mut desired_counts,
+                    peak,
+                    gp_dynamic_budget,
+                    fp_dynamic_budget,
+                );
+            }
             SsaInstKind::Value { args, results, .. } => {
                 for operand in args {
                     consume_operand(
@@ -450,7 +470,9 @@ fn desired_entry_slots_for_block(
                     gp_unit_bytes,
                 );
             }
-            SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalEnsureCache { .. }
+            | SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Call(_) => {}
         }
         peak.gp = peak.gp.max(live.gp);
         peak.fp = peak.fp.max(live.fp);
@@ -679,6 +701,13 @@ fn maybe_repair_edge(
             });
         }
     }
+    for slot in &target_entry {
+        if !pred_exit.contains(slot) {
+            ops.push(SsaInst {
+                kind: SsaInstKind::LocalEnsureCache { slot: *slot },
+            });
+        }
+    }
     let repair_edge = crate::vm::middle::ssa_ir::ir::SsaEdge {
         target: edge.target,
         bindings: repair_params
@@ -738,7 +767,8 @@ fn build_cache_candidates(program: &SsaProgram, gp_unit_bytes: u8) -> BTreeMap<F
                 SsaInstKind::LocalSetCache { slot, src } => {
                     (slot, value_type_from_slice(&program.value_types, src))
                 }
-                SsaInstKind::LocalDropCache { slot } => (slot, ValueType::I32),
+                SsaInstKind::LocalEnsureCache { slot }
+                | SsaInstKind::LocalDropCache { slot } => (slot, ValueType::I32),
                 _ => continue,
             };
             candidates.entry(slot).or_insert_with(|| {
@@ -776,6 +806,7 @@ fn compute_remaining_uses(block: &crate::vm::middle::ssa_ir::ir::SsaBlock) -> BT
             SsaInstKind::Fill { .. }
             | SsaInstKind::LocalGetSlot { .. }
             | SsaInstKind::LocalGetCache { .. }
+            | SsaInstKind::LocalEnsureCache { .. }
             | SsaInstKind::LocalDropCache { .. }
             | SsaInstKind::Call(_) => {}
         }
@@ -816,7 +847,9 @@ fn compute_remaining_cache_accesses(
     let mut counts = BTreeMap::new();
     for inst in &block.ops {
         match inst.kind {
-            SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalSetCache { slot, .. } => {
+            SsaInstKind::LocalGetCache { slot, .. }
+            | SsaInstKind::LocalSetCache { slot, .. }
+            | SsaInstKind::LocalEnsureCache { slot } => {
                 *counts.entry(slot).or_insert(0) += 1;
             }
             _ => {}
@@ -1111,37 +1144,6 @@ fn result_types(value_types: &[ValueType], results: &[SsaValue]) -> Vec<ValueTyp
         .collect()
 }
 
-fn clear_skip_reload(call: SsaCallOp) -> SsaCallOp {
-    match call {
-        SsaCallOp::CallDirect {
-            callee,
-            args,
-            results,
-            ..
-        } => SsaCallOp::CallDirect {
-            callee,
-            args,
-            results,
-            skip_reload: Vec::new(),
-        },
-        SsaCallOp::CallIndirect {
-            type_idx,
-            table_idx,
-            index_slot,
-            args,
-            results,
-            ..
-        } => SsaCallOp::CallIndirect {
-            type_idx,
-            table_idx,
-            index_slot,
-            args,
-            results,
-            skip_reload: Vec::new(),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,6 +1156,70 @@ mod tests {
         },
     };
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
+
+    #[test]
+    fn repairs_missing_entry_cache_with_explicit_ensure_block() {
+        let frame = plan_frame_layout(1, 1, 4);
+        let slot = frame.local_slot(0);
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
+            local_cache: SsaLocalCachePrefs {
+                gp_preferred_slots: alloc::vec![slot],
+                gp_preferred_types: alloc::vec![ValueType::I32],
+                fp_preferred_slots: alloc::vec![],
+                fp_preferred_types: alloc::vec![],
+                gp_local_info: alloc::vec![CachedLocalInfo::default()],
+                fp_local_info: alloc::vec![],
+            },
+            blocks: alloc::vec![
+                crate::vm::middle::ssa_ir::ir::SsaBlock {
+                    id: SsaTarget(0),
+                    params: alloc::vec![],
+                    ops: alloc::vec![],
+                    terminator: SsaTerminator::Goto(crate::vm::middle::ssa_ir::ir::SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: alloc::vec![],
+                    }),
+                },
+                crate::vm::middle::ssa_ir::ir::SsaBlock {
+                    id: SsaTarget(1),
+                    params: alloc::vec![],
+                    ops: alloc::vec![SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot,
+                            dst: SsaValue(0),
+                        },
+                    }],
+                    terminator: SsaTerminator::Return { results: None },
+                },
+            ],
+            block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![]],
+            value_types: alloc::vec![ValueType::I32],
+            value_sink_local: alloc::vec![],
+        };
+
+        plan_resources(&mut program, 8, 2, 0);
+
+        assert_eq!(program.block_entry_cached_slots[1], alloc::vec![slot]);
+        assert_eq!(program.blocks.len(), 3);
+
+        let repair = program
+            .blocks
+            .iter()
+            .find(|block| {
+                block.id != SsaTarget(0)
+                    && block.id != SsaTarget(1)
+                    && block.ops.iter().any(|inst| {
+                        matches!(inst.kind, SsaInstKind::LocalEnsureCache { slot: repair_slot } if repair_slot == slot)
+                    })
+            })
+            .expect("expected repair block with LocalEnsureCache");
+
+        assert!(matches!(
+            &program.blocks[0].terminator,
+            SsaTerminator::Goto(crate::vm::middle::ssa_ir::ir::SsaEdge { target, .. }) if *target == repair.id
+        ));
+    }
 
     #[test]
     fn carries_cached_locals_across_compatible_edges() {

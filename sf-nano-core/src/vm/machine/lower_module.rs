@@ -2,7 +2,7 @@
 // Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
 
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 use crate::{
     error::WasmError,
@@ -18,7 +18,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
-            frame::{FrameLayoutPlan, FrameSpan},
+            frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             ssa_ir::{
                 ir::{
                     SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
@@ -36,7 +36,7 @@ use crate::{
 use super::{
     gp32::Gp32Lowering,
     lower_const_pool::ConstPoolBuilder,
-    lower_context::{explicit_cached_locals, BlockLowerContext, EntryCacheParam, ValueRegs},
+    lower_context::{explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs},
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
@@ -192,6 +192,7 @@ fn lower_function(
         &Gp64Lowering
     };
     let explicit_cache = explicit_cached_locals(input.ssa);
+    let block_entry_cache_dirty = compute_block_entry_cache_dirty(input.ssa, &explicit_cache);
 
     for block in &input.ssa.blocks {
         let target = block.id;
@@ -205,7 +206,9 @@ fn lower_function(
             gp_reg_width,
             i64_ops,
             target == input.ssa.entry,
-            None,
+            block_entry_cache_dirty
+                .get(target.as_usize())
+                .map(|dirty| dirty.as_slice()),
             #[cfg(has_guard_pages)]
             guard_pages,
         )?;
@@ -290,7 +293,6 @@ fn lower_function(
                         callee,
                         args,
                         results,
-                        skip_reload,
                     } if is_local_func
                         .get(*callee as usize)
                         .copied()
@@ -309,7 +311,7 @@ fn lower_function(
                         )?;
                         current_block = continuation;
                         current_params = Vec::new();
-                        lower.begin_continuation_block_selective(Some(skip_reload))?;
+                        lower.begin_continuation_block_selective()?;
                     }
                     // External targets stay in the current block as helper-call
                     // instructions. They cross the runtime ABI boundary but do
@@ -318,15 +320,8 @@ fn lower_function(
                         callee,
                         args,
                         results,
-                        skip_reload,
                     } => {
-                        lower.lower_call_external(
-                            *callee,
-                            *args,
-                            *results,
-                            skip_reload,
-                            const_pool,
-                        )?;
+                        lower.lower_call_external(*callee, *args, *results, const_pool)?;
                     }
                     SsaCallOp::CallIndirect { .. } => {
                         let SsaCallOp::CallIndirect {
@@ -335,7 +330,6 @@ fn lower_function(
                             index_slot,
                             args,
                             results,
-                            skip_reload,
                         } = call
                         else {
                             unreachable!("matched call_indirect");
@@ -638,7 +632,7 @@ fn lower_function(
 
                         current_block = continuation;
                         current_params = Vec::new();
-                        lower.begin_continuation_block_selective(Some(skip_reload))?;
+                        lower.begin_continuation_block_selective()?;
                     }
                 },
                 _ => lower.lower_inst(inst)?,
@@ -1484,3 +1478,163 @@ fn indexed_const_addr(
 // Cross-block dirty-flag dataflow analysis
 // ---------------------------------------------------------------------------
 //
+// Entry dirty bits are solved on the final explicit SSA program after edge
+// repair blocks have been inserted. Each block carries one canonical entry
+// cache state; dirty bits are propagated conservatively by OR-ing predecessor
+// exit dirtiness for the slots that must already be resident on block entry.
+//
+
+fn compute_block_entry_cache_dirty(
+    program: &SsaProgram,
+    cached_locals: &[CachedLocal],
+) -> Vec<Vec<bool>> {
+    if program.blocks.is_empty() || cached_locals.is_empty() {
+        return vec![Vec::new(); program.blocks.len()];
+    }
+
+    let predecessors = compute_ssa_predecessors(program);
+    let slot_to_index = cached_locals
+        .iter()
+        .enumerate()
+        .map(|(index, cached)| (cached.slot, index))
+        .collect::<BTreeMap<FrameSlot, usize>>();
+    let mut entry_dirty = vec![vec![false; cached_locals.len()]; program.blocks.len()];
+
+    loop {
+        let mut changed = false;
+        for block in &program.blocks {
+            if block.id == program.entry {
+                continue;
+            }
+            let block_index = block.id.as_usize();
+            let Some(entry_slots) = program.block_entry_cached_slots.get(block_index) else {
+                continue;
+            };
+            if entry_slots.is_empty() {
+                continue;
+            }
+
+            let mut next_dirty = vec![false; cached_locals.len()];
+            for &pred_index in &predecessors[block_index] {
+                let (_, pred_exit_dirty) = simulate_block_cache_exit_state(
+                    program,
+                    &program.blocks[pred_index],
+                    &entry_dirty[pred_index],
+                    &slot_to_index,
+                );
+                for &slot in entry_slots {
+                    if let Some(&cached_index) = slot_to_index.get(&slot) {
+                        next_dirty[cached_index] |= pred_exit_dirty[cached_index];
+                    }
+                }
+            }
+
+            if next_dirty != entry_dirty[block_index] {
+                entry_dirty[block_index] = next_dirty;
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    entry_dirty
+}
+
+fn compute_ssa_predecessors(program: &SsaProgram) -> Vec<Vec<usize>> {
+    let mut predecessors = vec![Vec::new(); program.blocks.len()];
+    for block in &program.blocks {
+        let from = block.id.as_usize();
+        match &block.terminator {
+            SsaTerminator::Goto(edge) => {
+                if let Some(preds) = predecessors.get_mut(edge.target.as_usize()) {
+                    preds.push(from);
+                }
+            }
+            SsaTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } => {
+                if let Some(preds) = predecessors.get_mut(then_edge.target.as_usize()) {
+                    preds.push(from);
+                }
+                if let Some(preds) = predecessors.get_mut(else_edge.target.as_usize()) {
+                    preds.push(from);
+                }
+            }
+            SsaTerminator::BrTable { entries, .. } => {
+                for edge in entries {
+                    if let Some(preds) = predecessors.get_mut(edge.target.as_usize()) {
+                        preds.push(from);
+                    }
+                }
+            }
+            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        }
+    }
+
+    for preds in &mut predecessors {
+        preds.sort_unstable();
+        preds.dedup();
+    }
+    predecessors
+}
+
+fn simulate_block_cache_exit_state(
+    program: &SsaProgram,
+    block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
+    entry_dirty: &[bool],
+    slot_to_index: &BTreeMap<FrameSlot, usize>,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut resident = vec![false; slot_to_index.len()];
+    let mut dirty = vec![false; slot_to_index.len()];
+
+    if let Some(entry_slots) = program.block_entry_cached_slots.get(block.id.as_usize()) {
+        for &slot in entry_slots {
+            if let Some(&cached_index) = slot_to_index.get(&slot) {
+                resident[cached_index] = true;
+                dirty[cached_index] = entry_dirty.get(cached_index).copied().unwrap_or(false);
+            }
+        }
+    }
+
+    for inst in &block.ops {
+        match &inst.kind {
+            SsaInstKind::LocalGetCache { slot, .. }
+            | SsaInstKind::LocalEnsureCache { slot } => {
+                if let Some(&cached_index) = slot_to_index.get(slot) {
+                    if !resident[cached_index] {
+                        resident[cached_index] = true;
+                        dirty[cached_index] = false;
+                    }
+                }
+            }
+            SsaInstKind::LocalSetCache { slot, .. } => {
+                if let Some(&cached_index) = slot_to_index.get(slot) {
+                    resident[cached_index] = true;
+                    dirty[cached_index] = true;
+                }
+            }
+            SsaInstKind::LocalDropCache { slot } => {
+                if let Some(&cached_index) = slot_to_index.get(slot) {
+                    resident[cached_index] = false;
+                    dirty[cached_index] = false;
+                }
+            }
+            SsaInstKind::Call(_) => {
+                resident.fill(false);
+                dirty.fill(false);
+            }
+            SsaInstKind::Value { .. }
+            | SsaInstKind::LocalGetSlot { .. }
+            | SsaInstKind::LocalSetSlot { .. }
+            | SsaInstKind::Fill { .. }
+            | SsaInstKind::Spill { .. } => {}
+        }
+    }
+
+    (resident, dirty)
+}

@@ -429,8 +429,8 @@ fn build_cache_plan(
     frame: FrameLayoutPlan,
     local_cache: &SsaLocalCachePrefs,
     gp_unit_bytes: u8,
-    gp_cache_budget: u8,
-    fp_cache_budget: u8,
+    _gp_cache_budget: u8,
+    _fp_cache_budget: u8,
 ) -> CachePlan {
     let mut candidates = Vec::new();
     let mut local_to_candidate = alloc::vec![None; semantic.local_count as usize];
@@ -439,7 +439,6 @@ fn build_cache_plan(
         .map(|local_idx| (frame.local_slot(local_idx as u16), local_idx))
         .collect::<BTreeMap<_, _>>();
 
-    let mut gp_used = 0usize;
     for (rank, slot) in local_cache.gp_preferred_slots.iter().copied().enumerate() {
         let Some(&local_idx) = slot_to_local.get(&slot) else {
             continue;
@@ -450,9 +449,6 @@ fn build_cache_plan(
             .copied()
             .unwrap_or(ValueType::I64);
         let cost = gp_value_budget_units(ty, gp_unit_bytes);
-        if gp_used.saturating_add(cost) > gp_cache_budget as usize {
-            continue;
-        }
         let index = candidates.len();
         candidates.push(CacheCandidate {
             slot,
@@ -461,15 +457,10 @@ fn build_cache_plan(
             rank,
         });
         local_to_candidate[local_idx] = Some(index);
-        gp_used = gp_used.saturating_add(cost);
     }
 
     let fp_rank_base = candidates.len();
-    let mut fp_used = 0usize;
     for (rank, slot) in local_cache.fp_preferred_slots.iter().copied().enumerate() {
-        if fp_used >= fp_cache_budget as usize {
-            break;
-        }
         let Some(&local_idx) = slot_to_local.get(&slot) else {
             continue;
         };
@@ -481,7 +472,6 @@ fn build_cache_plan(
             rank: fp_rank_base + rank,
         });
         local_to_candidate[local_idx] = Some(index);
-        fp_used += 1;
     }
 
     CachePlan {

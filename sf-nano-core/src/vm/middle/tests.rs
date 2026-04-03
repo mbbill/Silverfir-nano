@@ -1664,11 +1664,7 @@ fn prepares_explicit_cached_local_drop_before_call() {
         block.ops
             .iter()
             .position(|inst| {
-                matches!(
-                    inst.kind,
-                    SsaInstKind::Call(SsaCallOp::CallDirect { ref skip_reload, .. })
-                        if skip_reload.is_empty()
-                )
+                matches!(inst.kind, SsaInstKind::Call(SsaCallOp::CallDirect { .. }))
             })
             .is_some_and(|call_index| {
                 block.ops[..call_index]
@@ -1683,7 +1679,7 @@ fn prepares_explicit_cached_local_drop_before_call() {
 }
 
 #[test]
-fn fixed_cache_stage_limits_explicit_cache_ops_to_budgeted_slots() {
+fn joint_cache_planner_keeps_multiple_locals_cache_eligible() {
     use crate::value_type::ValueType;
 
     let semantic = SemanticProgram {
@@ -1719,24 +1715,24 @@ fn fixed_cache_stage_limits_explicit_cache_ops_to_budgeted_slots() {
         },
         &semantic,
     )
-    .expect("fixed cache prepare should succeed");
+    .expect("joint cache prepare should succeed");
 
-    let cached_slot = prepared.frame.local_slot(0);
-    let uncached_slot = prepared.frame.local_slot(1);
+    let first_slot = prepared.frame.local_slot(0);
+    let second_slot = prepared.frame.local_slot(1);
 
     assert!(prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
         matches!(
             inst.kind,
             SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalSetCache { slot, .. }
-                if slot == cached_slot
+                if slot == first_slot
         )
     }));
 
-    assert!(!prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
+    assert!(prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()).any(|inst| {
         matches!(
             inst.kind,
             SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalSetCache { slot, .. }
-                if slot == uncached_slot
+                if slot == second_slot
         )
     }));
 }

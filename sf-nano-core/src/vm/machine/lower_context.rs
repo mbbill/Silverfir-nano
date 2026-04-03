@@ -89,9 +89,9 @@ pub(super) struct BlockLowerContext<'a> {
     cached_locals: Vec<CachedLocal>,
     cache_bindings: Vec<Option<CachedLocalBinding>>,
     /// Per cached-local dirty bit: `true` means the register has been written
-    /// since the last call save.  Only dirty locals need saving before the
-    /// next call.  Starts all-dirty for non-entry blocks (conservative)
-    /// and all-clean for the entry block.
+    /// since the last call save. Only dirty locals need saving before the next
+    /// call. Entry blocks start clean; non-entry blocks receive their carried
+    /// dirty state from cross-block analysis.
     cache_live: Vec<bool>,
     cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,
@@ -124,8 +124,8 @@ impl<'a> BlockLowerContext<'a> {
         call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
-        _is_entry: bool,
-        _initial_cache_dirty: Option<&[bool]>,
+        is_entry: bool,
+        initial_cache_dirty: Option<&[bool]>,
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
@@ -184,7 +184,11 @@ impl<'a> BlockLowerContext<'a> {
         for entry in entry_cache_params {
             lower.bind_cached_local_to_regs(entry.cached_index, entry.regs.lo, entry.regs.hi)?;
             lower.set_cache_live(entry.cached_index, true);
-            lower.set_cache_dirty(entry.cached_index, true);
+            let initial_dirty = initial_cache_dirty
+                .and_then(|bits| bits.get(entry.cached_index))
+                .copied()
+                .unwrap_or(!is_entry);
+            lower.set_cache_dirty(entry.cached_index, initial_dirty);
         }
         lower.release_dead_values()?;
 
@@ -867,7 +871,8 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
                         &mut order,
                     );
                 }
-                SsaInstKind::LocalDropCache { slot } => {
+                SsaInstKind::LocalEnsureCache { slot }
+                | SsaInstKind::LocalDropCache { slot } => {
                     record_explicit_cached_local(&mut explicit, &pref_map, *slot, None, &mut order);
                 }
                 _ => {}

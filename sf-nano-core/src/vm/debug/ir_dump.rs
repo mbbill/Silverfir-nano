@@ -316,6 +316,9 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
         SsaInstKind::LocalSetCache { slot, src } => {
             format!("local.set_cache fp[{}] <- v{}", slot.0, src.0)
         }
+        SsaInstKind::LocalEnsureCache { slot } => {
+            format!("local.ensure_cache fp[{}]", slot.0)
+        }
         SsaInstKind::LocalDropCache { slot } => {
             format!("local.drop_cache fp[{}]", slot.0)
         }
@@ -332,7 +335,6 @@ fn render_call(bop: &SsaCallOp) -> String {
             callee,
             args,
             results,
-            ..
         } => format!(
             "call_direct f{callee} args=fp[{}..{}) results=fp[{}..{})",
             args.start.0,
@@ -346,7 +348,6 @@ fn render_call(bop: &SsaCallOp) -> String {
             index_slot,
             args,
             results,
-            ..
         } => format!(
             "call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
             index_slot.0,

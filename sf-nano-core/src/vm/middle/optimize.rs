@@ -132,6 +132,7 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
             SsaInstKind::LocalGetSlot { .. }
             | SsaInstKind::LocalGetCache { .. }
             | SsaInstKind::Fill { .. }
+            | SsaInstKind::LocalEnsureCache { .. }
             | SsaInstKind::LocalDropCache { .. }
             | SsaInstKind::Call(_) => {}
         }
@@ -877,6 +878,7 @@ fn forward_slot_values(
             SsaInstKind::Fill { .. } | SsaInstKind::Spill { .. } => {}
             SsaInstKind::LocalGetCache { .. }
             | SsaInstKind::LocalSetCache { .. }
+            | SsaInstKind::LocalEnsureCache { .. }
             | SsaInstKind::LocalDropCache { .. }
             | SsaInstKind::Call(_) => {
                 slot_values.fill(None);
@@ -917,7 +919,9 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
             | SsaInstKind::Spill { src, .. } => {
                 max_value = max_value.max(Some(*src));
             }
-            SsaInstKind::LocalDropCache { .. } | SsaInstKind::Call(_) => {}
+            SsaInstKind::LocalEnsureCache { .. }
+            | SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Call(_) => {}
         }
     }
 
@@ -968,6 +972,7 @@ fn compute_last_uses(block: &SsaBlock, len: usize) -> Vec<Option<u32>> {
             SsaInstKind::LocalGetSlot { .. }
             | SsaInstKind::LocalGetCache { .. }
             | SsaInstKind::Fill { .. }
+            | SsaInstKind::LocalEnsureCache { .. }
             | SsaInstKind::LocalDropCache { .. }
             | SsaInstKind::Call(_) => {}
         }
@@ -1048,6 +1053,7 @@ fn rewrite_inst_uses(kind: &mut SsaInstKind, aliases: &[Option<SsaValue>]) {
         SsaInstKind::LocalGetSlot { .. }
         | SsaInstKind::LocalGetCache { .. }
         | SsaInstKind::Fill { .. }
+        | SsaInstKind::LocalEnsureCache { .. }
         | SsaInstKind::LocalDropCache { .. }
         | SsaInstKind::Call(_) => {}
     }

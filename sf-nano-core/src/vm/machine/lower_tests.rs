@@ -858,7 +858,6 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
                         caller_frame.operand_slot(0),
                         1,
                     ),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -1161,7 +1160,6 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
                     callee: 7,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
                     results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -1296,7 +1294,6 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
                         callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
-                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -1383,7 +1380,6 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
                         callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
-                        skip_reload: alloc::vec![true],
                     }),
                 },
             ],
@@ -1405,7 +1401,7 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
             result_count: 0,
         }],
     })
-    .expect("direct external call lowering should honor skip_reload");
+    .expect("direct external call lowering should preserve explicit cache protocol");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 5);
@@ -1460,7 +1456,6 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                         callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
                         results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
-                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -1522,7 +1517,6 @@ fn lowers_direct_local_call_with_continuation_block() {
                         caller_frame.operand_slot(0),
                         1
                     ),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -1705,7 +1699,6 @@ fn flushes_cached_local_before_second_direct_call() {
                             caller_frame.operand_slot(0),
                             1,
                         ),
-                        skip_reload: alloc::vec![],
                     }),
                 },
                 SsaInst {
@@ -1736,7 +1729,6 @@ fn flushes_cached_local_before_second_direct_call() {
                             caller_frame.operand_slot(0),
                             1,
                         ),
-                        skip_reload: alloc::vec![],
                     }),
                 },
             ],
@@ -2057,6 +2049,84 @@ fn threads_cached_locals_through_block_edge_params() {
 }
 
 #[test]
+fn does_not_save_clean_carried_cache_before_external_call() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_cache: SsaLocalCachePrefs {
+            gp_preferred_slots: alloc::vec![slot],
+            gp_preferred_types: alloc::vec![ValueType::I32],
+            fp_preferred_slots: alloc::vec![],
+            fp_preferred_types: alloc::vec![],
+            gp_local_info: alloc::vec![CachedLocalInfo {
+                is_param: true,
+                reads_before_write: true,
+            }],
+            fp_local_info: alloc::vec![],
+        },
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::LocalEnsureCache { slot },
+                }],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                        callee: 7,
+                        args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                        results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                    }),
+                }],
+                terminator: SsaTerminator::TrapUnreachable,
+            },
+        ],
+        value_types: alloc::vec![],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("clean carried cache should not be saved before external call");
+
+    let program = &lowered.module.functions[0].program;
+    assert!(matches!(&program.blocks[0].terminator, MachineTerminator::Jump(_)));
+    assert!(
+        program.blocks[1]
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        "clean carried cache should not be spilled before the external call"
+    );
+    assert!(
+        program.blocks[1]
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::CallExternal(_))),
+        "expected external call in continuation block"
+    );
+}
+
+#[test]
 fn rejects_cache_store_with_incompatible_gp_storage_types() {
     use crate::value_type::ValueType;
 
@@ -2146,7 +2216,6 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                         caller_frame.operand_slot(0),
                         1,
                     ),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -2344,7 +2413,6 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
                     index_slot: call_base.advance(2),
                     args: crate::vm::middle::frame::FrameSpan::new(call_base, 2),
                     results: crate::vm::middle::frame::FrameSpan::new(call_base, 1),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -2551,7 +2619,6 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
                     index_slot: call_base.advance(2),
                     args: crate::vm::middle::frame::FrameSpan::new(call_base, 2),
                     results: crate::vm::middle::frame::FrameSpan::new(call_base, 1),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,
@@ -2705,7 +2772,6 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
                         caller_frame.operand_slot(0),
                         1,
                     ),
-                    skip_reload: alloc::vec![],
                 }),
             }],
             terminator: SsaTerminator::TrapUnreachable,

@@ -167,7 +167,6 @@ impl<'a> BlockLowerContext<'a> {
         func_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
-        _skip_reload: &[bool],
         const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(

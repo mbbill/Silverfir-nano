@@ -217,7 +217,6 @@ pub(super) fn lower_call_direct(
             callee,
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-            skip_reload: Vec::new(),
         }),
     });
     state.finish_call(params, results);
@@ -240,7 +239,6 @@ pub(super) fn lower_call_indirect(
             index_slot: call_base.advance(params),
             args: FrameSpan::new(call_base, params),
             results: FrameSpan::new(call_base, results),
-            skip_reload: Vec::new(),
         }),
     });
     state.finish_call(consumed, results);

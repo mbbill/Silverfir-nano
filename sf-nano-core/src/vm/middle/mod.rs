@@ -176,7 +176,6 @@ pub(crate) fn prepare_function(
     };
     let mut ssa = ssa;
     thread_jumps::simplify_cfg(&mut ssa);
-    sink_plan::plan_sinks(&mut ssa);
     optimize::optimize_ssa(&mut ssa, frame);
     resource_plan::plan_resources(
         &mut ssa,
@@ -184,6 +183,7 @@ pub(crate) fn prepare_function(
         gp_dynamic_budget,
         fp_dynamic_budget,
     );
+    sink_plan::plan_sinks(&mut ssa);
     validate_program(&ssa)?;
 
     Ok(PreparedFunction { frame, ssa })
