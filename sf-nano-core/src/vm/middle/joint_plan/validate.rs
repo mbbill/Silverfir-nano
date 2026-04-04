@@ -5,7 +5,7 @@ use crate::{
     vm::middle::{cfg::SemanticCfg, slot_ssa::SlotSsaProgram},
 };
 
-use super::types::FunctionPlan;
+use super::facts::FunctionPlan;
 
 pub(crate) fn validate_plan(
     cfg: &SemanticCfg,

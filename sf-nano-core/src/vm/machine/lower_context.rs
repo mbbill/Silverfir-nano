@@ -7,8 +7,8 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineAddr, MachineCallLinkLayout, MachineFrameRegion, MachineFuncId,
-            MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
-            MachineReg, MachineStorageType, MachineValue,
+            MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth,
+            MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
         },
         middle::{
             frame::FrameSlot,
@@ -22,8 +22,8 @@ use super::{
     lower_i64::I64Lowering,
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
-        canonical_value_mem_width_for_value, gp_reg_int_width, gp_reg_mem_width,
-        lir_value_storage_type, value_type_storage_type, MachineRegFile,
+        canonical_cached_local_mem_width, canonical_value_mem_width_for_value, gp_reg_int_width,
+        gp_reg_mem_width, lir_value_storage_type, value_type_storage_type, MachineRegFile,
     },
     lower_util::compute_remaining_uses,
 };
@@ -182,13 +182,21 @@ impl<'a> BlockLowerContext<'a> {
         }
         let entry_cache_params = lower.entry_cache_params.clone();
         for entry in entry_cache_params {
-            lower.bind_cached_local_to_regs(entry.cached_index, entry.regs.lo, entry.regs.hi)?;
-            lower.set_cache_live(entry.cached_index, true);
-            let initial_dirty = initial_cache_dirty
-                .and_then(|bits| bits.get(entry.cached_index))
-                .copied()
-                .unwrap_or(!is_entry);
-            lower.set_cache_dirty(entry.cached_index, initial_dirty);
+            if is_entry {
+                lower.materialize_entry_cached_local(entry.cached_index, entry.regs)?;
+            } else {
+                lower.bind_cached_local_to_regs(
+                    entry.cached_index,
+                    entry.regs.lo,
+                    entry.regs.hi,
+                )?;
+                lower.set_cache_live(entry.cached_index, true);
+                let initial_dirty = initial_cache_dirty
+                    .and_then(|bits| bits.get(entry.cached_index))
+                    .copied()
+                    .unwrap_or(true);
+                lower.set_cache_dirty(entry.cached_index, initial_dirty);
+            }
         }
         lower.release_dead_values()?;
 
@@ -845,6 +853,34 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn ops_pop(&mut self) -> Option<MachineInst> {
         self.ops.pop()
+    }
+
+    fn materialize_entry_cached_local(
+        &mut self,
+        cached_index: usize,
+        regs: ValueRegs,
+    ) -> Result<(), WasmError> {
+        // Function entry has no predecessor edge to carry cached locals. If the
+        // planner wants them resident immediately, materialize them here from
+        // their frame slots instead of faking extra entry block params.
+        let cached = self.bind_cached_local_to_regs(cached_index, regs.lo, regs.hi)?;
+        if matches!(cached.ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            ops.emit_reload_cached_i64(self, &cached)?;
+        } else {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    ty: cached.ty,
+                    dst: cached.reg,
+                    addr: self.frame_addr(cached.slot)?,
+                    width: canonical_cached_local_mem_width(cached.ty),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+        }
+        self.set_cache_live(cached_index, true);
+        self.set_cache_dirty(cached_index, false);
+        Ok(())
     }
 }
 

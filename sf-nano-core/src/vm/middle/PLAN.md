@@ -285,6 +285,10 @@ So:
 
 This avoids any full recompute loop. The block is lowered once.
 
+At the first semantic op of a CFG block, the chosen `block_open(block)`
+transient state must be authoritative. The planner must not silently fall back
+to an older per-op transient contract at block start.
+
 #### 5. Observed block exit cache state
 
 Block exit is not independently planned first.
@@ -570,6 +574,12 @@ For stack values:
 - chosen resident values stay in the resident entry stack suffix
 - non-chosen deeper values may be spilled before the block needs them
 
+Function entry should follow the same planner policy:
+
+- the planner may still choose entry cached locals for the entry block
+- the backend should materialize them with prologue loads from frame slots
+- they must not become hidden extra entry-block params
+
 ### Entry-state rule
 
 At `block_open(block)`:
@@ -819,6 +829,14 @@ Important example:
 
 So pressure resolution must plan the whole step together.
 
+The fit check must cover both:
+
+- the transient window before the op
+- the immediate transient window after the op
+
+Otherwise a plan can fit before the op and still overflow immediately after a
+push or other result-producing op.
+
 ### Eviction classes
 
 At a pressure point, classify resident values in this order:
@@ -846,6 +864,25 @@ So if two values are both dead after the current point:
 
 This is enough to preserve loop steady state without separately planning exit.
 
+For transients, the implementation tracks whole-block usage of block-local
+stack symbols. That lets the planner rank:
+
+- cached locals
+- the current bottom live transient
+
+under the same keep-key model.
+
+Important legality nuance:
+
+- stack spilling is suffix-based
+- so the only spillable transient is the current bottom live value
+
+That means pressure sometimes has to spill through a cold bottom value in the
+"wrong" bank in order to expose the deeper values that are really causing the
+overflow. The policy should prefer victims that directly relieve the current
+overflow, but if none exist it must still allow bottom-transient spill to make
+progress.
+
 ### Pseudocode
 
 ```text
@@ -859,7 +896,6 @@ function plan_op(block, op_index, current_state):
     // - LocalGetSlot
     // - LocalGetCacheAlreadyResident
     // - LocalGetCacheAndKeepResident
-    // - LocalSetSlot
     // - LocalSetCache
 
     best = none
@@ -907,16 +943,36 @@ function evict_to_fit(block, op_index, state, demand, shape, block_ranking):
 
 
 function choose_eviction_victim(block, op_index, state, shape, block_ranking):
-    best_victim = none
-    best_keep_key = none
+    cache_victim = weakest_cached_local_in_overflowing_bank(
+        block,
+        op_index,
+        state,
+        shape,
+        block_ranking,
+    )
+    bottom_transient = bottom_live_transient(state)
 
-    for each resident value V in pressured_bank(state):
-        key = keep_key(block, op_index, V, shape, block_ranking)
-        if best_keep_key is none or key < best_keep_key:
-            best_keep_key = key
-            best_victim = V
+    if bottom_transient != none:
+        transient_keep = keep_key(block, op_index, bottom_transient, shape, block_ranking)
+        transient_relief = relief_score(bottom_transient, state)
+    else:
+        transient_keep = none
+        transient_relief = -1
 
-    return best_victim
+    if cache_victim != none:
+        cache_keep = keep_key(block, op_index, cache_victim, shape, block_ranking)
+        cache_relief = relief_score(cache_victim, state)
+    else:
+        cache_keep = none
+        cache_relief = -1
+
+    if cache_relief > transient_relief:
+        return cache_victim
+    if transient_relief > cache_relief:
+        return bottom_transient
+    if cache_keep != none and (transient_keep == none or cache_keep <= transient_keep):
+        return cache_victim
+    return bottom_transient
 
 
 function keep_key(block, op_index, value, shape, block_ranking):

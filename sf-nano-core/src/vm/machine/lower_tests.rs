@@ -2098,6 +2098,62 @@ fn does_not_save_clean_carried_cache_before_external_call() {
 }
 
 #[test]
+fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }],
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::LocalEnsureCache { slot },
+            }],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![slot]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("entry block cached locals should lower via prologue loads");
+
+    let block = &lowered.module.functions[0].program.blocks[0];
+    assert!(
+        block.params.is_empty(),
+        "entry block must not gain hidden cache params"
+    );
+    assert!(
+        matches!(block.ops[0].kind, MachineInstKind::Load { .. }),
+        "entry cached local should be materialized with an explicit frame load"
+    );
+    assert!(
+        block
+            .ops
+            .iter()
+            .skip(1)
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "LocalEnsureCache should not reload the same cached local again"
+    );
+}
+
+#[test]
 fn rejects_cache_store_with_incompatible_gp_storage_types() {
     use crate::value_type::ValueType;
 

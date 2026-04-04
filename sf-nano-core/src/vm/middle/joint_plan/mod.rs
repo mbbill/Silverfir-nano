@@ -1,17 +1,24 @@
 //! Joint transient/cache planning.
 //!
-//! This module exposes the single planner facade used by `rewrite.rs`.
+//! This module exposes the single planner facade used by `rewrite/`.
 
 #[allow(unused_imports)]
-pub(crate) use planner::{
+pub(crate) use facade::JointPlanner;
+#[allow(unused_imports)]
+pub(crate) use interface::{
     BeforeOpDecision, BeforeOpQuery, BlockExitDecision, BlockOpenDecision, EdgeRepairDecision,
-    EdgeRepairQuery, FunctionSetupDecision, JointPlanner, LocalAccessDecision, LocalAccessQuery,
+    EdgeRepairQuery, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
     TargetEntryDecision, TransientContract,
 };
-pub(super) mod builder;
+mod block_open;
+pub(super) mod build;
 pub(super) mod canonical;
-mod planner;
+pub(super) mod entry_region;
+mod facade;
+pub(super) mod facts;
+mod interface;
+mod local_access;
 mod policy;
-pub(super) mod scan;
-pub(super) mod types;
+mod pressure;
+mod repair;
 pub(super) mod validate;

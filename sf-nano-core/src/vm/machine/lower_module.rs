@@ -225,11 +225,13 @@ fn lower_function(
                 program_value_storage_type(input.ssa, value),
             ));
         }
-        append_entry_cache_params(
-            &mut current_params,
-            lower.entry_cache_params(),
-            &explicit_cache,
-        );
+        if target != input.ssa.entry {
+            append_entry_cache_params(
+                &mut current_params,
+                lower.entry_cache_params(),
+                &explicit_cache,
+            );
+        }
 
         for inst in &block.ops {
             match &inst.kind {

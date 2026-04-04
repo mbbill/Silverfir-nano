@@ -4,7 +4,7 @@
 //! - `cfg.rs` builds the explicit semantic CFG
 //! - `slot_ssa.rs` will build slot-only SSA
 //! - `joint_plan/` will decide cache and spill policy
-//! - `rewrite.rs` will materialize the final SSA-IR
+//! - `rewrite/` will materialize the final SSA-IR
 
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;

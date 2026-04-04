@@ -1,0 +1,227 @@
+//! Core joint-plan data types.
+
+use alloc::vec::Vec;
+
+use crate::value_type::ValueType;
+use crate::vm::middle::frame::{FrameSlot, FrameSpan};
+
+/// Prefix actions chosen while simulating transient legality.
+///
+/// These actions are builder-internal. The rewrite-facing planner no longer
+/// consumes static prep scripts; it only uses the resulting transient state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PrepAction {
+    Spill(FrameSpan),
+    Fill(FrameSpan, Vec<ValueType>),
+    DropCache(FrameSlot),
+}
+
+/// Exact transient entry state at one semantic program point.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EntryState {
+    pub stack_height: u16,
+    pub spill_depth: u16,
+    /// Full semantic stack typing at this program point, from bottom to top.
+    ///
+    /// `live_types` is still the rewrite-facing resident suffix. The full stack
+    /// shape is planner-only metadata used for entry-stack ranking.
+    pub stack_types: Vec<ValueType>,
+    pub live_types: Vec<ValueType>,
+}
+
+impl EntryState {}
+
+/// First meaningful access shape for one local inside a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FirstAccessKind {
+    ReadFirst,
+    WriteFirst,
+}
+
+/// Block-local use summary for one local slot.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockLocalInfo {
+    pub slot: FrameSlot,
+    pub first_access_kind: Option<FirstAccessKind>,
+    pub first_read_distance: Option<u16>,
+    pub first_write_distance: Option<u16>,
+    pub read_count: u16,
+    pub write_count: u16,
+    pub access_offsets: Vec<u16>,
+    pub hot_score: i32,
+}
+
+impl BlockLocalInfo {
+    #[inline]
+    pub(crate) fn used_anywhere(&self) -> bool {
+        self.first_access_kind.is_some()
+    }
+
+    #[inline]
+    pub(crate) fn used_after(&self, block_offset: u16) -> bool {
+        self.access_offsets
+            .iter()
+            .any(|offset| *offset > block_offset)
+    }
+
+    #[inline]
+    pub(crate) fn remaining_use_count(&self, block_offset: u16) -> u16 {
+        self.access_offsets
+            .iter()
+            .filter(|offset| **offset > block_offset)
+            .count() as u16
+    }
+
+    #[inline]
+    pub(crate) fn next_use_distance(&self, block_offset: u16) -> Option<u16> {
+        self.access_offsets
+            .iter()
+            .copied()
+            .find(|offset| *offset > block_offset)
+            .map(|offset| offset.saturating_sub(block_offset))
+    }
+}
+
+/// Block-local entry-region and whole-block hotness facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockLocalRegion {
+    pub ranked_slots: Vec<FrameSlot>,
+    pub locals: Vec<Option<BlockLocalInfo>>,
+}
+
+impl BlockLocalRegion {
+    #[inline]
+    pub(crate) fn info(&self, slot: FrameSlot) -> Option<&BlockLocalInfo> {
+        self.locals.get(slot.0 as usize).and_then(Option::as_ref)
+    }
+}
+
+/// Entry-stack use summary for one original block-entry stack value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlockStackValueInfo {
+    pub stack_index: u16,
+    pub ty: ValueType,
+    pub touched_before_barrier: bool,
+    pub first_touch_distance: Option<u16>,
+    pub touch_count: u16,
+    pub hot_score: i32,
+}
+
+/// Entry-stack facts used by block-open planning.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockEntryStackRegion {
+    pub entry_stack_height: u16,
+    pub values: Vec<BlockStackValueInfo>,
+}
+
+impl BlockEntryStackRegion {
+    #[inline]
+    pub(crate) fn score_suffix(&self, spill_depth: u16) -> i32 {
+        self.values
+            .iter()
+            .filter(|info| info.stack_index >= spill_depth)
+            .map(|info| info.hot_score)
+            .sum()
+    }
+}
+
+/// Whole-block use summary for one transient stack symbol.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TransientSymbolInfo {
+    pub first_touch_distance: Option<u16>,
+    pub touch_count: u16,
+    pub access_offsets: Vec<u16>,
+    pub hot_score: i32,
+}
+
+impl TransientSymbolInfo {
+    #[inline]
+    pub(crate) fn used_anywhere(&self) -> bool {
+        !self.access_offsets.is_empty()
+    }
+
+    #[inline]
+    pub(crate) fn used_after(&self, block_offset: u16) -> bool {
+        self.access_offsets
+            .iter()
+            .any(|offset| *offset > block_offset)
+    }
+
+    #[inline]
+    pub(crate) fn remaining_use_count(&self, block_offset: u16) -> u16 {
+        self.access_offsets
+            .iter()
+            .filter(|offset| **offset > block_offset)
+            .count() as u16
+    }
+
+    #[inline]
+    pub(crate) fn next_use_distance(&self, block_offset: u16) -> Option<u16> {
+        self.access_offsets
+            .iter()
+            .copied()
+            .find(|offset| *offset > block_offset)
+            .map(|offset| offset.saturating_sub(block_offset))
+    }
+}
+
+/// Whole-block transient-symbol facts for one CFG block.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockTransientRegion {
+    pub entry_stack_height: u16,
+    pub symbols: Vec<TransientSymbolInfo>,
+}
+
+impl BlockTransientRegion {
+    #[inline]
+    pub(crate) fn info(&self, symbol: u16) -> Option<&TransientSymbolInfo> {
+        self.symbols.get(symbol as usize)
+    }
+}
+
+/// Local semantic op kind used by the planner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalOpKind {
+    Get,
+    Set,
+    Tee,
+}
+
+/// Per-op planner lookup facts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpInfo {
+    pub block_index: u32,
+    pub block_offset: u16,
+    pub is_block_start: bool,
+    pub local_op: Option<(FrameSlot, LocalOpKind)>,
+}
+
+/// Planned straight-line behavior for one semantic op.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpPlan {
+    pub before: EntryState,
+}
+
+/// Planned block boundary state used by the planner facade.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockPlan {
+    pub entry: EntryState,
+    pub entry_cached_locals: Vec<FrameSlot>,
+    pub exit_cached_locals: Vec<FrameSlot>,
+}
+
+/// Whole-function joint plan.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FunctionPlan {
+    pub gp_unit_bytes: u8,
+    pub gp_dynamic_budget: u8,
+    pub fp_dynamic_budget: u8,
+    pub local_slot_types: Vec<ValueType>,
+    pub op_plans: Vec<OpPlan>,
+    pub entry_states: Vec<EntryState>,
+    pub op_info: Vec<OpInfo>,
+    pub block_regions: Vec<BlockLocalRegion>,
+    pub block_stack_regions: Vec<BlockEntryStackRegion>,
+    pub block_transient_regions: Vec<BlockTransientRegion>,
+    pub blocks: Vec<BlockPlan>,
+}

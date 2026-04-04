@@ -1,4 +1,10 @@
 //! Final SSA-IR materialization from the chosen joint plan.
+//!
+//! This file still holds most of the lowering mechanics. The important split is
+//! already in place:
+//! - `state.rs` owns mutable transient state and SSA value allocation
+//! - `edge.rs` owns cached-local boundary repair block insertion
+//! - this file coordinates one block-at-a-time lowering using planner decisions
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -12,8 +18,8 @@ use crate::{
             cfg::{CfgBlockId, SemanticCfg},
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                BeforeOpQuery, EdgeRepairQuery, JointPlanner, LocalAccessDecision,
-                LocalAccessQuery, TransientContract,
+                BeforeOpQuery, JointPlanner, LocalAccessDecision, LocalAccessQuery,
+                TransientContract,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -31,6 +37,11 @@ use crate::{
             semantic_ir::{SemanticOpKind, SemanticProgram},
         },
     },
+};
+
+use super::{
+    edge::insert_boundary_repair_blocks,
+    state::{make_block_params, BlockState, ValueAlloc},
 };
 
 pub(crate) fn rewrite_function(
@@ -127,6 +138,20 @@ pub(crate) fn rewrite_function(
         value_sink_local: Vec::new(),
     };
 
+    if let Some(entry_block) = program
+        .blocks
+        .iter()
+        .find(|block| block.id == program.entry)
+    {
+        if !entry_block.params.is_empty() {
+            return Err(WasmError::internal(alloc::format!(
+                "entry block {} unexpectedly has {} SSA params after middle rewrite",
+                entry_block.id.0,
+                entry_block.params.len()
+            )));
+        }
+    }
+
     insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots, planner);
     Ok(program)
 }
@@ -141,192 +166,6 @@ fn collect_local_slot_info(semantic: &SemanticProgram) -> Vec<LocalSlotInfo> {
         .collect()
 }
 
-#[derive(Clone, Debug, Default)]
-struct ValueAlloc {
-    next: u32,
-    types: Vec<ValueType>,
-}
-
-impl ValueAlloc {
-    fn fresh_typed(&mut self, ty: ValueType) -> SsaValue {
-        let value = SsaValue(self.next);
-        self.next += 1;
-        self.types.push(ty);
-        value
-    }
-
-    fn many_typed(&mut self, types: &[ValueType]) -> Vec<SsaValue> {
-        types.iter().map(|ty| self.fresh_typed(*ty)).collect()
-    }
-
-    fn value_type(&self, value: SsaValue) -> ValueType {
-        self.types
-            .get(value.0 as usize)
-            .copied()
-            .unwrap_or(ValueType::I64)
-    }
-
-    fn take_types(&mut self) -> Vec<ValueType> {
-        core::mem::take(&mut self.types)
-    }
-}
-
-#[derive(Clone, Debug)]
-struct BlockState {
-    gp_unit_bytes: u8,
-    gp_live_budget: u8,
-    fp_live_budget: u8,
-    stack_height: u16,
-    spill_depth: u16,
-    live: Vec<SsaValue>,
-    live_types: Vec<ValueType>,
-    ops: Vec<SsaInst>,
-}
-
-impl BlockState {
-    fn from_entry(
-        entry: TransientContract<'_>,
-        params: &[SsaValue],
-        gp_unit_bytes: u8,
-        gp_live_budget: u8,
-        fp_live_budget: u8,
-    ) -> Result<Self, WasmError> {
-        let state = Self {
-            gp_unit_bytes,
-            gp_live_budget,
-            fp_live_budget,
-            stack_height: entry.stack_height,
-            spill_depth: entry.spill_depth,
-            live: params.to_vec(),
-            live_types: entry.live_types.to_vec(),
-            ops: Vec::new(),
-        };
-        state.ensure_live_fit("block entry")?;
-        Ok(state)
-    }
-
-    fn height(&self) -> u16 {
-        self.stack_height
-    }
-
-    fn spill_depth(&self) -> u16 {
-        self.spill_depth
-    }
-
-    fn live(&self) -> &[SsaValue] {
-        &self.live
-    }
-
-    fn top_values(&self, count: usize) -> Result<Vec<SsaValue>, WasmError> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "transient underflow: requested {} values from live window {} (stack_height={}, spill_depth={})",
-                count,
-                self.live.len(),
-                self.stack_height,
-                self.spill_depth,
-            )));
-        }
-        Ok(self.live[self.live.len() - count..].to_vec())
-    }
-
-    fn pop_one(&mut self) -> Result<SsaValue, WasmError> {
-        let value = self
-            .live
-            .pop()
-            .ok_or_else(|| WasmError::internal("transient underflow".into()))?;
-        self.live_types.pop();
-        self.stack_height = self.stack_height.saturating_sub(1);
-        self.spill_depth = self.spill_depth.min(self.stack_height);
-        Ok(value)
-    }
-
-    fn consume_top(&mut self, count: usize) -> Result<(), WasmError> {
-        if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "transient underflow: tried to consume {} values from live window {}",
-                count,
-                self.live.len(),
-            )));
-        }
-        let new_len = self.live.len().saturating_sub(count);
-        self.live.truncate(new_len);
-        self.live_types.truncate(new_len);
-        self.stack_height = self.stack_height.saturating_sub(count as u16);
-        self.spill_depth = self.spill_depth.min(self.stack_height);
-        Ok(())
-    }
-
-    fn push_results(
-        &mut self,
-        results: Vec<SsaValue>,
-        result_types: Vec<ValueType>,
-    ) -> Result<(), WasmError> {
-        self.stack_height = self.stack_height.saturating_add(results.len() as u16);
-        self.live.extend(results);
-        self.live_types.extend(result_types);
-        self.ensure_live_fit("value push")
-    }
-
-    fn spill_prefix(&mut self, count: u16) -> Result<Vec<SsaValue>, WasmError> {
-        let count = count as usize;
-        if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "spill requested {} values from live window {}",
-                count,
-                self.live.len(),
-            )));
-        }
-        let spilled = self.live.drain(..count).collect::<Vec<_>>();
-        self.live_types.drain(..count);
-        self.spill_depth = self.spill_depth.saturating_add(count as u16);
-        Ok(spilled)
-    }
-
-    fn fill_prefix(
-        &mut self,
-        values: Vec<SsaValue>,
-        value_types: Vec<ValueType>,
-    ) -> Result<(), WasmError> {
-        self.spill_depth = self.spill_depth.saturating_sub(values.len() as u16);
-        let mut new_live = values;
-        new_live.extend(self.live.drain(..));
-        self.live = new_live;
-        let mut new_live_types = value_types;
-        new_live_types.extend(self.live_types.drain(..));
-        self.live_types = new_live_types;
-        self.ensure_live_fit("prefix fill")
-    }
-
-    fn finish_call(&mut self, consumed: u16, produced: u16) {
-        self.stack_height = self
-            .stack_height
-            .saturating_sub(consumed)
-            .saturating_add(produced);
-        self.spill_depth = self.stack_height;
-        self.live.clear();
-        self.live_types.clear();
-    }
-
-    fn ensure_live_fit(&self, context: &str) -> Result<(), WasmError> {
-        let (gp_live, fp_live) = count_live_bank_budget_units(&self.live_types, self.gp_unit_bytes);
-        if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR exceeds configured dynamic bank budget during {context}: gp {} > {} or fp {} > {}",
-                gp_live, self.gp_live_budget, fp_live, self.fp_live_budget
-            )));
-        }
-        Ok(())
-    }
-}
-
-fn make_block_params(entry_live_types: &[ValueType], values: &mut ValueAlloc) -> Vec<SsaValue> {
-    values.many_typed(entry_live_types)
-}
-
 struct LoweredBlock {
     ops: Vec<SsaInst>,
     terminator: SsaTerminator,
@@ -335,6 +174,13 @@ struct LoweredBlock {
     extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
 }
 
+/// Lower one CFG block exactly once from the planner-chosen entry state.
+///
+/// The intended long-term algorithm is:
+/// 1. start from the tentative entry boundary
+/// 2. consult the planner before each op
+/// 3. observe the realized exit
+/// 4. later derive the finalized entry and trivial cached-local repair
 fn lower_block_range(
     block_id: CfgBlockId,
     semantic_range: core::ops::Range<usize>,
@@ -404,6 +250,12 @@ fn lower_block_range(
     })
 }
 
+/// Apply the planner-owned pre-op transition.
+///
+/// This is where the boundary contract becomes executable:
+/// - planner may request dropping some cached locals first
+/// - planner then supplies the exact transient contract that must hold
+/// - rewrite validates and materializes that contract, but does not invent one
 fn lower_prefix_actions(
     semantic_index: usize,
     planner: &JointPlanner,
@@ -439,6 +291,13 @@ fn lower_prefix_actions(
     Ok(())
 }
 
+/// Realize the exact transient contract chosen by the planner.
+///
+/// The rewriter only performs two legal shape changes here:
+/// - fill a spilled prefix back into the live window
+/// - spill a live prefix out to frame slots
+///
+/// Everything else about the stack shape must already agree.
 fn realize_transient_contract(
     target: TransientContract<'_>,
     state: &mut BlockState,
@@ -497,6 +356,9 @@ fn realize_transient_contract(
     Ok(())
 }
 
+/// Check the central joint invariant:
+/// live transient values plus resident cached locals must fit the dynamic bank
+/// budgets at every rewrite point.
 fn ensure_state_fits_with_cache(
     state: &BlockState,
     resident_cache: &BTreeSet<FrameSlot>,
@@ -600,15 +462,9 @@ fn lower_block_body_op(
             resident_cache,
             values,
         ),
-        SemanticOpKind::LocalSet { idx } => lower_local_set(
-            *idx,
-            planner,
-            semantic_index,
-            state,
-            frame,
-            local_slot_types,
-            resident_cache,
-        ),
+        SemanticOpKind::LocalSet { idx } => {
+            lower_local_set(*idx, state, frame, local_slot_types, resident_cache)
+        }
         SemanticOpKind::LocalTee { idx } => lower_local_tee(
             semantic,
             *idx,
@@ -700,6 +556,8 @@ fn lower_local_get(
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
+    // `local.get` always needs one SSA result. The current planner decides
+    // whether we also keep the local cached after that load.
     let ty = semantic
         .local_types
         .get(local_idx as usize)
@@ -727,28 +585,18 @@ fn lower_local_get(
 
 fn lower_local_set(
     local_idx: u16,
-    planner: &JointPlanner,
-    semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     local_slot_types: &[ValueType],
     resident_cache: &mut BTreeSet<FrameSlot>,
 ) -> Result<(), WasmError> {
+    // `local.set` consumes one SSA value, so the consumed residency naturally
+    // becomes the cached local. There is no separate admission decision here.
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
-    let access = planner.local_access(LocalAccessQuery {
-        semantic_index,
-        slot,
-        resident_cache,
-    });
+    resident_cache.insert(slot);
     state.ops.push(SsaInst {
-        kind: match access {
-            LocalAccessDecision::Slot => SsaInstKind::LocalSetSlot { slot, src },
-            LocalAccessDecision::Cache => {
-                resident_cache.insert(slot);
-                SsaInstKind::LocalSetCache { slot, src }
-            }
-        },
+        kind: SsaInstKind::LocalSetCache { slot, src },
     });
     ensure_state_fits_with_cache(state, resident_cache, local_slot_types, "local.set")
 }
@@ -763,6 +611,9 @@ fn lower_local_tee(
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
+    // `local.tee` is the same admission question as `local.get`, except stack
+    // height stays flat: the source value stays logically available while we
+    // decide whether the local also deserves cache residency.
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
     let ty = semantic
@@ -959,15 +810,7 @@ fn lower_block_terminator(
             )?))
         }
         SemanticOpKind::LocalSet { idx } => {
-            lower_local_set(
-                *idx,
-                planner,
-                semantic_index,
-                state,
-                frame,
-                local_slot_types,
-                resident_cache,
-            )?;
+            lower_local_set(*idx, state, frame, local_slot_types, resident_cache)?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -1618,138 +1461,6 @@ fn canonicalize_return_results(
             },
         });
     }
-}
-
-fn insert_boundary_repair_blocks(
-    program: &mut SsaProgram,
-    exit_cached_slots: &[Vec<FrameSlot>],
-    planner: &JointPlanner,
-) {
-    let original_len = program.blocks.len();
-    let target_params = program
-        .blocks
-        .iter()
-        .map(|block| block.params.clone())
-        .collect::<Vec<_>>();
-    let target_entries = program.block_entry_cached_slots.clone();
-    let mut extra_blocks = Vec::new();
-
-    for block_index in 0..original_len {
-        let pred_exit = exit_cached_slots
-            .get(block_index)
-            .cloned()
-            .unwrap_or_default();
-        let terminator = &mut program.blocks[block_index].terminator;
-        match terminator {
-            SsaTerminator::Goto(edge) => maybe_repair_edge(
-                edge,
-                &pred_exit,
-                &target_entries,
-                &target_params,
-                &mut extra_blocks,
-                &mut program.block_entry_cached_slots,
-                original_len,
-                planner,
-            ),
-            SsaTerminator::Branch {
-                then_edge,
-                else_edge,
-                ..
-            } => {
-                maybe_repair_edge(
-                    then_edge,
-                    &pred_exit,
-                    &target_entries,
-                    &target_params,
-                    &mut extra_blocks,
-                    &mut program.block_entry_cached_slots,
-                    original_len,
-                    planner,
-                );
-                maybe_repair_edge(
-                    else_edge,
-                    &pred_exit,
-                    &target_entries,
-                    &target_params,
-                    &mut extra_blocks,
-                    &mut program.block_entry_cached_slots,
-                    original_len,
-                    planner,
-                );
-            }
-            SsaTerminator::BrTable { entries, .. } => {
-                for edge in entries {
-                    maybe_repair_edge(
-                        edge,
-                        &pred_exit,
-                        &target_entries,
-                        &target_params,
-                        &mut extra_blocks,
-                        &mut program.block_entry_cached_slots,
-                        original_len,
-                        planner,
-                    );
-                }
-            }
-            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
-        }
-    }
-
-    program.blocks.extend(extra_blocks);
-}
-
-fn maybe_repair_edge(
-    edge: &mut SsaEdge,
-    pred_exit: &[FrameSlot],
-    target_entries: &[Vec<FrameSlot>],
-    target_params: &[Vec<SsaValue>],
-    extra_blocks: &mut Vec<SsaBlock>,
-    block_entry_cached_slots: &mut Vec<Vec<FrameSlot>>,
-    original_len: usize,
-    planner: &JointPlanner,
-) {
-    let target_id = edge.target.as_usize();
-    let target_entry = target_entries.get(target_id).cloned().unwrap_or_default();
-    let repair = planner.edge_repair(EdgeRepairQuery {
-        pred_exit,
-        succ_entry: &target_entry,
-    });
-    if repair.ensure_cached_locals.is_empty() && repair.drop_cached_locals.is_empty() {
-        return;
-    }
-
-    let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
-    let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
-    let mut ops = Vec::new();
-    for slot in repair.drop_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
-    }
-    for slot in repair.ensure_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalEnsureCache { slot },
-        });
-    }
-    let repair_edge = SsaEdge {
-        target: edge.target,
-        bindings: repair_params
-            .iter()
-            .copied()
-            .map(|param| SsaBinding {
-                param,
-                value: param,
-            })
-            .collect(),
-    };
-    extra_blocks.push(SsaBlock {
-        id: repair_id,
-        params: repair_params,
-        ops,
-        terminator: SsaTerminator::Goto(repair_edge),
-    });
-    block_entry_cached_slots.push(pred_exit.to_vec());
-    edge.target = repair_id;
 }
 
 fn entry_scope_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
