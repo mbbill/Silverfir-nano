@@ -9,6 +9,7 @@
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;
 
+mod budget;
 mod cfg;
 mod cleanup;
 mod joint_plan;
@@ -27,7 +28,7 @@ use crate::{
 
 use self::{
     frame::{plan_frame_layout, FrameLayoutPlan},
-    joint_plan::naive,
+    joint_plan::JointPlanner,
     ssa_ir::{ir::SsaProgram, target::SsaTarget, validate::validate_program},
 };
 
@@ -65,9 +66,9 @@ pub(crate) fn prepare_function(
 
     let semantic_cfg = cfg::build_semantic_cfg(semantic);
     let slot_program = slot_ssa::lower_slot_only_ssa(semantic, &semantic_cfg, frame)?;
-    let plan = naive::build_plan(semantic, &semantic_cfg, &slot_program, frame, input.config)?;
-    joint_plan::validate::validate_plan(&semantic_cfg, &slot_program, &plan)?;
-    let mut ssa = rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &plan, frame)?;
+    let planner = JointPlanner::build(semantic, &semantic_cfg, &slot_program, frame, input.config)?;
+    let mut ssa =
+        rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
     cleanup::cleanup_program(&mut ssa);
     validate_program(&ssa)?;
 

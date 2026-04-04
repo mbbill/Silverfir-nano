@@ -8,11 +8,12 @@ use crate::{
     value_type::ValueType,
     vm::{
         middle::{
-            cfg::SemanticCfg,
+            budget::{count_live_bank_budget_units, gp_value_budget_units},
+            cfg::{CfgBlockId, SemanticCfg},
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                naive::count_live_bank_budget_units,
-                types::{EntryState, FunctionPlan, OpPlan, PrepAction, PreparedLocalAccess},
+                BeforeOpQuery, EdgeRepairQuery, JointPlanner, LocalAccessDecision,
+                LocalAccessQuery, TransientContract,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -36,7 +37,7 @@ pub(crate) fn rewrite_function(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
     _slot_program: &SlotSsaProgram,
-    plan: &FunctionPlan,
+    planner: &JointPlanner,
     frame: FrameLayoutPlan,
 ) -> Result<SsaProgram, WasmError> {
     if semantic.ops.is_empty() {
@@ -56,69 +57,77 @@ pub(crate) fn rewrite_function(
         .iter()
         .map(|id| SsaTarget(id.0))
         .collect::<Vec<_>>();
+    let setup = planner.function_setup();
     let mut values = ValueAlloc::default();
     let block_params = cfg
         .blocks
         .iter()
-        .map(|block| make_block_params(&plan.entry_states[block.range.start], &mut values))
+        .map(|block| {
+            let block_open = planner.block_open(block.id);
+            make_block_params(block_open.transient.live_types, &mut values)
+        })
         .collect::<Vec<_>>();
 
     let original_block_count = cfg.blocks.len();
     let mut blocks = Vec::with_capacity(original_block_count);
+    let mut block_entry_cached_slots = Vec::with_capacity(original_block_count);
+    let mut block_exit_cached_slots = Vec::with_capacity(original_block_count);
     let mut extra_blocks = Vec::new();
+    let mut extra_block_cached_slots = Vec::new();
+    let mut extra_block_exit_cached_slots = Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
+        let block_entry = planner.block_open(cfg_block.id);
+        let block_exit = planner.block_exit(cfg_block.id);
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
-            &plan.entry_states[cfg_block.range.start],
+            block_entry.transient,
             &params,
-            plan.gp_unit_bytes,
-            plan.gp_dynamic_budget,
-            plan.fp_dynamic_budget,
+            setup.gp_unit_bytes,
+            setup.gp_dynamic_budget,
+            setup.fp_dynamic_budget,
         )?;
         let lowered = lower_block_range(
+            cfg_block.id,
             cfg_block.range.clone(),
             state,
             semantic,
-            &plan.op_plans,
-            &plan.entry_states,
+            planner,
             frame,
             &semantic_to_block,
             &block_params,
-            &plan.blocks[block_index].entry.cached_locals,
+            block_entry.cached_locals,
+            block_exit.cached_locals,
             &mut values,
             original_block_count,
             extra_blocks.len(),
         )?;
+        block_entry_cached_slots.push(block_entry.cached_locals.to_vec());
+        block_exit_cached_slots.push(block_exit.cached_locals.to_vec());
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
             ops: lowered.ops,
             terminator: lowered.terminator,
         });
+        extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
+        extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
         extra_blocks.extend(lowered.extra_blocks);
     }
     blocks.extend(extra_blocks);
+    block_entry_cached_slots.extend(extra_block_cached_slots);
+    block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
     let mut program = SsaProgram {
         entry: SsaTarget(cfg.entry.0),
         local_slot_types: semantic.local_types.clone(),
         local_slot_info: collect_local_slot_info(semantic),
-        block_entry_cached_slots: plan
-            .blocks
-            .iter()
-            .map(|block| block.entry.cached_locals.clone())
-            .chain(
-                core::iter::repeat(Vec::new())
-                    .take(blocks.len().saturating_sub(original_block_count)),
-            )
-            .collect(),
+        block_entry_cached_slots,
         blocks,
         value_types: values.take_types(),
         value_sink_local: Vec::new(),
     };
 
-    let exit_cached_slots = compute_block_exit_cached_slots(&program);
-    insert_boundary_repair_blocks(&mut program, &exit_cached_slots);
+    insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots, planner);
     Ok(program)
 }
 
@@ -176,7 +185,7 @@ struct BlockState {
 
 impl BlockState {
     fn from_entry(
-        entry: &EntryState,
+        entry: TransientContract<'_>,
         params: &[SsaValue],
         gp_unit_bytes: u8,
         gp_live_budget: u8,
@@ -189,7 +198,7 @@ impl BlockState {
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
             live: params.to_vec(),
-            live_types: entry.live_types.clone(),
+            live_types: entry.live_types.to_vec(),
             ops: Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
@@ -314,31 +323,40 @@ impl BlockState {
     }
 }
 
-fn make_block_params(entry: &EntryState, values: &mut ValueAlloc) -> Vec<SsaValue> {
-    values.many_typed(&entry.live_types)
+fn make_block_params(entry_live_types: &[ValueType], values: &mut ValueAlloc) -> Vec<SsaValue> {
+    values.many_typed(entry_live_types)
 }
 
 struct LoweredBlock {
     ops: Vec<SsaInst>,
     terminator: SsaTerminator,
     extra_blocks: Vec<SsaBlock>,
+    extra_block_cached_slots: Vec<Vec<FrameSlot>>,
+    extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
 }
 
 fn lower_block_range(
+    block_id: CfgBlockId,
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
     semantic: &SemanticProgram,
-    prepared: &[OpPlan],
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
     frame: FrameLayoutPlan,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
     entry_cached_locals: &[FrameSlot],
+    exit_cached_locals: &[FrameSlot],
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredBlock, WasmError> {
     let mut resident_cache = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
+    ensure_state_fits_with_cache(
+        &state,
+        &resident_cache,
+        &semantic.local_types,
+        "block entry boundary",
+    )?;
     let last_index = semantic_range
         .end
         .checked_sub(1)
@@ -347,14 +365,15 @@ fn lower_block_range(
     for semantic_index in semantic_range.start..last_index {
         if matches!(semantic.ops[semantic_index].kind, SemanticOpKind::End) {
             let target = fallthrough_target(semantic_index, semantic.ops.len())?;
-            canonicalize_live_window_for_target(target, &mut state, frame, entry_states)?;
+            canonicalize_live_window_for_target(target, &mut state, frame, planner)?;
         }
         lower_block_body_op(
             semantic,
             semantic_index,
-            &prepared[semantic_index],
+            planner,
             &mut state,
             frame,
+            &semantic.local_types,
             &mut resident_cache,
             values,
         )?;
@@ -363,75 +382,179 @@ fn lower_block_range(
     let terminator = lower_block_terminator(
         semantic,
         last_index,
-        &prepared[last_index],
+        planner,
         &mut state,
         frame,
+        &semantic.local_types,
         &mut resident_cache,
         semantic_to_block,
         block_params,
-        entry_states,
         values,
         original_block_count,
         extra_blocks_len,
     )?;
+    validate_planned_cached_locals(block_id, &resident_cache, exit_cached_locals)?;
 
     Ok(LoweredBlock {
         ops: state.ops,
         terminator: terminator.terminator,
         extra_blocks: terminator.extra_blocks,
+        extra_block_cached_slots: terminator.extra_block_cached_slots,
+        extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,
     })
 }
 
 fn lower_prefix_actions(
-    op: &OpPlan,
+    semantic_index: usize,
+    planner: &JointPlanner,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<FrameSlot>,
+    frame: FrameLayoutPlan,
     local_slot_types: &[ValueType],
+    resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
-    for action in &op.prefix {
-        match action {
-            PrepAction::Spill(frame) => {
-                let spilled = state.spill_prefix(frame.count)?;
-                for (offset, src) in spilled.into_iter().enumerate() {
-                    state.ops.push(SsaInst {
-                        kind: SsaInstKind::Spill {
-                            slot: frame.start.advance(offset as u16),
-                            src,
-                        },
-                    });
-                }
-            }
-            PrepAction::Fill(frame, fill_types) => {
-                ensure_capacity_for_state(
-                    state,
-                    resident_cache,
-                    local_slot_types,
-                    fill_types,
-                    None,
-                    None,
-                )?;
-                let mut reloaded = Vec::with_capacity(frame.count as usize);
-                for offset in 0..frame.count as usize {
-                    let ty = fill_types.get(offset).copied().unwrap_or(ValueType::I64);
-                    let dst = values.fresh_typed(ty);
-                    state.ops.push(SsaInst {
-                        kind: SsaInstKind::Fill {
-                            slot: frame.start.advance(offset as u16),
-                            dst,
-                        },
-                    });
-                    reloaded.push(dst);
-                }
-                state.fill_prefix(reloaded, fill_types.clone())?;
-            }
-            PrepAction::DropCache(slot) => {
-                resident_cache.remove(slot);
-                state.ops.push(SsaInst {
-                    kind: SsaInstKind::LocalDropCache { slot: *slot },
-                });
-            }
+    let before_op = planner.before_op(BeforeOpQuery {
+        semantic_index,
+        resident_cache,
+    });
+    for slot in before_op.drop_cached_locals {
+        if !resident_cache.remove(&slot) {
+            return Err(WasmError::internal(alloc::format!(
+                "planner dropped uncached local slot {} before semantic op {}",
+                slot.0,
+                semantic_index
+            )));
         }
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::LocalDropCache { slot },
+        });
+    }
+    realize_transient_contract(before_op.transient, state, frame, values)?;
+    ensure_state_fits_with_cache(
+        state,
+        resident_cache,
+        local_slot_types,
+        "planned pre-op boundary",
+    )?;
+    Ok(())
+}
+
+fn realize_transient_contract(
+    target: TransientContract<'_>,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    if state.height() != target.stack_height {
+        return Err(WasmError::internal(alloc::format!(
+            "planner expected stack height {} before op, but rewrite has {}",
+            target.stack_height,
+            state.height()
+        )));
+    }
+
+    let current_spill_depth = state.spill_depth();
+    if current_spill_depth > target.spill_depth {
+        let fill_count = (current_spill_depth - target.spill_depth) as usize;
+        if target.live_types.len() < fill_count {
+            return Err(WasmError::internal(
+                "planner fill contract has fewer types than required".into(),
+            ));
+        }
+        let fill_types = target.live_types[..fill_count].to_vec();
+        let mut reloaded = Vec::with_capacity(fill_count);
+        let base_slot = frame.operand_slot(target.spill_depth);
+        for (offset, ty) in fill_types.iter().copied().enumerate() {
+            let dst = values.fresh_typed(ty);
+            state.ops.push(SsaInst {
+                kind: SsaInstKind::Fill {
+                    slot: base_slot.advance(offset as u16),
+                    dst,
+                },
+            });
+            reloaded.push(dst);
+        }
+        state.fill_prefix(reloaded, fill_types)?;
+    } else if current_spill_depth < target.spill_depth {
+        let spill_count = target.spill_depth - current_spill_depth;
+        let base_slot = frame.operand_slot(current_spill_depth);
+        let spilled = state.spill_prefix(spill_count)?;
+        for (offset, src) in spilled.into_iter().enumerate() {
+            state.ops.push(SsaInst {
+                kind: SsaInstKind::Spill {
+                    slot: base_slot.advance(offset as u16),
+                    src,
+                },
+            });
+        }
+    }
+
+    if state.spill_depth() != target.spill_depth || state.live_types != target.live_types {
+        return Err(WasmError::internal(
+            "planner transient contract does not match realized rewrite state".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_state_fits_with_cache(
+    state: &BlockState,
+    resident_cache: &BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    context: &str,
+) -> Result<(), WasmError> {
+    let (gp_live, fp_live) = count_live_bank_budget_units(&state.live_types, state.gp_unit_bytes);
+    let (gp_cache, fp_cache) =
+        count_cached_local_budget_units(resident_cache, local_slot_types, state.gp_unit_bytes);
+    if gp_live + gp_cache > state.gp_live_budget as usize
+        || fp_live + fp_cache > state.fp_live_budget as usize
+    {
+        return Err(WasmError::internal(alloc::format!(
+            "planner exceeded dynamic bank budget during {context}: gp {} > {} or fp {} > {}",
+            gp_live + gp_cache,
+            state.gp_live_budget,
+            fp_live + fp_cache,
+            state.fp_live_budget,
+        )));
+    }
+    Ok(())
+}
+
+fn count_cached_local_budget_units(
+    resident_cache: &BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    gp_unit_bytes: u8,
+) -> (usize, usize) {
+    let mut gp = 0usize;
+    let mut fp = 0usize;
+    for &slot in resident_cache {
+        let ty = local_slot_types
+            .get(slot.0 as usize)
+            .copied()
+            .unwrap_or(ValueType::I64);
+        if ty.is_float() {
+            fp += 1;
+        } else {
+            gp += gp_value_budget_units(ty, gp_unit_bytes);
+        }
+    }
+    (gp, fp)
+}
+
+fn validate_planned_cached_locals(
+    block: CfgBlockId,
+    resident_cache: &BTreeSet<FrameSlot>,
+    planned_cached_locals: &[FrameSlot],
+) -> Result<(), WasmError> {
+    if resident_cache.len() != planned_cached_locals.len()
+        || planned_cached_locals
+            .iter()
+            .any(|slot| !resident_cache.contains(slot))
+    {
+        return Err(WasmError::internal(alloc::format!(
+            "planner exit cache boundary mismatch for block {}",
+            block.0
+        )));
     }
     Ok(())
 }
@@ -439,24 +562,39 @@ fn lower_prefix_actions(
 fn lower_block_body_op(
     semantic: &SemanticProgram,
     semantic_index: usize,
-    op: &OpPlan,
+    planner: &JointPlanner,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
+    local_slot_types: &[ValueType],
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
-    lower_prefix_actions(op, state, resident_cache, &semantic.local_types, values)?;
+    lower_prefix_actions(
+        semantic_index,
+        planner,
+        state,
+        frame,
+        local_slot_types,
+        resident_cache,
+        values,
+    )?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
             Err(WasmError::internal("unreachable must end a block".into()))
         }
-        SemanticOpKind::Primitive(kind) => {
-            lower_primitive(semantic, kind, semantic_index, state, resident_cache, values)
-        }
+        SemanticOpKind::Primitive(kind) => lower_primitive(
+            semantic,
+            kind,
+            semantic_index,
+            state,
+            resident_cache,
+            values,
+        ),
         SemanticOpKind::LocalGet { idx } => lower_local_get(
             semantic,
             *idx,
-            effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+            planner,
+            semantic_index,
             state,
             frame,
             resident_cache,
@@ -464,16 +602,18 @@ fn lower_block_body_op(
         ),
         SemanticOpKind::LocalSet { idx } => lower_local_set(
             *idx,
-            effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+            planner,
+            semantic_index,
             state,
             frame,
+            local_slot_types,
             resident_cache,
-            &semantic.local_types,
         ),
         SemanticOpKind::LocalTee { idx } => lower_local_tee(
             semantic,
             *idx,
-            effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+            planner,
+            semantic_index,
             state,
             frame,
             resident_cache,
@@ -485,7 +625,6 @@ fn lower_block_body_op(
             results,
         } => {
             lower_call_direct(*callee, *params, *results, frame, state);
-            resident_cache.clear();
             Ok(())
         }
         SemanticOpKind::CallIndirect {
@@ -495,7 +634,6 @@ fn lower_block_body_op(
             results,
         } => {
             lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
-            resident_cache.clear();
             Ok(())
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
@@ -538,14 +676,6 @@ fn lower_primitive(
             .unwrap_or(ValueType::I64)
     };
     state.consume_top(pop as usize)?;
-    ensure_capacity_for_state(
-        state,
-        resident_cache,
-        &semantic.local_types,
-        &alloc::vec![result_ty; push as usize],
-        None,
-        None,
-    )?;
     let results = (0..push)
         .map(|_| values.fresh_typed(result_ty))
         .collect::<Vec<_>>();
@@ -556,13 +686,15 @@ fn lower_primitive(
             results: results.clone(),
         },
     });
-    state.push_results(results, alloc::vec![result_ty; push as usize])
+    state.push_results(results, alloc::vec![result_ty; push as usize])?;
+    ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "primitive op")
 }
 
 fn lower_local_get(
     semantic: &SemanticProgram,
     local_idx: u16,
-    access: PreparedLocalAccess,
+    planner: &JointPlanner,
+    semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -574,83 +706,58 @@ fn lower_local_get(
         .copied()
         .unwrap_or(ValueType::I64);
     let slot = frame.local_slot(local_idx);
-    let mut access = access;
-    if access == PreparedLocalAccess::Cache
-        && ensure_capacity_for_state(
-            state,
-            resident_cache,
-            &semantic.local_types,
-            core::slice::from_ref(&ty),
-            Some(slot),
-            Some(slot),
-        )
-        .is_err()
-    {
-        access = PreparedLocalAccess::Slot;
-    }
-    if access == PreparedLocalAccess::Slot {
-        ensure_capacity_for_state(
-            state,
-            resident_cache,
-            &semantic.local_types,
-            core::slice::from_ref(&ty),
-            None,
-            None,
-        )?;
-    }
+    let access = planner.local_access(LocalAccessQuery {
+        semantic_index,
+        slot,
+        resident_cache,
+    });
     let dst = values.fresh_typed(ty);
     state.ops.push(SsaInst {
         kind: match access {
-            PreparedLocalAccess::Slot => SsaInstKind::LocalGetSlot { slot, dst },
-            PreparedLocalAccess::Cache => {
+            LocalAccessDecision::Slot => SsaInstKind::LocalGetSlot { slot, dst },
+            LocalAccessDecision::Cache => {
                 resident_cache.insert(slot);
                 SsaInstKind::LocalGetCache { slot, dst }
             }
         },
     });
-    state.push_results(alloc::vec![dst], alloc::vec![ty])
+    state.push_results(alloc::vec![dst], alloc::vec![ty])?;
+    ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.get")
 }
 
 fn lower_local_set(
     local_idx: u16,
-    access: PreparedLocalAccess,
+    planner: &JointPlanner,
+    semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    resident_cache: &mut BTreeSet<FrameSlot>,
     local_slot_types: &[ValueType],
+    resident_cache: &mut BTreeSet<FrameSlot>,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
-    let mut access = access;
-    if access == PreparedLocalAccess::Cache
-        && ensure_capacity_for_state(
-            state,
-            resident_cache,
-            local_slot_types,
-            &[],
-            Some(slot),
-            Some(slot),
-        )
-        .is_err()
-    {
-        access = PreparedLocalAccess::Slot;
-    }
+    let access = planner.local_access(LocalAccessQuery {
+        semantic_index,
+        slot,
+        resident_cache,
+    });
     state.ops.push(SsaInst {
         kind: match access {
-            PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
-            PreparedLocalAccess::Cache => {
+            LocalAccessDecision::Slot => SsaInstKind::LocalSetSlot { slot, src },
+            LocalAccessDecision::Cache => {
                 resident_cache.insert(slot);
                 SsaInstKind::LocalSetCache { slot, src }
             }
         },
     });
-    Ok(())
+    ensure_state_fits_with_cache(state, resident_cache, local_slot_types, "local.set")
 }
 
 fn lower_local_tee(
     semantic: &SemanticProgram,
     local_idx: u16,
-    access: PreparedLocalAccess,
+    planner: &JointPlanner,
+    semantic_index: usize,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -663,34 +770,15 @@ fn lower_local_tee(
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
-    let mut access = access;
-    if access == PreparedLocalAccess::Cache
-        && ensure_capacity_for_state(
-            state,
-            resident_cache,
-            &semantic.local_types,
-            core::slice::from_ref(&ty),
-            Some(slot),
-            Some(slot),
-        )
-        .is_err()
-    {
-        access = PreparedLocalAccess::Slot;
-    }
-    if access == PreparedLocalAccess::Slot {
-        ensure_capacity_for_state(
-            state,
-            resident_cache,
-            &semantic.local_types,
-            core::slice::from_ref(&ty),
-            None,
-            None,
-        )?;
-    }
+    let access = planner.local_access(LocalAccessQuery {
+        semantic_index,
+        slot,
+        resident_cache,
+    });
     state.ops.push(SsaInst {
         kind: match access {
-            PreparedLocalAccess::Slot => SsaInstKind::LocalSetSlot { slot, src },
-            PreparedLocalAccess::Cache => {
+            LocalAccessDecision::Slot => SsaInstKind::LocalSetSlot { slot, src },
+            LocalAccessDecision::Cache => {
                 resident_cache.insert(slot);
                 SsaInstKind::LocalSetCache { slot, src }
             }
@@ -699,14 +787,15 @@ fn lower_local_tee(
     let dst = values.fresh_typed(ty);
     state.ops.push(SsaInst {
         kind: match access {
-            PreparedLocalAccess::Slot => SsaInstKind::LocalGetSlot { slot, dst },
-            PreparedLocalAccess::Cache => {
+            LocalAccessDecision::Slot => SsaInstKind::LocalGetSlot { slot, dst },
+            LocalAccessDecision::Cache => {
                 resident_cache.insert(slot);
                 SsaInstKind::LocalGetCache { slot, dst }
             }
         },
     });
-    state.push_results(alloc::vec![dst], alloc::vec![ty])
+    state.push_results(alloc::vec![dst], alloc::vec![ty])?;
+    ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.tee")
 }
 
 fn lower_call_direct(
@@ -776,6 +865,8 @@ fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<FrameSpan> {
 struct LoweredTerminator {
     terminator: SsaTerminator,
     extra_blocks: Vec<SsaBlock>,
+    extra_block_cached_slots: Vec<Vec<FrameSlot>>,
+    extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
 }
 
 impl LoweredTerminator {
@@ -783,6 +874,8 @@ impl LoweredTerminator {
         Self {
             terminator,
             extra_blocks: Vec::new(),
+            extra_block_cached_slots: Vec::new(),
+            extra_block_exit_cached_slots: Vec::new(),
         }
     }
 }
@@ -791,18 +884,26 @@ impl LoweredTerminator {
 fn lower_block_terminator(
     semantic: &SemanticProgram,
     semantic_index: usize,
-    op: &OpPlan,
+    planner: &JointPlanner,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
+    local_slot_types: &[ValueType],
     resident_cache: &mut BTreeSet<FrameSlot>,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
-    entry_states: &[EntryState],
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredTerminator, WasmError> {
-    lower_prefix_actions(op, state, resident_cache, &semantic.local_types, values)?;
+    lower_prefix_actions(
+        semantic_index,
+        planner,
+        state,
+        frame,
+        local_slot_types,
+        resident_cache,
+        values,
+    )?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
             Ok(LoweredTerminator::new(SsaTerminator::TrapUnreachable))
@@ -820,7 +921,7 @@ fn lower_block_terminator(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -828,14 +929,15 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::LocalGet { idx } => {
             lower_local_get(
                 semantic,
                 *idx,
-                effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+                planner,
+                semantic_index,
                 state,
                 frame,
                 resident_cache,
@@ -845,7 +947,7 @@ fn lower_block_terminator(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -853,23 +955,24 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::LocalSet { idx } => {
             lower_local_set(
                 *idx,
-                effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+                planner,
+                semantic_index,
                 state,
                 frame,
+                local_slot_types,
                 resident_cache,
-                &semantic.local_types,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -877,14 +980,15 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::LocalTee { idx } => {
             lower_local_tee(
                 semantic,
                 *idx,
-                effective_local_access(frame.local_slot(*idx), op.local_access, resident_cache),
+                planner,
+                semantic_index,
                 state,
                 frame,
                 resident_cache,
@@ -894,7 +998,7 @@ fn lower_block_terminator(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -902,7 +1006,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } => {
@@ -910,7 +1014,7 @@ fn lower_block_terminator(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -918,7 +1022,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::If { else_target, .. } => {
@@ -930,7 +1034,7 @@ fn lower_block_terminator(
                 ],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             let then_edge = next_edge(
                 semantic_index,
@@ -938,7 +1042,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?;
             let else_edge = edge_to_target(
                 *else_target,
@@ -946,7 +1050,7 @@ fn lower_block_terminator(
                 EdgeMapping::Identity,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?;
             Ok(LoweredTerminator::new(SsaTerminator::Branch {
                 cond,
@@ -955,14 +1059,14 @@ fn lower_block_terminator(
             }))
         }
         SemanticOpKind::Else { end_target } => {
-            maybe_publish_live_window_for_targets(&[*end_target], state, frame, entry_states);
+            maybe_publish_live_window_for_targets(&[*end_target], state, frame, planner);
             Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
                 *end_target,
                 state,
                 EdgeMapping::Identity,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?)))
         }
         SemanticOpKind::End => {
@@ -970,7 +1074,7 @@ fn lower_block_terminator(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -978,7 +1082,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::Br {
@@ -986,7 +1090,7 @@ fn lower_block_terminator(
             arity,
             target,
         } => {
-            if target_expects_canonical_payload(*target, *stack_drop, state, entry_states)? {
+            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
@@ -998,7 +1102,7 @@ fn lower_block_terminator(
                 },
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?)))
         }
         SemanticOpKind::BrIf {
@@ -1009,10 +1113,10 @@ fn lower_block_terminator(
             let cond = state.pop_one()?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
             let needs_then_bridge =
-                target_expects_canonical_payload(*target, *stack_drop, state, entry_states)?
+                target_expects_canonical_payload(*target, *stack_drop, state, planner)?
                     && *arity != 0;
             if needs_then_bridge {
-                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, entry_states);
+                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
                 let payload = state.top_values(*arity as usize)?;
                 let then_block_id = SsaTarget((original_block_count + extra_blocks_len) as u32);
                 let payload_types = payload
@@ -1060,7 +1164,7 @@ fn lower_block_terminator(
                     },
                     semantic_to_block,
                     block_params,
-                    entry_states,
+                    planner,
                 )?;
                 let else_edge = next_edge(
                     semantic_index,
@@ -1068,7 +1172,7 @@ fn lower_block_terminator(
                     state,
                     semantic_to_block,
                     block_params,
-                    entry_states,
+                    planner,
                 )?;
                 let bridge_block = SsaBlock {
                     id: then_block_id,
@@ -1083,12 +1187,17 @@ fn lower_block_terminator(
                         else_edge,
                     },
                     extra_blocks: alloc::vec![bridge_block],
+                    extra_block_cached_slots: alloc::vec![resident_cache.iter().copied().collect()],
+                    extra_block_exit_cached_slots: alloc::vec![resident_cache
+                        .iter()
+                        .copied()
+                        .collect()],
                 })
             } else {
-                if target_expects_canonical_payload(*target, *stack_drop, state, entry_states)? {
+                if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
                     publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
                 }
-                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, entry_states);
+                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
                 let then_edge = edge_to_target(
                     *target,
                     state,
@@ -1098,7 +1207,7 @@ fn lower_block_terminator(
                     },
                     semantic_to_block,
                     block_params,
-                    entry_states,
+                    planner,
                 )?;
                 let else_edge = next_edge(
                     semantic_index,
@@ -1106,7 +1215,7 @@ fn lower_block_terminator(
                     state,
                     semantic_to_block,
                     block_params,
-                    entry_states,
+                    planner,
                 )?;
                 Ok(LoweredTerminator::new(SsaTerminator::Branch {
                     cond,
@@ -1117,7 +1226,7 @@ fn lower_block_terminator(
         }
         SemanticOpKind::BrTable { entries } => {
             let index = state.pop_one()?;
-            maybe_publish_taken_branch_payloads(entries, state, frame, entry_states)?;
+            maybe_publish_taken_branch_payloads(entries, state, frame, planner)?;
             let entries = entries
                 .iter()
                 .map(|entry| {
@@ -1127,7 +1236,7 @@ fn lower_block_terminator(
                         state,
                         semantic_to_block,
                         block_params,
-                        entry_states,
+                        planner,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1142,13 +1251,11 @@ fn lower_block_terminator(
             results,
         } => {
             lower_call_direct(*callee, *params, *results, frame, state);
-            resident_cache.clear();
-            resident_cache.clear();
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -1156,7 +1263,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::CallIndirect {
@@ -1166,13 +1273,11 @@ fn lower_block_terminator(
             results,
         } => {
             lower_call_indirect(*type_idx, *table_idx, *params, *results, frame, state);
-            resident_cache.clear();
-            resident_cache.clear();
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
                 frame,
-                entry_states,
+                planner,
             );
             Ok(LoweredTerminator::new(goto_next(
                 semantic_index,
@@ -1180,7 +1285,7 @@ fn lower_block_terminator(
                 state,
                 semantic_to_block,
                 block_params,
-                entry_states,
+                planner,
             )?))
         }
         SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(SsaTerminator::Return {
@@ -1216,16 +1321,16 @@ fn maybe_publish_live_window_for_targets(
     targets: &[SemanticTarget],
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) {
     if state.live().is_empty() {
         return;
     }
     let max_target_spill_depth = targets
         .iter()
-        .filter_map(|target| entry_states.get(target.index().as_usize()))
-        .filter(|entry| entry.stack_height == state.height())
-        .map(|entry| entry.spill_depth)
+        .map(|target| planner.target_entry(target.index().as_usize()))
+        .filter(|entry| entry.transient.stack_height == state.height())
+        .map(|entry| entry.transient.spill_depth)
         .max()
         .unwrap_or(state.spill_depth());
     if max_target_spill_depth <= state.spill_depth() {
@@ -1244,138 +1349,22 @@ fn maybe_publish_live_window_for_targets(
     }
 }
 
-fn effective_local_access(
-    slot: FrameSlot,
-    planned: PreparedLocalAccess,
-    resident_cache: &BTreeSet<FrameSlot>,
-) -> PreparedLocalAccess {
-    if resident_cache.contains(&slot) {
-        PreparedLocalAccess::Cache
-    } else {
-        planned
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CacheBank {
-    Gp,
-    Fp,
-}
-
-fn ensure_capacity_for_state(
-    state: &mut BlockState,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
-    push_types: &[ValueType],
-    add_cache_slot: Option<FrameSlot>,
-    preserve_slot: Option<FrameSlot>,
-) -> Result<(), WasmError> {
-    loop {
-        let (mut gp_live, mut fp_live) =
-            count_live_bank_budget_units(&state.live_types, state.gp_unit_bytes);
-        let (push_gp, push_fp) = count_live_bank_budget_units(push_types, state.gp_unit_bytes);
-        gp_live += push_gp;
-        fp_live += push_fp;
-        let (mut gp_cache, mut fp_cache) =
-            resident_cache_counts(resident_cache, local_slot_types, state.gp_unit_bytes);
-        if let Some(slot) = add_cache_slot {
-            if !resident_cache.contains(&slot) {
-                let (bank, cost) = cache_slot_bank_cost(slot, local_slot_types, state.gp_unit_bytes);
-                match bank {
-                    CacheBank::Gp => gp_cache += cost,
-                    CacheBank::Fp => fp_cache += cost,
-                }
-            }
-        }
-
-        let fits = gp_live + gp_cache <= state.gp_live_budget as usize
-            && fp_live + fp_cache <= state.fp_live_budget as usize;
-        if fits {
-            return Ok(());
-        }
-
-        let Some(victim) = choose_cache_drop_victim(resident_cache, local_slot_types, preserve_slot) else {
-            return Err(WasmError::internal(
-                "cached locals plus live transient values exceed dynamic bank budget".into(),
-            ));
-        };
-        resident_cache.remove(&victim);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot: victim },
-        });
-    }
-}
-
-fn choose_cache_drop_victim(
-    resident_cache: &BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
-    preserve_slot: Option<FrameSlot>,
-) -> Option<FrameSlot> {
-    let mut gp_victim = None;
-    let mut fp_victim = None;
-    for &slot in resident_cache.iter().rev() {
-        if Some(slot) == preserve_slot {
-            continue;
-        }
-        let (bank, _) = cache_slot_bank_cost(slot, local_slot_types, 8);
-        match bank {
-            CacheBank::Gp if gp_victim.is_none() => gp_victim = Some(slot),
-            CacheBank::Fp if fp_victim.is_none() => fp_victim = Some(slot),
-            _ => {}
-        }
-    }
-    gp_victim.or(fp_victim)
-}
-
-fn resident_cache_counts(
-    resident_cache: &BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
-    gp_unit_bytes: u8,
-) -> (usize, usize) {
-    let mut gp = 0usize;
-    let mut fp = 0usize;
-    for &slot in resident_cache {
-        let (bank, cost) = cache_slot_bank_cost(slot, local_slot_types, gp_unit_bytes);
-        match bank {
-            CacheBank::Gp => gp += cost,
-            CacheBank::Fp => fp += cost,
-        }
-    }
-    (gp, fp)
-}
-
-fn cache_slot_bank_cost(
-    slot: FrameSlot,
-    local_slot_types: &[ValueType],
-    gp_unit_bytes: u8,
-) -> (CacheBank, usize) {
-    let ty = local_slot_types
-        .get(slot.0 as usize)
-        .copied()
-        .unwrap_or(ValueType::I64);
-    if ty.is_float() {
-        (CacheBank::Fp, 1)
-    } else {
-        let (gp, _) = count_live_bank_budget_units(core::slice::from_ref(&ty), gp_unit_bytes);
-        (CacheBank::Gp, gp)
-    }
-}
-
 fn canonicalize_live_window_for_target(
     target: SemanticTarget,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<(), WasmError> {
-    let target_entry = entry_states
-        .get(target.index().as_usize())
-        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
-    if target_entry.stack_height != state.height()
-        || target_entry.spill_depth <= state.spill_depth()
+    let target_entry = planner.target_entry(target.index().as_usize());
+    if target_entry.transient.stack_height != state.height()
+        || target_entry.transient.spill_depth <= state.spill_depth()
     {
         return Ok(());
     }
-    let publish_count = target_entry.spill_depth.saturating_sub(state.spill_depth());
+    let publish_count = target_entry
+        .transient
+        .spill_depth
+        .saturating_sub(state.spill_depth());
     let base_slot = frame.operand_slot(state.spill_depth());
     let spilled = state.spill_prefix(publish_count)?;
     for (offset, value) in spilled.into_iter().enumerate() {
@@ -1395,7 +1384,7 @@ fn goto_next(
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<SsaTerminator, WasmError> {
     Ok(SsaTerminator::Goto(next_edge(
         semantic_index,
@@ -1403,7 +1392,7 @@ fn goto_next(
         state,
         semantic_to_block,
         block_params,
-        entry_states,
+        planner,
     )?))
 }
 
@@ -1413,7 +1402,7 @@ fn next_edge(
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
     let next = semantic_index
         .checked_add(1)
@@ -1425,7 +1414,7 @@ fn next_edge(
         EdgeMapping::Identity,
         semantic_to_block,
         block_params,
-        entry_states,
+        planner,
     )
 }
 
@@ -1444,11 +1433,9 @@ fn edge_to_target(
     mapping: EdgeMapping,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
-    let target_entry = entry_states
-        .get(target.index().as_usize())
-        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+    let target_entry = planner.target_entry(target.index().as_usize());
     let target_block = semantic_to_block
         .get(target.index().as_usize())
         .copied()
@@ -1463,22 +1450,23 @@ fn edge_to_target(
             state.height().saturating_sub(stack_drop as u16)
         }
     };
-    if mapped_height != target_entry.stack_height {
+    if mapped_height != target_entry.transient.stack_height {
         return Err(WasmError::internal(alloc::format!(
             "edge to semantic op {} computes stack height {}, but target expects {}",
             target.index().as_usize(),
             mapped_height,
-            target_entry.stack_height,
+            target_entry.transient.stack_height,
         )));
     }
 
     let bindings = match mapping {
         EdgeMapping::Identity => {
-            let live_values = state.top_values(target_entry.live_value_count() as usize)?;
+            let live_values =
+                state.top_values(target_entry.transient.live_value_count() as usize)?;
             bind_values(target_params, &live_values)?
         }
         EdgeMapping::TakenBranch { payload, .. } => {
-            if target_entry.live_value_count() == 0 {
+            if target_entry.transient.live_value_count() == 0 {
                 if !target_params.is_empty() {
                     return Err(WasmError::internal(
                         "taken branch target expects no live values but still has params".into(),
@@ -1486,7 +1474,7 @@ fn edge_to_target(
                 }
                 Vec::new()
             } else {
-                let live_needed = target_entry.live_value_count() as usize;
+                let live_needed = target_entry.transient.live_value_count() as usize;
                 let live_values = state.top_values(live_needed)?;
                 if payload.map(|span| span.count).unwrap_or(0) != live_needed as u16 {
                     return Err(WasmError::internal(
@@ -1510,7 +1498,7 @@ fn br_table_edge(
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
     edge_to_target(
         entry.target,
@@ -1521,7 +1509,7 @@ fn br_table_edge(
         },
         semantic_to_block,
         block_params,
-        entry_states,
+        planner,
     )
 }
 
@@ -1546,13 +1534,11 @@ fn target_expects_canonical_payload(
     target: SemanticTarget,
     stack_drop: u32,
     state: &BlockState,
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<bool, WasmError> {
-    let entry = entry_states
-        .get(target.index().as_usize())
-        .ok_or_else(|| WasmError::invalid("taken branch target out of range".into()))?;
-    Ok(entry.live_value_count() == 0
-        && entry.stack_height == state.height().saturating_sub(stack_drop as u16))
+    let entry = planner.target_entry(target.index().as_usize());
+    Ok(entry.transient.live_value_count() == 0
+        && entry.transient.stack_height == state.height().saturating_sub(stack_drop as u16))
 }
 
 fn publish_taken_branch_payload_at(
@@ -1586,11 +1572,11 @@ fn maybe_publish_taken_branch_payloads(
     entries: &[BrTableEntry],
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    entry_states: &[EntryState],
+    planner: &JointPlanner,
 ) -> Result<(), WasmError> {
     let mut published = Vec::<u32>::new();
     for entry in entries {
-        if !target_expects_canonical_payload(entry.target, entry.stack_drop, state, entry_states)? {
+        if !target_expects_canonical_payload(entry.target, entry.stack_drop, state, planner)? {
             continue;
         }
         if published.contains(&entry.stack_drop) {
@@ -1634,38 +1620,11 @@ fn canonicalize_return_results(
     }
 }
 
-fn compute_block_exit_cached_slots(program: &SsaProgram) -> Vec<Vec<FrameSlot>> {
-    let mut exits = Vec::with_capacity(program.blocks.len());
-    for (block_index, block) in program.blocks.iter().enumerate() {
-        let mut resident = program
-            .block_entry_cached_slots
-            .get(block_index)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        for inst in &block.ops {
-            match inst.kind {
-                SsaInstKind::LocalGetCache { slot, .. }
-                | SsaInstKind::LocalSetCache { slot, .. }
-                | SsaInstKind::LocalEnsureCache { slot } => {
-                    resident.insert(slot);
-                }
-                SsaInstKind::LocalDropCache { slot } => {
-                    resident.remove(&slot);
-                }
-                SsaInstKind::Call(_) => {
-                    resident.clear();
-                }
-                _ => {}
-            }
-        }
-        exits.push(resident.into_iter().collect());
-    }
-    exits
-}
-
-fn insert_boundary_repair_blocks(program: &mut SsaProgram, exit_cached_slots: &[Vec<FrameSlot>]) {
+fn insert_boundary_repair_blocks(
+    program: &mut SsaProgram,
+    exit_cached_slots: &[Vec<FrameSlot>],
+    planner: &JointPlanner,
+) {
     let original_len = program.blocks.len();
     let target_params = program
         .blocks
@@ -1690,6 +1649,7 @@ fn insert_boundary_repair_blocks(program: &mut SsaProgram, exit_cached_slots: &[
                 &mut extra_blocks,
                 &mut program.block_entry_cached_slots,
                 original_len,
+                planner,
             ),
             SsaTerminator::Branch {
                 then_edge,
@@ -1704,6 +1664,7 @@ fn insert_boundary_repair_blocks(program: &mut SsaProgram, exit_cached_slots: &[
                     &mut extra_blocks,
                     &mut program.block_entry_cached_slots,
                     original_len,
+                    planner,
                 );
                 maybe_repair_edge(
                     else_edge,
@@ -1713,6 +1674,7 @@ fn insert_boundary_repair_blocks(program: &mut SsaProgram, exit_cached_slots: &[
                     &mut extra_blocks,
                     &mut program.block_entry_cached_slots,
                     original_len,
+                    planner,
                 );
             }
             SsaTerminator::BrTable { entries, .. } => {
@@ -1725,6 +1687,7 @@ fn insert_boundary_repair_blocks(program: &mut SsaProgram, exit_cached_slots: &[
                         &mut extra_blocks,
                         &mut program.block_entry_cached_slots,
                         original_len,
+                        planner,
                     );
                 }
             }
@@ -1743,29 +1706,30 @@ fn maybe_repair_edge(
     extra_blocks: &mut Vec<SsaBlock>,
     block_entry_cached_slots: &mut Vec<Vec<FrameSlot>>,
     original_len: usize,
+    planner: &JointPlanner,
 ) {
     let target_id = edge.target.as_usize();
     let target_entry = target_entries.get(target_id).cloned().unwrap_or_default();
-    if pred_exit == target_entry {
+    let repair = planner.edge_repair(EdgeRepairQuery {
+        pred_exit,
+        succ_entry: &target_entry,
+    });
+    if repair.ensure_cached_locals.is_empty() && repair.drop_cached_locals.is_empty() {
         return;
     }
 
     let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
     let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
     let mut ops = Vec::new();
-    for slot in pred_exit {
-        if !target_entry.contains(slot) {
-            ops.push(SsaInst {
-                kind: SsaInstKind::LocalDropCache { slot: *slot },
-            });
-        }
+    for slot in repair.drop_cached_locals {
+        ops.push(SsaInst {
+            kind: SsaInstKind::LocalDropCache { slot },
+        });
     }
-    for slot in &target_entry {
-        if !pred_exit.contains(slot) {
-            ops.push(SsaInst {
-                kind: SsaInstKind::LocalEnsureCache { slot: *slot },
-            });
-        }
+    for slot in repair.ensure_cached_locals {
+        ops.push(SsaInst {
+            kind: SsaInstKind::LocalEnsureCache { slot },
+        });
     }
     let repair_edge = SsaEdge {
         target: edge.target,

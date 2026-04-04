@@ -12,12 +12,10 @@ Correctness comes first. Optimization passes can be added later.
 
 ## Non-goals
 
-The new `middle/` should not keep any of the old architecture around.
-
-- no backward compatibility layers
-- no function-level local-cache preference table
-- no late pass that reconstructs block live-ins from already-lowered cache ops
-- no duplicated ownership of boundary decisions across multiple passes
+- no backward-compatibility architecture
+- no whole-function cache hotness table
+- no late pass that reconstructs boundary state from emitted cache ops
+- no duplicated ownership of boundary decisions
 
 ## Core model
 
@@ -33,362 +31,42 @@ For each bank, the invariant is:
 
 This must hold at every program point and every block boundary.
 
-## Boundary state
-
-Each block boundary has two parts:
+Boundary state has two parts:
 
 - `cached_locals`: resident local slots, in deterministic order
 - `stack_values`: live transient SSA values, in stack order
 
-Conceptually:
+Transient stack shape is constrained by Wasm semantics. The main policy choices
+are:
 
-```text
-BoundaryState =
-  cached_locals: [slotA, slotB, slotN, ...]
-  stack_values:  [v1, v2, v3, ...]
-```
-
-If dirty tracking is needed, it extends naturally:
-
-```text
-cached_locals: [(slotA, clean), (slotB, dirty), ...]
-stack_values:  [v1, v2, v3, ...]
-```
-
-Transient stack values are determined by Wasm semantics. The part that requires policy is cached locals.
+- which values deserve residency
+- when residency must be materialized
+- which values to evict under pressure
 
 ## High-level pipeline
 
-### 1. Semantic IR -> explicit block CFG
-
-Input:
-
-- Wasm semantic IR with structured control
-
-Output:
-
-- explicit CFG with basic blocks and explicit edges
-
-Properties:
-
-- all merge points and loop headers are explicit
-- semantic stack shape on each edge is known
-- no cache decisions yet
-- no spills/fills yet
-
-### 2. Slot-only SSA lowering
-
-Input:
-
-- explicit semantic CFG
-
-Output:
-
-- slot-only SSA-form blocks
-
-Properties:
-
-- transient values become SSA values
-- semantic `local.get/set/tee` become slot-form SSA-local ops
-- no cache ops yet
-- no spill/fill yet
-
-At this stage locals are still only:
-
-- `LocalGetSlot`
-- `LocalSetSlot`
-
-The starting point is deliberately conservative and policy-free.
-
-### 3. In-block local-use scan
-
-Input:
-
-- slot-only SSA blocks
-
-Output:
-
-- per-block ranked local-use preference
-
-This is not whole-function hotness. It is only block-local guidance.
-
-For each block, compute an ordered local preference such as:
-
-```text
-preferred_locals(block) = [slot4, slot2, slot3, ...]
-```
-
-The order should favor locals that are used repeatedly or soon inside the block.
-
-This scan is cheap and only helps choose the block entry cache state.
-
-Only used locals in the block are in the list, so if a local is not in the list, it means the block doesn't touch it.
-
-### 4. Choose canonical predecessor per block
-
-Input:
-
-- CFG
-- basic block profile bias if available
-
-Output:
-
-- one canonical incoming edge for each non-entry block
-
-Rules:
-
-- single-predecessor block: that predecessor is canonical
-- loop header: prefer the backedge as canonical, not the cold preheader
-- ordinary merge: prefer the hotter predecessor
-
-This is the key to keeping hot boundaries free.
-
-### 5. One-pass joint block rewrite
-
-This is the main transformation.
-
-For each block, define its entry boundary using:
-
-- exact incoming transient stack state from Wasm
-- cached locals chosen from:
-  - this block's preferred locals first
-  - then carried cached locals from the canonical predecessor
-  - clipped to the available dynamic budget after stack pressure
-
-Then lower the block once from that entry state.
-
-While processing each instruction:
-
-- maintain current transient stack state
-- maintain current cached-local state
-- maintain current total dynamic usage
-- rewrite local ops:
-  - `LocalGetSlot` may become `LocalGetCache`
-  - `LocalSetSlot` may become `LocalSetCache`
-- insert:
-  - `Spill`
-  - `Fill`
-  - `LocalEnsureCache`
-  - `LocalDropCache`
-
-Pressure handling policy:
-
-- if there is room, keep hot locals cached
-- if pressure is tight, first evict carried-through cached locals unused in this block
-- then evict lower-priority cached locals
-- if needed, spill lower-priority transient stack values
-
-At block end, record the actual exit boundary:
-
-- remaining cached locals
-- remaining live transient stack values in stack order
-
-For linear flow, that exit naturally becomes the next block's inherited state on the canonical path.
-
-### 6. Repair non-canonical incoming edges
-
-After each block has a chosen entry boundary and each predecessor has an exit boundary:
-
-- if `pred.exit == succ.entry`, the edge is free
-- otherwise insert a repair block on that edge
-
-Repair blocks only do boundary matching:
-
-- `LocalEnsureCache`
-- `LocalDropCache`
-- transient boundary repair if ever needed beyond the Wasm-fixed stack contract
-
-The important rule is:
-
-- block live-ins are not reconstructed from lowered cache ops
-- they are already known from the chosen entry boundary
-- repair only exists to match non-canonical edges to that known boundary
-
-### 7. Optional cleanup
-
-Not required for the first correct version.
-
-Later cleanup can include:
-
-- CFG simplification
-- block merging
-- jump threading
-- unreachable block removal
-- redundant `LocalEnsureCache` / `LocalDropCache` removal
-- dead `Spill` / `Fill` cleanup
-- local sink / direct-write cleanup
-
-These passes must not change the ownership model above.
-
-## Important design decisions
-
-### No whole-function cache analysis
-
-Whole-function local hotness is not part of the design.
-
-It is misleading for local cache decisions because cache usefulness is region-local and CFG-local.
-
-Only block-local local-use guidance is used.
-
-### No late reconstruction of boundary state
-
-This is a hard rule.
-
-The system must never:
-
-- lower a block first
-- notice `LocalGetCache` / `LocalSetCache`
-- reconstruct that the block must have wanted those locals cached at entry
-
-That is backward.
-
-Instead:
-
-- choose the block entry boundary first
-- then lower from that known state
-
-### No global SSA solving
-
-Wasm already fixes the transient stack contract across control flow.
-
-The only real policy choice at boundaries is cached-local residency.
-
-### No repeated full re-lowering loop
-
-The design is intentionally one-pass over blocks after choosing:
-
-- block-local preference order
-- canonical predecessor
-- block entry cache set
-
-This is fast and already close to the end-state algorithm.
-
-If a later version wants to improve predecessor choice or entry-cache selection, it should do so by replacing the selection heuristic, not by changing the entire architecture.
-
-## Example shape
-
-Starting from slot-only SSA:
-
-```text
-b0:
-  v0 = ConstI32 0
-  LocalSetSlot slot0, v0
-
-  v1 = ConstI32 1
-  LocalSetSlot slot1, v1
-
-  Jump b1
-
-b1:
-  v2 = LocalGetSlot slot1
-  ...
-```
-
-After the joint rewrite, if `slot0` and `slot1` are worth keeping cached through the loop:
-
-```text
-b0:
-  v0 = ConstI32 0
-  LocalSetSlot slot0, v0
-
-  v1 = ConstI32 1
-  LocalSetSlot slot1, v1
-
-  Jump b0_b1_repair
-
-b0_b1_repair:
-  LocalEnsureCache slot0
-  LocalEnsureCache slot1
-  Jump b1
-
-b1:
-  v2 = LocalGetCache slot1
-  ...
-```
-
-The hot loop backedge should match the chosen loop-header entry state directly, so it stays free.
-
-## What `machine/` should receive
-
-The output SSA-IR given to `machine/` should already be explicit and legal:
-
-- explicit blocks and edges
-- explicit SSA values
-- explicit `Spill` / `Fill`
-- explicit `LocalGetSlot`
-- explicit `LocalSetSlot`
-- explicit `LocalGetCache`
-- explicit `LocalSetCache`
-- explicit `LocalEnsureCache`
-- explicit `LocalDropCache`
-- explicit repair blocks where required
-
-`machine/` should not need to rediscover local-cache policy.
-
-## What remains swappable later
-
-The following are algorithmic choices and can be improved later without changing the architecture:
-
-- how block-local local-use preference is ranked
-- how canonical predecessor is chosen at ordinary merges
-- how many carried-through cached locals survive after preferred locals are packed
-- which cached local to evict first under pressure
-- which transient value to spill first under pressure
-- profile weighting and loop bias
-
-These are implementation heuristics, not architectural pieces.
-
-## File structure proposal
-
-The new `middle/` should be organized around clear ownership:
-
-```text
-middle/
-  PLAN.md
-  mod.rs
-  frame.rs
-  cfg.rs
-  slot_ssa.rs
-  rewrite.rs
-  cleanup.rs
-  joint_plan/
-    mod.rs
-    types.rs
-    scan.rs
-    canonical.rs
-    naive.rs
-    validate.rs
-  ssa_ir/
-    mod.rs
-    ir.rs
-    target.rs
-    validate.rs
-  tests.rs
-```
-
-Responsibilities:
-
-- `mod.rs`
-  orchestrates the whole pipeline
-- `frame.rs`
-  owns frame and slot layout
-- `cfg.rs`
-  turns structured semantic IR into explicit block CFG
-- `slot_ssa.rs`
-  lowers that CFG into slot-only SSA
-- `rewrite.rs`
-  owns the real lowering state and emits final SSA-IR
-- `cleanup.rs`
-  later post-lowering cleanup only
-- `joint_plan/`
-  owns policy and decisions
-- `ssa_ir/`
-  owns the final IR contract and validation
-
-This structure keeps the core split explicit:
-
-- `joint_plan/` decides
-- `rewrite.rs` performs the rewrite and owns the facts
+1. Build an explicit CFG from Wasm semantic IR.
+2. Lower that CFG to slot-only SSA.
+3. Let `joint_plan/` choose:
+   - canonical predecessor
+   - block entry/exit residency
+   - per-op lowering and pressure policy
+   - edge repair requirements
+4. Let `rewrite.rs` lower once from those chosen decisions.
+5. Hand `machine/` explicit SSA-IR with explicit:
+   - blocks and edges
+   - SSA values
+   - `Spill` / `Fill`
+   - `LocalGet/SetSlot`
+   - `LocalGet/SetCache`
+   - `LocalEnsureCache` / `LocalDropCache`
+
+The design constraints are:
+
+- no whole-function cache hotness model
+- no late reconstruction of boundary state
+- no repeated full re-lowering loop
+- heuristics are swappable, ownership is not
 
 ## Planner and rewrite ownership
 
@@ -424,7 +102,7 @@ The planner needs facts, not ownership of the mutable rewrite state object.
 - exact Wasm stack contract on block entry and exit
 - local slot type, bank, and cost
 - dynamic budgets
-- block-local local-use ranking
+- block-local value ranking
 - canonical predecessor for each block
 
 ### Block-entry facts
@@ -454,19 +132,18 @@ The planner does not emit IR. It returns decisions.
 ### Whole-block outputs
 
 - canonical predecessor
-- chosen entry cached-local set
-- chosen exit cached-local set
-- repair requirement for each non-canonical incoming edge
+- tentative entry cached-local set
+- finalized entry cached-local set after one lowering pass
+- repair requirement derived from that finalized entry
 
 ### Per-instruction outputs
 
 At each relevant point, the planner should be able to answer:
 
 - should this `LocalGet` use slot or cache
-- should this `LocalSet` write slot or cache
+- should this `LocalSet` use cache
 - under pressure, should we drop a cached local or spill a transient value
 - which cached locals should be admitted at block entry
-- which cached locals should survive to block exit
 
 ### Edge outputs
 
@@ -496,8 +173,8 @@ correctness.
 
 This is mandatory.
 
-The old system had a fixed transient window. The new system uses the full
-dynamic-bank budget, but transient stack legality still needs an explicit plan.
+The new system uses the full dynamic-bank budget, but transient stack legality
+still needs an explicit plan.
 
 For each instruction, the planner must be able to answer:
 
@@ -514,7 +191,7 @@ Examples:
 - `br_if`
   requires the condition value to be resident before the op
 
-So even with naive policy, `rewrite.rs` must never spill below the transient
+So even with a simple policy, `rewrite.rs` must never spill below the transient
 floor required by the current op.
 
 #### 2. Pressure resolution
@@ -536,42 +213,106 @@ This is enough for a correct first implementation.
 For every local access, the planner must choose:
 
 - `LocalGetSlot` or `LocalGetCache`
-- `LocalSetSlot` or `LocalSetCache`
+- `LocalSetCache` by default
+- `LocalSetSlot` only as a temporary fallback while the old path still exists
 
-This depends on current residency, pressure, and block-local local preference.
+This depends on current residency, pressure, and block-local value ranking.
 
 ### Boundary-level planning responsibilities
 
 These must also exist as explicit planner outputs, even if the initial policy
 is simple.
 
-#### 4. Block entry cache set
+#### 4. Block entry resident set
 
-For each block, the planner must define which locals are expected to be cached
+For each block, the planner must define which values are expected to be resident
 on entry.
 
-This is chosen from:
+This is chosen from one ranked resident-set policy that considers:
 
-- this block's own preferred locals
-- carried cached locals from the canonical predecessor
-- subject to the remaining dynamic budget after transient stack pressure
+- local cache candidates
+- touched entry-stack values
+- carried values from the canonical predecessor exit
+- subject to the shared dynamic budget
 
-#### 5. Block exit cache set
+This decision is not the same as entry materialization.
 
-For each block, the planner must define which cached locals survive to the
-block boundary.
+For locals, the planner must distinguish:
 
-Those locals become candidates for carry-through to successor blocks.
+- resident on entry
+- must be ensured at entry
+
+A local may deserve boundary residency even when it should not be loaded on the
+incoming edge.
+
+Important example:
+
+- if the first access is a write, the local may still deserve entry and exit
+  residency on a hot path
+- but the old value should not be loaded on entry
+- the first `LocalSetCache` should materialize it instead
+
+The key consistency failure is:
+
+- a value is materialized on entry
+- and then dropped before its first use
+
+That means the planner's residency ranking and eviction policy are inconsistent.
+
+The important single-pass rule is:
+
+- first build a tentative entry
+- lower the block once from that tentative entry
+- then finalize entry by trimming only useless carried-in locals
+
+The finalized entry is:
+
+```text
+final_entry =
+    used_anywhere_in_block
+    union
+    (tentative_entry intersect actual_exit)
+```
+
+Only locals unused in the block can be removed by this step.
+
+So:
+
+- if a carried local is used in the block, keep it in entry
+- if a carried local is unused but survives to exit, keep it in entry
+- if a carried local is unused and does not survive to exit, remove it from
+  entry
+
+This avoids any full recompute loop. The block is lowered once.
+
+#### 5. Observed block exit cache state
+
+Block exit is not independently planned first.
+
+The rewriter lowers once from the tentative entry and observes the actual exit
+cached-local state.
+
+That observed exit is then used only for:
+
+- trimming unused carried-in locals from tentative entry
+- keeping hot loop state close to the planned entry
+- deriving trivial edge repair
 
 #### 6. Edge repair
 
-For each non-canonical incoming edge, the planner must define:
+Under the current Wasm/SSA model, repair is almost entirely a cached-local
+question.
+
+The transient stack contract is already fixed by Wasm semantics, and SSA block
+params already handle transient value flow.
+
+So once the finalized block entry is known, repair is simple:
 
 - which locals to `LocalEnsureCache`
 - which locals to `LocalDropCache`
 
-Repair exists only to match a known chosen entry boundary. It must never be
-used to reconstruct what the block entry should have been.
+Repair exists only to match every incoming edge to that finalized entry. It must
+never be used to reconstruct what the block entry should have been.
 
 ### Planning responsibilities that can stay simple initially
 
@@ -654,7 +395,8 @@ The planner may later use block/edge profile information to improve:
 - chosen block entry boundary
 - actual block exit boundary as produced by rewriting
 
-The rewriter is the part that makes the program real. The planner only tells it what to do.
+The rewriter is the part that makes the program real. The planner only tells it
+what to do.
 
 ## Summary
 
@@ -679,3 +421,648 @@ The critical principle is:
 - non-canonical edges repair into it
 
 That is the clean replacement for the old `middle/`.
+
+## Current unified boundary policy
+
+This section describes the intended simple near-optimal policy for boundary
+selection.
+
+### First-principles goal
+
+The goal is not to cache locals separately from stack values.
+
+The goal is:
+
+- keep the highest-value values resident in registers
+- subject to the shared dynamic-bank budget
+- across the hottest part of execution
+- while avoiding useless churn
+
+Those resident values can be:
+
+- local caches
+- transient stack values
+
+Boundary selection is not an isolated problem. It is one part of resident-set
+planning.
+
+### One policy for all blocks
+
+Use one policy for all blocks.
+
+Do not invent a separate loop algorithm for cache selection.
+
+Loops still matter, but they should fall out naturally from:
+
+- canonical predecessor choice
+- value ranking
+- exit-to-entry carry-through
+
+The only explicit loop bias needed is:
+
+- loop headers should prefer the backedge as canonical predecessor
+
+Everything else should use the same boundary-selection algorithm as ordinary
+blocks.
+
+### Entry region
+
+For block entry planning, only the block entry region matters.
+
+The entry region runs from block start to the first hard barrier.
+
+Typical hard barriers:
+
+- call
+- return
+- control terminator
+- any forced cache-clear boundary
+
+Values not touched meaningfully before the first hard barrier should not be
+preloaded eagerly at block entry.
+
+### Ranked values
+
+For each block, rank boundary candidates from one unified list.
+
+Candidate kinds:
+
+- local slot `slotN`
+- entry stack value `stack[-k]`
+
+At rewrite time the entry stack already exists as explicit SSA values, so stack
+usage can be counted just like local usage.
+
+Local candidates and stack candidates therefore share one ranking model.
+
+The realization is still constrained on the stack side:
+
+- locals can be chosen as any subset
+- stack values are chosen as a resident top suffix
+
+So the stack side is equivalent to choosing a `spill_depth`.
+
+### Ranking signals
+
+Keep the signals simple and cheap.
+
+For a local candidate:
+
+- touched before the first hard barrier
+- first-use distance
+- use count before the first hard barrier
+- carried by the canonical predecessor exit or not
+- whether the first access is a read or a write
+
+For an entry stack value:
+
+- touched before the first hard barrier
+- first-touch distance
+- touch count before the first hard barrier
+
+The most important signals are:
+
+- carried on canonical predecessor exit
+- used early
+- reused enough to justify residency
+
+Single-use locals are not automatically bad boundary candidates.
+
+If a local is used early, preloading it may still be good because:
+
+- the load happens earlier than immediate use
+- a later `machine/` aliasing pass may fold away the reg-to-reg copy path
+
+So single-use locals should not be rejected by policy alone.
+
+The first-access kind matters more:
+
+- read-first local: if chosen and not already carried, it may need entry
+  materialization
+- write-first local: if chosen, it should usually reserve residency but not
+  trigger an entry load
+
+Without profile data, the base hot-edge signal should stay simple:
+
+- use the canonical predecessor as the carry-through signal
+- prefer loop backedges as canonical predecessors
+- do not require weighted incoming edge coverage in the base algorithm
+
+Profile-weighted incoming coverage can remain a later optional improvement.
+
+### Residency versus materialization
+
+Boundary planning must distinguish:
+
+- which values deserve residency
+- which values must be materialized immediately at entry
+
+Those are not the same decision.
+
+For locals:
+
+- read-first and chosen but not carried: materialize on entry
+- write-first and chosen but not carried: reserve residency but do not load on
+  entry
+
+For stack values:
+
+- chosen resident values stay in the resident entry stack suffix
+- non-chosen deeper values may be spilled before the block needs them
+
+### Entry-state rule
+
+At `block_open(block)`:
+
+1. start from the exact Wasm stack contract
+2. rank entry-region locals and entry-stack SSA values together
+3. prefer values already carried by the canonical predecessor exit
+4. choose the resident stack suffix that is worth keeping hot
+5. choose cached locals under the remaining budget
+6. decide which chosen locals must actually be ensured on entry
+7. allow write-first locals to reserve boundary residency without forcing an
+   entry load
+
+This means block entry is chosen from one ranked resident-set policy, not from
+"locals only".
+
+### Pseudocode
+
+```text
+function plan_block_open(block):
+    entry_stack = wasm_entry_stack(block)
+    canonical_pred = canonical_predecessor(block)
+    carried_locals = []
+    if canonical_pred exists:
+        carried_locals = exit_cached_locals(canonical_pred)
+    budgets = dynamic_bank_budgets(block)   // {gp, fp}
+    region = scan_entry_region(block)
+
+    stack_candidates = []
+    for each entry stack value v in entry_stack:
+        info = region.stack_info(v)
+        stack_candidates.push({
+            value: v,
+            touched: info.touched_before_barrier,
+            first_touch: info.first_touch_distance,
+            touch_count: info.touch_count,
+            score: score_stack_value(info),
+        })
+
+    local_candidates = []
+    for each local L touched in region:
+        info = region.local_info(L)
+        local_candidates.push({
+            local: L,
+            carried: L in carried_locals,
+            first_access: info.first_access_kind,   // ReadFirst or WriteFirst
+            first_read: info.first_read_distance,
+            first_write: info.first_write_distance,
+            read_count: info.read_count,
+            write_count: info.write_count,
+            score: score_local(info, L in carried_locals),
+        })
+
+    best = none
+    for each feasible stack suffix S of entry_stack:
+        stack_score = sum(score(v) for v in S)
+        stack_cost = cost_by_bank(S)   // {gp, fp}
+        if not fits_in_bank_budget(stack_cost, budgets):
+            continue
+
+        remaining_budget = subtract_bank_budget(budgets, stack_cost)
+        chosen_locals = choose_best_locals_under_budget(
+            local_candidates,
+            remaining_budget,
+        )
+        local_score = sum(score(L) for L in chosen_locals)
+
+        candidate = {
+            resident_stack_suffix: S,
+            entry_cached_locals: chosen_locals,
+            total_score: stack_score + local_score,
+        }
+        if best is none:
+            best = candidate
+        else if candidate.total_score > best.total_score:
+            best = candidate
+        else if candidate.total_score == best.total_score:
+            // Prefer the cheaper boundary when the value score is the same.
+            if count_entry_ensures(candidate) < count_entry_ensures(best):
+                best = candidate
+            else if count_entry_ensures(candidate) == count_entry_ensures(best):
+                if local_cache_cost(candidate) < local_cache_cost(best):
+                    best = candidate
+
+    if best is none:
+        best = {
+            resident_stack_suffix: [],
+            entry_cached_locals: [],
+            total_score: 0,
+        }
+
+    ensure_on_entry = []
+    for each chosen local C in best.entry_cached_locals:
+        if C.carried:
+            continue
+        if C.first_access == ReadFirst:
+            ensure_on_entry.push(C.local)
+        else:
+            // Write-first locals reserve boundary residency but do not load the
+            // old value on entry. The first LocalSetCache materializes them.
+            continue
+
+    return BlockOpenDecision {
+        resident_stack_suffix: best.resident_stack_suffix,
+        entry_cached_locals: best.entry_cached_locals,
+        ensure_on_entry: ensure_on_entry,
+    }
+
+
+function score_local(info, carried):
+    if info.first_access_kind == None:
+        return VERY_LOW
+
+    score = 0
+    if carried:
+        score += CARRY_BONUS
+
+    if info.first_access_kind == ReadFirst:
+        score += EARLY_USE_BONUS / (1 + info.first_read_distance)
+        score += REUSE_BONUS * info.read_count
+    else:
+        score += EARLY_USE_BONUS / (1 + info.first_write_distance)
+        score += WRITE_FIRST_BOUNDARY_BONUS
+        score += REUSE_BONUS * info.write_count
+
+    return score
+
+
+function score_stack_value(info):
+    if not info.touched_before_barrier:
+        return VERY_LOW
+    score = 0
+    score += EARLY_USE_BONUS / (1 + info.first_touch_distance)
+    score += REUSE_BONUS * info.touch_count
+    return score
+```
+
+This pseudocode is intentionally simple:
+
+- locals and entry-stack SSA values compete under one shared resident-set
+  policy, subject to per-bank budgets
+- stack realization still becomes a resident suffix, so the planner only needs
+  to try feasible suffixes
+- write-first locals can be boundary-resident without forcing an entry load
+- canonical predecessor carry-through is the base hot-edge signal
+- single-use early locals are still eligible; later `machine/` local aliasing
+  may delete the reg-to-reg copy path
+- when scores tie, prefer the boundary with fewer cold-edge entry materializations
+- the same value ordering should later guide cache eviction; otherwise the
+  `dropped_before_first_use` diagnostic will expose an inconsistent planner
+
+### Entry finalization and repair
+
+Block-entry planning is single-pass:
+
+1. build a tentative entry from hot block values plus carried predecessor values
+2. lower once from that tentative entry
+3. observe the actual exit
+4. finalize entry as:
+
+```text
+final_entry =
+    used_anywhere_in_block
+    union
+    (tentative_entry intersect actual_exit)
+```
+
+5. repair all incoming edges to that finalized entry
+
+This means repair is a consequence of finalized entry, not a separate
+optimization problem.
+
+```text
+function finalize_block_entry(tentative_entry, used_in_block, actual_exit):
+    return used_in_block union (tentative_entry intersect actual_exit)
+
+
+function derive_edge_repair(pred_exit, final_entry):
+    ensure_cached_locals = final_entry - pred_exit
+    drop_cached_locals = pred_exit - final_entry
+    return {
+        ensure_cached_locals,
+        drop_cached_locals,
+    }
+```
+
+### Failure condition
+
+For boundary selection, the key diagnostic failure is:
+
+- a value is materialized into the entry state
+- then it is dropped before its first use
+
+That means the planner admitted the wrong value or used an inconsistent eviction
+ranking.
+
+If a value survives until use and is later evicted due to pressure, that is a
+pressure-resolution question, not a boundary-selection question.
+
+The post-lowering check can be written as:
+
+```text
+function validate_block_open(block, decision, lowering_trace):
+    for each local L in decision.ensure_on_entry:
+        if lowering_trace.dropped_before_first_use(L):
+            fail("block_open admitted the wrong local or eviction ranking disagrees")
+```
+
+### Why loops work under the same policy
+
+In a loop:
+
+- the backedge is canonical
+- values carried on the backedge exit seed the tentative entry
+- values used early and repeatedly inside the loop rank highly
+
+So a profitable loop-hot resident set should emerge naturally without needing a
+separate loop-only cache-selection algorithm.
+
+The steady-state goal is:
+
+- hot loop backedge exit should stay as close as possible to the finalized loop
+  entry
+
+That keeps the loop hot without repeated repair churn.
+
+## Mid-block pressure policy
+
+Mid-block planning must choose operation shape and eviction together.
+
+It is not enough to decide:
+
+- `local.get` should use cache
+
+and only then ask:
+
+- what should be evicted
+
+because different lowering shapes need different numbers of live registers.
+
+Important example:
+
+- `LocalGetSlot -> SSA` may need one new live register
+- `LocalGetCache -> SSA` may need two live registers if we want both:
+  - the cached local to remain resident
+  - the SSA result value
+
+So pressure resolution must plan the whole step together.
+
+### Eviction classes
+
+At a pressure point, classify resident values in this order:
+
+1. `unused_in_block`
+   Values not used anywhere in the current block.
+2. `dead_after_point`
+   Values used earlier in the block but not in the remaining instructions.
+3. `live_after_point`
+   Values still used in the remaining instructions.
+
+This gives the first simple policy:
+
+- evict `unused_in_block` first
+- then `dead_after_point`
+- only evict `live_after_point` if forced
+
+Among values in the same class, use the same whole-block ranking policy that
+drives block-entry hotness.
+
+So if two values are both dead after the current point:
+
+- keep the one that is hotter for the block as a whole
+- evict the colder one
+
+This is enough to preserve loop steady state without separately planning exit.
+
+### Pseudocode
+
+```text
+function plan_op(block, op_index, current_state):
+    op = semantic_op(block, op_index)
+    floor = required_transient_floor(op)
+    block_ranking = block_hot_ranking(block)
+
+    candidates = enumerate_op_shapes(op, current_state)
+    // Examples:
+    // - LocalGetSlot
+    // - LocalGetCacheAlreadyResident
+    // - LocalGetCacheAndKeepResident
+    // - LocalSetSlot
+    // - LocalSetCache
+
+    best = none
+
+    for each shape in candidates:
+        state = clone(current_state)
+
+        realize_transient_floor(state, floor)
+
+        demand = extra_live_cost_by_bank(shape, state)
+        evictions = evict_to_fit(block, op_index, state, demand, shape, block_ranking)
+        if evictions == impossible:
+            continue
+
+        candidate = {
+            shape: shape,
+            evictions: evictions,
+            score: shape_score(shape) - eviction_cost(evictions),
+        }
+
+        if best is none or candidate.score > best.score:
+            best = candidate
+
+    return best
+
+
+function evict_to_fit(block, op_index, state, demand, shape, block_ranking):
+    evictions = []
+
+    while not fits_after(state, demand):
+        victim = choose_eviction_victim(
+            block,
+            op_index,
+            state,
+            shape,
+            block_ranking,
+        )
+        if victim == none:
+            return impossible
+
+        apply_evict(state, victim)
+        evictions.push(victim)
+
+    return evictions
+
+
+function choose_eviction_victim(block, op_index, state, shape, block_ranking):
+    best_victim = none
+    best_keep_key = none
+
+    for each resident value V in pressured_bank(state):
+        key = keep_key(block, op_index, V, shape, block_ranking)
+        if best_keep_key is none or key < best_keep_key:
+            best_keep_key = key
+            best_victim = V
+
+    return best_victim
+
+
+function keep_key(block, op_index, value, shape, block_ranking):
+    if used_now_by_shape(value, op_index, shape):
+        return (3, INF)
+
+    if used_after_point(value, block, op_index):
+        return (
+            2,
+            remaining_use_score(value, block, op_index)
+                + block_hot_score(value, block_ranking),
+        )
+
+    if used_anywhere_in_block(value, block):
+        return (
+            1,
+            block_hot_score(value, block_ranking),
+        )
+
+    return (0, 0)
+```
+
+This policy is intentionally conservative:
+
+- values unused in the entire block are always the first eviction candidates
+- values dead after the current point are next
+- values still needed later are last
+- values required by the current op shape get the highest possible keep key
+- op lowering mode and eviction are chosen together, not in separate planner
+  passes
+
+## Local access policy
+
+When there is spare capacity, local access policy is simple:
+
+- always keep the local cached
+
+The interesting case is when there is no spare capacity for an additional cached
+local.
+
+For `local.get`, this does not mean the op itself is impossible. The op still
+needs one register for the SSA result no matter what.
+
+The real policy question is:
+
+- after producing the SSA result, should we spend one additional cache slot to
+  keep this local resident?
+
+So `local.get` should be treated as:
+
+- mandatory: produce the SSA result
+- optional: keep the local cached after the get
+
+That optional part should reuse the same keep-key logic as pressure eviction.
+
+`local.tee` asks the same cache-admission question, but without the mandatory
+result-allocation pressure:
+
+- it consumes one SSA value
+- it produces one SSA value
+- stack height does not grow
+- the only real policy question is whether to keep the local cached after the
+  tee
+
+### Pseudocode
+
+```text
+function plan_local_get(block, op_index, local, state, block_ranking):
+    if local already resident in cache:
+        return LocalGetCacheAlreadyResident
+
+    // The SSA result is mandatory. The extra cache slot is optional.
+    target_keep = keep_key_for_local_after_get(block, op_index, local, block_ranking)
+
+    if fits_extra_cache_slot_for_local(state, local):
+        return LocalGetSlotPlusCache
+
+    victim = weakest_resident_value_in_same_bank(
+        block,
+        op_index,
+        state,
+        shape = LocalGetSlotPlusCache,
+        block_ranking,
+    )
+
+    if victim != none and target_keep > keep_key(block, op_index, victim, LocalGetSlotPlusCache, block_ranking):
+        return LocalGetSlotPlusCacheAndEvict(victim)
+
+    return LocalGetSlotOnly
+
+
+function keep_key_for_local_after_get(block, op_index, local, block_ranking):
+    info = remaining_local_info(block, op_index, local)
+    if not info.used_after_point:
+        return (0, 0)
+
+    return (
+        2,
+        remaining_use_score(local, block, op_index)
+            + block_hot_score(local, block_ranking),
+    )
+
+
+function plan_local_set(block, op_index, local, state, block_ranking):
+    // local.set consumes one SSA value, so the local can naturally take over
+    // that residency. No extra cache slot needs to be found at the set point.
+    return LocalSetCache
+
+
+function plan_local_tee(block, op_index, local, state, block_ranking):
+    if local already resident in cache:
+        return LocalTeeCacheAlreadyResident
+
+    // local.tee keeps stack height flat. The question is only whether the local
+    // also deserves cache residency after the tee.
+    target_keep = keep_key_for_local_after_get(block, op_index, local, block_ranking)
+
+    if fits_extra_cache_slot_for_local(state, local):
+        return LocalTeeCache
+
+    victim = weakest_resident_value_in_same_bank(
+        block,
+        op_index,
+        state,
+        shape = LocalTeeCache,
+        block_ranking,
+    )
+
+    if victim != none and target_keep > keep_key(block, op_index, victim, LocalTeeCache, block_ranking):
+        return LocalTeeCacheAndEvict(victim)
+
+    return LocalTeeSlot
+```
+
+This policy stays simple:
+
+- with spare capacity, always cache
+- under pressure, compare the target local against the weakest current resident
+  value in the same bank
+- `local.get` pays one mandatory register for the SSA result and only asks
+  whether the extra cache residency is worth it
+- `local.set` naturally becomes `LocalSetCache` because it consumes one SSA slot
+- `local.tee` asks the same cache-admission question as `local.get`, but it does
+  not pay the extra stack-growth cost
+
+Later TODO:
+
+- once cache-first `local.set` works end to end and dirty/writeback remains
+  backend-owned, delete `LocalSetSlot` from the middle-layer policy and SSA-IR

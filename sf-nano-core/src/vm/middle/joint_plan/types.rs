@@ -3,11 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::value_type::ValueType;
-use crate::vm::middle::{
-    cfg::CfgBlockId,
-    frame::{FrameSlot, FrameSpan},
-    ssa_ir::ir::SsaValue,
-};
+use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
 /// Straight-line local access choice for one semantic local op.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,42 +29,22 @@ pub(crate) struct EntryState {
     pub live_types: Vec<ValueType>,
 }
 
-impl EntryState {
-    #[inline]
-    pub(crate) const fn live_value_count(&self) -> u16 {
-        self.stack_height.saturating_sub(self.spill_depth)
-    }
-}
+impl EntryState {}
 
 /// Planned straight-line behavior for one semantic op.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OpPlan {
-    pub prefix: Vec<PrepAction>,
+    pub before: EntryState,
+    pub drop_cached_locals: Vec<FrameSlot>,
     pub local_access: PreparedLocalAccess,
 }
 
-/// Explicit block-boundary state shared between the planner and the rewriter.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BoundaryState {
-    pub cached_locals: Vec<FrameSlot>,
-    pub stack_values: Vec<SsaValue>,
-}
-
-/// Planned cache repair for one non-canonical incoming edge.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EdgePlan {
-    pub source: CfgBlockId,
-    pub target: CfgBlockId,
-    pub ensure_cached_locals: Vec<FrameSlot>,
-    pub drop_cached_locals: Vec<FrameSlot>,
-}
-
-/// Planned boundary state for one block.
+/// Planned block boundary state used by the planner facade.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockPlan {
-    pub canonical_predecessor: Option<CfgBlockId>,
-    pub entry: BoundaryState,
-    pub exit: BoundaryState,
+    pub entry: EntryState,
+    pub entry_cached_locals: Vec<FrameSlot>,
+    pub exit_cached_locals: Vec<FrameSlot>,
 }
 
 /// Whole-function joint plan.
@@ -80,5 +56,4 @@ pub(crate) struct FunctionPlan {
     pub op_plans: Vec<OpPlan>,
     pub entry_states: Vec<EntryState>,
     pub blocks: Vec<BlockPlan>,
-    pub repairs: Vec<EdgePlan>,
 }

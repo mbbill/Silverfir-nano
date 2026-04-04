@@ -1,13 +1,13 @@
-//! First complete joint-plan implementation.
+//! Joint-plan builder from first-pass SSA.
 //!
-//! This planner is intentionally simple for cached locals, but it is strict
+//! This builder currently uses a simple cached-local policy, but it is strict
 //! about transient legality. It produces:
 //! - exact transient spill/fill behavior per semantic op
 //! - local slot-vs-cache access choice per semantic op
 //! - a canonical predecessor per block
 //! - a chosen cached-local entry set per block
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
+            budget::{count_live_bank_budget_units, gp_value_budget_units},
             cfg::SemanticCfg,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             slot_ssa::SlotSsaProgram,
@@ -30,10 +31,9 @@ use crate::{
 
 use super::{
     canonical::choose_canonical_predecessors,
+    policy::{clears_cache_region, op_must_drop_all_caches},
     scan::scan_local_rankings,
-    types::{
-        BlockPlan, BoundaryState, EntryState, FunctionPlan, OpPlan, PrepAction, PreparedLocalAccess,
-    },
+    types::{BlockPlan, EntryState, FunctionPlan, OpPlan, PrepAction, PreparedLocalAccess},
 };
 
 pub(crate) fn build_plan(
@@ -65,6 +65,7 @@ pub(crate) fn build_plan(
         semantic,
         cfg,
         frame,
+        &op_plans,
         &canonical.by_block,
         &rankings.blocks,
         &block_peak_live,
@@ -73,18 +74,20 @@ pub(crate) fn build_plan(
         gp_dynamic_budget,
         fp_dynamic_budget,
     );
+    let block_exits =
+        simulate_block_exit_cached_locals(semantic, cfg, frame, &block_entries, &op_plans);
 
     let blocks = canonical
         .by_block
         .into_iter()
         .enumerate()
-        .map(|(block_index, canonical_predecessor)| BlockPlan {
-            canonical_predecessor,
-            entry: BoundaryState {
-                cached_locals: block_entries.get(block_index).cloned().unwrap_or_default(),
-                stack_values: Vec::new(),
-            },
-            exit: BoundaryState::default(),
+        .map(|(block_index, _canonical_predecessor)| BlockPlan {
+            entry: entry_states
+                .get(cfg.blocks[block_index].range.start)
+                .cloned()
+                .unwrap_or_default(),
+            entry_cached_locals: block_entries.get(block_index).cloned().unwrap_or_default(),
+            exit_cached_locals: block_exits.get(block_index).cloned().unwrap_or_default(),
         })
         .collect();
 
@@ -95,14 +98,64 @@ pub(crate) fn build_plan(
         op_plans,
         entry_states,
         blocks,
-        repairs: Vec::new(),
     })
+}
+
+fn simulate_block_exit_cached_locals(
+    semantic: &SemanticProgram,
+    cfg: &SemanticCfg,
+    frame: FrameLayoutPlan,
+    block_entries: &[Vec<FrameSlot>],
+    op_plans: &[OpPlan],
+) -> Vec<Vec<FrameSlot>> {
+    cfg.blocks
+        .iter()
+        .map(|block| {
+            let mut resident = block_entries
+                .get(block.id.as_usize())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            for semantic_index in block.range.clone() {
+                let Some(op_plan) = op_plans.get(semantic_index) else {
+                    continue;
+                };
+                let Some(op) = semantic.ops.get(semantic_index) else {
+                    continue;
+                };
+                if op_must_drop_all_caches(&op.kind) {
+                    resident.clear();
+                } else {
+                    for &slot in &op_plan.drop_cached_locals {
+                        resident.remove(&slot);
+                    }
+                }
+                let local_idx = match op.kind {
+                    SemanticOpKind::LocalGet { idx }
+                    | SemanticOpKind::LocalSet { idx }
+                    | SemanticOpKind::LocalTee { idx } => Some(idx),
+                    _ => None,
+                };
+                if let Some(local_idx) = local_idx {
+                    let slot = frame.local_slot(local_idx);
+                    if resident.contains(&slot)
+                        || matches!(op_plan.local_access, PreparedLocalAccess::Cache)
+                    {
+                        resident.insert(slot);
+                    }
+                }
+            }
+            resident.into_iter().collect()
+        })
+        .collect()
 }
 
 fn choose_block_entry_cached_locals(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
+    op_plans: &[OpPlan],
     canonical_predecessors: &[Option<crate::vm::middle::cfg::CfgBlockId>],
     rankings: &[super::scan::BlockLocalRanking],
     block_peak_live: &[LiveCounts],
@@ -142,6 +195,7 @@ fn choose_block_entry_cached_locals(
 
     let iterations = cfg.blocks.len().max(1) * 2;
     for _ in 0..iterations {
+        let exits = simulate_block_exit_cached_locals(semantic, cfg, frame, &entries, op_plans);
         let mut changed = false;
         for (block_index, block) in cfg.blocks.iter().enumerate() {
             if block.flags.is_entry {
@@ -153,8 +207,8 @@ fn choose_block_entry_cached_locals(
                 .unwrap_or_default();
             desired.retain(|slot| cacheable_slots.contains(slot));
             if let Some(pred) = canonical_predecessors.get(block_index).copied().flatten() {
-                if let Some(pred_entry) = entries.get(pred.as_usize()) {
-                    for &slot in pred_entry {
+                if let Some(pred_exit) = exits.get(pred.as_usize()) {
+                    for &slot in pred_exit {
                         if !desired.contains(&slot) {
                             desired.push(slot);
                         }
@@ -165,7 +219,10 @@ fn choose_block_entry_cached_locals(
                 desired,
                 semantic,
                 frame,
-                block_peak_live.get(block_index).copied().unwrap_or_default(),
+                block_peak_live
+                    .get(block_index)
+                    .copied()
+                    .unwrap_or_default(),
                 gp_unit_bytes,
                 gp_dynamic_budget,
                 fp_dynamic_budget,
@@ -442,7 +499,25 @@ fn prepare_semantic_ops(
                 .unwrap_or_default(),
         );
         ops.push(OpPlan {
-            prefix,
+            before: EntryState {
+                stack_height: state.height,
+                spill_depth: state.spill_depth,
+                live_types: if state.unreachable {
+                    Vec::new()
+                } else {
+                    state.types_at(
+                        state.spill_depth,
+                        state.height.saturating_sub(state.spill_depth),
+                    )
+                },
+            },
+            drop_cached_locals: prefix
+                .iter()
+                .filter_map(|action| match action {
+                    PrepAction::DropCache(slot) => Some(*slot),
+                    PrepAction::Spill(..) | PrepAction::Fill(..) => None,
+                })
+                .collect(),
             local_access,
         });
         apply_semantic_effect(semantic_op, op_index, &semantic.op_result_types, &mut state);
@@ -751,25 +826,6 @@ fn compute_future_local_accesses_in_region(semantic: &SemanticProgram) -> Vec<bo
         }
     }
     future_access
-}
-
-fn clears_cache_region(kind: &SemanticOpKind) -> bool {
-    matches!(
-        kind,
-        SemanticOpKind::Loop { .. }
-            | SemanticOpKind::If { .. }
-            | SemanticOpKind::Else { .. }
-            | SemanticOpKind::End
-            | SemanticOpKind::Br { .. }
-            | SemanticOpKind::BrIf { .. }
-            | SemanticOpKind::BrTable { .. }
-            | SemanticOpKind::CallDirect { .. }
-            | SemanticOpKind::CallIndirect { .. }
-            | SemanticOpKind::ReturnVoid
-            | SemanticOpKind::ReturnOne
-            | SemanticOpKind::Return { .. }
-            | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-    )
 }
 
 fn ensure_capacity(
@@ -1237,26 +1293,4 @@ fn spill_all_except_top(
         count,
     )));
     state.spill_depth += count;
-}
-
-pub(crate) fn count_live_bank_budget_units(
-    types: &[ValueType],
-    gp_unit_bytes: u8,
-) -> (usize, usize) {
-    let mut gp = 0usize;
-    let mut fp = 0usize;
-    for ty in types {
-        match ty {
-            ValueType::F32 | ValueType::F64 => fp += 1,
-            _ => gp += gp_value_budget_units(*ty, gp_unit_bytes),
-        }
-    }
-    (gp, fp)
-}
-
-pub(crate) fn gp_value_budget_units(ty: ValueType, gp_unit_bytes: u8) -> usize {
-    match ty {
-        ValueType::I64 if gp_unit_bytes < 8 => 2,
-        _ => 1,
-    }
 }
