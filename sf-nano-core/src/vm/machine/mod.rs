@@ -21,6 +21,7 @@ mod lower_regalloc;
 mod lower_util;
 pub(crate) mod machine_ir;
 mod optimize;
+mod ownership;
 pub(crate) mod peephole;
 pub(crate) mod validate;
 

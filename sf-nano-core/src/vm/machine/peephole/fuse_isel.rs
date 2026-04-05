@@ -32,25 +32,24 @@ use alloc::vec::Vec;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineBlock, MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp,
-    MachineIntWidth, MachineReg, MachineShiftOp, MachineSign, MachineTerminator, MachineValue,
+    MachineBlock, MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp,
+    MachineIntWidth, MachineReg, MachineRegOwner, MachineShiftOp, MachineSign, MachineTerminator,
+    MachineValue,
 };
 
 use super::helpers::reg_live_after;
 
 /// Check that an intermediate register can be safely eliminated.
-/// It must be transient (not a cached local or fixed register) and dead
+/// It must hold one linear value (not a cached local snapshot) and be dead
 /// after the fused instruction.
 fn can_eliminate_reg(
+    owner: Option<MachineRegOwner>,
     reg: MachineReg,
     dst: MachineReg,
     later: &[MachineInst],
     term: &MachineTerminator,
-    config: BackendConfig,
 ) -> bool {
-    // Cached locals and fixed registers are implicitly live across block
-    // boundaries — the within-block liveness scan cannot prove them dead.
-    if !machine_ir::is_transient_reg(reg, config) {
+    if owner != Some(MachineRegOwner::LinearValue) {
         return false;
     }
     // If the fused instruction overwrites the same register, it's dead by
@@ -168,7 +167,7 @@ fn try_fuse_ubfx(
     second: &MachineInst,
     later: &[MachineInst],
     term: &MachineTerminator,
-    config: BackendConfig,
+    _config: BackendConfig,
 ) -> Option<MachineInst> {
     // First: IntBinary { op: ShrU, dst: shift_dst, lhs: Reg(src), rhs: Imm64(shift) }
     let (width, shift_dst, src, shift_amount) = match first.kind {
@@ -201,8 +200,8 @@ fn try_fuse_ubfx(
         return None;
     }
 
-    // shift_dst must be safely eliminable (transient + dead after fusion).
-    if !can_eliminate_reg(shift_dst, and_dst, later, term, config) {
+    // shift_dst must be safely eliminable (linear value + dead after fusion).
+    if !can_eliminate_reg(first.kind.def_owner(), shift_dst, and_dst, later, term) {
         return None;
     }
 
@@ -225,7 +224,7 @@ fn try_fuse_shifted_binop(
     second: &MachineInst,
     later: &[MachineInst],
     term: &MachineTerminator,
-    config: BackendConfig,
+    _config: BackendConfig,
 ) -> Option<MachineInst> {
     // First: IntBinary { op: Shl/ShrU/ShrS, dst: shift_dst, lhs: Reg(shift_src), rhs: Imm64(amount) }
     let (width, shift_dst, shift_src, shift, amount) = match first.kind {
@@ -277,8 +276,8 @@ fn try_fuse_shifted_binop(
         return None;
     }
 
-    // shift_dst must be safely eliminable (transient + dead after fusion).
-    if !can_eliminate_reg(shift_dst, binop_dst, later, term, config) {
+    // shift_dst must be safely eliminable (linear value + dead after fusion).
+    if !can_eliminate_reg(first.kind.def_owner(), shift_dst, binop_dst, later, term) {
         return None;
     }
 
@@ -303,7 +302,7 @@ fn try_fuse_test_bits(
     second: &MachineInst,
     later: &[MachineInst],
     term: &MachineTerminator,
-    config: BackendConfig,
+    _config: BackendConfig,
 ) -> Option<MachineInst> {
     // First: IntBinary { op: And, dst: and_dst, lhs: src, rhs: mask }
     let (width, and_dst, src, mask) = match first.kind {
@@ -335,8 +334,8 @@ fn try_fuse_test_bits(
         _ => return None,
     };
 
-    // and_dst must be safely eliminable (transient + dead after fusion).
-    if !can_eliminate_reg(and_dst, cmp_dst, later, term, config) {
+    // and_dst must be safely eliminable (linear value + dead after fusion).
+    if !can_eliminate_reg(first.kind.def_owner(), and_dst, cmp_dst, later, term) {
         return None;
     }
 

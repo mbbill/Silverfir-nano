@@ -167,7 +167,7 @@ impl<'a> super::backend::ExampleBackend<'a> {
 
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { dst, src, ty } => self.lower_move(*ty, *dst, *src),
+            MachineInstKind::Move { dst, src, ty, .. } => self.lower_move(*ty, *dst, *src),
             MachineInstKind::IntBinary {
                 width,
                 op,

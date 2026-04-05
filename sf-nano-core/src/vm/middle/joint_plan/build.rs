@@ -5,7 +5,7 @@
 //! - exact transient spill/fill behavior per semantic op
 //! - a canonical predecessor per block
 //! - a tentative entry boundary per block
-//! - a single-pass finalized cached-local entry set per block
+//! - block-local facts needed to finalize the public entry after one lowering pass
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -50,12 +50,8 @@ pub(crate) fn build_plan(
     frame: FrameLayoutPlan,
     config: BackendConfig,
 ) -> Result<FunctionPlan, WasmError> {
-    let gp_dynamic_budget = config
-        .gp_transient_budget
-        .saturating_add(config.gp_local_cache_budget);
-    let fp_dynamic_budget = config
-        .fp_transient_budget
-        .saturating_add(config.fp_local_cache_budget);
+    let gp_dynamic_budget = config.gp_dynamic_budget;
+    let fp_dynamic_budget = config.fp_dynamic_budget;
 
     let op_info = build_op_info(semantic, cfg, frame);
     let semantic_entry_shapes = analyze_semantic_entry_shapes(semantic);
@@ -79,7 +75,6 @@ pub(crate) fn build_plan(
         .iter()
         .map(|op| op_must_drop_all_caches(&op.kind))
         .collect::<Vec<_>>();
-
     let mut plan = FunctionPlan {
         gp_unit_bytes: config.gp_unit_bytes,
         gp_dynamic_budget,
@@ -93,8 +88,12 @@ pub(crate) fn build_plan(
         block_transient_regions,
         blocks: alloc::vec![BlockPlan::default(); cfg.blocks.len()],
     };
-    let (block_entries, block_exits) =
-        compute_block_boundaries(cfg, &plan, &op_force_drop_all_caches, &canonical.by_block);
+    let block_entries = compute_tentative_block_entries(
+        cfg,
+        &plan,
+        &op_force_drop_all_caches,
+        &canonical.by_block,
+    );
 
     plan.blocks =
         canonical
@@ -111,16 +110,7 @@ pub(crate) fn build_plan(
                 });
                 BlockPlan {
                     entry: tentative.transient,
-                    entry_cached_locals: finalize_block_entry(
-                        block_index,
-                        &plan,
-                        &tentative.cached_locals,
-                        block_exits
-                            .get(block_index)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]),
-                    ),
-                    exit_cached_locals: block_exits.get(block_index).cloned().unwrap_or_default(),
+                    tentative_entry_cached_locals: tentative.cached_locals,
                 }
             })
             .collect();
@@ -196,32 +186,87 @@ struct TentativeBlockEntry {
     cached_locals: Vec<FrameSlot>,
 }
 
-fn compute_block_boundaries(
+fn compute_tentative_block_entries(
     cfg: &SemanticCfg,
     plan: &FunctionPlan,
     op_force_drop_all_caches: &[bool],
     canonical_predecessors: &[Option<crate::vm::middle::cfg::CfgBlockId>],
-) -> (Vec<TentativeBlockEntry>, Vec<Vec<FrameSlot>>) {
+) -> Vec<TentativeBlockEntry> {
     let mut entries = alloc::vec![TentativeBlockEntry::default(); cfg.blocks.len()];
-    let mut exits = alloc::vec![Vec::new(); cfg.blocks.len()];
+    let mut predicted_exits = alloc::vec![Vec::new(); cfg.blocks.len()];
 
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         let carried = canonical_predecessors
             .get(block_index)
-            .and_then(|pred| pred.map(|pred| exits[pred.as_usize()].clone()))
+            .and_then(|pred| pred.map(|pred| predicted_exits[pred.as_usize()].clone()))
             .unwrap_or_default();
         let tentative = choose_tentative_block_entry(block_index, &carried, plan);
-        let actual_exit = simulate_block_exit_cached_locals(
+        predicted_exits[block_index] = simulate_block_exit_cached_locals(
             block,
             plan,
             op_force_drop_all_caches,
             &tentative.cached_locals,
         );
         entries[block_index] = tentative;
-        exits[block_index] = actual_exit;
     }
 
-    (entries, exits)
+    entries
+}
+
+fn simulate_block_exit_cached_locals(
+    block: &crate::vm::middle::cfg::CfgBlock,
+    plan: &FunctionPlan,
+    op_force_drop_all_caches: &[bool],
+    entry_cached_locals: &[FrameSlot],
+) -> Vec<FrameSlot> {
+    let mut resident = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
+    for semantic_index in block.range.clone() {
+        let before = before_op_decision(
+            plan,
+            op_force_drop_all_caches,
+            BeforeOpQuery {
+                semantic_index,
+                resident_cache: &resident,
+            },
+        );
+        for slot in before.drop_cached_locals {
+            resident.remove(&slot);
+        }
+
+        if !fits_with_cached_locals(plan, semantic_index, &resident) {
+            let mut trimmed = resident.clone();
+            while !fits_with_cached_locals(plan, semantic_index, &trimmed) {
+                let Some(slot) = trimmed.iter().next_back().copied() else {
+                    break;
+                };
+                trimmed.remove(&slot);
+            }
+            resident = trimmed;
+        }
+
+        let Some((slot, kind)) = plan.op_info[semantic_index].local_op else {
+            continue;
+        };
+        let access = decide_local_access(
+            plan,
+            super::interface::LocalAccessQuery {
+                semantic_index,
+                slot,
+                resident_cache: &resident,
+            },
+        );
+        match kind {
+            LocalOpKind::Get | LocalOpKind::Tee => {
+                if matches!(access, super::interface::LocalAccessDecision::Cache) {
+                    resident.insert(slot);
+                }
+            }
+            LocalOpKind::Set => {
+                resident.insert(slot);
+            }
+        }
+    }
+    resident.into_iter().collect()
 }
 
 fn choose_tentative_block_entry(
@@ -246,10 +291,10 @@ fn choose_tentative_block_entry(
             let info = region.info(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.hot_score).unwrap_or_default(),
+                info.map(|info| info.entry_hot_score).unwrap_or_default(),
                 false,
                 matches!(
-                    info.and_then(|info| info.first_access_kind),
+                    info.and_then(|info| info.entry_first_access_kind),
                     Some(FirstAccessKind::ReadFirst)
                 ),
             ));
@@ -260,10 +305,10 @@ fn choose_tentative_block_entry(
             let info = region.info(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.hot_score + 1024).unwrap_or(1024),
+                info.map(|info| info.entry_hot_score + 1024).unwrap_or(1024),
                 true,
                 matches!(
-                    info.and_then(|info| info.first_access_kind),
+                    info.and_then(|info| info.entry_first_access_kind),
                     Some(FirstAccessKind::ReadFirst)
                 ),
             ));
@@ -291,6 +336,9 @@ fn choose_tentative_block_entry(
         let mut ensure_count = 0usize;
         let mut cache_cost = 0usize;
         for (slot, score, carried_slot, read_first) in &scored_locals {
+            if *score <= 0 && !*carried_slot {
+                continue;
+            }
             let ty = plan
                 .local_slot_types
                 .get(slot.0 as usize)
@@ -362,82 +410,6 @@ fn choose_tentative_block_entry(
         transient,
         cached_locals,
     }
-}
-
-fn simulate_block_exit_cached_locals(
-    block: &crate::vm::middle::cfg::CfgBlock,
-    plan: &FunctionPlan,
-    op_force_drop_all_caches: &[bool],
-    entry_cached_locals: &[FrameSlot],
-) -> Vec<FrameSlot> {
-    let mut resident = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
-    for semantic_index in block.range.clone() {
-        let before = before_op_decision(
-            plan,
-            op_force_drop_all_caches,
-            BeforeOpQuery {
-                semantic_index,
-                resident_cache: &resident,
-            },
-        );
-        for slot in before.drop_cached_locals {
-            resident.remove(&slot);
-        }
-
-        if !fits_with_cached_locals(plan, semantic_index, &resident) {
-            let mut trimmed = resident.clone();
-            while !fits_with_cached_locals(plan, semantic_index, &trimmed) {
-                let Some(slot) = trimmed.iter().next_back().copied() else {
-                    break;
-                };
-                trimmed.remove(&slot);
-            }
-            resident = trimmed;
-        }
-
-        let Some((slot, kind)) = plan.op_info[semantic_index].local_op else {
-            continue;
-        };
-        let access = decide_local_access(
-            plan,
-            super::interface::LocalAccessQuery {
-                semantic_index,
-                slot,
-                resident_cache: &resident,
-            },
-        );
-        match kind {
-            LocalOpKind::Get | LocalOpKind::Tee => {
-                if matches!(access, super::interface::LocalAccessDecision::Cache) {
-                    resident.insert(slot);
-                }
-            }
-            LocalOpKind::Set => {
-                resident.insert(slot);
-            }
-        }
-    }
-    resident.into_iter().collect()
-}
-
-fn finalize_block_entry(
-    block_index: usize,
-    plan: &FunctionPlan,
-    tentative_entry: &[FrameSlot],
-    actual_exit: &[FrameSlot],
-) -> Vec<FrameSlot> {
-    let region = &plan.block_regions[block_index];
-    tentative_entry
-        .iter()
-        .copied()
-        .filter(|slot| {
-            region
-                .info(*slot)
-                .map(|info| info.used_anywhere())
-                .unwrap_or(false)
-                || actual_exit.contains(slot)
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1715,6 +1687,12 @@ mod tests {
                 ranked_slots: alloc::vec![FrameSlot(0)],
                 locals: alloc::vec![Some(BlockLocalInfo {
                     slot: FrameSlot(0),
+                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                    entry_first_read_distance: Some(0),
+                    entry_first_write_distance: None,
+                    entry_read_count: 1,
+                    entry_write_count: 0,
+                    entry_hot_score: 300,
                     first_access_kind: Some(FirstAccessKind::ReadFirst),
                     first_read_distance: Some(0),
                     first_write_distance: None,
@@ -1765,11 +1743,20 @@ mod tests {
     fn finalize_entry_keeps_used_and_surviving_carried_values() {
         let mut plan = test_plan();
         plan.block_regions[0].locals.push(None);
-        let finalized =
-            finalize_block_entry(0, &plan, &[FrameSlot(0), FrameSlot(1)], &[FrameSlot(1)]);
+        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+        let finalized = crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+            &plan,
+            crate::vm::middle::cfg::CfgBlockId(0),
+            &[FrameSlot(1)],
+        );
         assert_eq!(finalized, alloc::vec![FrameSlot(0), FrameSlot(1)]);
 
-        let finalized = finalize_block_entry(0, &plan, &[FrameSlot(1)], &[]);
+        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(1)];
+        let finalized = crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+            &plan,
+            crate::vm::middle::cfg::CfgBlockId(0),
+            &[],
+        );
         assert!(finalized.is_empty());
     }
 

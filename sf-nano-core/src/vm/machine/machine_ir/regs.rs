@@ -16,9 +16,9 @@ const _: () = assert!(
     "BackendConfig::FIXED must equal MACHINE_FIXED_REG_COUNT"
 );
 
-// ── Register layout: [fixed | gp_cache | gp_trans | fp_trans | fp_cache] ─────
+// ── Register layout: [fixed | gp_dynamic | fp_dynamic] ─────
 //
-// The helpers below are the single source of truth for the partition order.
+// The helpers below are the single source of truth for bank order.
 // `MachineRegFile::new()` allocates IDs in this order, and architecture
 // backends use these to map abstract IDs back to physical registers.
 
@@ -34,24 +34,10 @@ pub(crate) fn is_gp_reg(reg: MachineReg, config: BackendConfig) -> bool {
     reg.0 < config.first_fp_reg()
 }
 
-/// Returns `true` if `reg` is a GP transient (not fixed, not cache).
+/// Returns `true` if `reg` belongs to either GP or FP dynamic bank.
 #[inline]
-pub(crate) fn is_gp_transient(reg: MachineReg, config: BackendConfig) -> bool {
-    reg.0 >= config.first_gp_transient() && reg.0 < config.first_fp_reg()
-}
-
-/// Returns `true` if `reg` is an FP transient (not cache).
-#[inline]
-pub(crate) fn is_fp_transient(reg: MachineReg, config: BackendConfig) -> bool {
-    fp_reg_index(reg, config)
-        .map(|index| index < config.fp_transient_budget as usize)
-        .unwrap_or(false)
-}
-
-/// Returns `true` if `reg` is any transient register.
-#[inline]
-pub(crate) fn is_transient_reg(reg: MachineReg, config: BackendConfig) -> bool {
-    is_gp_transient(reg, config) || is_fp_transient(reg, config)
+pub(crate) fn is_dynamic_reg(reg: MachineReg, config: BackendConfig) -> bool {
+    reg.0 >= MACHINE_FIXED_REG_COUNT && reg.0 < config.total_reg_count()
 }
 
 /// Returns `true` if both regs are in the same bank (both GP or both FP).
@@ -72,36 +58,14 @@ pub(crate) fn fp_reg_index(reg: MachineReg, config: BackendConfig) -> Option<usi
     }
 }
 
-/// Classify a GP MachineReg into its partition index.
+/// Returns the GP dynamic-bank index for `reg`.
 ///
-/// Returns `None` for fixed regs (those use `map_fixed_reg`).
-/// Returns `Some((index, is_cache))` where `index` is the offset within the
-/// gp_local_cache or gp_transient array.
+/// Returns `None` for fixed or FP-bank regs.
 #[inline]
-pub(crate) fn classify_gp_reg(reg: MachineReg, config: BackendConfig) -> Option<(usize, bool)> {
+pub(crate) fn gp_dynamic_index(reg: MachineReg, config: BackendConfig) -> Option<usize> {
     if reg.0 < MACHINE_FIXED_REG_COUNT {
         return None;
     }
     let dynamic = (reg.0 - MACHINE_FIXED_REG_COUNT) as usize;
-    let cache_count = config.gp_local_cache_budget as usize;
-    if dynamic < cache_count {
-        Some((dynamic, true))
-    } else {
-        Some((dynamic - cache_count, false))
-    }
-}
-
-/// Classify an FP MachineReg into its partition index.
-///
-/// `fp_index` is `reg.0 - first_fp_reg` (the caller subtracts the GP span).
-/// Returns `(index, is_cache)` where `index` is the offset within the
-/// fp_transient or fp_local_cache array.
-#[inline]
-pub(crate) fn classify_fp_reg(fp_index: usize, config: BackendConfig) -> (usize, bool) {
-    let trans_count = config.fp_transient_budget as usize;
-    if fp_index < trans_count {
-        (fp_index, false)
-    } else {
-        (fp_index - trans_count, true)
-    }
+    (dynamic < config.gp_dynamic_budget as usize).then_some(dynamic)
 }

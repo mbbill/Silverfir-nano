@@ -5,8 +5,8 @@ use crate::vm::backend::BackendConfig;
 use super::machine_ir::is_fp_reg;
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{
-    MachineAddr, MachineConstId, MachineEdge, MachineFloatWidth, MachineFuncId, MachineInst,
-    MachineReg, MachineValue,
+    is_dynamic_reg, MachineAddr, MachineConstId, MachineEdge, MachineFloatWidth, MachineFuncId,
+    MachineInst, MachineReg, MachineRegOwner, MachineValue,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -75,13 +75,6 @@ impl MachineProgram {
         let reg_count = config.total_reg_count();
         let first_fp = config.first_fp_reg();
         let fp_bank_count = reg_count.saturating_sub(first_fp) as usize;
-        if config.fp_transient_budget as usize > fp_bank_count {
-            return Err(WasmError::internal(alloc::format!(
-                "machine fp_transient_count {} exceeds fp bank size {}",
-                config.fp_transient_budget,
-                fp_bank_count,
-            )));
-        }
         if !self.fp_reg_init_widths.is_empty() && self.fp_reg_init_widths.len() != fp_bank_count {
             return Err(WasmError::internal(alloc::format!(
                 "machine fp_reg_init_widths length {} does not match fp bank size {}",
@@ -126,16 +119,36 @@ impl MachineProgram {
                 param.ty,
             )));
         }
+        if matches!(param.owner, MachineRegOwner::CachedLocal) && !is_dynamic_reg(param.reg, config)
+        {
+            return Err(WasmError::internal(alloc::format!(
+                "cached-local block param {} must use a dynamic register",
+                param.reg.0,
+            )));
+        }
         Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]
     fn validate_inst(&self, inst: &MachineInst, config: BackendConfig) -> ValidateResult {
         match &inst.kind {
-            MachineInstKind::Move { ty, dst, src } => {
+            MachineInstKind::Move { ty, dst, src, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*src, config)?;
                 self.validate_reg_storage_type(*dst, *ty, config)?;
+                if matches!(
+                    &inst.kind,
+                    MachineInstKind::Move {
+                        owner: MachineRegOwner::CachedLocal,
+                        ..
+                    }
+                ) && !is_dynamic_reg(*dst, config)
+                {
+                    return Err(WasmError::internal(alloc::format!(
+                        "cached-local move destination {} must use a dynamic register",
+                        dst.0,
+                    )));
+                }
             }
             MachineInstKind::FloatConst { dst, .. } => {
                 self.validate_reg(*dst, config)?;
@@ -150,6 +163,19 @@ impl MachineProgram {
                 self.validate_reg(*dst, config)?;
                 self.validate_addr(*addr, config)?;
                 self.validate_reg_storage_type(*dst, *ty, config)?;
+                if matches!(
+                    &inst.kind,
+                    MachineInstKind::Load {
+                        owner: MachineRegOwner::CachedLocal,
+                        ..
+                    }
+                ) && !is_dynamic_reg(*dst, config)
+                {
+                    return Err(WasmError::internal(alloc::format!(
+                        "cached-local load destination {} must use a dynamic register",
+                        dst.0,
+                    )));
+                }
             }
             MachineInstKind::Store { ty, addr, src, .. } => {
                 self.validate_addr(*addr, config)?;

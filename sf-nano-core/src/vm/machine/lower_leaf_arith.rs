@@ -40,6 +40,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst_reg = self.alloc_value(dst)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: lir_value_storage_type(self.program(), dst),
                 dst: dst_reg,
                 src: MachineValue::Imm64(imm),

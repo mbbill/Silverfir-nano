@@ -76,6 +76,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn emit_reload_mem0_cache_regs(&mut self) {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: self.regfile().mem0_base(),
                 addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_base_offset),
@@ -85,6 +86,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: self.regfile().mem0_size(),
                 addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),

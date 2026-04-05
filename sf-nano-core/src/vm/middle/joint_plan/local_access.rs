@@ -116,6 +116,15 @@ mod tests {
                 locals: alloc::vec![
                     Some(BlockLocalInfo {
                         slot: FrameSlot(0),
+                        entry_first_access_kind: Some(match target_kind {
+                            LocalOpKind::Set | LocalOpKind::Tee => FirstAccessKind::WriteFirst,
+                            LocalOpKind::Get => FirstAccessKind::ReadFirst,
+                        }),
+                        entry_first_read_distance: Some(0),
+                        entry_first_write_distance: Some(0),
+                        entry_read_count: 2,
+                        entry_write_count: 1,
+                        entry_hot_score: target_hot,
                         first_access_kind: Some(match target_kind {
                             LocalOpKind::Set | LocalOpKind::Tee => FirstAccessKind::WriteFirst,
                             LocalOpKind::Get => FirstAccessKind::ReadFirst,
@@ -129,6 +138,12 @@ mod tests {
                     }),
                     Some(BlockLocalInfo {
                         slot: FrameSlot(1),
+                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        entry_first_read_distance: Some(0),
+                        entry_first_write_distance: None,
+                        entry_read_count: 1,
+                        entry_write_count: 0,
+                        entry_hot_score: victim_hot,
                         first_access_kind: Some(FirstAccessKind::ReadFirst),
                         first_read_distance: Some(0),
                         first_write_distance: None,

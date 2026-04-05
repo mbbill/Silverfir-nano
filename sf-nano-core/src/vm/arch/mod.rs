@@ -210,7 +210,7 @@ mod tests {
         set_reference_backend_mode(ReferenceBackendMode::Disabled).expect("reset reference mode");
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 8);
-        assert_eq!(config.gp_transient_budget, 4);
+        assert_eq!(config.gp_dynamic_budget, 7);
     }
 
     #[test]
@@ -221,10 +221,8 @@ mod tests {
         set_reference_backend_mode(ReferenceBackendMode::Emu32).expect("enable emu32");
         let config = compile_backend_config(NativeBackend::Reference);
         assert_eq!(config.gp_unit_bytes, 4);
-        assert_eq!(config.gp_local_cache_budget, 4);
-        assert_eq!(config.gp_transient_budget, 5);
-        assert_eq!(config.fp_local_cache_budget, 8);
-        assert_eq!(config.fp_transient_budget, 5);
+        assert_eq!(config.gp_dynamic_budget, 9);
+        assert_eq!(config.fp_dynamic_budget, 13);
         assert_eq!(backend_display_name(NativeBackend::Reference), "emu32");
         set_reference_backend_mode(ReferenceBackendMode::Disabled).expect("reset reference mode");
     }

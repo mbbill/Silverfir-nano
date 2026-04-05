@@ -3,14 +3,14 @@
 //! # GP register plan (R0-R15)
 //!
 //! ```text
-//! Reg    EABI             Role                    Count
+//! Reg    EABI             Role                     Count
 //! ─────────────────────────────────────────────────────
-//! R0-R2  caller-saved     GP transient                3
-//! R3     caller-saved     GP transient                1
+//! R0-R2  caller-saved     GP dynamic                  3
+//! R3     caller-saved     GP dynamic                  1
 //! R4     callee-saved     fixed: MEM0_SIZE            1
-//! R5-R7  callee-saved     GP local cache              3
+//! R5-R7  callee-saved     GP dynamic                  3
 //! R8     callee-saved     fixed: CTX                  1
-//! R9     platform         GP transient                1
+//! R9     platform         GP dynamic                  1
 //! R10    callee-saved     fixed: FP                   1
 //! R11    callee-saved     fixed: MEM0_BASE            1
 //! R12    caller-saved     scratch: SCRATCH0 (IP)      1
@@ -18,22 +18,19 @@
 //! R14    caller-saved     scratch: SCRATCH1 (LR)      1
 //! R15    —                PC (reserved)               1
 //! ─────────────────────────────────────────────────────
-//!                         GP transient                5
-//!                         GP local cache              3
+//!                         GP dynamic                  8
 //!                         GP scratch                  2
 //! ```
 //!
 //! # FP register plan (D0-D15, VFPv3-D16)
 //!
 //! ```text
-//! Reg    EABI             Role                   Count
+//! Reg    EABI             Role                    Count
 //! ─────────────────────────────────────────────────────
 //! D0-D2  caller-saved     FP scratch                 3
-//! D3-D7  caller-saved     FP transient (TOS)         5
-//! D8-D15 callee-saved     FP local cache             8
+//! D3-D15 mixed            FP dynamic                13
 //! ─────────────────────────────────────────────────────
-//!                         FP transient               5
-//!                         FP local cache             8
+//!                         FP dynamic                13
 //! ```
 
 use crate::{
@@ -41,7 +38,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
@@ -52,7 +49,7 @@ use crate::vm::arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitt
 
 pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
 /// Call-local scratch. LR is saved in the shared prologue and only used as a
-/// transient scratch within straight-line sequences that do not issue calls.
+/// linear-value scratch within straight-line sequences that do not issue calls.
 pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
 
 /// FP scratch registers (caller-saved, not used for values or parameters).
@@ -77,41 +74,34 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
 //
 // These arrays are the single source of truth for register budgets.
 // `config.rs` derives BackendConfig from their lengths.
-// Ordering: local-cache first, then transient — must match MachineRegFile layout.
+// Ordering is the preferred dynamic allocation order, not semantic ownership.
 
 pub(super) const GP_UNIT_BYTES: u8 = 4;
 
-/// GP local cache: preferred for cached locals. Shared lowering
-/// synchronizes cached locals through frame slots across helper/call
-/// boundaries, so this bank does not rely on every register being
-/// callee-saved in the C ABI.
-///
-/// R9 is never used for fixed MachineIR state. It stays in the dynamic bank
-/// only, so the fixed roles remain pinned to unquestionably preserved
-/// registers.
-pub(super) const GP_LOCAL_CACHE: [Arm32Reg; 3] = [Arm32Reg::R5, Arm32Reg::R6, Arm32Reg::R7];
-
-/// GP transient: dead at call boundaries.
-pub(super) const GP_TRANSIENT: [Arm32Reg; 5] = [
+/// Preferred GP dynamic order. Caller-clobbered regs come first so short-lived
+/// SSA values and lowering helpers naturally bias toward them, but all entries
+/// are part of the same dynamic bank.
+pub(super) const GP_DYNAMIC: [Arm32Reg; 8] = [
     Arm32Reg::R3,
     Arm32Reg::R9,
     Arm32Reg::R0,
     Arm32Reg::R1,
     Arm32Reg::R2,
+    Arm32Reg::R5,
+    Arm32Reg::R6,
+    Arm32Reg::R7,
 ];
 
-/// Caller-saved FP registers reserved for transient SSA values (TOS lanes).
-pub(super) const FP_TRANSIENT: [u32; 5] = [3, 4, 5, 6, 7];
+/// Preferred FP dynamic order. Earlier lanes are caller-clobbered; later lanes
+/// are callee-saved, but ownership is decided by lowering state, not the index.
+pub(super) const FP_DYNAMIC: [u32; 13] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-/// FP registers reserved for cached locals (D8-D15, callee-saved).
-pub(super) const FP_LOCAL_CACHE: [u32; 8] = [8, 9, 10, 11, 12, 13, 14, 15];
+/// Total FP machine-register capacity.
+pub(super) const FP_MACHINE_REG_COUNT: usize = FP_DYNAMIC.len();
 
-/// Total FP machine-register capacity: transients first, then cached locals.
-pub(super) const FP_MACHINE_REG_COUNT: usize = FP_TRANSIENT.len() + FP_LOCAL_CACHE.len();
-
-// Compile-time check: transients + cache + scratch must cover all 16 D-regs.
+// Compile-time check: dynamic + scratch must cover all 16 D-regs.
 const _: () = assert!(
-    FP_TRANSIENT.len() + FP_LOCAL_CACHE.len() + 3 == 16,
+    FP_DYNAMIC.len() + 3 == 16,
     "FP register plan must account for all 16 D-registers (VFPv3-D16)"
 );
 
@@ -119,14 +109,7 @@ const _: () = assert!(
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(
-        GP_LOCAL_CACHE.len() as u8,
-        GP_TRANSIENT.len() as u8,
-        FP_LOCAL_CACHE.len() as u8,
-        FP_TRANSIENT.len() as u8,
-        GP_UNIT_BYTES,
-        8,
-    )
+    BackendConfig::new(GP_DYNAMIC.len() as u8, FP_DYNAMIC.len() as u8, GP_UNIT_BYTES, 8)
 }
 
 // ── Callee-saved sets (ARMv7-specific encoding) ─────────────────────────────
@@ -157,7 +140,7 @@ const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 =
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
-    MACHINE_FIXED_REG_COUNT as usize + GP_LOCAL_CACHE.len() + GP_TRANSIENT.len()
+    MACHINE_FIXED_REG_COUNT as usize + GP_DYNAMIC.len()
 }
 
 #[inline]
@@ -172,13 +155,7 @@ pub(super) const fn max_total_machine_regs() -> usize {
 
 #[inline]
 pub(super) fn fp_machine_reg(index: usize) -> Option<u32> {
-    let config = compile_backend_config();
-    let (i, is_cache) = classify_fp_reg(index, config);
-    if is_cache {
-        FP_LOCAL_CACHE.get(i).copied()
-    } else {
-        FP_TRANSIENT.get(i).copied()
-    }
+    FP_DYNAMIC.get(index).copied()
 }
 
 #[inline]
@@ -198,17 +175,14 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
         return Ok(map_fixed_reg(reg));
     }
     let config = compile_backend_config();
-    match classify_gp_reg(reg, config) {
-        Some((index, true)) => GP_LOCAL_CACHE.get(index).copied(),
-        Some((index, false)) => GP_TRANSIENT.get(index).copied(),
-        None => return Ok(map_fixed_reg(reg)),
-    }
-    .ok_or_else(|| {
-        WasmError::invalid(alloc::format!(
-            "armv7a MachineIR backend has no physical mapping for machine reg {}",
-            reg.0
-        ))
-    })
+    gp_dynamic_index(reg, config)
+        .and_then(|index| GP_DYNAMIC.get(index).copied())
+        .ok_or_else(|| {
+            WasmError::invalid(alloc::format!(
+                "armv7a MachineIR backend has no physical mapping for machine reg {}",
+                reg.0
+            ))
+        })
 }
 
 #[inline]
@@ -219,14 +193,11 @@ pub(super) fn inv_map_reg(reg: Arm32Reg) -> MachineReg {
         Arm32Reg::R11 => MACHINE_MEM0_BASE_REG,
         Arm32Reg::R4 => MACHINE_MEM0_SIZE_REG,
         other => {
-            if let Some(i) = GP_LOCAL_CACHE.iter().position(|c| *c == other) {
-                return MachineReg(MACHINE_FIXED_REG_COUNT + i as u16);
-            }
-            let i = GP_TRANSIENT
+            let i = GP_DYNAMIC
                 .iter()
                 .position(|c| *c == other)
                 .expect("mapped reg must come from dynamic table");
-            MachineReg(MACHINE_FIXED_REG_COUNT + GP_LOCAL_CACHE.len() as u16 + i as u16)
+            MachineReg(MACHINE_FIXED_REG_COUNT + i as u16)
         }
     }
 }

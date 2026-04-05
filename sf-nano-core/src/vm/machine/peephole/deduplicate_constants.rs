@@ -56,6 +56,7 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
                         .find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
                     {
                         inst.kind = MachineInstKind::Move {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                             ty: match w {
                                 MachineFloatWidth::F32 => MachineStorageType::Fp32,
                                 MachineFloatWidth::F64 => MachineStorageType::Fp64,

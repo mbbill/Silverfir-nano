@@ -6,9 +6,9 @@
 pub(crate) use facade::JointPlanner;
 #[allow(unused_imports)]
 pub(crate) use interface::{
-    BeforeOpDecision, BeforeOpQuery, BlockExitDecision, BlockOpenDecision, EdgeRepairDecision,
-    EdgeRepairQuery, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
-    TargetEntryDecision, TransientContract,
+    BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, EdgeRepairDecision, EdgeRepairQuery,
+    FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery, TargetEntryDecision,
+    TransientContract,
 };
 mod block_open;
 pub(super) mod build;

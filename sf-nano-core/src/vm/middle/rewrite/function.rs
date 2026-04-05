@@ -15,11 +15,10 @@ use crate::{
     vm::{
         middle::{
             budget::{count_live_bank_budget_units, gp_value_budget_units},
-            cfg::{CfgBlockId, SemanticCfg},
+            cfg::SemanticCfg,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                BeforeOpQuery, JointPlanner, LocalAccessDecision, LocalAccessQuery,
-                TransientContract,
+                BeforeOpQuery, JointPlanner, LocalAccessDecision, LocalAccessQuery, TransientContract,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -88,7 +87,6 @@ pub(crate) fn rewrite_function(
     let mut extra_block_exit_cached_slots = Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
-        let block_exit = planner.block_exit(cfg_block.id);
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
             block_entry.transient,
@@ -98,7 +96,6 @@ pub(crate) fn rewrite_function(
             setup.fp_dynamic_budget,
         )?;
         let lowered = lower_block_range(
-            cfg_block.id,
             cfg_block.range.clone(),
             state,
             semantic,
@@ -107,13 +104,13 @@ pub(crate) fn rewrite_function(
             &semantic_to_block,
             &block_params,
             block_entry.cached_locals,
-            block_exit.cached_locals,
             &mut values,
             original_block_count,
             extra_blocks.len(),
         )?;
-        block_entry_cached_slots.push(block_entry.cached_locals.to_vec());
-        block_exit_cached_slots.push(block_exit.cached_locals.to_vec());
+        let final_entry = planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots);
+        block_entry_cached_slots.push(final_entry);
+        block_exit_cached_slots.push(lowered.actual_exit_cached_slots.clone());
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -169,6 +166,7 @@ fn collect_local_slot_info(semantic: &SemanticProgram) -> Vec<LocalSlotInfo> {
 struct LoweredBlock {
     ops: Vec<SsaInst>,
     terminator: SsaTerminator,
+    actual_exit_cached_slots: Vec<FrameSlot>,
     extra_blocks: Vec<SsaBlock>,
     extra_block_cached_slots: Vec<Vec<FrameSlot>>,
     extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
@@ -182,7 +180,6 @@ struct LoweredBlock {
 /// 3. observe the realized exit
 /// 4. later derive the finalized entry and trivial cached-local repair
 fn lower_block_range(
-    block_id: CfgBlockId,
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
     semantic: &SemanticProgram,
@@ -191,7 +188,6 @@ fn lower_block_range(
     semantic_to_block: &[SsaTarget],
     block_params: &[Vec<SsaValue>],
     entry_cached_locals: &[FrameSlot],
-    exit_cached_locals: &[FrameSlot],
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
@@ -239,11 +235,11 @@ fn lower_block_range(
         original_block_count,
         extra_blocks_len,
     )?;
-    validate_planned_cached_locals(block_id, &resident_cache, exit_cached_locals)?;
 
     Ok(LoweredBlock {
         ops: state.ops,
         terminator: terminator.terminator,
+        actual_exit_cached_slots: resident_cache.iter().copied().collect(),
         extra_blocks: terminator.extra_blocks,
         extra_block_cached_slots: terminator.extra_block_cached_slots,
         extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,
@@ -401,24 +397,6 @@ fn count_cached_local_budget_units(
         }
     }
     (gp, fp)
-}
-
-fn validate_planned_cached_locals(
-    block: CfgBlockId,
-    resident_cache: &BTreeSet<FrameSlot>,
-    planned_cached_locals: &[FrameSlot],
-) -> Result<(), WasmError> {
-    if resident_cache.len() != planned_cached_locals.len()
-        || planned_cached_locals
-            .iter()
-            .any(|slot| !resident_cache.contains(slot))
-    {
-        return Err(WasmError::internal(alloc::format!(
-            "planner exit cache boundary mismatch for block {}",
-            block.0
-        )));
-    }
-    Ok(())
 }
 
 fn lower_block_body_op(

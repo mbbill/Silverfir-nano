@@ -25,6 +25,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
 
         match &mut inst.kind {
             MachineInstKind::Load {
+                owner,
                 ty,
                 dst,
                 addr,
@@ -42,6 +43,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                     } else if let Some(move_ty) = rewrite_move_storage_type(*dst, src, *ty, config)
                     {
                         inst.kind = MachineInstKind::Move {
+                            owner: *owner,
                             ty: move_ty,
                             dst: *dst,
                             src,

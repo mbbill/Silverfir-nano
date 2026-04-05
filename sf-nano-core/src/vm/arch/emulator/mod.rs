@@ -310,11 +310,11 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::Load {
-                ty: _,
                 dst,
                 addr,
                 width,
                 extension,
+                ..
             } => {
                 let value = self.load(*addr, *width, *extension)?;
                 self.write_reg_with_kind(*dst, value, fixed_reg_addr_kind(*dst))?;
@@ -2834,6 +2834,7 @@ mod tests {
                             params: Vec::new(),
                             ops: vec![MachineInst {
                                 kind: MachineInstKind::Move {
+                                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                                     ty: MachineStorageType::GpI64,
                                     dst: MachineReg(MACHINE_FIXED_REG_COUNT),
                                     src: MachineValue::Imm64(7),
@@ -2859,10 +2860,10 @@ mod tests {
     fn compiled_emu32_rejects_wrong_gp_fp_boundary() {
         let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
         // Create a module config with a mismatched GP/FP boundary by reducing
-        // the GP transient budget by 1, so module.config.first_fp_reg() differs
+        // the GP dynamic budget by 1, so module.config.first_fp_reg() differs
         // from backend.first_fp_reg().
         let mut wrong_config = backend;
-        wrong_config.gp_transient_budget = wrong_config.gp_transient_budget.saturating_sub(1);
+        wrong_config.gp_dynamic_budget = wrong_config.gp_dynamic_budget.saturating_sub(1);
         let err = CompiledNativeModule::new(
             NativeBackend::Reference,
             backend,

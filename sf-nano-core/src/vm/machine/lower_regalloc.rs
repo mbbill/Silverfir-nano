@@ -1,4 +1,4 @@
-//! Register allocation and register-file partition for SSA-IR -> MachineIR lowering.
+//! Register allocation and register-file layout for SSA-IR -> MachineIR lowering.
 
 use alloc::vec::Vec;
 
@@ -10,8 +10,8 @@ use crate::{
         machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineBlockParam, MachineBranchCond,
             MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind,
-            MachineIntWidth, MachineMemWidth, MachineReg, MachineStorageType, MachineTerminator,
-            MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
+            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{SsaProgram, SsaValue},
@@ -21,53 +21,45 @@ use crate::{
 use super::lower_context::BlockLowerContext;
 
 // ---------------------------------------------------------------------------
-// MachineRegFile — fixed machine-register partition used by lowering
+// MachineRegFile — unified dynamic register banks used by lowering
 // ---------------------------------------------------------------------------
 
-/// Fixed machine-register partition used by lowering.
+/// Fixed machine-register layout used by lowering.
 ///
 /// `ctx`, `fp`, and the pinned `mem0` view regs are fixed MachineIR roles.
-/// The remaining GP/FP dynamic banks are currently partitioned into cache and
-/// transient subranges, but the regfile keeps them as unified dynamic banks so
-/// later stages can relax that split without rewriting every lowering caller.
-/// Transient registers may only be borrowed for non-SSA work through explicit
-/// helpers that prove the use is short-lived and non-overlapping.
+/// The remaining GP/FP registers form two ordered dynamic banks. The order is
+/// a backend preference only: semantic linear-value ownership is tracked by
+/// live lowering state in `BlockLowerContext`, not by register number.
+///
+/// Some lowering helpers still borrow free GP dynamic regs for short-lived
+/// control plumbing. Those helpers must be explicit at the callsite because
+/// borrowing a dynamic reg for non-SSA work is the exception rather than the
+/// rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
     gp_dynamic: Vec<MachineReg>,
-    gp_cache_count: usize,
     fp_dynamic: Vec<MachineReg>,
-    fp_transient_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
 }
 
 impl MachineRegFile {
     pub(super) fn new(config: BackendConfig) -> Result<Self, WasmError> {
-        if config.gp_transient_budget == 0 {
+        if config.gp_dynamic_budget == 0 {
             return Err(WasmError::internal(
-                "native lowering requires at least one GP transient register".into(),
+                "native lowering requires at least one GP dynamic register".into(),
             ));
         }
 
         let mut next = MACHINE_FIXED_REG_COUNT;
-        let gp_dynamic = collect_regs(
-            &mut next,
-            config.gp_local_cache_budget + config.gp_transient_budget,
-        );
+        let gp_dynamic = collect_regs(&mut next, config.gp_dynamic_budget);
         let first_fp_reg = next;
-        let fp_dynamic = collect_regs(
-            &mut next,
-            config.fp_transient_budget + config.fp_local_cache_budget,
-        );
+        let fp_dynamic = collect_regs(&mut next, config.fp_dynamic_budget);
 
-        // Layout: [fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
-        //                                                              ^ first_fp_reg
+        // Layout: [fixed | gp_dynamic | fp_dynamic]
         Ok(Self {
             gp_dynamic,
-            gp_cache_count: config.gp_local_cache_budget as usize,
             fp_dynamic,
-            fp_transient_count: config.fp_transient_budget as usize,
             first_fp_reg,
             reg_count: next,
         })
@@ -104,17 +96,8 @@ impl MachineRegFile {
     }
 
     #[inline]
-    pub(super) fn gp_local_cache(&self, index: usize) -> Option<MachineReg> {
+    pub(super) fn ordered_gp_dynamic(&self, index: usize) -> Option<MachineReg> {
         self.gp_dynamic.get(index).copied()
-    }
-
-    #[inline]
-    pub(super) fn gp_transient(&self, index: usize) -> Option<MachineReg> {
-        self.gp_dynamic.get(self.gp_cache_count + index).copied()
-    }
-
-    pub(super) fn gp_transient_count(&self) -> usize {
-        self.gp_dynamic.len().saturating_sub(self.gp_cache_count)
     }
 
     #[inline]
@@ -128,19 +111,8 @@ impl MachineRegFile {
     }
 
     #[inline]
-    pub(super) fn fp_transient(&self, index: usize) -> Option<MachineReg> {
+    pub(super) fn ordered_fp_dynamic(&self, index: usize) -> Option<MachineReg> {
         self.fp_dynamic.get(index).copied()
-    }
-
-    pub(super) fn fp_transient_count(&self) -> usize {
-        self.fp_transient_count
-    }
-
-    #[inline]
-    pub(super) fn fp_local_cache(&self, index: usize) -> Option<MachineReg> {
-        self.fp_dynamic
-            .get(self.fp_transient_count + index)
-            .copied()
     }
 
     #[inline]
@@ -236,7 +208,7 @@ impl<'a> BlockLowerContext<'a> {
     /// Resolve an operand to a machine register.
     ///
     /// - `SsaOperand::Value(v)` → `use_value(v)`
-    /// - `SsaOperand::Const(bits)` → allocate a transient, emit a Move with
+    /// - `SsaOperand::Const(bits)` → allocate a linear-value reg, emit a Move with
     ///   the constant, and return the register.
     pub(super) fn use_operand(
         &mut self,
@@ -246,14 +218,16 @@ impl<'a> BlockLowerContext<'a> {
             crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => self.use_value(v),
             crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => {
                 let ty = crate::vm::machine::machine_ir::MachineStorageType::GpWord;
-                let Some(reg) = self.first_free_transient(ty) else {
+                let Some(reg) = self.first_free_linear_value_reg(ty) else {
                     return Err(crate::error::WasmError::internal(
-                        "transient budget exhausted while materializing constant operand".into(),
+                        "dynamic register budget exhausted while materializing constant operand"
+                            .into(),
                     ));
                 };
-                self.set_transient(reg, None, Some(ty))?;
+                self.set_linear_value_reg(reg, None, Some(ty))?;
                 self.emit_machine_inst(crate::vm::machine::machine_ir::MachineInst {
                     kind: crate::vm::machine::machine_ir::MachineInstKind::Move {
+                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                         ty,
                         dst: reg,
                         src: crate::vm::machine::machine_ir::MachineValue::Imm64(bits),
@@ -317,7 +291,7 @@ impl<'a> BlockLowerContext<'a> {
         let mut all_defined = Vec::new();
         for inst in continuation_ops {
             for_each_inst_defined_reg(&inst.kind, |reg| {
-                if self.is_transient_reg(reg) && !all_defined.contains(&reg) {
+                if self.is_linear_value_reg(reg) && !all_defined.contains(&reg) {
                     all_defined.push(reg);
                 }
             });
@@ -326,7 +300,7 @@ impl<'a> BlockLowerContext<'a> {
         for entry in self.values_iter() {
             let remaining = self.remaining_use_count(entry.value);
             if remaining != 0
-                && self.is_transient_reg(entry.reg)
+                && self.is_linear_value_reg(entry.reg)
                 && !all_defined.contains(&entry.reg)
             {
                 push_unique_param(
@@ -334,7 +308,7 @@ impl<'a> BlockLowerContext<'a> {
                     machine_block_param(entry.reg, self.storage_type_for_reg(entry.reg)),
                 );
                 if let Some(hi_reg) = entry.hi_reg {
-                    if self.is_transient_reg(hi_reg) && !all_defined.contains(&hi_reg) {
+                    if self.is_linear_value_reg(hi_reg) && !all_defined.contains(&hi_reg) {
                         push_unique_param(
                             &mut params,
                             machine_block_param(hi_reg, self.storage_type_for_reg(hi_reg)),
@@ -347,7 +321,7 @@ impl<'a> BlockLowerContext<'a> {
         let mut defined_so_far = Vec::new();
         for inst in continuation_ops {
             visit_inst_source_regs(&inst.kind, |reg| {
-                if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
+                if self.is_linear_value_reg(reg) && !defined_so_far.contains(&reg) {
                     push_unique_param(
                         &mut params,
                         machine_block_param(reg, self.storage_type_for_reg(reg)),
@@ -355,13 +329,13 @@ impl<'a> BlockLowerContext<'a> {
                 }
             });
             for_each_inst_defined_reg(&inst.kind, |dst| {
-                if self.is_transient_reg(dst) && !defined_so_far.contains(&dst) {
+                if self.is_linear_value_reg(dst) && !defined_so_far.contains(&dst) {
                     defined_so_far.push(dst);
                 }
             });
         }
         visit_term_source_regs(continuation_term, |reg| {
-            if self.is_transient_reg(reg) && !defined_so_far.contains(&reg) {
+            if self.is_linear_value_reg(reg) && !defined_so_far.contains(&reg) {
                 push_unique_param(
                     &mut params,
                     machine_block_param(reg, self.storage_type_for_reg(reg)),
@@ -378,12 +352,20 @@ impl<'a> BlockLowerContext<'a> {
             };
             push_unique_param(
                 &mut params,
-                machine_block_param(bound.reg, self.storage_type_for_reg(bound.reg)),
+                machine_block_param_with_owner(
+                    bound.reg,
+                    self.storage_type_for_reg(bound.reg),
+                    MachineRegOwner::CachedLocal,
+                ),
             );
             if let Some(hi_reg) = bound.hi_reg {
                 push_unique_param(
                     &mut params,
-                    machine_block_param(hi_reg, self.storage_type_for_reg(hi_reg)),
+                    machine_block_param_with_owner(
+                        hi_reg,
+                        self.storage_type_for_reg(hi_reg),
+                        MachineRegOwner::CachedLocal,
+                    ),
                 );
             }
         }
@@ -405,7 +387,7 @@ impl<'a> BlockLowerContext<'a> {
         let reg = self.try_value_reg(value)?;
         // Cache registers belong to cached locals and must not be reused as
         // scratch — they may still be needed by later source-alias lookups.
-        if !self.is_transient_reg(reg) {
+        if !self.is_linear_value_reg(reg) {
             return None;
         }
         Some(reg)
@@ -446,16 +428,16 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
-        let Some(reg) = self.first_free_transient(ty) else {
+        let Some(reg) = self.first_free_linear_value_reg(ty) else {
             return Err(WasmError::internal(alloc::format!(
-                "prepared SSA-IR exceeded {} transient register budget during native lowering in block b{} for value {}",
+                "prepared SSA-IR exceeded {} dynamic register budget during native lowering in block b{} for value {}",
                 if ty.is_fp() { "FP" } else { "GP" },
                 self.block_id(),
                 value.0,
             )));
         };
         self.push_value_location(value, reg, None);
-        self.set_transient(reg, Some(value), Some(ty))?;
+        self.set_linear_value_reg(reg, Some(value), Some(ty))?;
         Ok(reg)
     }
 
@@ -473,17 +455,17 @@ impl<'a> BlockLowerContext<'a> {
             )));
         }
 
-        let Some((lo, hi)) = self.first_free_gp_pair_transient() else {
+        let Some((lo, hi)) = self.first_free_gp_linear_value_pair() else {
             return Err(WasmError::internal(alloc::format!(
-                "prepared SSA-IR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                "prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b{} for value {}",
                 self.block_id(),
                 value.0,
             )));
         };
         self.push_value_location(value, lo, Some(hi));
         // Pair-aware 32-bit lowering treats both halves as GP-word registers.
-        self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
-        self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+        self.set_linear_value_reg(lo, Some(value), Some(MachineStorageType::GpWord))?;
+        self.set_linear_value_reg(hi, Some(value), Some(MachineStorageType::GpWord))?;
         Ok((lo, hi))
     }
 
@@ -539,7 +521,7 @@ impl<'a> BlockLowerContext<'a> {
         self.alloc_value_in_bank(value, ty)
     }
 
-    pub(super) fn first_free_transient(&self, ty: MachineStorageType) -> Option<MachineReg> {
+    pub(super) fn first_free_linear_value_reg(&self, ty: MachineStorageType) -> Option<MachineReg> {
         let regfile = self.regfile();
         let count = if ty.is_fp() {
             regfile.fp_dynamic_count()
@@ -559,7 +541,7 @@ impl<'a> BlockLowerContext<'a> {
         None
     }
 
-    pub(super) fn first_free_gp_pair_transient(&self) -> Option<(MachineReg, MachineReg)> {
+    pub(super) fn first_free_gp_linear_value_pair(&self) -> Option<(MachineReg, MachineReg)> {
         let regfile = self.regfile();
         let mut first = None;
         for ordinal in 0..regfile.gp_dynamic_count() {
@@ -575,21 +557,21 @@ impl<'a> BlockLowerContext<'a> {
         None
     }
 
-    pub(super) fn set_transient(
+    pub(super) fn set_linear_value_reg(
         &mut self,
         reg: MachineReg,
         value: Option<SsaValue>,
         ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
         let index = self.dynamic_index(reg)?;
-        self.set_transient_state(index, value, ty)
+        self.set_linear_value_state(index, value, ty)
     }
 
-    pub(super) fn clear_transient(&mut self, reg: MachineReg) -> Result<(), WasmError> {
-        self.set_transient(reg, None, None)
+    pub(super) fn clear_linear_value_reg(&mut self, reg: MachineReg) -> Result<(), WasmError> {
+        self.set_linear_value_reg(reg, None, None)
     }
 
-    pub(super) fn is_transient_reg(&self, reg: MachineReg) -> bool {
+    pub(super) fn is_linear_value_reg(&self, reg: MachineReg) -> bool {
         self.dynamic_index(reg).is_ok() && !self.is_bound_cache_reg(reg)
     }
 
@@ -624,30 +606,30 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn storage_type_for_reg(&self, reg: MachineReg) -> MachineStorageType {
         if let Ok(index) = self.dynamic_index(reg) {
             return self
-                .transient_state_ty(index)
+                .linear_value_storage_type(index)
                 .unwrap_or(MachineStorageType::GpWord);
         }
         self.cached_local_storage_type_for_reg(reg)
             .unwrap_or(MachineStorageType::GpWord)
     }
 
-    /// Reserve a specific GP transient lane for structured lowering-internal
+    /// Reserve a specific GP dynamic lane for structured lowering-internal
     /// control flow. This is the narrow escape hatch for non-SSA use of the
-    /// transient bank; callers must name the purpose so the exception is
+    /// dynamic bank; callers must name the purpose so the exception is
     /// explicit at the call site.
-    pub(super) fn reserved_gp_transient(
+    pub(super) fn reserved_gp_dynamic(
         &self,
         index: usize,
         purpose: &'static str,
     ) -> Result<MachineReg, WasmError> {
-        self.regfile().gp_transient(index).ok_or_else(|| {
+        self.regfile().ordered_gp_dynamic(index).ok_or_else(|| {
             WasmError::internal(alloc::format!(
-                "native lowering requires GP transient register {index} for {purpose}"
+                "native lowering requires GP dynamic register {index} for {purpose}"
             ))
         })
     }
 
-    pub(super) fn borrow_free_transients(
+    pub(super) fn borrow_free_gp_dynamic_regs(
         &self,
         count: usize,
     ) -> Result<Vec<MachineReg>, WasmError> {
@@ -665,7 +647,7 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
         Err(WasmError::internal(alloc::format!(
-            "native lowering requires {count} free transient registers"
+            "native lowering requires {count} free GP dynamic registers"
         )))
     }
 
@@ -680,7 +662,7 @@ impl<'a> BlockLowerContext<'a> {
         addr: crate::vm::machine::machine_ir::MachineAddr,
         width: MachineMemWidth,
     ) -> bool {
-        if !self.is_transient_reg(src_reg) {
+        if !self.is_linear_value_reg(src_reg) {
             return false;
         }
         let remaining = self.remaining_use_count(src_value);
@@ -690,6 +672,7 @@ impl<'a> BlockLowerContext<'a> {
 
         let imm = match self.ops_last().map(|inst| &inst.kind) {
             Some(MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: inst_ty,
                 dst,
                 src: MachineValue::Imm64(imm),
@@ -727,7 +710,7 @@ impl<'a> BlockLowerContext<'a> {
     fn dynamic_reg_available(&self, reg: MachineReg) -> bool {
         self.dynamic_index(reg)
             .ok()
-            .map(|index| !self.transient_occupied(index) && !self.is_bound_cache_reg(reg))
+            .map(|index| !self.linear_value_occupied(index) && !self.is_bound_cache_reg(reg))
             .unwrap_or(false)
     }
 }
@@ -746,19 +729,11 @@ pub(super) fn canonical_storage_mem_width(ty: MachineStorageType) -> MachineMemW
 }
 
 fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
-    if ordinal < regfile.gp_transient_count() {
-        regfile.gp_transient(ordinal)
-    } else {
-        regfile.gp_local_cache(ordinal - regfile.gp_transient_count())
-    }
+    regfile.ordered_gp_dynamic(ordinal)
 }
 
 fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
-    if ordinal < regfile.fp_transient_count() {
-        regfile.fp_transient(ordinal)
-    } else {
-        regfile.fp_local_cache(ordinal - regfile.fp_transient_count())
-    }
+    regfile.ordered_fp_dynamic(ordinal)
 }
 
 pub(super) fn canonical_cached_local_mem_width(ty: MachineStorageType) -> MachineMemWidth {
@@ -1101,11 +1076,19 @@ pub(super) fn convert_result_float_width(op: MachineConvertOp) -> Option<Machine
 }
 
 fn machine_block_param(reg: MachineReg, ty: MachineStorageType) -> MachineBlockParam {
+    machine_block_param_with_owner(reg, ty, MachineRegOwner::LinearValue)
+}
+
+fn machine_block_param_with_owner(
+    reg: MachineReg,
+    ty: MachineStorageType,
+    owner: MachineRegOwner,
+) -> MachineBlockParam {
     match ty {
-        MachineStorageType::GpWord => MachineBlockParam::gp_word(reg),
-        MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg),
-        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32),
-        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64),
+        MachineStorageType::GpWord => MachineBlockParam::gp_word(reg).with_owner(owner),
+        MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg).with_owner(owner),
+        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32).with_owner(owner),
+        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64).with_owner(owner),
     }
 }
 
@@ -1172,7 +1155,7 @@ mod tests {
             value_sink_local: alloc::vec![],
         }));
         let regfile = Box::leak(Box::new(
-            MachineRegFile::new(BackendConfig::new(0, 5, 0, 0, 4, 8)).expect("regfile"),
+            MachineRegFile::new(BackendConfig::new(5, 0, 4, 8)).expect("regfile"),
         ));
         let runtime = MachineFunctionAbi::default();
         let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
@@ -1204,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn alloc_i64_value_pair_reserves_two_gp_word_transients() {
+    fn alloc_i64_value_pair_reserves_two_gp_word_linear_value_regs() {
         let mut lower = make_test_context(alloc::vec![ValueType::I64]);
         let (lo, hi) = lower.alloc_i64_value_pair(SsaValue(0)).expect("pair alloc");
         assert_ne!(lo, hi);
@@ -1215,15 +1198,15 @@ mod tests {
         assert_eq!(lower.storage_type_for_reg(lo), MachineStorageType::GpWord);
         assert_eq!(lower.storage_type_for_reg(hi), MachineStorageType::GpWord);
 
-        let lo_index = lower.dynamic_index(lo).expect("lo transient");
-        let hi_index = lower.dynamic_index(hi).expect("hi transient");
-        assert!(lower.transient_occupied(lo_index));
-        assert!(lower.transient_occupied(hi_index));
+        let lo_index = lower.dynamic_index(lo).expect("lo linear value");
+        let hi_index = lower.dynamic_index(hi).expect("hi linear value");
+        assert!(lower.linear_value_occupied(lo_index));
+        assert!(lower.linear_value_occupied(hi_index));
 
         lower.release_dead_values().expect("release pair");
         assert!(lower.try_value_regs(SsaValue(0)).is_none());
-        assert!(!lower.transient_occupied(lo_index));
-        assert!(!lower.transient_occupied(hi_index));
+        assert!(!lower.linear_value_occupied(lo_index));
+        assert!(!lower.linear_value_occupied(hi_index));
     }
 
     #[test]
@@ -1241,8 +1224,8 @@ mod tests {
         assert_eq!(scalar, pair_lo);
         assert_eq!(lower.try_value_regs(SsaValue(0)), None);
         assert_eq!(lower.try_value_regs(SsaValue(1)), Some((pair_lo, None)));
-        let hi_index = lower.dynamic_index(pair_hi).expect("hi transient");
-        assert!(!lower.transient_occupied(hi_index));
+        let hi_index = lower.dynamic_index(pair_hi).expect("hi linear value");
+        assert!(!lower.linear_value_occupied(hi_index));
     }
 
     #[test]

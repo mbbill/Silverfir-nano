@@ -758,13 +758,24 @@ function finalize_block_entry(tentative_entry, used_in_block, actual_exit):
 
 
 function derive_edge_repair(pred_exit, final_entry):
-    ensure_cached_locals = final_entry - pred_exit
+    ensure_cached_locals = []
+    reserve_cached_locals = []
+    for each local L in final_entry - pred_exit:
+        if first_access_kind(L) == WriteFirst:
+            reserve_cached_locals.push(L)
+        else:
+            ensure_cached_locals.push(L)
     drop_cached_locals = pred_exit - final_entry
     return {
         ensure_cached_locals,
+        reserve_cached_locals,
         drop_cached_locals,
     }
 ```
+
+For function entry, use the same rule from an empty predecessor. In the current
+implementation that materialization may be emitted as one synthetic entry-repair
+block that jumps to the original entry block.
 
 ### Failure condition
 
@@ -1122,3 +1133,25 @@ Later TODO:
 
 - once cache-first `local.set` works end to end and dirty/writeback remains
   backend-owned, delete `LocalSetSlot` from the middle-layer policy and SSA-IR
+
+## Backend bank contract
+
+The backend contract is now:
+
+- one `gp_dynamic_budget`
+- one `fp_dynamic_budget`
+- no static cached-local/linear-value partition inside either bank
+
+This has an important consequence for `machine/`:
+
+- semantic `LinearValue` means "this dynamic register currently holds one
+  linear SSA-like machine value"
+- semantic "cached local" means "this dynamic register is currently bound to a
+  local cache"
+- therefore late machine passes must not infer linear-value ownership from the
+  machine register number alone
+- MachineIR should carry explicit ownership for block params and for ambiguous
+  defs such as `Move` / `Load`
+
+Physical register order is still allowed and useful, but it is only a backend
+allocation preference. It is not a semantic class boundary.

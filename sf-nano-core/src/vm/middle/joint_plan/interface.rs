@@ -7,7 +7,10 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
+use crate::{
+    value_type::ValueType,
+    vm::middle::{cfg::CfgBlockId, frame::FrameSlot},
+};
 
 /// Function-wide setup facts needed by the rewriter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,15 +77,10 @@ pub(crate) enum LocalAccessDecision {
     Cache,
 }
 
-/// Chosen block-exit boundary.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct BlockExitDecision<'a> {
-    pub cached_locals: &'a [FrameSlot],
-}
-
 /// Query for repairing a block edge.
 #[derive(Clone, Debug)]
 pub(crate) struct EdgeRepairQuery<'a> {
+    pub succ_block: Option<CfgBlockId>,
     pub pred_exit: &'a [FrameSlot],
     pub succ_entry: &'a [FrameSlot],
 }
@@ -91,5 +89,6 @@ pub(crate) struct EdgeRepairQuery<'a> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct EdgeRepairDecision {
     pub ensure_cached_locals: Vec<FrameSlot>,
+    pub reserve_cached_locals: Vec<FrameSlot>,
     pub drop_cached_locals: Vec<FrameSlot>,
 }

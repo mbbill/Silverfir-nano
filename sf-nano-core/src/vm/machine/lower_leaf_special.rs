@@ -34,6 +34,7 @@ impl<'a> BlockLowerContext<'a> {
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
@@ -41,9 +42,10 @@ impl<'a> BlockLowerContext<'a> {
             });
         } else {
             let runtime_layout = self.runtime_abi_layout();
-            let temp = self.borrow_free_transients(1)?[0];
+            let temp = self.borrow_free_gp_dynamic_regs(1)?[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: temp,
                     addr: self.runtime_addr(runtime_layout.context.memory_views_base_offset),
@@ -53,6 +55,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     addr: self.indexed_addr(
@@ -285,9 +288,10 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
         let width = self.canonical_value_mem_width_for_value(result);
-        let base = self.borrow_free_transients(1)?[0];
+        let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -297,6 +301,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty,
                 dst,
                 addr: self.indexed_addr(
@@ -322,6 +327,7 @@ impl<'a> BlockLowerContext<'a> {
         let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -338,6 +344,7 @@ impl<'a> BlockLowerContext<'a> {
         let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_lo,
                 addr: lo_addr,
@@ -347,6 +354,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
                 addr: hi_addr,
@@ -382,9 +390,10 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
         let width = self.canonical_value_mem_width_for_value(src_value);
-        let base = self.borrow_free_transients(1)?[0];
+        let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -416,9 +425,10 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let runtime_layout = self.runtime_abi_layout();
         let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
-        let base = self.borrow_free_transients(1)?[0];
+        let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -458,10 +468,11 @@ impl<'a> BlockLowerContext<'a> {
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
-        let table_views = self.borrow_free_transients(1)?[0];
+        let table_views = self.borrow_free_gp_dynamic_regs(1)?[0];
         let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_views,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -471,6 +482,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
@@ -497,7 +509,7 @@ impl<'a> BlockLowerContext<'a> {
         let index = self.use_value(single_arg(args)?.unwrap_value())?;
         let dst = self.alloc_result_value(single_result(results)?)?;
         let index64 = dst;
-        let table_len = self.borrow_free_transients(1)?[0];
+        let table_len = self.borrow_free_gp_dynamic_regs(1)?[0];
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,
             index,
@@ -537,9 +549,9 @@ impl<'a> BlockLowerContext<'a> {
         let index = self.use_value(index_value)?;
         let src = self.use_value(src_value)?;
         let (index64, table_len) = if let Some(index64) = self.dead_value_reg(index_value) {
-            (index64, self.borrow_free_transients(1)?[0])
+            (index64, self.borrow_free_gp_dynamic_regs(1)?[0])
         } else {
-            let scratch = self.borrow_free_transients(2)?;
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             (scratch[0], scratch[1])
         };
         let continuation_ops = self.lower_table_access_continuation(
@@ -595,7 +607,7 @@ impl<'a> BlockLowerContext<'a> {
         let fp_load_usable = spec.ty.float_width().is_some()
             && (spec.memidx != 0
                 || self.dead_value_reg(addr_value).is_some()
-                || self.borrow_free_transients(1).is_ok());
+                || self.borrow_free_gp_dynamic_regs(1).is_ok());
         let dst = if let Some(width) = spec.ty.float_width().filter(|_| fp_load_usable) {
             self.alloc_float_value(single_result(results)?, width)?
         } else {
@@ -607,7 +619,7 @@ impl<'a> BlockLowerContext<'a> {
                 if let Some(addr32) = self.dead_value_reg(addr_value) {
                     addr32
                 } else {
-                    self.borrow_free_transients(1)?[0]
+                    self.borrow_free_gp_dynamic_regs(1)?[0]
                 }
             } else {
                 dst
@@ -623,7 +635,7 @@ impl<'a> BlockLowerContext<'a> {
                 spec.extension,
             )?);
         } else {
-            let scratch = self.borrow_free_transients(2)?;
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
             let residual = self.emit_memory_bounds_trap_if(
@@ -678,7 +690,7 @@ impl<'a> BlockLowerContext<'a> {
             let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
                 addr32
             } else {
-                self.borrow_free_transients(1)?[0]
+                self.borrow_free_gp_dynamic_regs(1)?[0]
             };
             let residual =
                 self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
@@ -686,7 +698,7 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_mem0_store_continuation(addr32, residual, src, spec.ty, spec.width)?,
             );
         } else {
-            let scratch = self.borrow_free_transients(2)?;
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
             let addr32 = scratch[0];
             let memory_view = scratch[1];
             let residual = self.emit_memory_bounds_trap_if(
@@ -773,7 +785,7 @@ impl<'a> BlockLowerContext<'a> {
             let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
                 addr32
             } else {
-                self.borrow_free_transients(1)?[0]
+                self.borrow_free_gp_dynamic_regs(1)?[0]
             };
             let residual =
                 self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
@@ -784,9 +796,9 @@ impl<'a> BlockLowerContext<'a> {
             );
         } else {
             let (addr32, base) = if let Some(addr32) = self.dead_value_reg(addr_value) {
-                (addr32, self.borrow_free_transients(1)?[0])
+                (addr32, self.borrow_free_gp_dynamic_regs(1)?[0])
             } else {
-                let scratch = self.borrow_free_transients(2)?;
+                let scratch = self.borrow_free_gp_dynamic_regs(2)?;
                 (scratch[0], scratch[1])
             };
             let residual = self.emit_memory_bounds_trap_if(
@@ -839,7 +851,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             return Ok(0);
         }
-        if let Ok(free) = self.borrow_free_transients(1) {
+        if let Ok(free) = self.borrow_free_gp_dynamic_regs(1) {
             let check_reg = free[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -924,13 +936,13 @@ impl<'a> BlockLowerContext<'a> {
         //
         // Guard: the borrowed register must differ from addr32.  When
         // addr32 came from dead_value_reg it is back in the free pool,
-        // so borrow_free_transients can hand it out again.  If that
+        // so borrow_free_gp_dynamic_regs can hand it out again. If that
         // happens, `check_reg = addr32 + access_bytes` silently corrupts
         // addr32 while the caller believes residual is 0 (untouched).
         // Filtering it out forces the in-place fallback path below,
         // which correctly reports the residual for later subtraction.
         if let Some(check_reg) = self
-            .borrow_free_transients(1)
+            .borrow_free_gp_dynamic_regs(1)
             .ok()
             .map(|s| s[0])
             .filter(|r| *r != addr32)
@@ -1031,6 +1043,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some((dst, ty, width, extension)) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty,
                     dst,
                     addr: MachineAddr {
@@ -1141,6 +1154,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty,
                 dst,
                 addr: MachineAddr {
@@ -1334,6 +1348,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if index64 != index {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: index64,
                     src: MachineValue::Reg(index),
@@ -1343,6 +1358,7 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_len,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1352,6 +1368,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_len,
                 addr: self.indexed_addr(
@@ -1404,6 +1421,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if index64 != index {
             ops.push(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: index64,
                     src: MachineValue::Reg(index),
@@ -1413,6 +1431,7 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scratch,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1422,6 +1441,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scratch,
                 addr: self.indexed_addr(
@@ -1455,6 +1475,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(dst) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     addr: MachineAddr {
@@ -1499,6 +1520,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if addr32 != addr {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: addr32,
                     src: MachineValue::Reg(addr),
@@ -1546,6 +1568,7 @@ impl<'a> BlockLowerContext<'a> {
         if memidx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
@@ -1556,6 +1579,7 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.runtime_addr(self.runtime_abi_layout().context.memory_views_base_offset),
@@ -1565,6 +1589,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
@@ -1833,6 +1858,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U64 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     addr: MachineAddr { base, offset: 4 },
@@ -1842,6 +1868,7 @@ pub(super) fn append_i64_load_ops(
             });
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1853,6 +1880,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U8 | MachineMemWidth::U16 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1865,6 +1893,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U32 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1899,6 +1928,7 @@ fn append_i64_load_hi_fill_ops(
         MachineLoadExtension::ZeroExtend | MachineLoadExtension::None => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     src: MachineValue::Imm64(0),
@@ -1959,6 +1989,7 @@ fn emit_memory_base_load_ops(
     if memidx == 0 {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 src: MachineValue::Reg(MACHINE_MEM0_BASE_REG),
@@ -1969,6 +2000,7 @@ fn emit_memory_base_load_ops(
 
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst,
             addr: MachineAddr {
@@ -1981,6 +2013,7 @@ fn emit_memory_base_load_ops(
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst,
             addr: MachineAddr {

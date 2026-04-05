@@ -30,6 +30,7 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
             | SsaInstKind::LocalGetCache { .. }
             | SsaInstKind::Fill { .. } => {}
             SsaInstKind::LocalEnsureCache { .. }
+            | SsaInstKind::LocalReserveCache { .. }
             | SsaInstKind::LocalDropCache { .. }
             | SsaInstKind::Call(_) => {}
         }

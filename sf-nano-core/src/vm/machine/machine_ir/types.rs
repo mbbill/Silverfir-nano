@@ -2,6 +2,24 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct MachineReg(pub(crate) u16);
 
+/// Semantic owner for a dynamic-register value.
+///
+/// This is intentionally about the *current meaning* of the value in the
+/// register, not about the physical register number:
+/// - `LinearValue` means a linear SSA-like machine value that can participate
+///   in copy-propagation / fusion rules which rely on straight-line value
+///   semantics.
+/// - `CachedLocal` means the register currently holds one cached local slot.
+///
+/// Under the unified dynamic-bank model, these meanings can appear in the same
+/// physical register numbers at different program points, so late machine
+/// passes must consult explicit ownership instead of bank layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MachineRegOwner {
+    LinearValue,
+    CachedLocal,
+}
+
 /// One machine CFG block id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct MachineBlockId(pub(crate) u32);

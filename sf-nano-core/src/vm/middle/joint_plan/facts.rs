@@ -42,6 +42,12 @@ pub(crate) enum FirstAccessKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockLocalInfo {
     pub slot: FrameSlot,
+    pub entry_first_access_kind: Option<FirstAccessKind>,
+    pub entry_first_read_distance: Option<u16>,
+    pub entry_first_write_distance: Option<u16>,
+    pub entry_read_count: u16,
+    pub entry_write_count: u16,
+    pub entry_hot_score: i32,
     pub first_access_kind: Option<FirstAccessKind>,
     pub first_read_distance: Option<u16>,
     pub first_write_distance: Option<u16>,
@@ -206,8 +212,12 @@ pub(crate) struct OpPlan {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockPlan {
     pub entry: EntryState,
-    pub entry_cached_locals: Vec<FrameSlot>,
-    pub exit_cached_locals: Vec<FrameSlot>,
+    /// Cached locals the block may assume at open while lowering once.
+    ///
+    /// This is intentionally tentative. Rewrite observes the actual exit and
+    /// finalizes the public block entry afterward by trimming only useless
+    /// carried-in locals.
+    pub tentative_entry_cached_locals: Vec<FrameSlot>,
 }
 
 /// Whole-function joint plan.

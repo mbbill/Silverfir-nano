@@ -3,7 +3,8 @@ use super::types::{
     MachineAddr, MachineCompareKind, MachineConstId, MachineConvertOp, MachineFloatBinaryOp,
     MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineIntBinaryOp,
     MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+    MachineRegOwner, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind,
+    MachineValue,
 };
 
 /// Inline external call that falls through in the same function.
@@ -51,6 +52,12 @@ pub(crate) enum MachineInstKind {
     ///
     /// Signed widening remains an explicit `Convert`.
     Move {
+        /// Semantic owner for the value defined in `dst`.
+        ///
+        /// The destination can become either one linear machine value or a
+        /// cached-local binding. Late machine passes must use this explicit
+        /// owner rather than infer meaning from the register number.
+        owner: MachineRegOwner,
         ty: MachineStorageType,
         dst: MachineReg,
         src: MachineValue,
@@ -61,6 +68,11 @@ pub(crate) enum MachineInstKind {
         bits: u64,
     },
     Load {
+        /// Semantic owner for the value defined in `dst`.
+        ///
+        /// A load can materialize either one linear machine value or a cached
+        /// local. The owner tag keeps that distinction alive after lowering.
+        owner: MachineRegOwner,
         ty: MachineStorageType,
         dst: MachineReg,
         addr: MachineAddr,
@@ -363,4 +375,53 @@ pub(crate) enum MachineInstKind {
     ElemDrop {
         elem_idx: u32,
     },
+}
+
+impl MachineInstKind {
+    /// Semantic owner for the register definitions of this instruction.
+    ///
+    /// Most defining instructions always produce linear machine values.
+    /// `Move` and `Load` are the ambiguous cases, so they carry explicit owner
+    /// metadata in the IR itself.
+    pub(crate) const fn def_owner(&self) -> Option<MachineRegOwner> {
+        match self {
+            Self::Move { owner, .. } | Self::Load { owner, .. } => Some(*owner),
+            Self::FloatConst { .. }
+            | Self::IndexedLoad { .. }
+            | Self::IntUnary { .. }
+            | Self::IntBinary { .. }
+            | Self::Int64PairBinary { .. }
+            | Self::Int64PairDivRem { .. }
+            | Self::Int64PairUnary { .. }
+            | Self::Int64PairShift { .. }
+            | Self::IntCompare { .. }
+            | Self::BitfieldExtractU { .. }
+            | Self::IntBinaryShifted { .. }
+            | Self::TestBits { .. }
+            | Self::Int64PairCompare { .. }
+            | Self::ConvertI64PairToFloat { .. }
+            | Self::ConvertFloatToI64Pair { .. }
+            | Self::ReinterpretF64ToI64Pair { .. }
+            | Self::ReinterpretI64PairToF64 { .. }
+            | Self::FloatUnary { .. }
+            | Self::FloatBinary { .. }
+            | Self::FloatCompare { .. }
+            | Self::Convert { .. }
+            | Self::Select { .. }
+            | Self::MemoryGrow { .. }
+            | Self::TableGrow { .. } => Some(MachineRegOwner::LinearValue),
+            Self::Store { .. }
+            | Self::IndexedStore { .. }
+            | Self::TrapIf { .. }
+            | Self::CallExternal(_)
+            | Self::MemoryFill { .. }
+            | Self::MemoryCopy { .. }
+            | Self::MemoryInit { .. }
+            | Self::DataDrop { .. }
+            | Self::TableFill { .. }
+            | Self::TableCopy { .. }
+            | Self::TableInit { .. }
+            | Self::ElemDrop { .. } => None,
+        }
+    }
 }

@@ -7,13 +7,11 @@ use crate::vm::machine::machine_ir::{
     MachineProgram, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
 };
 
-/// Minimal config for validate tests: no cache/transient budget beyond the minimum.
+/// Minimal config for validate tests: no extra dynamic budget beyond the minimum.
 fn minimal_config() -> BackendConfig {
     let gp_unit_bytes = core::mem::size_of::<usize>() as u8;
     BackendConfig::new(
-        0,
         if gp_unit_bytes == 4 { 5 } else { 3 },
-        0,
         0,
         gp_unit_bytes,
         if gp_unit_bytes == 4 { 8 } else { 3 },
@@ -58,6 +56,7 @@ fn rejects_out_of_range_register() {
             params: Vec::new(),
             ops: alloc::vec![MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: MachineReg(99),
                     src: MachineValue::Imm64(0),

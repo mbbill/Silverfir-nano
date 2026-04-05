@@ -47,6 +47,7 @@ impl I64Lowering for Gp32Lowering {
             })?;
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     src: MachineValue::Reg(cached.reg),
@@ -54,6 +55,7 @@ impl I64Lowering for Gp32Lowering {
             });
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     src: MachineValue::Reg(cached_hi),
@@ -62,6 +64,7 @@ impl I64Lowering for Gp32Lowering {
         } else {
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: ctx.frame_addr_offset(slot, 0)?,
@@ -71,6 +74,7 @@ impl I64Lowering for Gp32Lowering {
             });
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     addr: ctx.frame_addr_offset(slot, 4)?,
@@ -104,6 +108,7 @@ impl I64Lowering for Gp32Lowering {
             })?;
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cached.reg,
                     src: MachineValue::Reg(src_lo),
@@ -111,6 +116,7 @@ impl I64Lowering for Gp32Lowering {
             });
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cache_hi,
                     src: MachineValue::Reg(src_hi),
@@ -158,6 +164,7 @@ impl I64Lowering for Gp32Lowering {
         })?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                 ty: MachineStorageType::GpWord,
                 dst: cached.reg,
                 addr: ctx.frame_addr_offset(cached.slot, 0)?,
@@ -167,6 +174,7 @@ impl I64Lowering for Gp32Lowering {
         });
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                 ty: MachineStorageType::GpWord,
                 dst: cached_hi,
                 addr: ctx.frame_addr_offset(cached.slot, 4)?,

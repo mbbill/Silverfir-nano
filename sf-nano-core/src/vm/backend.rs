@@ -19,16 +19,14 @@ pub enum BackendKind {
 /// spend above the fixed machine ABI roles (`ctx`, `fp`, and the pinned mem0
 /// view regs).
 ///
-/// Different layers consume different subsets of this budget:
-/// - planning/SSA-IR shapes the live transient window from
-///   `gp_transient_budget`/`fp_transient_budget`
-/// - native lowering maps `gp_local_cache_budget`/`fp_local_cache_budget`
-///   onto cache regs
+/// Different layers interpret this budget differently:
+/// - `middle/` treats it as one unified dynamic bank per register class
+/// - native lowering maps that bank onto concrete machine registers
 /// - the frontend frame planner reserves `call_scratch_slots` in the native
 ///   frame prefix for call-link and helper scratch state
 /// - backend-only temporaries must be modeled explicitly through scratch pools
 ///   or lowering helpers rather than by ad hoc reach-through into these
-///   partitions
+///   dynamic banks
 ///
 /// It is *not* the place to describe fixed machine roles or runtime stack
 /// state.
@@ -44,29 +42,23 @@ pub(crate) struct BackendConfig {
     /// across the currently supported backends, both `f32` and `f64` consume
     /// exactly one FP register budget unit.
     pub gp_unit_bytes: u8,
-    pub gp_local_cache_budget: u8,
-    pub gp_transient_budget: u8,
-    pub fp_local_cache_budget: u8,
-    pub fp_transient_budget: u8,
+    pub gp_dynamic_budget: u8,
+    pub fp_dynamic_budget: u8,
     pub call_scratch_slots: u16,
 }
 
 impl BackendConfig {
     #[inline]
     pub(crate) const fn new(
-        gp_local_cache_budget: u8,
-        gp_transient_budget: u8,
-        fp_local_cache_budget: u8,
-        fp_transient_budget: u8,
+        gp_dynamic_budget: u8,
+        fp_dynamic_budget: u8,
         gp_unit_bytes: u8,
         call_scratch_slots: u16,
     ) -> Self {
         Self {
             gp_unit_bytes,
-            gp_local_cache_budget,
-            gp_transient_budget,
-            fp_local_cache_budget,
-            fp_transient_budget,
+            gp_dynamic_budget,
+            fp_dynamic_budget,
             call_scratch_slots,
         }
     }
@@ -78,30 +70,24 @@ impl BackendConfig {
 
     // ── Register layout helpers ──────────────────────────────────────────
     //
-    // Layout: [fixed(4) | gp_cache | gp_trans | fp_trans | fp_cache]
+    // Layout: [fixed(4) | gp_dynamic | fp_dynamic]
     //
-    // These derive partition boundaries from the budget so that no
+    // These derive the bank boundaries from the unified dynamic budgets so no
     // call-site needs to recompute them manually.
 
     /// Number of fixed MachineIR registers (ctx, fp, mem0_base, mem0_size).
     pub(crate) const FIXED: u16 = 4;
 
-    /// First GP transient MachineReg ID (= first reg after GP cache).
-    #[inline]
-    pub(crate) const fn first_gp_transient(self) -> u16 {
-        Self::FIXED + self.gp_local_cache_budget as u16
-    }
-
     /// First FP MachineReg ID (= first reg after all GP regs).
     #[inline]
     pub(crate) const fn first_fp_reg(self) -> u16 {
-        Self::FIXED + self.gp_local_cache_budget as u16 + self.gp_transient_budget as u16
+        Self::FIXED + self.gp_dynamic_budget as u16
     }
 
-    /// Total MachineReg count across all partitions.
+    /// Total MachineReg count across all dynamic banks.
     #[inline]
     pub(crate) const fn total_reg_count(self) -> u16 {
-        self.first_fp_reg() + self.fp_transient_budget as u16 + self.fp_local_cache_budget as u16
+        self.first_fp_reg() + self.fp_dynamic_budget as u16
     }
 }
 
@@ -111,20 +97,20 @@ mod tests {
 
     #[test]
     fn backend_config_keeps_explicit_gp_unit_bytes() {
-        let config = BackendConfig::new(1, 2, 3, 4, 4, 8);
+        let config = BackendConfig::new(3, 7, 4, 8);
         assert_eq!(config.gp_unit_bytes, 4);
         assert_eq!(config.call_scratch_slots, 8);
     }
 
     #[test]
     fn backend_config_detects_32bit_gp_targets() {
-        assert!(BackendConfig::new(1, 2, 3, 4, 4, 8).is_32bit_gp_target());
-        assert!(!BackendConfig::new(1, 2, 3, 4, 8, 3).is_32bit_gp_target());
+        assert!(BackendConfig::new(3, 7, 4, 8).is_32bit_gp_target());
+        assert!(!BackendConfig::new(3, 7, 8, 3).is_32bit_gp_target());
     }
 
     #[test]
     fn backend_config_allows_explicit_call_scratch_slots() {
-        let config = BackendConfig::new(1, 2, 3, 4, 8, 9);
+        let config = BackendConfig::new(3, 7, 8, 9);
         assert_eq!(config.call_scratch_slots, 9);
     }
 }

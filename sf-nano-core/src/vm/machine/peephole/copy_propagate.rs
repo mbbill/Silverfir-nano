@@ -1,7 +1,7 @@
 //! Copy propagation pass.
 //!
-//! Tracks transient register aliases within a block and rewrites later uses to
-//! the original source register. Cached-local and fixed-register writes are
+//! Tracks linear-value register aliases within a block and rewrites later uses
+//! to the original source register. Cached-local and fixed-register writes are
 //! preserved, but their sources are still canonicalized.
 //!
 //! Also folds single-use `move rX <- Imm64(C)` into consumer operands as
@@ -15,6 +15,7 @@ use crate::vm::machine::machine_ir::{
     self, MachineAddr, MachineBlock, MachineBranchCond, MachineConvertOp, MachineEdge, MachineInst,
     MachineInstKind, MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
 };
+use crate::vm::machine::ownership::DynamicOwnershipTracker;
 
 use super::helpers::{
     count_value_uses, for_each_defined_reg, inst_defines, reg_live_after, terminator_uses_reg,
@@ -25,6 +26,7 @@ pub(super) struct CopyPropagateScratch {
     aliases: Vec<Option<MachineReg>>,
     float_aliases: Vec<Option<MachineReg>>,
     rewritten: Vec<MachineInst>,
+    ownership: DynamicOwnershipTracker,
 }
 
 impl CopyPropagateScratch {
@@ -33,6 +35,7 @@ impl CopyPropagateScratch {
             aliases: vec![None; reg_count],
             float_aliases: vec![None; reg_count],
             rewritten: Vec::new(),
+            ownership: DynamicOwnershipTracker::new(reg_count),
         }
     }
 
@@ -62,6 +65,8 @@ pub(super) fn copy_propagate(
     let aliases = &mut scratch.aliases;
     let float_aliases = &mut scratch.float_aliases;
     let rewritten = &mut scratch.rewritten;
+    let ownership = &mut scratch.ownership;
+    ownership.reset_for_block(block, config);
 
     for (index, mut inst) in original_ops.iter().cloned().enumerate() {
         rewrite_sources(&mut inst.kind, aliases);
@@ -81,6 +86,7 @@ pub(super) fn copy_propagate(
 
         match &inst.kind {
             MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: _,
                 dst,
                 src: MachineValue::Reg(src),
@@ -88,11 +94,10 @@ pub(super) fn copy_propagate(
                 if *dst == *src {
                     continue;
                 }
-                // Only transient-to-transient copies are safe to elide here.
-                // Moves from fixed or cached-local registers into a transient
-                // often act as snapshots, not just aliases.
-                if machine_ir::is_transient_reg(*dst, config)
-                    && machine_ir::is_transient_reg(*src, config)
+                // Only linear-value moves are safe to elide here. Cached-local
+                // or fixed-register moves often materialize snapshots, so they
+                // must remain explicit.
+                if ownership.is_linear_value_reg(*src, config)
                     && machine_ir::same_reg_bank(*dst, *src, config)
                     && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
                 {
@@ -106,6 +111,7 @@ pub(super) fn copy_propagate(
             _ => {}
         }
 
+        ownership.apply_inst(&inst.kind, config);
         rewritten.push(inst);
     }
 

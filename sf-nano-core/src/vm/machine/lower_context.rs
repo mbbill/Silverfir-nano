@@ -70,7 +70,7 @@ pub(super) struct ValueLocation {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TransientState {
+struct LinearValueState {
     value: Option<SsaValue>,
     ty: Option<MachineStorageType>,
 }
@@ -96,7 +96,15 @@ pub(super) struct BlockLowerContext<'a> {
     cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
-    transient_state: Vec<TransientState>,
+    /// Dynamic-register occupancy for linear SSA-like values.
+    ///
+    /// Cached locals are tracked separately through `cache_bindings`. A dynamic
+    /// register is therefore in exactly one of three semantic states at any
+    /// program point:
+    /// - free
+    /// - occupied by one linear value
+    /// - bound to one cached local
+    linear_value_state: Vec<LinearValueState>,
     #[cfg(has_guard_pages)]
     guard_pages: bool,
 }
@@ -150,8 +158,8 @@ impl<'a> BlockLowerContext<'a> {
             cache_dirty,
             values: Vec::new(),
             remaining_uses: compute_remaining_uses(block),
-            transient_state: alloc::vec![
-                TransientState::default();
+            linear_value_state: alloc::vec![
+                LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
             #[cfg(has_guard_pages)]
@@ -172,12 +180,12 @@ impl<'a> BlockLowerContext<'a> {
             });
             let ty = lir_value_storage_type(lower.program, param);
             if lower.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
-                lower.set_transient(regs.lo, Some(param), Some(MachineStorageType::GpWord))?;
+                lower.set_linear_value_reg(regs.lo, Some(param), Some(MachineStorageType::GpWord))?;
                 if let Some(hi) = regs.hi {
-                    lower.set_transient(hi, Some(param), Some(MachineStorageType::GpWord))?;
+                    lower.set_linear_value_reg(hi, Some(param), Some(MachineStorageType::GpWord))?;
                 }
             } else {
-                lower.set_transient(regs.lo, Some(param), Some(ty))?;
+                lower.set_linear_value_reg(regs.lo, Some(param), Some(ty))?;
             }
         }
         let entry_cache_params = lower.entry_cache_params.clone();
@@ -509,27 +517,27 @@ impl<'a> BlockLowerContext<'a> {
         &mut self.remaining_uses
     }
 
-    pub(super) fn transient_occupied(&self, index: usize) -> bool {
-        self.transient_state
+    pub(super) fn linear_value_occupied(&self, index: usize) -> bool {
+        self.linear_value_state
             .get(index)
             .map(|state| state.value.is_some())
             .unwrap_or(false)
     }
 
-    pub(super) fn transient_state_ty(&self, index: usize) -> Option<MachineStorageType> {
-        self.transient_state.get(index).and_then(|state| state.ty)
+    pub(super) fn linear_value_storage_type(&self, index: usize) -> Option<MachineStorageType> {
+        self.linear_value_state.get(index).and_then(|state| state.ty)
     }
 
-    pub(super) fn set_transient_state(
+    pub(super) fn set_linear_value_state(
         &mut self,
         index: usize,
         value: Option<SsaValue>,
         ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
-        let slot = self.transient_state.get_mut(index).ok_or_else(|| {
-            WasmError::internal("transient register index is out of range".into())
+        let slot = self.linear_value_state.get_mut(index).ok_or_else(|| {
+            WasmError::internal("linear-value register index is out of range".into())
         })?;
-        *slot = TransientState { value, ty };
+        *slot = LinearValueState { value, ty };
         Ok(())
     }
 
@@ -542,8 +550,8 @@ impl<'a> BlockLowerContext<'a> {
         self.values.push(ValueLocation { value, reg, hi_reg });
     }
 
-    /// Free transient registers for values with no remaining uses.
-    /// Values in non-transient registers (e.g. cache registers from source
+    /// Free linear-value registers for values with no remaining uses.
+    /// Values in non-linear registers (e.g. cache registers from source
     /// aliasing or sink allocation) are removed from the value list but their
     /// registers are not cleared — they belong to the cached local.
     pub(super) fn release_dead_values(&mut self) -> Result<(), WasmError> {
@@ -555,12 +563,12 @@ impl<'a> BlockLowerContext<'a> {
                 let reg = self.values[index].reg;
                 let hi_reg = self.values[index].hi_reg;
                 self.values.swap_remove(index);
-                if self.is_transient_reg(reg) {
-                    self.clear_transient(reg)?;
+                if self.is_linear_value_reg(reg) {
+                    self.clear_linear_value_reg(reg)?;
                 }
                 if let Some(hi_reg) = hi_reg {
-                    if self.is_transient_reg(hi_reg) {
-                        self.clear_transient(hi_reg)?;
+                    if self.is_linear_value_reg(hi_reg) {
+                        self.clear_linear_value_reg(hi_reg)?;
                     }
                 }
             } else {
@@ -587,7 +595,7 @@ impl<'a> BlockLowerContext<'a> {
         let Some((reg, hi_reg)) = self.try_value_regs(value) else {
             return Ok(None);
         };
-        if !self.is_transient_reg(reg) || self.is_fp_reg(reg) != ty.is_fp() {
+        if !self.is_linear_value_reg(reg) || self.is_fp_reg(reg) != ty.is_fp() {
             return Ok(None);
         }
         match ty {
@@ -595,11 +603,11 @@ impl<'a> BlockLowerContext<'a> {
                 let Some(hi_reg) = hi_reg else {
                     return Ok(None);
                 };
-                if !self.is_transient_reg(hi_reg) || self.is_fp_reg(hi_reg) {
+                if !self.is_linear_value_reg(hi_reg) || self.is_fp_reg(hi_reg) {
                     return Ok(None);
                 }
-                self.clear_transient(reg)?;
-                self.clear_transient(hi_reg)?;
+                self.clear_linear_value_reg(reg)?;
+                self.clear_linear_value_reg(hi_reg)?;
                 return self
                     .bind_cached_local_to_regs(index, reg, Some(hi_reg))
                     .map(Some);
@@ -610,11 +618,11 @@ impl<'a> BlockLowerContext<'a> {
                 }
             }
         }
-        self.clear_transient(reg)?;
+        self.clear_linear_value_reg(reg)?;
         self.bind_cached_local_to_regs(index, reg, None).map(Some)
     }
 
-    /// Materialize all live values aliased to `cache_reg` into transient
+    /// Materialize all live values aliased to `cache_reg` into linear-value
     /// registers. Values in `except` are skipped — they are instruction args
     /// that will be consumed (read) before the cache register is overwritten.
     pub(super) fn materialize_cache_aliases(
@@ -630,19 +638,20 @@ impl<'a> BlockLowerContext<'a> {
             let vr = self.values[i].reg;
             let vv = self.values[i].value;
             if vr == cache_reg && !except.contains(&vv) {
-                let Some(t) = self.first_free_transient(ty) else {
+                let Some(t) = self.first_free_linear_value_reg(ty) else {
                     return Err(WasmError::internal(
-                        "transient budget exhausted during cache alias materialization".into(),
+                        "linear-value budget exhausted during cache alias materialization".into(),
                     ));
                 };
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
+                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                         ty,
                         dst: t,
                         src: MachineValue::Reg(cache_reg),
                     },
                 });
-                self.set_transient(t, Some(vv), Some(ty))?;
+                self.set_linear_value_reg(t, Some(vv), Some(ty))?;
                 self.values[i].reg = t;
             }
             i += 1;
@@ -754,7 +763,7 @@ impl<'a> BlockLowerContext<'a> {
             || self
                 .dynamic_index(reg)
                 .ok()
-                .map(|index| self.transient_occupied(index))
+                .map(|index| self.linear_value_occupied(index))
                 .unwrap_or(true)
     }
 
@@ -770,15 +779,15 @@ impl<'a> BlockLowerContext<'a> {
             .position(|entry| entry.value == candidate && entry.hi_reg.is_some())
         {
             let lo = self.values[index].reg;
-            if !self.is_transient_reg(lo) {
+            if !self.is_linear_value_reg(lo) {
                 return Ok(None);
             }
             let hi = self.values[index]
                 .hi_reg
                 .expect("pair candidate must have hi reg");
             self.values[index].value = value;
-            self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
-            self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+            self.set_linear_value_reg(lo, Some(value), Some(MachineStorageType::GpWord))?;
+            self.set_linear_value_reg(hi, Some(value), Some(MachineStorageType::GpWord))?;
             return Ok(Some((lo, hi)));
         }
         Ok(None)
@@ -796,20 +805,20 @@ impl<'a> BlockLowerContext<'a> {
             .position(|entry| entry.value == candidate && entry.hi_reg.is_none())
         {
             let lo = self.values[index].reg;
-            if self.is_fp_reg(lo) || !self.is_transient_reg(lo) {
+            if self.is_fp_reg(lo) || !self.is_linear_value_reg(lo) {
                 return Ok(None);
             }
-            let Some(hi) = self.first_free_transient(MachineStorageType::GpWord) else {
+            let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
                 return Err(WasmError::internal(alloc::format!(
-                    "prepared SSA-IR exceeded GP transient pair budget during native lowering in block b{} for value {}",
+                    "prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b{} for value {}",
                     self.block.id.0,
                     value.0,
                 )));
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);
-            self.set_transient(lo, Some(value), Some(MachineStorageType::GpWord))?;
-            self.set_transient(hi, Some(value), Some(MachineStorageType::GpWord))?;
+            self.set_linear_value_reg(lo, Some(value), Some(MachineStorageType::GpWord))?;
+            self.set_linear_value_reg(hi, Some(value), Some(MachineStorageType::GpWord))?;
             return Ok(Some((lo, hi)));
         }
         Ok(None)
@@ -828,20 +837,20 @@ impl<'a> BlockLowerContext<'a> {
             .position(|entry| entry.value == candidate && self.is_fp_reg(entry.reg) == ty.is_fp())
         {
             let reg = self.values[index].reg;
-            // Cannot reuse non-transient registers (e.g. cache registers from
+            // Cannot reuse non-linear registers (e.g. cache registers from
             // source aliasing) — they belong to cached locals.
-            if !self.is_transient_reg(reg) {
+            if !self.is_linear_value_reg(reg) {
                 return Ok(None);
             }
             if let Some(hi_reg) = self.values[index].hi_reg {
                 if ty.is_fp() {
                     return Ok(None);
                 }
-                self.clear_transient(hi_reg)?;
+                self.clear_linear_value_reg(hi_reg)?;
                 self.values[index].hi_reg = None;
             }
             self.values[index].value = value;
-            self.set_transient(reg, Some(value), Some(ty))?;
+            self.set_linear_value_reg(reg, Some(value), Some(ty))?;
             return Ok(Some(reg));
         }
         Ok(None)
@@ -870,6 +879,7 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: cached.ty,
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,
@@ -910,7 +920,9 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
                         &mut order,
                     );
                 }
-                SsaInstKind::LocalEnsureCache { slot } | SsaInstKind::LocalDropCache { slot } => {
+                SsaInstKind::LocalEnsureCache { slot }
+                | SsaInstKind::LocalReserveCache { slot }
+                | SsaInstKind::LocalDropCache { slot } => {
                     record_explicit_cached_local(&mut explicit, &pref_map, *slot, None, &mut order);
                 }
                 _ => {}

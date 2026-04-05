@@ -69,7 +69,7 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::Return { .. } => {
                 if self.values_iter().next().is_some() {
                     return Err(WasmError::internal(
-                        "SSA-IR return reached native lowering with live transient SSA values; results must be published before return".into(),
+                        "SSA-IR return reached native lowering with live linear SSA values; results must be published before return".into(),
                     ));
                 }
                 Ok(MachineTerminator::Return)
@@ -89,7 +89,8 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// Pre-map a sunk result to its cache register so the lowering
-    /// writes directly there instead of allocating a transient.
+    /// writes directly there instead of allocating a fresh linear-value
+    /// register.
     ///
     /// Must be called before any register allocation for the result
     /// (i.e. before both `lower_leaf_special` and `lower_inst`).
@@ -146,6 +147,9 @@ impl<'a> BlockLowerContext<'a> {
             SsaInstKind::LocalEnsureCache { slot } => {
                 self.lower_local_ensure_cache(*slot)?;
             }
+            SsaInstKind::LocalReserveCache { slot } => {
+                self.lower_local_reserve_cache(*slot)?;
+            }
             SsaInstKind::LocalDropCache { slot } => {
                 if let Some(index) = self.cached_local_index(*slot) {
                     self.emit_drop_cached_local(index)?;
@@ -163,6 +167,7 @@ impl<'a> BlockLowerContext<'a> {
                 let width = canonical_value_mem_width_for_value(self.program(), *dst);
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
+                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                         ty,
                         dst: dst_reg,
                         addr: self.frame_addr(*slot)?,
@@ -231,6 +236,7 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: cached.ty,
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,
@@ -259,6 +265,7 @@ impl<'a> BlockLowerContext<'a> {
         let width = canonical_value_mem_width_for_value(self.program(), dst);
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty,
                 dst: dst_reg,
                 addr: self.frame_addr(slot)?,
@@ -299,6 +306,7 @@ impl<'a> BlockLowerContext<'a> {
             let (dst_lo, dst_hi) = self.alloc_i64_value_pair(dst)?;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     src: MachineValue::Reg(cached.reg),
@@ -306,6 +314,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     src: MachineValue::Reg(cached_hi),
@@ -317,6 +326,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst_reg = self.alloc_slot_load_value(dst)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: cached.ty,
                 dst: dst_reg,
                 src: MachineValue::Reg(cached.reg),
@@ -348,6 +358,29 @@ impl<'a> BlockLowerContext<'a> {
                     err.message(),
                 ))
             })
+    }
+
+    fn lower_local_reserve_cache(
+        &mut self,
+        slot: crate::vm::middle::frame::FrameSlot,
+    ) -> Result<(), WasmError> {
+        let Some(cached_index) = self.cached_local_index(slot) else {
+            return Err(WasmError::internal(alloc::format!(
+                "LocalReserveCache on non-cached local slot {:?}",
+                slot,
+            )));
+        };
+        self.ensure_bound_cached_local(cached_index).map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "LocalReserveCache(slot={:?}) in block b{} failed: {}",
+                slot,
+                self.block_id(),
+                err.message(),
+            ))
+        })?;
+        self.set_cache_live(cached_index, true);
+        self.set_cache_dirty(cached_index, false);
+        Ok(())
     }
 
     fn lower_local_set_slot(
@@ -420,6 +453,7 @@ impl<'a> BlockLowerContext<'a> {
             let (src_lo, src_hi) = self.use_i64_value_pair(src)?;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cached.reg,
                     src: MachineValue::Reg(src_lo),
@@ -427,6 +461,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cached_hi,
                     src: MachineValue::Reg(src_hi),
@@ -446,6 +481,7 @@ impl<'a> BlockLowerContext<'a> {
         let src_reg = self.use_value(src)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                 ty: cached.ty,
                 dst: cache_reg,
                 src: MachineValue::Reg(src_reg),

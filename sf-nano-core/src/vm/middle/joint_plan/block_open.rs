@@ -2,9 +2,9 @@
 //!
 //! Cached-local entry is the real boundary policy problem in the current
 //! middle-end. Stack/SSA edge shape is already mostly solved by Wasm semantics
-//! plus block params. The builder computes a finalized cached-local entry set
-//! per block, and the helpers here expose that state and the dynamic pre-op
-//! drops needed to keep rewrite legal.
+//! plus block params. The planner chooses a tentative cached-local entry set
+//! per block, rewrite lowers once from it, and then finalizes the public block
+//! entry from actual use/exit feedback.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -14,7 +14,7 @@ use crate::vm::middle::cfg::CfgBlockId;
 use super::{
     facts::{EntryState, FunctionPlan, LocalOpKind},
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockExitDecision, BlockOpenDecision, TargetEntryDecision,
+        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, TargetEntryDecision,
         TransientContract,
     },
     local_access::decide_local_access,
@@ -29,7 +29,7 @@ pub(crate) fn block_open_decision(plan: &FunctionPlan, block: CfgBlockId) -> Blo
     let block_plan = &plan.blocks[block.as_usize()];
     BlockOpenDecision {
         transient: transient_contract(&block_plan.entry),
-        cached_locals: &block_plan.entry_cached_locals,
+        cached_locals: &block_plan.tentative_entry_cached_locals,
     }
 }
 
@@ -127,11 +127,31 @@ pub(crate) fn before_op_decision<'plan>(
     }
 }
 
-#[inline]
-pub(crate) fn block_exit_decision(plan: &FunctionPlan, block: CfgBlockId) -> BlockExitDecision<'_> {
-    BlockExitDecision {
-        cached_locals: &plan.blocks[block.as_usize()].exit_cached_locals,
-    }
+/// Finalize a public block entry after lowering once from the tentative entry.
+///
+/// The only legal post-lowering trim is removing locals that were carried into
+/// the tentative entry, were never used by the block, and did not survive the
+/// actual exit. Used locals stay, and unused locals that naturally carried
+/// through stay too.
+pub(crate) fn finalize_block_entry_cached_locals(
+    plan: &FunctionPlan,
+    block: CfgBlockId,
+    actual_exit: &[crate::vm::middle::frame::FrameSlot],
+) -> Vec<crate::vm::middle::frame::FrameSlot> {
+    let block_index = block.as_usize();
+    let tentative_entry = &plan.blocks[block_index].tentative_entry_cached_locals;
+    let region = &plan.block_regions[block_index];
+    tentative_entry
+        .iter()
+        .copied()
+        .filter(|slot| {
+            region
+                .info(*slot)
+                .map(|info| info.used_anywhere())
+                .unwrap_or(false)
+                || actual_exit.contains(slot)
+        })
+        .collect()
 }
 
 #[inline]

@@ -67,25 +67,30 @@ pub(crate) fn analyze_block_entry_regions(
                 slot,
                 ..Default::default()
             });
-            info.access_offsets.push(block_offset as u16);
-            match access_kind {
-                FirstAccessKind::ReadFirst => {
-                    info.read_count = info.read_count.saturating_add(1);
-                    info.first_read_distance.get_or_insert(block_offset as u16);
-                }
-                FirstAccessKind::WriteFirst => {
-                    info.write_count = info.write_count.saturating_add(1);
-                    info.first_write_distance.get_or_insert(block_offset as u16);
-                }
+            record_local_access(info, access_kind, block_offset as u16, false);
+        }
+
+        for (block_offset, semantic_index) in block.range.clone().enumerate() {
+            if clears_cache_region(&semantic.ops[semantic_index].kind) {
+                break;
             }
-            if info.first_access_kind.is_none() {
-                info.first_access_kind = Some(access_kind);
-            }
+            let Some((local_idx, access_kind)) =
+                classify_local_access(&semantic.ops[semantic_index].kind)
+            else {
+                continue;
+            };
+            let slot = frame.local_slot(local_idx);
+            let info = locals[local_idx as usize].get_or_insert_with(|| BlockLocalInfo {
+                slot,
+                ..Default::default()
+            });
+            record_local_access(info, access_kind, block_offset as u16, true);
         }
 
         let mut ranked = Vec::new();
         for info in locals.iter_mut().flatten() {
             info.hot_score = score_local(info);
+            info.entry_hot_score = score_entry_local(info);
             ranked.push((info.slot, info.hot_score));
         }
         ranked.sort_by_key(|(slot, score)| (core::cmp::Reverse(*score), slot.0));
@@ -103,6 +108,45 @@ pub(crate) fn analyze_block_entry_regions(
     }
 
     (local_regions, stack_regions)
+}
+
+fn record_local_access(
+    info: &mut BlockLocalInfo,
+    access_kind: FirstAccessKind,
+    block_offset: u16,
+    entry_region: bool,
+) {
+    if entry_region {
+        match access_kind {
+            FirstAccessKind::ReadFirst => {
+                info.entry_read_count = info.entry_read_count.saturating_add(1);
+                info.entry_first_read_distance.get_or_insert(block_offset);
+            }
+            FirstAccessKind::WriteFirst => {
+                info.entry_write_count = info.entry_write_count.saturating_add(1);
+                info.entry_first_write_distance.get_or_insert(block_offset);
+            }
+        }
+        if info.entry_first_access_kind.is_none() {
+            info.entry_first_access_kind = Some(access_kind);
+        }
+        return;
+    }
+
+    info.access_offsets.push(block_offset);
+    match access_kind {
+        FirstAccessKind::ReadFirst => {
+            info.read_count = info.read_count.saturating_add(1);
+            info.first_read_distance.get_or_insert(block_offset);
+        }
+        FirstAccessKind::WriteFirst => {
+            info.write_count = info.write_count.saturating_add(1);
+            info.first_write_distance.get_or_insert(block_offset);
+        }
+    }
+    if info.first_access_kind.is_none() {
+        info.first_access_kind = Some(access_kind);
+    }
 }
 
 /// Summarize whole-block transient-symbol usage for each CFG block.
@@ -282,6 +326,25 @@ fn score_local(info: &BlockLocalInfo) -> i32 {
                 + WRITE_FIRST_BOUNDARY_BONUS
                 + REUSE_BONUS * i32::from(info.write_count)
                 + (REUSE_BONUS / 2) * i32::from(info.read_count)
+        }
+    }
+}
+
+fn score_entry_local(info: &BlockLocalInfo) -> i32 {
+    match info.entry_first_access_kind {
+        None => 0,
+        Some(FirstAccessKind::ReadFirst) => {
+            let first = info.entry_first_read_distance.unwrap_or(u16::MAX) as i32;
+            (EARLY_USE_BONUS / (1 + first))
+                + REUSE_BONUS * i32::from(info.entry_read_count)
+                + (REUSE_BONUS / 2) * i32::from(info.entry_write_count)
+        }
+        Some(FirstAccessKind::WriteFirst) => {
+            let first = info.entry_first_write_distance.unwrap_or(u16::MAX) as i32;
+            (EARLY_USE_BONUS / (1 + first))
+                + WRITE_FIRST_BOUNDARY_BONUS
+                + REUSE_BONUS * i32::from(info.entry_write_count)
+                + (REUSE_BONUS / 2) * i32::from(info.entry_read_count)
         }
     }
 }

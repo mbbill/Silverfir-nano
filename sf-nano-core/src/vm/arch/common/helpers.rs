@@ -1,4 +1,3 @@
-use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineConvertOp, MachineFloatWidth, MachineMemWidth, MachineTrapKind,
 };
@@ -53,16 +52,6 @@ pub(crate) fn convert_result_float_width(op: MachineConvertOp) -> Option<Machine
         | MachineConvertOp::F64ReinterpretI64 => MachineFloatWidth::F64,
         _ => return None,
     })
-}
-
-// ── FP transient count ───────────────────────────────────────────────────────
-
-pub(crate) fn defaulted_fp_transient_count(config: BackendConfig) -> usize {
-    if config.fp_transient_budget != 0 {
-        return config.fp_transient_budget as usize;
-    }
-    let fp_bank_count = (config.total_reg_count() - config.first_fp_reg()) as usize;
-    fp_bank_count.min(2)
 }
 
 // ── Page alignment ───────────────────────────────────────────────────────────

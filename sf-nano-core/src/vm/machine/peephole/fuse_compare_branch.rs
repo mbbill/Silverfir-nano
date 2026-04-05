@@ -2,15 +2,15 @@
 //!
 //! Fuses `IntCompare { dst } + Branch { Reg(dst) }` into
 //! `Branch { IntCompare { ... } }` when the compare result register is a
-//! transient and is dead in both successor blocks.
+//! linear value and is dead in both successor blocks.
 //!
 //! This is a cross-block pass: it reads successor blocks to check liveness,
 //! so it must run after the per-block optimizations are done.
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind,
-    MachineReg, MachineTerminator, MachineValue,
+    MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind, MachineReg,
+    MachineRegOwner, MachineTerminator, MachineValue,
 };
 
 use super::helpers::{count_value_uses, inst_defines, terminator_uses_reg, value_is_reg};
@@ -18,7 +18,7 @@ use super::helpers::{count_value_uses, inst_defines, terminator_uses_reg, value_
 pub(super) fn fuse_compare_branch(
     blocks: &mut [MachineBlock],
     gp_reg_width: u8,
-    config: BackendConfig,
+    _config: BackendConfig,
 ) {
     for idx in 0..blocks.len() {
         // Check the last op and the terminator of this block.
@@ -36,14 +36,6 @@ pub(super) fn fuse_compare_branch(
             } => (*r, then_edge.target, else_edge.target),
             _ => continue,
         };
-
-        // Only fuse when the compare-result register is transient.
-        // Cached-local and fixed registers are implicitly live across block
-        // boundaries, so the single-successor liveness check below is not
-        // sufficient to prove the register is dead.
-        if !machine_ir::is_transient_reg(cond_reg, config) {
-            continue;
-        }
 
         // Build the fused branch condition, or skip.
         //
@@ -67,13 +59,17 @@ pub(super) fn fuse_compare_branch(
                 dst,
                 lhs,
                 rhs,
-            } if *dst == cond_reg => MachineBranchCond::IntCompare {
-                width: *width,
-                kind: *kind,
-                sign: *sign,
-                lhs: *lhs,
-                rhs: *rhs,
-            },
+            } if *dst == cond_reg
+                && last_op.kind.def_owner() == Some(MachineRegOwner::LinearValue) =>
+            {
+                MachineBranchCond::IntCompare {
+                    width: *width,
+                    kind: *kind,
+                    sign: *sign,
+                    lhs: *lhs,
+                    rhs: *rhs,
+                }
+            }
             MachineInstKind::TestBits { width, .. }
                 if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64
                     && gp_reg_width == 4 =>
@@ -86,12 +82,16 @@ pub(super) fn fuse_compare_branch(
                 dst,
                 src,
                 mask,
-            } if *dst == cond_reg => MachineBranchCond::TestBits {
-                width: *width,
-                kind: *kind,
-                src: MachineValue::Reg(*src),
-                mask: *mask,
-            },
+            } if *dst == cond_reg
+                && last_op.kind.def_owner() == Some(MachineRegOwner::LinearValue) =>
+            {
+                MachineBranchCond::TestBits {
+                    width: *width,
+                    kind: *kind,
+                    src: MachineValue::Reg(*src),
+                    mask: *mask,
+                }
+            }
             _ => continue,
         };
 

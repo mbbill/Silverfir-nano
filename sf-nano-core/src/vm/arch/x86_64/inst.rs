@@ -34,16 +34,16 @@ use crate::vm::machine::machine_ir::{MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_ME
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { dst, src, ty } => self.lower_move(*ty, *dst, *src),
+            MachineInstKind::Move { dst, src, ty, .. } => self.lower_move(*ty, *dst, *src),
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.lower_float_const(*width, *dst, *bits)
             }
             MachineInstKind::Load {
-                ty: _,
                 dst,
                 addr,
                 width,
                 extension,
+                ..
             } => self.lower_load(*dst, *addr, *width, *extension),
             MachineInstKind::Store {
                 ty: _,
@@ -879,7 +879,9 @@ impl<'a> X86_64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        // div/idiv implicitly uses RAX and RDX. RDX is a GP transient that
+        // div/idiv implicitly uses RAX and RDX. RDX is an early caller-clobbered
+        // GP dynamic register in the preferred allocation order, so reserve it
+        // explicitly here.
         // might hold a live value. Save it to self.gp_scratch.reg(1) (R11) and restore after.
         // (RAX = self.gp_scratch.reg(0), not in dynamic pool, so no save needed.)
         let need_save_rdx = dst != X86Reg::RDX;
@@ -2001,7 +2003,7 @@ impl<'a> X86_64Backend<'a> {
             self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
         // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
         // already lives in a mapped FP register (not self.fp_scratch.reg(0)), reuse
-        // self.fp_scratch.reg(0) for rhs to avoid clobbering live FP transients in
+        // self.fp_scratch.reg(0) for rhs to avoid clobbering live FP SSA values in
         // self.fp_scratch.reg(1)/self.fp_scratch.reg(2).
         let rhs_fp_scratch = if lhs_fp != self.fp_scratch.reg(0) as u32 {
             self.fp_scratch.reg(0)
@@ -2150,10 +2152,12 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    /// Save GP transient registers to the system stack before a C helper call.
-    /// Pushes 8 registers (7 transients + padding) for 16-byte alignment.
-    fn save_gp_transients(&mut self) {
-        // Push 7 GP transients + 1 padding for 16-byte alignment (8 * 8 = 64 bytes)
+    /// Save caller-clobbered GP dynamic registers to the system stack before a
+    /// C helper call. Pushes 8 registers (7 live-capable dynamic regs + padding)
+    /// for 16-byte alignment.
+    fn save_caller_clobbered_gp_dynamic(&mut self) {
+        // Push 7 caller-clobbered GP dynamic regs + 1 padding lane for
+        // 16-byte alignment (8 * 8 = 64 bytes)
         enc::push(&mut self.core.text, X86Reg::RCX);
         enc::push(&mut self.core.text, X86Reg::RDX);
         enc::push(&mut self.core.text, X86Reg::RSI);
@@ -2164,8 +2168,9 @@ impl<'a> X86_64Backend<'a> {
         enc::push(&mut self.core.text, X86Reg::R10); // padding for 16-byte alignment
     }
 
-    /// Restore GP transient registers from the system stack after a C helper call.
-    fn restore_gp_transients(&mut self) {
+    /// Restore caller-clobbered GP dynamic registers from the system stack
+    /// after a C helper call.
+    fn restore_caller_clobbered_gp_dynamic(&mut self) {
         enc::pop(&mut self.core.text, X86Reg::R10); // padding
         enc::pop(&mut self.core.text, X86Reg::R10);
         enc::pop(&mut self.core.text, X86Reg::R9);
@@ -2182,8 +2187,8 @@ impl<'a> X86_64Backend<'a> {
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
-        // The C helper call clobbers all GP transient registers. Save them.
-        self.save_gp_transients();
+        // The C helper call clobbers the caller-clobbered GP dynamic subset.
+        self.save_caller_clobbered_gp_dynamic();
         #[cfg(not(target_os = "windows"))]
         {
             enc::mov_rr_64(
@@ -2199,7 +2204,7 @@ impl<'a> X86_64Backend<'a> {
             );
             enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
             enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX);
-            self.restore_gp_transients();
+            self.restore_caller_clobbered_gp_dynamic();
             enc::test_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
             self.emit_jcc(Cc::NE, self.core.return_error_label);
         }
@@ -2219,7 +2224,7 @@ impl<'a> X86_64Backend<'a> {
             );
             enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
             enc::load_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RSP, 0);
-            self.restore_gp_transients();
+            self.restore_caller_clobbered_gp_dynamic();
             enc::test_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
             self.emit_jcc(Cc::NE, self.core.return_error_label);
         }
@@ -2235,8 +2240,8 @@ impl<'a> X86_64Backend<'a> {
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
-        // The C helper call clobbers all GP transient registers. Save them.
-        self.save_gp_transients();
+        // The C helper call clobbers the caller-clobbered GP dynamic subset.
+        self.save_caller_clobbered_gp_dynamic();
         enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
         self.materialize_u64(C_ARG1, convert_op_code(op));
         self.materialize_u64(
@@ -2244,9 +2249,9 @@ impl<'a> X86_64Backend<'a> {
             x86_64_saturating_trunc as usize as u64,
         );
         enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-        // Save result before restoring transients
+        // Save result before restoring the caller-clobbered dynamic subset.
         enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RAX);
-        self.restore_gp_transients();
+        self.restore_caller_clobbered_gp_dynamic();
         if dst != self.gp_scratch.reg(1) {
             enc::mov_rr_64(&mut self.core.text, dst, self.gp_scratch.reg(1));
         }

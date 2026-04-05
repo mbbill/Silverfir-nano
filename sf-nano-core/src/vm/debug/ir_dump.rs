@@ -302,6 +302,9 @@ fn render_lir_inst(kind: &SsaInstKind) -> String {
         SsaInstKind::LocalEnsureCache { slot } => {
             format!("local.ensure_cache fp[{}]", slot.0)
         }
+        SsaInstKind::LocalReserveCache { slot } => {
+            format!("local.reserve_cache fp[{}]", slot.0)
+        }
         SsaInstKind::LocalDropCache { slot } => {
             format!("local.drop_cache fp[{}]", slot.0)
         }
@@ -413,7 +416,7 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
             block
                 .params
                 .iter()
-                .map(|param| format!("r{}:{}", param.reg.0, sty(&param.ty)))
+                .map(|param| format!("r{}:{}:{}", param.reg.0, owner_tag(param.owner), sty(&param.ty)))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -426,13 +429,20 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
 
 fn render_machine_inst(kind: &MachineInstKind) -> String {
     match kind {
-        MachineInstKind::Move { ty, dst, src } => {
-            format!("move.{} r{} <- {}", sty(ty), dst.0, mval(src))
+        MachineInstKind::Move { owner, ty, dst, src, .. } => {
+            format!(
+                "move.{}.{} r{} <- {}",
+                owner_tag(*owner),
+                sty(ty),
+                dst.0,
+                mval(src)
+            )
         }
         MachineInstKind::FloatConst { width, dst, bits } => {
             format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
         }
         MachineInstKind::Load {
+            owner,
             ty,
             dst,
             addr,
@@ -440,7 +450,8 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             extension,
         } => {
             format!(
-                "load.{}.{}{} r{} <- [{}]",
+                "load.{}.{}.{}{} r{} <- [{}]",
+                owner_tag(*owner),
                 sty(ty),
                 mwidth(width),
                 mext(extension),
@@ -925,6 +936,13 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::ElemDrop { elem_idx } => {
             format!("elem.drop elem={}", elem_idx)
         }
+    }
+}
+
+fn owner_tag(owner: crate::vm::machine::machine_ir::MachineRegOwner) -> &'static str {
+    match owner {
+        crate::vm::machine::machine_ir::MachineRegOwner::LinearValue => "linear",
+        crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal => "cache",
     }
 }
 

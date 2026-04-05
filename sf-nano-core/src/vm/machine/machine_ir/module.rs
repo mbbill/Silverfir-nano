@@ -17,8 +17,8 @@ pub(crate) struct MachineConstData {
 pub(crate) struct MachineProgram {
     pub entry: MachineBlockId,
     /// Initial semantic width for each FP-bank register, indexed by
-    /// `reg - config.first_fp_reg()`. FP cached-local regs use `Some(width)`;
-    /// transient regs start as `None`.
+    /// `reg - config.first_fp_reg()`. FP cached-local bindings use
+    /// `Some(width)`; linear-value lanes start as `None`.
     pub fp_reg_init_widths: Vec<Option<MachineFloatWidth>>,
     pub blocks: Vec<super::cfg::MachineBlock>,
 }

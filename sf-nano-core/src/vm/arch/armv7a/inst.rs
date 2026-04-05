@@ -92,10 +92,8 @@ pub(super) fn prepare_fp<'p>(
                 // Instead, we use the index computation from the backend.
                 // This is a simplified path — callers pass FP regs only.
                 crate::vm::backend::BackendConfig::new(
-                    super::abi::GP_LOCAL_CACHE.len() as u8,
-                    super::abi::GP_TRANSIENT.len() as u8,
-                    super::abi::FP_LOCAL_CACHE.len() as u8,
-                    super::abi::FP_TRANSIENT.len() as u8,
+                    super::abi::GP_DYNAMIC.len() as u8,
+                    super::abi::FP_DYNAMIC.len() as u8,
                     super::abi::GP_UNIT_BYTES,
                     8,
                 ),
@@ -280,7 +278,7 @@ pub(super) fn emit_patchable_addr_into(text: &mut TextEmitter, dst: Arm32Reg) ->
 impl<'a> Arm32Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
-            MachineInstKind::Move { ty, dst, src } => {
+            MachineInstKind::Move { ty, dst, src, .. } => {
                 let dst_is_fp = self.is_fp_machine_reg(*dst);
                 let src_is_fp = match src {
                     MachineValue::Reg(r) => self.is_fp_machine_reg(*r),
@@ -377,11 +375,11 @@ impl<'a> Arm32Backend<'a> {
             }
 
             MachineInstKind::Load {
-                ty: _,
                 dst,
                 addr,
                 width,
                 extension,
+                ..
             } => {
                 self.compile_load(*dst, addr, *width, *extension)?;
             }
@@ -1677,9 +1675,9 @@ impl<'a> Arm32Backend<'a> {
             MachineSign::Unsigned => Cond::Hi,
         };
 
-        // Inline CMP without spill/restore.  We use pool-managed GP scratches
-        // (R12, R14/LR — saved in prologue) as temporaries, so no GP transient
-        // registers are clobbered.
+        // Inline CMP without spill/restore. We use pool-managed GP scratches
+        // (R12, R14/LR — saved in prologue) as temporaries, so no live GP
+        // dynamic state is clobbered.
         //
         // Compare hi words: prepare into scratch registers and CMP.
         let lhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_hi)?;

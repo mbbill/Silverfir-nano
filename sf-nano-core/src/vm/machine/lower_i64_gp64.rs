@@ -44,6 +44,7 @@ impl I64Lowering for Gp64Lowering {
             }
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: cached.ty,
                     dst: dst_reg,
                     src: MachineValue::Reg(cached.reg),
@@ -52,6 +53,7 @@ impl I64Lowering for Gp64Lowering {
         } else {
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty,
                     dst: dst_reg,
                     addr: ctx.frame_addr(slot)?,
@@ -83,6 +85,7 @@ impl I64Lowering for Gp64Lowering {
             let cache_reg = cached.reg;
             ctx.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                     ty: cached.ty,
                     dst: cache_reg,
                     src: MachineValue::Reg(src_reg),
@@ -124,6 +127,7 @@ impl I64Lowering for Gp64Lowering {
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
                 ty: cached.ty,
                 dst: cached.reg,
                 addr: ctx.frame_addr(cached.slot)?,

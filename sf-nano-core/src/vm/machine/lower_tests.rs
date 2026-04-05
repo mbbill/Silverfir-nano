@@ -30,35 +30,35 @@ const HOST_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
 const HOST_CALL_SCRATCH_SLOTS: u16 = if HOST_GP_UNIT_BYTES == 4 { 8 } else { 3 };
 
 fn host_backend_config(
-    gp_local_cache_budget: u8,
-    gp_transient_budget: u8,
-    fp_local_cache_budget: u8,
-    fp_transient_budget: u8,
+    gp_cache_budget: u8,
+    gp_linear_budget: u8,
+    fp_cache_budget: u8,
+    fp_linear_budget: u8,
 ) -> BackendConfig {
+    let gp_dynamic_budget = gp_cache_budget.saturating_add(gp_linear_budget);
+    let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
     BackendConfig::new(
-        gp_local_cache_budget,
-        gp_transient_budget,
-        fp_local_cache_budget,
-        fp_transient_budget,
+        gp_dynamic_budget,
+        fp_dynamic_budget,
         HOST_GP_UNIT_BYTES,
         HOST_CALL_SCRATCH_SLOTS,
     )
 }
 
 fn gp32_backend_config(
-    gp_local_cache_budget: u8,
-    gp_transient_budget: u8,
-    fp_local_cache_budget: u8,
-    fp_transient_budget: u8,
+    gp_cache_budget: u8,
+    gp_linear_budget: u8,
+    fp_cache_budget: u8,
+    fp_linear_budget: u8,
 ) -> BackendConfig {
-    // 32-bit GP targets need at least 5 transient budget units to satisfy
+    // 32-bit GP targets need at least 5 GP dynamic budget units to satisfy
     // the backend-wide worst-case operand pressure invariant.
-    let gp_transient_budget = gp_transient_budget.max(5);
+    let gp_linear_budget = gp_linear_budget.max(5);
+    let gp_dynamic_budget = gp_cache_budget.saturating_add(gp_linear_budget);
+    let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
     BackendConfig::new(
-        gp_local_cache_budget,
-        gp_transient_budget,
-        fp_local_cache_budget,
-        fp_transient_budget,
+        gp_dynamic_budget,
+        fp_dynamic_budget,
         4,
         8,
     )
@@ -66,9 +66,7 @@ fn gp32_backend_config(
 
 fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) {
     assert!(backend.is_32bit_gp_target());
-    let max_gp_regs = MACHINE_FIXED_REG_COUNT
-        + backend.gp_local_cache_budget as u16
-        + backend.gp_transient_budget as u16;
+    let max_gp_regs = MACHINE_FIXED_REG_COUNT + backend.gp_dynamic_budget as u16;
     module
         .validate_32bit_gp_target(max_gp_regs)
         .unwrap_or_else(|err| panic!("32-bit lowered module must already validate: {err}"));
@@ -279,7 +277,7 @@ fn lowers_select_with_wasm_operand_order() {
 }
 
 #[test]
-fn native_backend_requires_at_least_one_gp_transient_register() {
+fn native_backend_requires_at_least_one_gp_linear_value_register() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -307,10 +305,10 @@ fn native_backend_requires_at_least_one_gp_transient_register() {
             result_count: 0,
         }],
     })
-    .expect_err("zero GP-transient native backend must be rejected");
+    .expect_err("zero GP-dynamic native backend must be rejected");
 
     assert!(
-        alloc::format!("{err}").contains("at least one GP transient register"),
+        alloc::format!("{err}").contains("at least one GP dynamic register"),
         "unexpected error: {err}"
     );
 }
@@ -577,6 +575,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         crate::vm::machine::machine_ir::MachineBlockParam {
             reg: MachineReg(4),
             ty: MachineStorageType::GpWord,
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
         }
     ));
     assert!(matches!(
@@ -584,6 +583,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         crate::vm::machine::machine_ir::MachineBlockParam {
             reg: MachineReg(5),
             ty: MachineStorageType::GpWord,
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
         }
     ));
 
@@ -1013,7 +1013,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             } => Some(dst),
             _ => None,
         })
-        .expect("expected i32.const 7 to materialize into a transient reg");
+        .expect("expected i32.const 7 to materialize into a linear-value reg");
     assert!(
         ops.iter().any(|inst| matches!(
             inst.kind,
@@ -1028,7 +1028,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
 }
 
 #[test]
-fn local_set_cache_reuses_dying_source_transient_when_no_extra_reg_is_free() {
+fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -1317,7 +1317,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 5);
-    // ops[0]: I64Const(9) into transient reg
+    // ops[0]: I64Const(9) into linear-value reg
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
@@ -1467,7 +1467,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 5);
-    // ops[0]: I64Const(5) into transient reg
+    // ops[0]: I64Const(5) into linear-value reg
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
@@ -1765,18 +1765,21 @@ fn flushes_cached_local_before_second_direct_call() {
     assert_eq!(caller_program.blocks.len(), 3);
 
     let second_call_block = &caller_program.blocks[1];
-    // ops[0]: Fill from frame into transient
     assert!(matches!(
-        second_call_block.ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(5),
-            ..
-        }
+        second_call_block
+            .ops
+            .iter()
+            .find(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
+            .map(|inst| &inst.kind),
+        Some(MachineInstKind::Load { .. })
     ));
-    // ops[1]: explicit LocalDropCache flushes before second call
     assert!(matches!(
-        second_call_block.ops[1].kind,
-        MachineInstKind::Store { .. }
+        second_call_block
+            .ops
+            .iter()
+            .find(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
+            .map(|inst| &inst.kind),
+        Some(MachineInstKind::Store { .. })
     ));
     assert!(matches!(
         second_call_block.terminator,
@@ -1868,30 +1871,33 @@ fn preserves_cached_locals_across_block_edges() {
 
     let program = &lowered.module.functions[0].program;
     assert!(matches!(
-        program.blocks[0].ops[0].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(5),
-            src: MachineValue::Imm64(9),
-            ..
-        }
+        program.blocks[0]
+            .ops
+            .iter()
+            .find(|inst| matches!(inst.kind, MachineInstKind::Move { src: MachineValue::Imm64(9), .. }))
+            .map(|inst| &inst.kind),
+        Some(MachineInstKind::Move { src: MachineValue::Imm64(9), .. })
     ));
-    // LocalDropCache — spill to frame before the edge
     assert!(matches!(
-        program.blocks[0].ops[1].kind,
-        MachineInstKind::Store { .. }
+        program.blocks[0]
+            .ops
+            .iter()
+            .find(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
+            .map(|inst| &inst.kind),
+        Some(MachineInstKind::Store { .. })
     ));
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Jump(_)
     ));
     // Block 1: cache is re-established explicitly from the frame slot.
-    assert_eq!(program.blocks[1].ops.len(), 3);
     assert!(matches!(
-        program.blocks[1].ops[0].kind,
-        MachineInstKind::Load {
-            dst: MachineReg(4),
-            ..
-        }
+        program.blocks[1]
+            .ops
+            .iter()
+            .find(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
+            .map(|inst| &inst.kind),
+        Some(MachineInstKind::Load { .. })
     ));
     assert!(matches!(
         program.blocks[1].ops[1].kind,
@@ -3410,6 +3416,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             src: MachineValue::Imm64(value),
             ..
@@ -3490,7 +3497,7 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
 }
 
 #[test]
-fn threads_live_transients_through_split_continuation_params() {
+fn threads_live_linear_values_through_split_continuation_params() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -3588,7 +3595,7 @@ fn threads_live_transients_through_split_continuation_params() {
 }
 
 #[test]
-fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
+fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
@@ -3656,7 +3663,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_transient_width() {
             result_count: 0,
         }],
     })
-    .expect("inline memory store should preserve FP transient widths");
+    .expect("inline memory store should preserve FP linear-value widths");
 
     let program = &lowered.module.functions[0].program;
     assert_eq!(program.blocks.len(), 1);

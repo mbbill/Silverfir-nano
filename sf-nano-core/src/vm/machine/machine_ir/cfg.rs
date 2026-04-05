@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use super::inst::MachineInst;
 use super::types::{
     MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFuncId, MachineIntWidth,
-    MachineReg, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+    MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
 };
 
 /// One explicit machine block parameter.
@@ -11,6 +11,7 @@ use super::types::{
 pub(crate) struct MachineBlockParam {
     pub reg: MachineReg,
     pub ty: MachineStorageType,
+    pub owner: MachineRegOwner,
 }
 
 impl MachineBlockParam {
@@ -19,6 +20,7 @@ impl MachineBlockParam {
         Self {
             reg,
             ty: MachineStorageType::GpWord,
+            owner: MachineRegOwner::LinearValue,
         }
     }
 
@@ -27,6 +29,7 @@ impl MachineBlockParam {
         Self {
             reg,
             ty: MachineStorageType::GpI64,
+            owner: MachineRegOwner::LinearValue,
         }
     }
 
@@ -38,7 +41,14 @@ impl MachineBlockParam {
                 MachineFloatWidth::F32 => MachineStorageType::Fp32,
                 MachineFloatWidth::F64 => MachineStorageType::Fp64,
             },
+            owner: MachineRegOwner::LinearValue,
         }
+    }
+
+    #[inline]
+    pub(crate) const fn with_owner(mut self, owner: MachineRegOwner) -> Self {
+        self.owner = owner;
+        self
     }
 }
 
@@ -204,8 +214,9 @@ pub(crate) enum MachineTerminator {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MachineBlock {
     pub id: MachineBlockId,
-    /// Block parameters are generic registers. Incoming values are supplied by
-    /// the predecessor edge, the root public shim, or a local-call boundary.
+    /// Block parameters are generic registers plus explicit semantic owners.
+    /// Incoming values are supplied by the predecessor edge, the root public
+    /// shim, or a local-call boundary.
     pub params: Vec<MachineBlockParam>,
     pub ops: Vec<MachineInst>,
     pub terminator: MachineTerminator,

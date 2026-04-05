@@ -14,7 +14,7 @@ use crate::{
 
 use crate::vm::runtime::code::CompiledNativeModule;
 
-use super::helpers::{defaulted_fp_transient_count, trap_kind_index, MACHINE_TRAP_KIND_COUNT};
+use super::helpers::{trap_kind_index, MACHINE_TRAP_KIND_COUNT};
 use super::text_emitter::TextEmitter;
 use super::types::{
     DebugRegion, DirectCallPatch, EdgeStub, FunctionArtifact, LocalPtrPatch, PendingLocalPtrPatch,
@@ -108,16 +108,15 @@ impl<'a> CompilerCore<'a> {
 
     fn init_fp_widths(
         function: &MachineFunction,
-        config: BackendConfig,
+        _config: BackendConfig,
         fp_capacity: usize,
     ) -> Vec<Option<MachineFloatWidth>> {
         let mut widths = vec![None; fp_capacity];
         if function.program.fp_reg_init_widths.is_empty() {
-            let fp_bank_count = (config.total_reg_count() - config.first_fp_reg()) as usize;
-            let transient_count = defaulted_fp_transient_count(config);
-            for i in transient_count..fp_bank_count.min(fp_capacity) {
-                widths[i] = Some(MachineFloatWidth::F64);
-            }
+            // Unified dynamic FP banks no longer let us infer ownership or
+            // width defaults from register number. Until the lowering path
+            // publishes explicit init widths, every dynamic FP reg starts
+            // unknown and is typed on first materialization.
         } else {
             for (i, width) in function
                 .program
@@ -239,11 +238,8 @@ impl<'a> CompilerCore<'a> {
     }
 
     pub(crate) fn reset_block_fp_state(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
-        let transient_count = defaulted_fp_transient_count(self.compiled.backend());
-        for i in 0..transient_count {
-            if let Some(slot) = self.fp_reg_widths.get_mut(i) {
-                *slot = None;
-            }
+        for slot in &mut self.fp_reg_widths {
+            *slot = None;
         }
         for param in &block.params {
             if let Some(width) = param.ty.float_width() {

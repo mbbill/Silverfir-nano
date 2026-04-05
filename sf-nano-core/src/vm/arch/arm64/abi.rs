@@ -10,7 +10,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            classify_fp_reg, classify_gp_reg, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
@@ -39,19 +39,18 @@ struct RegPlan {
     mem0_size: Arm64Reg,
     // GP budget unit size
     gp_unit_bytes: u8,
-    // GP dynamic partition (ordered: cache first, then transient)
-    //   gp_local_cache: first `gp_local_cache_callee_saved` entries are
-    //   ABI callee-saved; the remainder are caller-saved.
-    gp_local_cache: &'static [Arm64Reg],
-    gp_local_cache_callee_saved: usize,
-    gp_transient: &'static [Arm64Reg],
+    // Preferred GP dynamic order. This is an allocation-order preference only;
+    // ownership stays in lowering state, not the machine-register number.
+    gp_dynamic: &'static [Arm64Reg],
+    // Caller-clobbered subset of the GP dynamic bank. Preserved-helper
+    // wrappers save exactly these because callee-saved dynamic regs already
+    // survive the C ABI boundary.
+    gp_dynamic_caller_saved: &'static [Arm64Reg],
     gp_scratch: &'static [Arm64Reg],
-    // FP dynamic partition (ordered: transient first, then cache)
-    //   fp_local_cache: first `fp_local_cache_callee_saved` entries are
-    //   ABI callee-saved; the remainder are caller-saved.
-    fp_transient: &'static [Arm64FpReg],
-    fp_local_cache: &'static [Arm64FpReg],
-    fp_local_cache_callee_saved: usize,
+    // Preferred FP dynamic order. As with GP, this is only allocation order.
+    fp_dynamic: &'static [Arm64FpReg],
+    // Caller-clobbered subset of the FP dynamic bank.
+    fp_dynamic_caller_saved: &'static [Arm64FpReg],
     fp_scratch: &'static [Arm64FpReg],
     // Callee-saved sets
     callee_saved_gp_pairs: &'static [(Arm64Reg, Arm64Reg)],
@@ -68,25 +67,7 @@ const REG_PLAN: RegPlan = RegPlan {
 
     gp_unit_bytes: 8,
 
-    gp_local_cache: &[
-        // callee-saved (first 6)
-        gp(23),
-        gp(24),
-        gp(25),
-        gp(26),
-        gp(27),
-        gp(28),
-        // caller-saved (remaining)
-        gp(9),
-        gp(10),
-        gp(11),
-        gp(12),
-        gp(13),
-        gp(14),
-        gp(15),
-    ],
-    gp_local_cache_callee_saved: 6,
-    gp_transient: &[
+    gp_dynamic: &[
         gp(3),
         gp(4),
         gp(5),
@@ -96,10 +77,41 @@ const REG_PLAN: RegPlan = RegPlan {
         gp(0),
         gp(1),
         gp(2),
+        gp(23),
+        gp(24),
+        gp(25),
+        gp(26),
+        gp(27),
+        gp(28),
+        gp(9),
+        gp(10),
+        gp(11),
+        gp(12),
+        gp(13),
+        gp(14),
+        gp(15),
+    ],
+    gp_dynamic_caller_saved: &[
+        gp(3),
+        gp(4),
+        gp(5),
+        gp(6),
+        gp(7),
+        gp(8),
+        gp(0),
+        gp(1),
+        gp(2),
+        gp(9),
+        gp(10),
+        gp(11),
+        gp(12),
+        gp(13),
+        gp(14),
+        gp(15),
     ],
     gp_scratch: &[gp(16), gp(17)],
 
-    fp_transient: &[
+    fp_dynamic: &[
         fp(3),
         fp(4),
         fp(5),
@@ -110,9 +122,6 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(18),
         fp(19),
         fp(20),
-    ],
-    fp_local_cache: &[
-        // callee-saved (first 8)
         fp(8),
         fp(9),
         fp(10),
@@ -121,7 +130,6 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(13),
         fp(14),
         fp(15),
-        // caller-saved (remaining)
         fp(21),
         fp(22),
         fp(23),
@@ -134,7 +142,29 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(30),
         fp(31),
     ],
-    fp_local_cache_callee_saved: 8,
+    fp_dynamic_caller_saved: &[
+        fp(3),
+        fp(4),
+        fp(5),
+        fp(6),
+        fp(7),
+        fp(16),
+        fp(17),
+        fp(18),
+        fp(19),
+        fp(20),
+        fp(21),
+        fp(22),
+        fp(23),
+        fp(24),
+        fp(25),
+        fp(26),
+        fp(27),
+        fp(28),
+        fp(29),
+        fp(30),
+        fp(31),
+    ],
     fp_scratch: &[fp(0), fp(1), fp(2)],
 
     callee_saved_gp_pairs: &[
@@ -152,7 +182,7 @@ const REG_PLAN: RegPlan = RegPlan {
 
 // Compile-time checks
 const _: () = assert!(
-    REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len() + REG_PLAN.fp_scratch.len() == 32,
+    REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 32,
     "FP register plan must account for all 32 D-registers"
 );
 
@@ -185,9 +215,9 @@ pub(super) fn callee_saved_fp_regs() -> &'static [Arm64FpReg] {
 // Platform calling-convention facts, used only at the C↔JIT boundary.
 //
 // These are foreign ABI registers, not extra MachineIR roles. They may alias
-// caller-saved transient or scratch regs, but must not alias the fixed
-// MachineIR roles. Boundary lowering is what makes that safe: transients are
-// dead at the boundary and cached locals have already been published.
+// caller-clobbered dynamic or scratch regs, but must not alias the fixed
+// MachineIR roles. Boundary lowering is what makes that safe: SSA values are
+// dead at the boundary and local state has already been published.
 
 pub(super) const C_ARG0: Arm64Reg = gp(0);
 pub(super) const C_ARG1: Arm64Reg = gp(1);
@@ -219,10 +249,8 @@ pub(super) const fn fp_zero_reg() -> Arm64FpReg {
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
     BackendConfig::new(
-        REG_PLAN.gp_local_cache.len() as u8,
-        REG_PLAN.gp_transient.len() as u8,
-        REG_PLAN.fp_local_cache.len() as u8,
-        REG_PLAN.fp_transient.len() as u8,
+        REG_PLAN.gp_dynamic.len() as u8,
+        REG_PLAN.fp_dynamic.len() as u8,
         REG_PLAN.gp_unit_bytes,
         3,
     )
@@ -245,11 +273,11 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm64FpReg, 3> {
 // ── Capacity queries ─────────────────────────────────────────────────────────
 
 pub(super) const FP_MACHINE_REG_COUNT: usize =
-    REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len();
+    REG_PLAN.fp_dynamic.len();
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
-    MACHINE_FIXED_REG_COUNT as usize + REG_PLAN.gp_local_cache.len() + REG_PLAN.gp_transient.len()
+    MACHINE_FIXED_REG_COUNT as usize + REG_PLAN.gp_dynamic.len()
 }
 
 #[inline]
@@ -281,64 +309,40 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm64Reg, WasmError> {
         return Ok(map_fixed_reg(reg));
     }
     let config = compile_backend_config();
-    match classify_gp_reg(reg, config) {
-        Some((index, true)) => REG_PLAN.gp_local_cache.get(index).copied(),
-        Some((index, false)) => REG_PLAN.gp_transient.get(index).copied(),
-        None => return Ok(map_fixed_reg(reg)),
-    }
-    .ok_or_else(|| {
-        WasmError::invalid(alloc::format!(
-            "arm64 has no GP mapping for machine reg {}",
-            reg.0
-        ))
-    })
+    gp_dynamic_index(reg, config)
+        .and_then(|index| REG_PLAN.gp_dynamic.get(index).copied())
+        .ok_or_else(|| {
+            WasmError::invalid(alloc::format!(
+                "arm64 has no GP mapping for machine reg {}",
+                reg.0
+            ))
+        })
 }
 
 #[inline]
 pub(super) fn fp_machine_reg(index: usize) -> Option<Arm64FpReg> {
-    let config = compile_backend_config();
-    let (i, is_cache) = classify_fp_reg(index, config);
-    if is_cache {
-        REG_PLAN.fp_local_cache.get(i).copied()
-    } else {
-        REG_PLAN.fp_transient.get(i).copied()
-    }
+    REG_PLAN.fp_dynamic.get(index).copied()
 }
 
 // ── Preserved-helper save sets ──────────────────────────────────────────────
 //
-// Derived from REG_PLAN — not duplicated.  The preserved-helper wrapper
-// saves all caller-clobbered registers that may hold live JIT state:
-//   GP: all transients + caller-saved local-cache
-//   FP: all transients + caller-saved local-cache
+// Derived from REG_PLAN — not duplicated. The preserved-helper wrapper saves
+// the caller-clobbered dynamic subset because any of those regs may carry live
+// JIT state when control crosses into a C helper.
 
-/// All GP transient registers (all caller-saved).
-pub(super) fn gp_transient_regs() -> &'static [Arm64Reg] {
-    REG_PLAN.gp_transient
+pub(super) fn gp_dynamic_caller_saved_regs() -> &'static [Arm64Reg] {
+    REG_PLAN.gp_dynamic_caller_saved
 }
 
-/// Caller-saved portion of the GP local cache (after the callee-saved prefix).
-pub(super) fn gp_caller_saved_cache() -> &'static [Arm64Reg] {
-    &REG_PLAN.gp_local_cache[REG_PLAN.gp_local_cache_callee_saved..]
-}
-
-/// All FP transient registers (all caller-saved).
-pub(super) fn fp_transient_regs() -> &'static [Arm64FpReg] {
-    REG_PLAN.fp_transient
-}
-
-/// Caller-saved portion of the FP local cache (after the callee-saved prefix).
-pub(super) fn fp_caller_saved_cache() -> &'static [Arm64FpReg] {
-    &REG_PLAN.fp_local_cache[REG_PLAN.fp_local_cache_callee_saved..]
+pub(super) fn fp_dynamic_caller_saved_regs() -> &'static [Arm64FpReg] {
+    REG_PLAN.fp_dynamic_caller_saved
 }
 
 /// Total number of GP registers saved by the preserved-helper.
-const PRESERVED_GP_COUNT: usize = REG_PLAN.gp_transient.len() + REG_PLAN.gp_local_cache.len()
-    - REG_PLAN.gp_local_cache_callee_saved;
+const PRESERVED_GP_COUNT: usize = REG_PLAN.gp_dynamic_caller_saved.len();
 
 /// Total number of FP registers saved by the preserved-helper.
-const PRESERVED_FP_COUNT: usize = REG_PLAN.fp_transient.len() + REG_PLAN.fp_local_cache.len()
-    - REG_PLAN.fp_local_cache_callee_saved;
+const PRESERVED_FP_COUNT: usize = REG_PLAN.fp_dynamic_caller_saved.len();
 
 const fn preserved_io_size() -> u32 {
     crate::vm::runtime::preserved::io::SLOT_COUNT as u32 * 8

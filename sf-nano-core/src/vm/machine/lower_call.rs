@@ -26,7 +26,7 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
     ) -> Result<MachineTerminator, WasmError> {
         self.ensure_no_live_values(
-            "prepared SSA-IR call reached native lowering with live transient SSA values; values must be published before the call",
+            "prepared SSA-IR call reached native lowering with live linear SSA values; values must be published before the call",
         )?;
 
         let callee_id = MachineFuncId(callee);
@@ -58,7 +58,7 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_dirty_cached_locals()?;
 
-        let call_regs = self.borrow_free_transients(2)?;
+        let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
         let callee_frame_base = call_regs[0];
         let stack_limit = call_regs[1];
 
@@ -170,7 +170,7 @@ impl<'a> BlockLowerContext<'a> {
         const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
-            "prepared SSA-IR external call reached native lowering with live transient SSA values; values must be published before the call",
+            "prepared SSA-IR external call reached native lowering with live linear SSA values; values must be published before the call",
         )?;
 
         // External calls are modeled as inline runtime-entry calls rather than MIR
@@ -235,6 +235,7 @@ impl<'a> BlockLowerContext<'a> {
             },
             MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: self.regfile().mem0_base(),
                     addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_base_offset),
@@ -244,6 +245,7 @@ impl<'a> BlockLowerContext<'a> {
             },
             MachineInst {
                 kind: MachineInstKind::Load {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: self.regfile().mem0_size(),
                     addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
@@ -278,6 +280,7 @@ impl<'a> BlockLowerContext<'a> {
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: stack_limit,
                 addr: self.runtime_addr(stack_end_offset),
@@ -320,6 +323,7 @@ impl<'a> BlockLowerContext<'a> {
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: stack_limit,
                 addr: self.runtime_addr(stack_end_offset),

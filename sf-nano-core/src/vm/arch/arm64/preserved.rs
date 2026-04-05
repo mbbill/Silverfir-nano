@@ -127,82 +127,74 @@ impl<'a> Arm64Backend<'a> {
     fn emit_save_preserved_gp(&mut self) {
         let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
         let mut slot = 0u32;
-        for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
-            let mut i = 0;
-            while i + 1 < regs.len() {
-                self.core.text.emit_u32(enc::stp_64(
-                    regs[i],
-                    regs[i + 1],
-                    abi::stack_reg(),
-                    ((base_off + slot * 8) / 8) as i32,
-                ));
-                slot += 2;
-                i += 2;
-            }
-            if i < regs.len() {
-                self.core.text.emit_u32(enc::str_64(
-                    regs[i],
-                    abi::stack_reg(),
-                    (base_off + slot * 8) / 8,
-                ));
-                slot += 1;
-            }
+        let regs = abi::gp_dynamic_caller_saved_regs();
+        let mut i = 0;
+        while i + 1 < regs.len() {
+            self.core.text.emit_u32(enc::stp_64(
+                regs[i],
+                regs[i + 1],
+                abi::stack_reg(),
+                ((base_off + slot * 8) / 8) as i32,
+            ));
+            slot += 2;
+            i += 2;
+        }
+        if i < regs.len() {
+            self.core.text.emit_u32(enc::str_64(
+                regs[i],
+                abi::stack_reg(),
+                (base_off + slot * 8) / 8,
+            ));
         }
     }
 
     fn emit_restore_preserved_gp(&mut self) {
         let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
         let mut slot = 0u32;
-        for regs in [abi::gp_transient_regs(), abi::gp_caller_saved_cache()] {
-            let mut i = 0;
-            while i + 1 < regs.len() {
-                self.core.text.emit_u32(enc::ldp_64(
-                    regs[i],
-                    regs[i + 1],
-                    abi::stack_reg(),
-                    ((base_off + slot * 8) / 8) as i32,
-                ));
-                slot += 2;
-                i += 2;
-            }
-            if i < regs.len() {
-                self.core.text.emit_u32(enc::ldr_64(
-                    regs[i],
-                    abi::stack_reg(),
-                    (base_off + slot * 8) / 8,
-                ));
-                slot += 1;
-            }
+        let regs = abi::gp_dynamic_caller_saved_regs();
+        let mut i = 0;
+        while i + 1 < regs.len() {
+            self.core.text.emit_u32(enc::ldp_64(
+                regs[i],
+                regs[i + 1],
+                abi::stack_reg(),
+                ((base_off + slot * 8) / 8) as i32,
+            ));
+            slot += 2;
+            i += 2;
+        }
+        if i < regs.len() {
+            self.core.text.emit_u32(enc::ldr_64(
+                regs[i],
+                abi::stack_reg(),
+                (base_off + slot * 8) / 8,
+            ));
         }
     }
 
     fn emit_save_preserved_fp(&mut self) {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
         let mut slot = 0u32;
-        for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
-            for reg in regs.iter().copied() {
-                self.core.text.emit_u32(enc::str_d(
-                    reg,
-                    abi::stack_reg(),
-                    (base_off + slot * 8) / 8,
-                ));
-                slot += 1;
-            }
+        for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
+            self.core.text.emit_u32(enc::str_d(
+                reg,
+                abi::stack_reg(),
+                (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
         }
     }
 
     fn emit_restore_preserved_fp(&mut self) {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
         let mut slot = 0u32;
-        for regs in [abi::fp_transient_regs(), abi::fp_caller_saved_cache()] {
-            for reg in regs.iter().copied() {
-                self.core.text.emit_u32(enc::ldr_d(
-                    reg,
-                    abi::stack_reg(),
-                    (base_off + slot * 8) / 8,
-                ));
-                slot += 1;
-            }
+        for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
+            self.core.text.emit_u32(enc::ldr_d(
+                reg,
+                abi::stack_reg(),
+                (base_off + slot * 8) / 8,
+            ));
+            slot += 1;
         }
     }
 } // impl Arm64Backend (preserved.rs)

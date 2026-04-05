@@ -410,9 +410,9 @@ impl<'a> Arm32Backend<'a> {
     #[inline]
     pub(super) fn emit_host_call(&mut self, target: usize) {
         // ARM hard-float helpers may clobber D0-D7. D0-D2 are reserved as
-        // scratch/return registers in this backend; preserve the live
-        // transient bank D3-D7 around every host call without perturbing
-        // the native stack layout used for helper stack arguments.
+        // scratch/return registers in this backend; preserve the caller-
+        // clobbered FP dynamic subset D3-D7 around every host call without
+        // perturbing the native stack layout used for helper stack arguments.
         let helper_scratch = self
             .core
             .compiled
@@ -593,8 +593,8 @@ impl<'a> Arm32Backend<'a> {
 
     pub(super) fn spill_caller_saved_gp_regs(&mut self) {
         // Keep SP 8-byte aligned across helper calls while preserving the
-        // full transient GP bank. R9 is platform-defined under AAPCS, so the
-        // JIT cannot rely on host helpers preserving it.
+        // caller-clobbered GP dynamic subset. R9 is platform-defined under
+        // AAPCS, so the JIT cannot rely on host helpers preserving it.
         self.core
             .text
             .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, 24, 0));

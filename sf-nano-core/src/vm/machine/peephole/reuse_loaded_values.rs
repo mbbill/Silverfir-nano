@@ -24,6 +24,7 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
 
         match &inst.kind {
             MachineInstKind::Load {
+                owner,
                 ty,
                 dst,
                 addr,
@@ -46,7 +47,7 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                     } else if let Some(move_ty) =
                         rewrite_move_storage_type(*dst, MachineValue::Reg(src_reg), *ty, config)
                     {
-                        rewrite_load = Some((*dst, src_reg, move_ty));
+                        rewrite_load = Some((*owner, *dst, src_reg, move_ty));
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
                             ty: *ty,
@@ -75,8 +76,9 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
         }
 
         if keep_inst {
-            if let Some((dst, src_reg, ty)) = rewrite_load {
+            if let Some((owner, dst, src_reg, ty)) = rewrite_load {
                 inst.kind = MachineInstKind::Move {
+                    owner,
                     ty,
                     dst,
                     src: MachineValue::Reg(src_reg),

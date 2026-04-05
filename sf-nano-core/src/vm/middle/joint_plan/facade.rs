@@ -21,14 +21,14 @@ use crate::{
 
 use super::{
     block_open::{
-        before_op_decision, block_exit_decision, block_open_decision, target_entry_decision,
+        before_op_decision, block_open_decision, finalize_block_entry_cached_locals,
+        target_entry_decision,
     },
     build,
     facts::FunctionPlan,
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockExitDecision, BlockOpenDecision, EdgeRepairDecision,
-        EdgeRepairQuery, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
-        TargetEntryDecision,
+        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, EdgeRepairDecision, EdgeRepairQuery,
+        FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery, TargetEntryDecision,
     },
     local_access::decide_local_access,
     policy::op_must_drop_all_caches,
@@ -93,11 +93,15 @@ impl JointPlanner {
     }
 
     #[inline]
-    pub(crate) fn block_exit(&self, block: CfgBlockId) -> BlockExitDecision<'_> {
-        block_exit_decision(&self.plan, block)
+    pub(crate) fn finalize_block_entry(
+        &self,
+        block: CfgBlockId,
+        actual_exit: &[crate::vm::middle::frame::FrameSlot],
+    ) -> Vec<crate::vm::middle::frame::FrameSlot> {
+        finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
     }
 
     pub(crate) fn edge_repair(&self, query: EdgeRepairQuery<'_>) -> EdgeRepairDecision {
-        derive_edge_repair(query)
+        derive_edge_repair(&self.plan, query)
     }
 }

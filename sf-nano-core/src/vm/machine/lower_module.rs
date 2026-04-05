@@ -346,7 +346,7 @@ fn lower_function(
                         let args = *args;
                         let results = *results;
                         lower.ensure_no_live_values(
-                            "prepared SSA-IR call_indirect reached native lowering with live transient SSA values; values must be published before the call",
+                            "prepared SSA-IR call_indirect reached native lowering with live linear SSA values; values must be published before the call",
                         )?;
                         // After the checked block resolves the table entry, this canonical frame
                         // slot is reused to carry the resolved function index through the rest of
@@ -879,22 +879,14 @@ pub(super) fn preferred_gp_dynamic_reg(
     regfile: &MachineRegFile,
     ordinal: usize,
 ) -> Option<MachineReg> {
-    if ordinal < regfile.gp_transient_count() {
-        regfile.gp_transient(ordinal)
-    } else {
-        regfile.gp_local_cache(ordinal - regfile.gp_transient_count())
-    }
+    regfile.ordered_gp_dynamic(ordinal)
 }
 
 pub(super) fn preferred_fp_dynamic_reg(
     regfile: &MachineRegFile,
     ordinal: usize,
 ) -> Option<MachineReg> {
-    if ordinal < regfile.fp_transient_count() {
-        regfile.fp_transient(ordinal)
-    } else {
-        regfile.fp_local_cache(ordinal - regfile.fp_transient_count())
-    }
+    regfile.ordered_fp_dynamic(ordinal)
 }
 
 fn fp_reg_init_widths(
@@ -910,7 +902,15 @@ fn append_entry_cache_params(
 ) {
     for entry in entry_cache_params {
         if let Some(cached) = cached_locals.get(entry.cached_index) {
-            params.extend(machine_block_params_for_value(entry.regs, cached.ty));
+            params.extend(
+                machine_block_params_for_value(entry.regs, cached.ty)
+                    .into_iter()
+                    .map(|param| {
+                        param.with_owner(
+                            crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                        )
+                    }),
+            );
         }
     }
 }
@@ -954,13 +954,13 @@ struct CallIndirectGpTemps {
 }
 
 // `call_indirect` is the structured MachineIR exception that intentionally
-// threads a fixed GP transient bundle across synthetic blocks.
+// threads a fixed GP dynamic bundle across synthetic blocks.
 fn call_indirect_gp_temps(lower: &BlockLowerContext<'_>) -> Result<CallIndirectGpTemps, WasmError> {
     Ok(CallIndirectGpTemps {
-        lane0: lower.reserved_gp_transient(0, "call_indirect control lane 0")?,
-        lane1: lower.reserved_gp_transient(1, "call_indirect control lane 1")?,
-        lane2: lower.reserved_gp_transient(2, "call_indirect control lane 2")?,
-        lane3: lower.reserved_gp_transient(3, "call_indirect control lane 3")?,
+        lane0: lower.reserved_gp_dynamic(0, "call_indirect control lane 0")?,
+        lane1: lower.reserved_gp_dynamic(1, "call_indirect control lane 1")?,
+        lane2: lower.reserved_gp_dynamic(2, "call_indirect control lane 2")?,
+        lane3: lower.reserved_gp_dynamic(3, "call_indirect control lane 3")?,
     })
 }
 
@@ -976,6 +976,7 @@ fn emit_call_indirect_bounds_check_setup(
     let table_len = temps.lane2;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: index,
             addr: lower.frame_addr(index_slot)?,
@@ -985,6 +986,7 @@ fn emit_call_indirect_bounds_check_setup(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: table_views,
             addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -994,6 +996,7 @@ fn emit_call_indirect_bounds_check_setup(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: table_len,
             addr: indexed_const_addr(
@@ -1022,6 +1025,7 @@ fn build_call_indirect_checked_block(
     Ok(vec![
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: index,
                 addr: lower.frame_addr(index_slot)?,
@@ -1031,6 +1035,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1040,6 +1045,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: indexed_const_addr(
@@ -1072,6 +1078,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: func_idx,
                 addr: MachineAddr {
@@ -1092,6 +1099,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: lower.runtime_addr(runtime_layout.context.function_views_len_offset),
@@ -1127,6 +1135,7 @@ fn build_call_indirect_type_check_block(
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: function_views,
             addr: lower.runtime_addr(runtime_layout.context.type_canon_base_offset),
@@ -1136,6 +1145,7 @@ fn build_call_indirect_type_check_block(
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: expected_type,
             addr: indexed_const_addr(
@@ -1174,6 +1184,7 @@ fn build_call_indirect_dispatch_block(
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: local_target,
             addr: MachineAddr {
@@ -1214,6 +1225,7 @@ fn build_call_indirect_local_prepare_block(
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: prefix_current,
             addr: MachineAddr {
@@ -1229,6 +1241,7 @@ fn build_call_indirect_local_prepare_block(
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: prefix_end,
             addr: MachineAddr {
@@ -1305,6 +1318,7 @@ fn build_call_indirect_local_transfer_block(
     emit_local_call_info_entry_addr(lower, callee_target, call_link_base, callee_entry)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: callee_entry,
             addr: MachineAddr {
@@ -1317,6 +1331,7 @@ fn build_call_indirect_local_transfer_block(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: call_link_base,
             addr: MachineAddr {
@@ -1362,6 +1377,7 @@ fn emit_local_call_info_entry_addr(
     let runtime_layout = lower.runtime_abi_layout();
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: info_base,
             addr: lower.runtime_addr(runtime_layout.context.local_call_infos_base_offset),
@@ -1372,6 +1388,7 @@ fn emit_local_call_info_entry_addr(
     if scaled_index != callee_target {
         lower.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scaled_index,
                 src: MachineValue::Reg(callee_target),
@@ -1413,6 +1430,7 @@ fn dynamic_function_view_load(
     let runtime_layout = native_runtime_abi_layout(lower.gp_reg_width());
     let mut ops = vec![MachineInst {
         kind: MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: func_idx_dst,
             addr: lower.frame_addr(index_slot)?,
@@ -1423,6 +1441,7 @@ fn dynamic_function_view_load(
     if scaled_index_reg != func_idx_dst {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scaled_index_reg,
                 src: MachineValue::Reg(func_idx_dst),
@@ -1441,6 +1460,7 @@ fn dynamic_function_view_load(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base_reg,
                 addr: lower.runtime_addr(runtime_layout.context.function_views_base_offset),
@@ -1459,6 +1479,7 @@ fn dynamic_function_view_load(
         },
         MachineInst {
             kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: MachineAddr {
@@ -1617,7 +1638,9 @@ fn simulate_block_cache_exit_state(
 
     for inst in &block.ops {
         match &inst.kind {
-            SsaInstKind::LocalGetCache { slot, .. } | SsaInstKind::LocalEnsureCache { slot } => {
+            SsaInstKind::LocalGetCache { slot, .. }
+            | SsaInstKind::LocalEnsureCache { slot }
+            | SsaInstKind::LocalReserveCache { slot } => {
                 if let Some(&cached_index) = slot_to_index.get(slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;

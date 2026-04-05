@@ -121,6 +121,9 @@ pub(crate) enum SsaInstKind {
     LocalEnsureCache {
         slot: FrameSlot,
     },
+    LocalReserveCache {
+        slot: FrameSlot,
+    },
     LocalDropCache {
         slot: FrameSlot,
     },

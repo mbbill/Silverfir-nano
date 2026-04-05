@@ -112,6 +112,7 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                     check(*src, &alloc::format!("{bctx} set/spill src"))?;
                 }
                 SsaInstKind::LocalEnsureCache { .. }
+                | SsaInstKind::LocalReserveCache { .. }
                 | SsaInstKind::LocalDropCache { .. }
                 | SsaInstKind::Call(_) => {}
             }

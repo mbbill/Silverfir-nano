@@ -52,8 +52,9 @@ struct TrackedLoad {
 
 /// Run peephole optimizations on all blocks in a program.
 ///
-/// Register classification is derived from `config` — the single source of
-/// truth for the register layout.
+/// `config` still defines physical register banks and bank compatibility, but
+/// semantic linear-value versus cached-local ownership now comes from explicit
+/// MachineIR metadata, not from register-number layout.
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let first_fp_reg = config.first_fp_reg();
     let gp_reg_width = config.gp_unit_bytes;
