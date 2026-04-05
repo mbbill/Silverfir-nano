@@ -56,12 +56,7 @@ fn gp32_backend_config(
     let gp_linear_budget = gp_linear_budget.max(5);
     let gp_dynamic_budget = gp_cache_budget.saturating_add(gp_linear_budget);
     let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
-    BackendConfig::new(
-        gp_dynamic_budget,
-        fp_dynamic_budget,
-        4,
-        8,
-    )
+    BackendConfig::new(gp_dynamic_budget, fp_dynamic_budget, 4, 8)
 }
 
 fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) {
@@ -1765,22 +1760,63 @@ fn flushes_cached_local_before_second_direct_call() {
     assert_eq!(caller_program.blocks.len(), 3);
 
     let second_call_block = &caller_program.blocks[1];
-    assert!(matches!(
-        second_call_block
-            .ops
-            .iter()
-            .find(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
-            .map(|inst| &inst.kind),
-        Some(MachineInstKind::Load { .. })
-    ));
-    assert!(matches!(
-        second_call_block
-            .ops
-            .iter()
-            .find(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
-            .map(|inst| &inst.kind),
-        Some(MachineInstKind::Store { .. })
-    ));
+    let result_slot_offset = i32::from(caller_frame.operand_slot(0).0) * 8;
+    let local_slot_offset = i32::from(caller_frame.local_slot(0).0) * 8;
+    let result_reload_indices = second_call_block
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, inst)| match &inst.kind {
+            MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                addr,
+                ..
+            } if *addr
+                == crate::vm::machine::machine_ir::MachineAddr {
+                    base: MachineReg(1),
+                    offset: result_slot_offset,
+                } =>
+            {
+                Some(idx)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let local_flush_indices = second_call_block
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, inst)| match inst.kind {
+            MachineInstKind::Store { addr, .. }
+                if addr
+                    == crate::vm::machine::machine_ir::MachineAddr {
+                        base: MachineReg(1),
+                        offset: local_slot_offset,
+                    } =>
+            {
+                Some(idx)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        result_reload_indices.len(),
+        1,
+        "the continuation for the second direct call should reload exactly one linear call result from its frame slot; ops={:?}",
+        second_call_block.ops
+    );
+    assert_eq!(
+        local_flush_indices.len(),
+        1,
+        "the continuation for the second direct call should flush exactly one cached local to its frame slot before the next call; ops={:?}",
+        second_call_block.ops
+    );
+    assert!(
+        result_reload_indices[0] < local_flush_indices[0],
+        "the filled call result must be reloaded before the cached local is flushed; ops={:?}",
+        second_call_block.ops
+    );
     assert!(matches!(
         second_call_block.terminator,
         MachineTerminator::CallDirect {
@@ -1870,51 +1906,89 @@ fn preserves_cached_locals_across_block_edges() {
     .expect("block-edge cache preservation lowering should succeed");
 
     let program = &lowered.module.functions[0].program;
-    assert!(matches!(
-        program.blocks[0]
-            .ops
-            .iter()
-            .find(|inst| matches!(inst.kind, MachineInstKind::Move { src: MachineValue::Imm64(9), .. }))
-            .map(|inst| &inst.kind),
-        Some(MachineInstKind::Move { src: MachineValue::Imm64(9), .. })
-    ));
-    assert!(matches!(
-        program.blocks[0]
-            .ops
-            .iter()
-            .find(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
-            .map(|inst| &inst.kind),
-        Some(MachineInstKind::Store { .. })
-    ));
+    let block0_move_index = program.blocks[0]
+        .ops
+        .iter()
+        .position(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    src: MachineValue::Imm64(9),
+                    ..
+                }
+            )
+        })
+        .expect("block 0 should materialize the constant into one linear machine value");
+    let block0_store_index = program.blocks[0]
+        .ops
+        .iter()
+        .position(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
+        .expect("block 0 should flush the dropped cached local to the frame before the edge");
+    assert!(
+        block0_move_index < block0_store_index,
+        "the constant must be materialized before the cache flush; ops={:?}",
+        program.blocks[0].ops
+    );
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Jump(_)
     ));
     // Block 1: cache is re-established explicitly from the frame slot.
-    assert!(matches!(
-        program.blocks[1]
-            .ops
-            .iter()
-            .find(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
-            .map(|inst| &inst.kind),
-        Some(MachineInstKind::Load { .. })
-    ));
-    assert!(matches!(
-        program.blocks[1].ops[1].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(5),
-            src: MachineValue::Reg(MachineReg(4)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        program.blocks[1].ops[2].kind,
-        MachineInstKind::Move {
-            dst: MachineReg(4),
-            src: MachineValue::Reg(MachineReg(5)),
-            ..
-        }
-    ));
+    let block1 = &program.blocks[1];
+    let (load_idx, cache_reg) = block1
+        .ops
+        .iter()
+        .enumerate()
+        .find_map(|(idx, inst)| match inst.kind {
+            MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                dst,
+                ..
+            } => Some((idx, dst)),
+            _ => None,
+        })
+        .expect("block 1 should re-establish the cached local with one CachedLocal load");
+    let (get_idx, linear_reg) = block1
+        .ops
+        .iter()
+        .enumerate()
+        .skip(load_idx + 1)
+        .find_map(|(idx, inst)| match inst.kind {
+            MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                dst,
+                src: MachineValue::Reg(src),
+                ..
+            } if src == cache_reg => Some((idx, dst)),
+            _ => None,
+        })
+        .expect("block 1 should read the rebuilt cached local into one linear value");
+    let (set_idx, rebuilt_cache_reg) = block1
+        .ops
+        .iter()
+        .enumerate()
+        .skip(get_idx + 1)
+        .find_map(|(idx, inst)| match inst.kind {
+            MachineInstKind::Move {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                dst,
+                src: MachineValue::Reg(src),
+                ..
+            } if src == linear_reg => Some((idx, dst)),
+            _ => None,
+        })
+        .expect("block 1 should write the linear value back into cached-local ownership");
+    assert_eq!(
+        rebuilt_cache_reg, cache_reg,
+        "block-edge cache preservation should rebuild the same cached-local register ownership chain; ops={:?}",
+        block1.ops
+    );
+    assert!(
+        load_idx < get_idx && get_idx < set_idx,
+        "cache rebuild should happen as Load(CachedLocal) -> Move(LinearValue) -> Move(CachedLocal); ops={:?}",
+        block1.ops
+    );
 }
 
 #[test]
@@ -2029,6 +2103,257 @@ fn threads_cached_locals_through_block_edge_params() {
 }
 
 #[test]
+fn local_reserve_cache_does_not_reload_old_slot_value() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }],
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::LocalReserveCache { slot },
+                },
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
+                            .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![SsaValue(0)],
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalSetCache {
+                        slot,
+                        src: SsaValue(0),
+                    },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("LocalReserveCache should lower without reloading the old slot value");
+
+    let block = &lowered.module.functions[0].program.blocks[0];
+    assert!(
+        block
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "LocalReserveCache should not trigger a frame reload before the later LocalSetCache; ops={:?}",
+        block.ops
+    );
+    assert!(
+        block.ops.iter().any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    ..
+                }
+            )
+        }),
+        "the later LocalSetCache should still materialize cached-local ownership"
+    );
+}
+
+#[test]
+fn reserved_cache_edge_threads_without_reload_into_target_block() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }],
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::LocalReserveCache { slot },
+                }],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(2),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(2),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(0)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot,
+                            src: SsaValue(0),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot,
+                            dst: SsaValue(1),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot,
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![], alloc::vec![slot]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("reserve repair edge should carry cache state without reloading");
+
+    let program = &lowered.module.functions[0].program;
+    let reserve_block = &program.blocks[1];
+    let target_block = &program.blocks[2];
+
+    assert!(
+        reserve_block
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "LocalReserveCache edge block should not reload the old slot value; ops={:?}",
+        reserve_block.ops
+    );
+    let carried_reg = match &reserve_block.terminator {
+        MachineTerminator::Jump(edge) => {
+            assert_eq!(edge.args.len(), 1, "expected one hidden cache edge arg");
+            match edge.args[0] {
+                MachineValue::Reg(reg) => reg,
+                other => panic!("expected reserved cache edge arg register, got {other:?}"),
+            }
+        }
+        other => panic!("expected jump terminator from reserve edge block, got {other:?}"),
+    };
+    assert_eq!(target_block.params.len(), 1);
+    assert!(
+        target_block
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "target block should receive reserved cache state through params, not reload it from frame; ops={:?}",
+        target_block.ops
+    );
+    assert_ne!(carried_reg.0, 0);
+}
+
+#[test]
+fn local_drop_cache_skips_writeback_when_cache_is_clean() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }],
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::LocalEnsureCache { slot },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalDropCache { slot },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("clean LocalDropCache should not write back");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert_eq!(
+        ops.iter()
+            .filter(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
+            .count(),
+        1,
+        "LocalEnsureCache should materialize one frame load"
+    );
+    assert!(
+        ops.iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        "dropping a clean cached local should not write its frame slot back"
+    );
+}
+
+#[test]
 fn does_not_save_clean_carried_cache_before_external_call() {
     let frame = plan_frame_layout(1, 1, 4);
     let slot = frame.local_slot(0);
@@ -2100,6 +2425,105 @@ fn does_not_save_clean_carried_cache_before_external_call() {
             .iter()
             .any(|inst| matches!(inst.kind, MachineInstKind::CallExternal(_))),
         "expected external call in continuation block"
+    );
+}
+
+#[test]
+fn saves_only_dirty_cached_locals_before_external_call() {
+    let frame = plan_frame_layout(2, 1, 4);
+    let dirty_slot = frame.local_slot(0);
+    let clean_slot = frame.local_slot(1);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: alloc::vec![
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true,
+            },
+        ],
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![SsaInst {
+                    kind: SsaInstKind::LocalEnsureCache { slot: clean_slot },
+                }],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 11 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(0)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: dirty_slot,
+                            src: SsaValue(0),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::Call(SsaCallOp::CallDirect {
+                            callee: 7,
+                            args: crate::vm::middle::frame::FrameSpan::new(
+                                frame.operand_slot(0),
+                                0
+                            ),
+                            results: crate::vm::middle::frame::FrameSpan::new(
+                                frame.operand_slot(0),
+                                0
+                            ),
+                        }),
+                    },
+                ],
+                terminator: SsaTerminator::TrapUnreachable,
+            },
+        ],
+        value_types: alloc::vec![ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![clean_slot]],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(2, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("only dirty caches should be saved before external call");
+
+    let ops = &lowered.module.functions[0].program.blocks[1].ops;
+    let store_count = ops
+        .iter()
+        .filter(|inst| matches!(inst.kind, MachineInstKind::Store { .. }))
+        .count();
+    assert_eq!(
+        store_count, 1,
+        "one dirty cached local and one clean carried local should produce exactly one save store before the external call; ops={ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::CallExternal(_))),
+        "expected external call in lowered block"
     );
 }
 

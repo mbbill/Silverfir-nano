@@ -18,7 +18,8 @@ use crate::{
             cfg::SemanticCfg,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                BeforeOpQuery, JointPlanner, LocalAccessDecision, LocalAccessQuery, TransientContract,
+                BeforeOpQuery, JointPlanner, LocalAccessDecision, LocalAccessQuery,
+                TransientContract,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -108,7 +109,8 @@ pub(crate) fn rewrite_function(
             original_block_count,
             extra_blocks.len(),
         )?;
-        let final_entry = planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots);
+        let final_entry =
+            planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots);
         block_entry_cached_slots.push(final_entry);
         block_exit_cached_slots.push(lowered.actual_exit_cached_slots.clone());
         blocks.push(SsaBlock {

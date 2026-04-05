@@ -176,7 +176,10 @@ fn maybe_repair_entry(
     planner: &JointPlanner,
 ) {
     let entry_target = program.entry.as_usize();
-    let entry_cached = target_entries.get(entry_target).cloned().unwrap_or_default();
+    let entry_cached = target_entries
+        .get(entry_target)
+        .cloned()
+        .unwrap_or_default();
     let repair = planner.edge_repair(EdgeRepairQuery {
         succ_block: (entry_target < original_len).then_some(CfgBlockId(entry_target as u32)),
         pred_exit: &[],

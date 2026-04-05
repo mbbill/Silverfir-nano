@@ -15,8 +15,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -56,8 +56,7 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<FpReg, 3> {
 
 pub(super) const GP_UNIT_BYTES: u8 = 8;
 
-pub(super) const GP_DYNAMIC: [GpReg; 6] =
-    [gp::X26, gp::X27, gp::X28, gp::X23, gp::X24, gp::X25];
+pub(super) const GP_DYNAMIC: [GpReg; 6] = [gp::X26, gp::X27, gp::X28, gp::X23, gp::X24, gp::X25];
 
 pub(super) const FP_DYNAMIC: [FpReg; 4] = [fp::D16, fp::D17, fp::D18, fp::D19];
 
@@ -65,7 +64,12 @@ pub(super) const FP_DYNAMIC: [FpReg; 4] = [fp::D16, fp::D17, fp::D18, fp::D19];
 
 #[inline]
 pub(super) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(GP_DYNAMIC.len() as u8, FP_DYNAMIC.len() as u8, GP_UNIT_BYTES, 3)
+    BackendConfig::new(
+        GP_DYNAMIC.len() as u8,
+        FP_DYNAMIC.len() as u8,
+        GP_UNIT_BYTES,
+        3,
+    )
 }
 
 // ── Callee-saved sets ────────────────────────────────────────────────────────

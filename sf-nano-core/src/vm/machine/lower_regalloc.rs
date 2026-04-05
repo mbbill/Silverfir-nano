@@ -11,8 +11,8 @@ use crate::{
             machine_ptr_width, machine_word_int_width, MachineBlockParam, MachineBranchCond,
             MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind,
             MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
-            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{SsaProgram, SsaValue},
     },
@@ -1087,8 +1087,12 @@ fn machine_block_param_with_owner(
     match ty {
         MachineStorageType::GpWord => MachineBlockParam::gp_word(reg).with_owner(owner),
         MachineStorageType::GpI64 => MachineBlockParam::gp_i64(reg).with_owner(owner),
-        MachineStorageType::Fp32 => MachineBlockParam::fp(reg, MachineFloatWidth::F32).with_owner(owner),
-        MachineStorageType::Fp64 => MachineBlockParam::fp(reg, MachineFloatWidth::F64).with_owner(owner),
+        MachineStorageType::Fp32 => {
+            MachineBlockParam::fp(reg, MachineFloatWidth::F32).with_owner(owner)
+        }
+        MachineStorageType::Fp64 => {
+            MachineBlockParam::fp(reg, MachineFloatWidth::F64).with_owner(owner)
+        }
     }
 }
 

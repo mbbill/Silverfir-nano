@@ -370,14 +370,15 @@ impl<'a> BlockLowerContext<'a> {
                 slot,
             )));
         };
-        self.ensure_bound_cached_local(cached_index).map_err(|err| {
-            WasmError::internal(alloc::format!(
-                "LocalReserveCache(slot={:?}) in block b{} failed: {}",
-                slot,
-                self.block_id(),
-                err.message(),
-            ))
-        })?;
+        self.ensure_bound_cached_local(cached_index)
+            .map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "LocalReserveCache(slot={:?}) in block b{} failed: {}",
+                    slot,
+                    self.block_id(),
+                    err.message(),
+                ))
+            })?;
         self.set_cache_live(cached_index, true);
         self.set_cache_dirty(cached_index, false);
         Ok(())

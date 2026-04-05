@@ -176,11 +176,9 @@ impl<'a> Arm64Backend<'a> {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
-            self.core.text.emit_u32(enc::str_d(
-                reg,
-                abi::stack_reg(),
-                (base_off + slot * 8) / 8,
-            ));
+            self.core
+                .text
+                .emit_u32(enc::str_d(reg, abi::stack_reg(), (base_off + slot * 8) / 8));
             slot += 1;
         }
     }
@@ -189,11 +187,9 @@ impl<'a> Arm64Backend<'a> {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
-            self.core.text.emit_u32(enc::ldr_d(
-                reg,
-                abi::stack_reg(),
-                (base_off + slot * 8) / 8,
-            ));
+            self.core
+                .text
+                .emit_u32(enc::ldr_d(reg, abi::stack_reg(), (base_off + slot * 8) / 8));
             slot += 1;
         }
     }

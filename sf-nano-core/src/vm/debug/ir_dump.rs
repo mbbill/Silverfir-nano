@@ -416,7 +416,12 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
             block
                 .params
                 .iter()
-                .map(|param| format!("r{}:{}:{}", param.reg.0, owner_tag(param.owner), sty(&param.ty)))
+                .map(|param| format!(
+                    "r{}:{}:{}",
+                    param.reg.0,
+                    owner_tag(param.owner),
+                    sty(&param.ty)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -429,7 +434,13 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
 
 fn render_machine_inst(kind: &MachineInstKind) -> String {
     match kind {
-        MachineInstKind::Move { owner, ty, dst, src, .. } => {
+        MachineInstKind::Move {
+            owner,
+            ty,
+            dst,
+            src,
+            ..
+        } => {
             format!(
                 "move.{}.{} r{} <- {}",
                 owner_tag(*owner),

@@ -76,6 +76,12 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
     crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
+    assert_eq!(
+        block.ops.len(),
+        1,
+        "copy propagation should remove the redundant move and leave only the rewritten unary op; ops={:?}",
+        block.ops
+    );
     let unary_uses_reg8 = matches!(
         block
             .ops
@@ -90,8 +96,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
     assert!(
         unary_uses_reg8,
         "optimized block did not rewrite the unary source as expected: ops={:?}, term={:?}",
-        block.ops,
-        block.terminator
+        block.ops, block.terminator
     );
     assert!(
         block.ops.iter().all(|inst| {
@@ -106,6 +111,255 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
         }),
         "copy propagation should remove the redundant linear-value move"
     );
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
+}
+
+#[test]
+fn does_not_copy_propagate_move_from_cached_local_block_param() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                // This uses a dynamic GP register that historically would have
+                // been treated as a plain "transient" number. The explicit
+                // owner says otherwise, and the peephole must obey the owner.
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))
+                    .with_owner(crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,)],
+                ops: alloc::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(8),
+                            src: MachineValue::Reg(MachineReg(7)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IntUnary {
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            dst: MachineReg(6),
+                            src: MachineValue::Reg(MachineReg(8)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(
+        block.ops.len(),
+        2,
+        "cached-local block params are not linear values, so the move must stay explicit; ops={:?}",
+        block.ops
+    );
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(8),
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(8)),
+            ..
+        }
+    ));
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
+}
+
+#[test]
+fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(11),
+                            addr: MachineAddr {
+                                base: MachineReg(1),
+                                offset: 16,
+                            },
+                            width: MachineMemWidth::U64,
+                            extension: MachineLoadExtension::ZeroExtend,
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(8),
+                            src: MachineValue::Reg(MachineReg(11)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IntUnary {
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            dst: MachineReg(6),
+                            src: MachineValue::Reg(MachineReg(8)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 14, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(
+        block.ops.len(),
+        2,
+        "a load tagged as LinearValue should seed aliasing even when it defines a high dynamic register; ops={:?}",
+        block.ops
+    );
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(11),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(11)),
+            ..
+        }
+    ));
+    let MachineTerminator::Jump(edge) = &block.terminator else {
+        panic!("expected jump terminator");
+    };
+    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(11))]);
+}
+
+#[test]
+fn does_not_copy_propagate_cached_local_load_defs() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(7),
+                            addr: MachineAddr {
+                                base: MachineReg(1),
+                                offset: 24,
+                            },
+                            width: MachineMemWidth::U64,
+                            extension: MachineLoadExtension::ZeroExtend,
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Move {
+                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(8),
+                            src: MachineValue::Reg(MachineReg(7)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::IntUnary {
+                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            dst: MachineReg(6),
+                            src: MachineValue::Reg(MachineReg(8)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 12, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(
+        block.ops.len(),
+        3,
+        "a load tagged as CachedLocal must not be treated as a linear alias source; ops={:?}",
+        block.ops
+    );
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(7),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Move {
+            dst: MachineReg(8),
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::IntUnary {
+            src: MachineValue::Reg(MachineReg(8)),
+            ..
+        }
+    ));
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
@@ -162,25 +416,49 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
     crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
+    let const_idx = block
+        .ops
+        .iter()
+        .position(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    dst: MachineReg(7),
+                    src: MachineValue::Imm64(5),
+                    ..
+                }
+            )
+        })
+        .expect(
+            "the tracked constant in reg7 must stay materialized because a later op still reads it",
+        );
+    let later_use_idx = block
+        .ops
+        .iter()
+        .enumerate()
+        .skip(const_idx + 1)
+        .find_map(|(idx, inst)| {
+            if matches!(
+                inst.kind,
+                MachineInstKind::Select {
+                    dst: MachineReg(7),
+                    on_true: MachineValue::Reg(MachineReg(7)),
+                    ..
+                }
+            ) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .expect("a later select must still read reg7 after the constant move");
+    assert!(const_idx < later_use_idx);
     assert!(block.ops.iter().any(|inst| {
         matches!(
             inst.kind,
             MachineInstKind::Move {
                 dst: MachineReg(7),
                 src: MachineValue::Imm64(5),
-                ..
-            }
-        )
-    }));
-    assert!(block.ops.iter().any(|inst| {
-        matches!(
-            inst.kind,
-            MachineInstKind::IntUnary {
-                dst: MachineReg(7),
-                ..
-            } | MachineInstKind::Select {
-                dst: MachineReg(7),
-                on_true: MachineValue::Reg(MachineReg(7)),
                 ..
             }
         )
@@ -1437,6 +1715,122 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
                 kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
                 ..
             },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn fuses_compare_branch_for_high_dynamic_result_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: Vec::new(),
+                ops: alloc::vec![MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        dst: MachineReg(11),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                }],
+                terminator: MachineTerminator::Branch {
+                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
+                        MachineValue::Reg(MachineReg(11)),
+                    ),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 14, 0));
+
+    let block = &program.blocks[0];
+    assert!(
+        block.ops.is_empty(),
+        "compare-branch fusion must not depend on old transient/cache register-number folklore"
+    );
+    assert!(matches!(
+        block.terminator,
+        MachineTerminator::Branch {
+            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+                ..
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn fuses_test_bits_for_high_dynamic_result_reg() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: vec![],
+        blocks: alloc::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::And,
+                        dst: MachineReg(11),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(0xff),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        dst: MachineReg(13),
+                        lhs: MachineValue::Reg(MachineReg(11)),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 16, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::TestBits {
+            dst: MachineReg(13),
+            src: MachineReg(4),
+            mask: MachineValue::Imm64(0xff),
             ..
         }
     ));

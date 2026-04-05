@@ -180,9 +180,17 @@ impl<'a> BlockLowerContext<'a> {
             });
             let ty = lir_value_storage_type(lower.program, param);
             if lower.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
-                lower.set_linear_value_reg(regs.lo, Some(param), Some(MachineStorageType::GpWord))?;
+                lower.set_linear_value_reg(
+                    regs.lo,
+                    Some(param),
+                    Some(MachineStorageType::GpWord),
+                )?;
                 if let Some(hi) = regs.hi {
-                    lower.set_linear_value_reg(hi, Some(param), Some(MachineStorageType::GpWord))?;
+                    lower.set_linear_value_reg(
+                        hi,
+                        Some(param),
+                        Some(MachineStorageType::GpWord),
+                    )?;
                 }
             } else {
                 lower.set_linear_value_reg(regs.lo, Some(param), Some(ty))?;
@@ -525,7 +533,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn linear_value_storage_type(&self, index: usize) -> Option<MachineStorageType> {
-        self.linear_value_state.get(index).and_then(|state| state.ty)
+        self.linear_value_state
+            .get(index)
+            .and_then(|state| state.ty)
     }
 
     pub(super) fn set_linear_value_state(

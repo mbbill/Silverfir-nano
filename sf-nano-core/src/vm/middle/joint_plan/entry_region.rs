@@ -230,7 +230,21 @@ fn analyze_entry_stack_region(
         match kind {
             SemanticOpKind::Primitive(primitive) => {
                 let (pop, push) = primitive_op::stack_effect(primitive);
-                record_stack_touches(&mut stack, pop as usize, block_offset as u16, &mut values);
+                if matches!(primitive, primitive_op::PrimitiveOpKind::Drop) {
+                    // A pure drop is not a reason to keep an entry-stack value
+                    // resident. The value is dead, and spilling it is just as
+                    // good or better than carrying it hot to the drop site.
+                    for _ in 0..pop {
+                        let _ = pop_one_symbol(&mut stack);
+                    }
+                } else {
+                    record_stack_touches(
+                        &mut stack,
+                        pop as usize,
+                        block_offset as u16,
+                        &mut values,
+                    );
+                }
                 for _ in 0..push {
                     stack.push(EntrySymbol::Temp);
                 }
@@ -551,7 +565,7 @@ mod tests {
                     kind: SemanticOpKind::LocalTee { idx: 0 },
                 },
                 SemanticOp {
-                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+                    kind: SemanticOpKind::LocalTee { idx: 0 },
                 },
             ],
             ..Default::default()
@@ -565,6 +579,27 @@ mod tests {
 
         let region = analyze_entry_stack_region(0..semantic.ops.len(), &semantic, &entry);
         assert_eq!(region.values[0].touch_count, 2);
+    }
+
+    #[test]
+    fn stack_region_does_not_treat_pure_drop_as_hot_use() {
+        let semantic = SemanticProgram {
+            ops: alloc::vec![SemanticOp {
+                kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
+            }],
+            ..Default::default()
+        };
+        let entry = EntryState {
+            stack_height: 1,
+            spill_depth: 0,
+            stack_types: alloc::vec![ValueType::I32],
+            live_types: alloc::vec![ValueType::I32],
+        };
+
+        let region = analyze_entry_stack_region(0..semantic.ops.len(), &semantic, &entry);
+        assert!(!region.values[0].touched_before_barrier);
+        assert_eq!(region.values[0].touch_count, 0);
+        assert_eq!(region.values[0].hot_score, 0);
     }
 
     #[test]

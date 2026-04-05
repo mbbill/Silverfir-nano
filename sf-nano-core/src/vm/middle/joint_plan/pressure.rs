@@ -261,17 +261,22 @@ fn semantic_successor_live_types(plan: &FunctionPlan, semantic_index: usize) -> 
     let Some(next_info) = plan.op_info.get(next_index) else {
         return current_live_types(plan, semantic_index);
     };
-    if next_info.is_block_start {
-        return plan
-            .blocks
+    let current_spill_delta = current_additional_spill_delta(plan, semantic_index);
+    let Some(next_state) = (if next_info.is_block_start {
+        plan.blocks
             .get(next_info.block_index as usize)
-            .map(|block| block.entry.live_types.as_slice())
-            .unwrap_or_else(|| current_live_types(plan, semantic_index));
-    }
-    plan.entry_states
-        .get(next_index)
-        .map(|entry| entry.live_types.as_slice())
-        .unwrap_or_else(|| current_live_types(plan, semantic_index))
+            .map(|block| &block.entry)
+    } else {
+        plan.entry_states.get(next_index)
+    }) else {
+        return current_live_types(plan, semantic_index);
+    };
+
+    let spill_depth = next_state
+        .spill_depth
+        .saturating_add(current_spill_delta)
+        .min(next_state.stack_height) as usize;
+    &next_state.stack_types[spill_depth..]
 }
 
 fn current_live_types(plan: &FunctionPlan, semantic_index: usize) -> &[ValueType] {
@@ -286,6 +291,28 @@ fn current_live_types(plan: &FunctionPlan, semantic_index: usize) -> &[ValueType
             .unwrap_or(&plan.op_plans[semantic_index].before.live_types);
     }
     &plan.op_plans[semantic_index].before.live_types
+}
+
+fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) -> u16 {
+    let Some(info) = plan.op_info.get(semantic_index) else {
+        return 0;
+    };
+    if !info.is_block_start {
+        return 0;
+    }
+    let Some(block_entry) = plan
+        .blocks
+        .get(info.block_index as usize)
+        .map(|block| &block.entry)
+    else {
+        return 0;
+    };
+    let Some(semantic_entry) = plan.entry_states.get(semantic_index) else {
+        return 0;
+    };
+    block_entry
+        .spill_depth
+        .saturating_sub(semantic_entry.spill_depth)
 }
 
 fn overflowing_gp(

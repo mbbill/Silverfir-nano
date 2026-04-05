@@ -15,7 +15,9 @@ use alloc::vec::Vec;
 
 use crate::vm::{
     backend::BackendConfig,
-    machine::machine_ir::{is_dynamic_reg, MachineBlock, MachineInstKind, MachineReg, MachineRegOwner},
+    machine::machine_ir::{
+        is_dynamic_reg, MachineBlock, MachineInstKind, MachineReg, MachineRegOwner,
+    },
 };
 
 /// One mutable ownership tracker for the current block scan.
@@ -50,11 +52,7 @@ impl DynamicOwnershipTracker {
     }
 
     #[inline]
-    pub(super) fn is_linear_value_reg(
-        &self,
-        reg: MachineReg,
-        config: BackendConfig,
-    ) -> bool {
+    pub(super) fn is_linear_value_reg(&self, reg: MachineReg, config: BackendConfig) -> bool {
         self.owner(reg, config) == Some(MachineRegOwner::LinearValue)
     }
 

@@ -38,8 +38,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -109,7 +109,12 @@ const _: () = assert!(
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(GP_DYNAMIC.len() as u8, FP_DYNAMIC.len() as u8, GP_UNIT_BYTES, 8)
+    BackendConfig::new(
+        GP_DYNAMIC.len() as u8,
+        FP_DYNAMIC.len() as u8,
+        GP_UNIT_BYTES,
+        8,
+    )
 }
 
 // ── Callee-saved sets (ARMv7-specific encoding) ─────────────────────────────

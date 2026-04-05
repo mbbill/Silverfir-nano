@@ -10,7 +10,7 @@ use crate::vm::{
         joint_plan::JointPlanner,
         prepare_function,
         slot_ssa::{self},
-        ssa_ir::ir::{SsaInstKind, SsaProgram},
+        ssa_ir::ir::{SsaBlock, SsaInstKind, SsaProgram, SsaTerminator},
         PrepareInput, PreparedFunction,
     },
     wasm::{
@@ -54,19 +54,41 @@ pub(super) fn i32_program(
     results: u16,
     ops: Vec<SemanticOp>,
 ) -> SemanticProgram {
-    SemanticProgram {
-        params: 0,
-        results,
-        local_count,
+    typed_program(
+        alloc::vec![ValueType::I32; local_count as usize],
+        alloc::vec![ValueType::I32; results as usize],
         max_stack_height,
         ops,
-        local_types: alloc::vec![ValueType::I32; local_count as usize],
-        result_types: alloc::vec![ValueType::I32; results as usize],
+    )
+}
+
+pub(super) fn typed_program(
+    local_types: Vec<ValueType>,
+    result_types: Vec<ValueType>,
+    max_stack_height: u16,
+    ops: Vec<SemanticOp>,
+) -> SemanticProgram {
+    SemanticProgram {
+        params: 0,
+        results: result_types.len() as u16,
+        local_count: local_types.len() as u16,
+        max_stack_height,
+        ops,
+        local_types,
+        result_types,
         op_result_types: BTreeMap::new(),
     }
 }
 
 pub(super) fn prepare_i32_program(
+    semantic: &SemanticProgram,
+    gp_dynamic_budget: u8,
+    fp_dynamic_budget: u8,
+) -> PreparedFunction {
+    prepare_program(semantic, gp_dynamic_budget, fp_dynamic_budget)
+}
+
+pub(super) fn prepare_program(
     semantic: &SemanticProgram,
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
@@ -90,6 +112,14 @@ pub(super) fn plan_i32_program(
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
 ) -> PlannedPipeline {
+    plan_program(semantic, gp_dynamic_budget, fp_dynamic_budget)
+}
+
+pub(super) fn plan_program(
+    semantic: &SemanticProgram,
+    gp_dynamic_budget: u8,
+    fp_dynamic_budget: u8,
+) -> PlannedPipeline {
     let config = host_config(gp_dynamic_budget, fp_dynamic_budget);
     semantic
         .validate()
@@ -102,13 +132,12 @@ pub(super) fn plan_i32_program(
             err.message()
         )
     });
-    let planner =
-        JointPlanner::build(semantic, &cfg, &slot, frame, config).unwrap_or_else(|err| {
-            panic!(
-                "joint planner should build for test semantic program: {}",
-                err.message()
-            )
-        });
+    let planner = JointPlanner::build(semantic, &cfg, &slot, frame, config).unwrap_or_else(|err| {
+        panic!(
+            "joint planner should build for test semantic program: {}",
+            err.message()
+        )
+    });
     PlannedPipeline {
         frame,
         cfg,
@@ -169,6 +198,33 @@ pub(super) fn count_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> usize
         .into_iter()
         .filter(|kind| matches!(kind, SsaInstKind::LocalEnsureCache { slot: got } if *got == slot))
         .count()
+}
+
+pub(super) fn incoming_cache_repair_blocks(
+    program: &SsaProgram,
+    target_block: usize,
+) -> Vec<&SsaBlock> {
+    program
+        .blocks
+        .iter()
+        .filter(|block| {
+            matches!(
+                &block.terminator,
+                SsaTerminator::Goto(edge) if edge.target.as_usize() == target_block
+            )
+        })
+        .filter(|block| {
+            !block.ops.is_empty()
+                && block.ops.iter().all(|inst| {
+                    matches!(
+                        inst.kind,
+                        SsaInstKind::LocalDropCache { .. }
+                            | SsaInstKind::LocalEnsureCache { .. }
+                            | SsaInstKind::LocalReserveCache { .. }
+                    )
+                })
+        })
+        .collect()
 }
 
 pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize) -> CfgBlockId {

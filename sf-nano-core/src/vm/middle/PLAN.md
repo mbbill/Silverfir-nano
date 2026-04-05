@@ -416,7 +416,11 @@ The new `middle/` should be built around this ownership split:
 - boundary reconciliation:
   - canonical predecessor
   - repair blocks only on non-canonical incoming edges
-- optional cleanup later
+- post-rewrite cleanup:
+  - thread empty goto blocks
+  - merge trivial goto-only successors
+  - remove unreachable blocks
+  - canonicalize pure cache-materialization runs
 
 The critical principle is:
 
@@ -485,6 +489,15 @@ Typical hard barriers:
 Values not touched meaningfully before the first hard barrier should not be
 preloaded eagerly at block entry.
 
+Pure structural cleanup of a value is not a meaningful hot-use signal.
+
+In particular:
+
+- a pure `Drop` of an entry stack value should not count as evidence that the
+  value deserves entry residency
+- otherwise the planner can keep cold entry stack live, then immediately evict
+  a genuinely useful ensured local under pressure
+
 ### Ranked values
 
 For each block, rank boundary candidates from one unified list.
@@ -523,6 +536,9 @@ For an entry stack value:
 - touched before the first hard barrier
 - first-touch distance
 - touch count before the first hard barrier
+
+The stack-side "touched" signal means semantically used, not merely popped for
+cleanup.
 
 The most important signals are:
 
@@ -663,6 +679,10 @@ function plan_block_open(block):
             else if count_entry_ensures(candidate) == count_entry_ensures(best):
                 if local_cache_cost(candidate) < local_cache_cost(best):
                     best = candidate
+                else if local_cache_cost(candidate) == local_cache_cost(best):
+                    if spill_depth(candidate.resident_stack_suffix)
+                        > spill_depth(best.resident_stack_suffix):
+                        best = candidate
 
     if best is none:
         best = {
@@ -728,6 +748,8 @@ This pseudocode is intentionally simple:
 - single-use early locals are still eligible; later `machine/` local aliasing
   may delete the reg-to-reg copy path
 - when scores tie, prefer the boundary with fewer cold-edge entry materializations
+- if score, ensure count, and cache cost all tie, prefer the colder boundary
+  with a larger spilled entry-stack prefix
 - the same value ordering should later guide cache eviction; otherwise the
   `dropped_before_first_use` diagnostic will expose an inconsistent planner
 
@@ -776,6 +798,69 @@ function derive_edge_repair(pred_exit, final_entry):
 For function entry, use the same rule from an empty predecessor. In the current
 implementation that materialization may be emitted as one synthetic entry-repair
 block that jumps to the original entry block.
+
+### Post-rewrite cleanup
+
+Repair is still the right boundary mechanism, but it can create extra structural
+blocks in the prepared SSA.
+
+That cleanup is now part of the intended pipeline, not an optional later pass.
+
+The cleanup rules should stay purely structural:
+
+- do not change the finalized entry/exit cache policy
+- do not invent new cache behavior
+- do not weaken edge semantics
+- only remove blocks or ops whose behavior is already implied by neighbors
+
+The cleanup should do four things:
+
+1. thread empty goto blocks by composing edge bindings through them
+2. merge an unconditional goto predecessor into a single-predecessor successor
+3. remove unreachable blocks
+4. canonicalize runs of pure cache materialization ops (`ensure`, `reserve`,
+   `drop`) while preserving required `drop-before-materialize` ordering
+
+```text
+function cleanup_prepared_ssa(program):
+    repeat until fixed point:
+        simplify_cache_only_runs(program)
+        if thread_one_empty_goto_block(program):
+            continue
+        if merge_one_goto_successor(program):
+            continue
+        if remove_unreachable_blocks(program):
+            continue
+
+
+function thread_one_empty_goto_block(program):
+    find block B such that:
+        B.ops is empty
+        B.terminator is Goto(T, bindings)
+    rewrite every predecessor edge P -> B into P -> T
+    compose predecessor bindings with B.bindings
+    remove B
+
+
+function merge_one_goto_successor(program):
+    find block P such that:
+        P.terminator is Goto(S, bindings)
+        S has exactly one predecessor
+    substitute S.params with bindings inside S.ops and S.terminator
+    append substituted S.ops to P.ops
+    replace P.terminator with substituted S.terminator
+    remove S
+
+
+function simplify_cache_only_runs(program):
+    within each maximal run of:
+        LocalEnsureCache
+        LocalReserveCache
+        LocalDropCache
+    keep only the net effect per local
+    but preserve any required drop that must happen before a later ensure or
+    reserve for the same local
+```
 
 ### Failure condition
 

@@ -14,8 +14,7 @@ use crate::vm::middle::cfg::CfgBlockId;
 use super::{
     facts::{EntryState, FunctionPlan, LocalOpKind},
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, TargetEntryDecision,
-        TransientContract,
+        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, TargetEntryDecision, TransientContract,
     },
     local_access::decide_local_access,
     pressure::{

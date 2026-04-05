@@ -10,8 +10,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
     },
 };
@@ -272,8 +272,7 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm64FpReg, 3> {
 
 // ── Capacity queries ─────────────────────────────────────────────────────────
 
-pub(super) const FP_MACHINE_REG_COUNT: usize =
-    REG_PLAN.fp_dynamic.len();
+pub(super) const FP_MACHINE_REG_COUNT: usize = REG_PLAN.fp_dynamic.len();
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {

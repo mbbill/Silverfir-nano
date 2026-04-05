@@ -88,12 +88,8 @@ pub(crate) fn build_plan(
         block_transient_regions,
         blocks: alloc::vec![BlockPlan::default(); cfg.blocks.len()],
     };
-    let block_entries = compute_tentative_block_entries(
-        cfg,
-        &plan,
-        &op_force_drop_all_caches,
-        &canonical.by_block,
-    );
+    let block_entries =
+        compute_tentative_block_entries(cfg, &plan, &op_force_drop_all_caches, &canonical.by_block);
 
     plan.blocks =
         canonical
@@ -384,7 +380,14 @@ fn choose_tentative_block_entry(
                 if total_score > *best_score
                     || (total_score == *best_score
                         && (ensure_count < *best_ensures
-                            || (ensure_count == *best_ensures && cache_cost < *best_cost)))
+                            || (ensure_count == *best_ensures
+                                && (cache_cost < *best_cost
+                                    || (cache_cost == *best_cost
+                                        && spill_depth
+                                            > best
+                                                .as_ref()
+                                                .map(|(entry, _, _, _, _)| entry.spill_depth)
+                                                .unwrap_or(0))))))
                 {
                     best = Some(candidate);
                 }
@@ -1740,24 +1743,341 @@ mod tests {
     }
 
     #[test]
+    fn tentative_entry_breaks_full_tie_by_preferring_lower_cache_cost() {
+        // Candidate A:
+        // - keep one hot stack value (score 300)
+        // - cache one i32 local (score 500, cost 1)
+        // => total 800, ensures 1, cache_cost 1
+        //
+        // Candidate B:
+        // - spill the stack
+        // - cache one i64 local (score 800, cost 2)
+        // => total 800, ensures 1, cache_cost 2
+        //
+        // The planner should pick candidate A via the final cache-cost
+        // tie-break.
+        let plan = FunctionPlan {
+            gp_unit_bytes: 4,
+            gp_dynamic_budget: 2,
+            fp_dynamic_budget: 0,
+            local_slot_types: alloc::vec![ValueType::I64, ValueType::I32],
+            op_plans: alloc::vec![OpPlan::default()],
+            entry_states: alloc::vec![EntryState {
+                stack_height: 1,
+                spill_depth: 0,
+                stack_types: alloc::vec![ValueType::I32],
+                live_types: alloc::vec![ValueType::I32],
+            }],
+            op_info: alloc::vec![OpInfo {
+                block_index: 0,
+                block_offset: 0,
+                is_block_start: true,
+                local_op: None,
+            }],
+            block_regions: alloc::vec![BlockLocalRegion {
+                ranked_slots: alloc::vec![FrameSlot(0), FrameSlot(1)],
+                locals: alloc::vec![
+                    Some(BlockLocalInfo {
+                        slot: FrameSlot(0),
+                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        entry_first_read_distance: Some(0),
+                        entry_first_write_distance: None,
+                        entry_read_count: 1,
+                        entry_write_count: 0,
+                        entry_hot_score: 800,
+                        first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        first_read_distance: Some(0),
+                        first_write_distance: None,
+                        read_count: 1,
+                        write_count: 0,
+                        access_offsets: alloc::vec![0],
+                        hot_score: 800,
+                    }),
+                    Some(BlockLocalInfo {
+                        slot: FrameSlot(1),
+                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        entry_first_read_distance: Some(0),
+                        entry_first_write_distance: None,
+                        entry_read_count: 1,
+                        entry_write_count: 0,
+                        entry_hot_score: 500,
+                        first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        first_read_distance: Some(0),
+                        first_write_distance: None,
+                        read_count: 1,
+                        write_count: 0,
+                        access_offsets: alloc::vec![0],
+                        hot_score: 500,
+                    }),
+                ],
+            }],
+            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+                entry_stack_height: 1,
+                values: alloc::vec![BlockStackValueInfo {
+                    stack_index: 0,
+                    ty: ValueType::I32,
+                    touched_before_barrier: true,
+                    first_touch_distance: Some(0),
+                    touch_count: 1,
+                    hot_score: 300,
+                }],
+            }],
+            block_transient_regions: alloc::vec![
+                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
+            ],
+            blocks: alloc::vec![BlockPlan::default()],
+        };
+
+        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        assert_eq!(
+            tentative.transient.spill_depth, 0,
+            "the equal-score/equal-ensure tie should keep the hot stack value and prefer the cheaper i32 cache"
+        );
+        assert_eq!(tentative.cached_locals, alloc::vec![FrameSlot(1)]);
+    }
+
+    #[test]
+    fn tentative_entry_breaks_equal_score_tie_by_avoiding_extra_entry_ensure() {
+        // Candidate A:
+        // - keep one hot entry-stack value (score 320)
+        // - no cached locals
+        // => total 320, ensures 0
+        //
+        // Candidate B:
+        // - spill the stack
+        // - cache one read-first local (score 320)
+        // => total 320, ensures 1
+        //
+        // The planner should keep the stack value and avoid the cold-edge
+        // entry ensure.
+        let plan = FunctionPlan {
+            gp_unit_bytes: 8,
+            gp_dynamic_budget: 1,
+            fp_dynamic_budget: 0,
+            local_slot_types: alloc::vec![ValueType::I32],
+            op_plans: alloc::vec![OpPlan::default()],
+            entry_states: alloc::vec![EntryState {
+                stack_height: 1,
+                spill_depth: 0,
+                stack_types: alloc::vec![ValueType::I32],
+                live_types: alloc::vec![ValueType::I32],
+            }],
+            op_info: alloc::vec![OpInfo {
+                block_index: 0,
+                block_offset: 0,
+                is_block_start: true,
+                local_op: None,
+            }],
+            block_regions: alloc::vec![BlockLocalRegion {
+                ranked_slots: alloc::vec![FrameSlot(0)],
+                locals: alloc::vec![Some(BlockLocalInfo {
+                    slot: FrameSlot(0),
+                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                    entry_first_read_distance: Some(0),
+                    entry_first_write_distance: None,
+                    entry_read_count: 1,
+                    entry_write_count: 0,
+                    entry_hot_score: 320,
+                    first_access_kind: Some(FirstAccessKind::ReadFirst),
+                    first_read_distance: Some(0),
+                    first_write_distance: None,
+                    read_count: 1,
+                    write_count: 0,
+                    access_offsets: alloc::vec![0],
+                    hot_score: 320,
+                })],
+            }],
+            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+                entry_stack_height: 1,
+                values: alloc::vec![BlockStackValueInfo {
+                    stack_index: 0,
+                    ty: ValueType::I32,
+                    touched_before_barrier: true,
+                    first_touch_distance: Some(0),
+                    touch_count: 1,
+                    hot_score: 320,
+                }],
+            }],
+            block_transient_regions: alloc::vec![
+                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
+            ],
+            blocks: alloc::vec![BlockPlan::default()],
+        };
+
+        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        assert_eq!(tentative.transient.spill_depth, 0);
+        assert!(tentative.cached_locals.is_empty());
+    }
+
+    #[test]
+    fn tentative_entry_breaks_last_full_tie_by_preferring_colder_stack_spilled() {
+        let plan = FunctionPlan {
+            gp_unit_bytes: 8,
+            gp_dynamic_budget: 2,
+            fp_dynamic_budget: 0,
+            local_slot_types: alloc::vec![],
+            op_plans: alloc::vec![OpPlan::default()],
+            entry_states: alloc::vec![EntryState {
+                stack_height: 2,
+                spill_depth: 0,
+                stack_types: alloc::vec![ValueType::I32, ValueType::I32],
+                live_types: alloc::vec![ValueType::I32, ValueType::I32],
+            }],
+            op_info: alloc::vec![OpInfo {
+                block_index: 0,
+                block_offset: 0,
+                is_block_start: true,
+                local_op: None,
+            }],
+            block_regions: alloc::vec![BlockLocalRegion::default()],
+            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+                entry_stack_height: 2,
+                values: alloc::vec![
+                    BlockStackValueInfo {
+                        stack_index: 0,
+                        ty: ValueType::I32,
+                        touched_before_barrier: false,
+                        first_touch_distance: None,
+                        touch_count: 0,
+                        hot_score: 0,
+                    },
+                    BlockStackValueInfo {
+                        stack_index: 1,
+                        ty: ValueType::I32,
+                        touched_before_barrier: false,
+                        first_touch_distance: None,
+                        touch_count: 0,
+                        hot_score: 0,
+                    },
+                ],
+            }],
+            block_transient_regions: alloc::vec![
+                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
+            ],
+            blocks: alloc::vec![BlockPlan::default()],
+        };
+
+        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        assert_eq!(
+            tentative.transient.spill_depth, 2,
+            "when score, ensure count, and cache cost fully tie, prefer the colder entry stack already spilled"
+        );
+        assert!(tentative.cached_locals.is_empty());
+    }
+
+    #[test]
     fn finalize_entry_keeps_used_and_surviving_carried_values() {
         let mut plan = test_plan();
         plan.block_regions[0].locals.push(None);
         plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
-        let finalized = crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
-            &plan,
-            crate::vm::middle::cfg::CfgBlockId(0),
-            &[FrameSlot(1)],
-        );
+        let finalized =
+            crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+                &plan,
+                crate::vm::middle::cfg::CfgBlockId(0),
+                &[FrameSlot(1)],
+            );
         assert_eq!(finalized, alloc::vec![FrameSlot(0), FrameSlot(1)]);
 
         plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(1)];
-        let finalized = crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
-            &plan,
-            crate::vm::middle::cfg::CfgBlockId(0),
-            &[],
-        );
+        let finalized =
+            crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+                &plan,
+                crate::vm::middle::cfg::CfgBlockId(0),
+                &[],
+            );
         assert!(finalized.is_empty());
+    }
+
+    #[test]
+    fn observed_exit_keeps_new_cache_admissions_and_drops_trimmed_carry_ins() {
+        let mut plan = test_plan();
+        plan.local_slot_types = alloc::vec![ValueType::I32, ValueType::I32];
+        plan.op_plans = alloc::vec![
+            OpPlan {
+                before: EntryState {
+                    stack_height: 0,
+                    spill_depth: 0,
+                    stack_types: Vec::new(),
+                    live_types: Vec::new(),
+                },
+            },
+            OpPlan {
+                before: EntryState {
+                    stack_height: 0,
+                    spill_depth: 0,
+                    stack_types: Vec::new(),
+                    live_types: Vec::new(),
+                },
+            },
+        ];
+        plan.entry_states = alloc::vec![
+            EntryState {
+                stack_height: 0,
+                spill_depth: 0,
+                stack_types: Vec::new(),
+                live_types: Vec::new(),
+            },
+            EntryState {
+                stack_height: 0,
+                spill_depth: 0,
+                stack_types: Vec::new(),
+                live_types: Vec::new(),
+            },
+        ];
+        plan.op_info = alloc::vec![
+            OpInfo {
+                block_index: 0,
+                block_offset: 0,
+                is_block_start: true,
+                local_op: Some((FrameSlot(1), LocalOpKind::Set)),
+            },
+            OpInfo {
+                block_index: 0,
+                block_offset: 1,
+                is_block_start: false,
+                local_op: None,
+            },
+        ];
+        plan.block_regions = alloc::vec![BlockLocalRegion {
+            ranked_slots: alloc::vec![FrameSlot(1)],
+            locals: alloc::vec![
+                Some(BlockLocalInfo {
+                    slot: FrameSlot(0),
+                    ..BlockLocalInfo::default()
+                }),
+                Some(BlockLocalInfo {
+                    slot: FrameSlot(1),
+                    entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+                    first_access_kind: Some(FirstAccessKind::WriteFirst),
+                    entry_write_count: 1,
+                    write_count: 1,
+                    access_offsets: alloc::vec![0],
+                    entry_hot_score: 32,
+                    hot_score: 32,
+                    ..BlockLocalInfo::default()
+                }),
+            ],
+        }];
+        plan.blocks = alloc::vec![BlockPlan::default()];
+        let block = crate::vm::middle::cfg::CfgBlock {
+            id: crate::vm::middle::cfg::CfgBlockId(0),
+            range: 0..2,
+            preds: Vec::new(),
+            succs: Vec::new(),
+            terminator: crate::vm::middle::cfg::CfgTerminator::TrapUnreachable { op_index: 1 },
+            flags: crate::vm::middle::cfg::CfgBlockFlags {
+                is_entry: true,
+                ..crate::vm::middle::cfg::CfgBlockFlags::default()
+            },
+        };
+
+        let exit =
+            simulate_block_exit_cached_locals(&block, &plan, &[false, false], &[FrameSlot(0)]);
+        assert_eq!(
+            exit,
+            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            "the observed block exit should carry through surviving entry caches and newly-admitted cached locals"
+        );
     }
 
     #[test]
