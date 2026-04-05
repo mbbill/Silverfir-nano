@@ -274,9 +274,17 @@ The finalized entry is:
 
 ```text
 final_entry =
-    used_anywhere_in_block
+    read_first_on_entry
     union
     (tentative_entry intersect actual_exit)
+
+Where:
+- `read_first_on_entry` means locals whose incoming value is actually needed by
+  the block before any in-block write
+- write-first locals do not become part of the public boundary just because
+  they are used later in the block
+- if a write-first local survives cached inside the block, that is still fine;
+  it just should not force loop-entry reserve/repair churn
 ```
 
 Only locals unused in the block can be removed by this step.
@@ -617,11 +625,14 @@ At `block_open(block)`:
 1. start from the exact Wasm stack contract
 2. keep that transient contract unchanged
 3. rank entry-region locals
-4. prefer values already carried by the canonical predecessor exit
-5. choose cached locals under the remaining budget left by the structural
+4. add a direct-successor carry bonus for tiny dispatcher / guard blocks, so
+   hot pass-through locals can stay resident through a block that does not
+   read them itself
+5. prefer values already carried by the canonical predecessor exit
+6. choose cached locals under the remaining budget left by the structural
    transient contract
-6. decide which chosen locals must actually be ensured on entry
-7. allow write-first locals to reserve boundary residency without forcing an
+7. decide which chosen locals must actually be ensured on entry
+8. allow write-first locals to reserve boundary residency without forcing an
    entry load
 
 This means the current boundary choice is about cached locals, not about
@@ -638,10 +649,11 @@ function plan_block_open(block):
         carried_locals = exit_cached_locals(canonical_pred)
     budgets = dynamic_bank_budgets(block)   // {gp, fp}
     region = scan_entry_region(block)
+    successor_bonus = score_direct_successor_hotness(block)
     remaining_budget = budgets - cost_by_bank(structural_transient.live_values)
 
     local_candidates = []
-    for each local L touched in region:
+    for each local L in union(region.ranked_locals, successor_bonus.locals):
         info = region.local_info(L)
         local_candidates.push({
             local: L,
@@ -651,7 +663,7 @@ function plan_block_open(block):
             first_write: info.first_write_distance,
             read_count: info.read_count,
             write_count: info.write_count,
-            score: score_local(info, L in carried_locals),
+            score: score_local(info, successor_bonus[L], L in carried_locals),
         })
 
     chosen_locals = choose_best_locals_under_budget(
@@ -677,11 +689,12 @@ function plan_block_open(block):
     }
 
 
-function score_local(info, carried):
-    if info.first_access_kind == None:
+function score_local(info, successor_bonus, carried):
+    if info.first_access_kind == None and successor_bonus == 0:
         return VERY_LOW
 
     score = 0
+    score += successor_bonus
     if carried:
         score += CARRY_BONUS
 
@@ -701,6 +714,8 @@ This pseudocode is intentionally simple:
 
 - transient entry shape is structural and is not optimized at block-open
 - cached locals are the real boundary-choice problem
+- direct-successor hotness lets tiny dispatch headers keep pass-through loop
+  locals hot instead of forcing backedge churn
 - write-first locals can be boundary-resident without forcing an entry load
 - canonical predecessor carry-through is the base hot-edge signal
 - single-use early locals are still eligible; later `machine/` local aliasing
@@ -719,9 +734,9 @@ Block-entry planning is single-pass:
 
 ```text
 final_entry =
-    used_anywhere_in_block
+    read_first_on_entry
     union
-    (tentative_entry intersect actual_exit)
+    ((tentative_entry with no entry-region access) intersect actual_exit)
 ```
 
 5. repair all incoming edges to that finalized entry
@@ -730,8 +745,19 @@ This means repair is a consequence of finalized entry, not a separate
 optimization problem.
 
 ```text
-function finalize_block_entry(tentative_entry, used_in_block, actual_exit):
-    return used_in_block union (tentative_entry intersect actual_exit)
+function finalize_block_entry(tentative_entry, entry_region_info, actual_exit):
+    final_entry = {}
+    for each local L in tentative_entry:
+        if entry_region_info[L].first_access == ReadFirst:
+            final_entry.add(L)
+        else if L in actual_exit:
+            final_entry.add(L)
+        else:
+            // If a tentative local dies before exit, it was not worth keeping
+            // in the public boundary. This trims write-first temporaries while
+            // still letting surviving write-first loop locals stay hot.
+            skip
+    return final_entry
 
 
 function derive_edge_repair(pred_exit, final_entry):

@@ -18,8 +18,7 @@ use alloc::vec::Vec;
 
 use super::ssa_ir::{
     ir::{
-        SsaBinding, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram,
-        SsaTerminator, SsaValue,
+        SsaBinding, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
     },
     target::SsaTarget,
 };
@@ -126,7 +125,8 @@ fn simplify_cache_only_runs(program: &mut SsaProgram) -> bool {
 fn simplify_cache_run(run: &[SsaInst]) -> Vec<SsaInst> {
     let mut by_slot = BTreeMap::<u16, CacheRunState>::new();
     for inst in run {
-        let slot = cache_run_slot(&inst.kind).expect("cache-only run should only contain cache ops");
+        let slot =
+            cache_run_slot(&inst.kind).expect("cache-only run should only contain cache ops");
         by_slot.entry(slot.0).or_default().apply(&inst.kind);
     }
 
@@ -392,7 +392,9 @@ fn substitute_inst(inst: SsaInst, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaIn
                 args: args
                     .into_iter()
                     .map(|arg| match arg {
-                        SsaOperand::Value(value) => SsaOperand::Value(substitute_value(value, subst)),
+                        SsaOperand::Value(value) => {
+                            SsaOperand::Value(substitute_value(value, subst))
+                        }
                         SsaOperand::Const(bits) => SsaOperand::Const(bits),
                     })
                     .collect(),
@@ -484,7 +486,12 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     }
 
     let mut new_blocks = Vec::with_capacity(program.blocks.len() - removed.len());
-    let mut new_entries = Vec::with_capacity(program.block_entry_cached_slots.len().saturating_sub(removed.len()));
+    let mut new_entries = Vec::with_capacity(
+        program
+            .block_entry_cached_slots
+            .len()
+            .saturating_sub(removed.len()),
+    );
     for (old_index, mut block) in program.blocks.drain(..).enumerate() {
         if removed.contains(&old_index) {
             continue;
@@ -580,11 +587,7 @@ mod tests {
     use super::*;
     use crate::vm::middle::{
         frame::FrameSlot,
-        ssa_ir::{
-            ir::SsaBlock,
-            leaf::SsaLeafOp,
-            validate::validate_program,
-        },
+        ssa_ir::{ir::SsaBlock, leaf::SsaLeafOp, validate::validate_program},
     };
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
@@ -616,10 +619,7 @@ mod tests {
         ];
         let simplified = simplify_cache_run(&run);
         assert_eq!(
-            simplified
-                .iter()
-                .map(|inst| &inst.kind)
-                .collect::<Vec<_>>(),
+            simplified.iter().map(|inst| &inst.kind).collect::<Vec<_>>(),
             alloc::vec![
                 &SsaInstKind::LocalDropCache { slot: FrameSlot(0) },
                 &SsaInstKind::LocalEnsureCache { slot: FrameSlot(0) },
@@ -733,7 +733,10 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(program.blocks[0].terminator, SsaTerminator::Return { .. }));
+        assert!(matches!(
+            program.blocks[0].terminator,
+            SsaTerminator::Return { .. }
+        ));
         validate_program(&program).unwrap();
     }
 

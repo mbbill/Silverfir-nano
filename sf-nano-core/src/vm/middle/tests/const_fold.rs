@@ -57,7 +57,12 @@ fn prepared_ssa_folds_fully_constant_expression_to_single_const() {
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let mut saw_const_three = false;
 
-    for inst in prepared.ssa.blocks.iter().flat_map(|block| block.ops.iter()) {
+    for inst in prepared
+        .ssa
+        .blocks
+        .iter()
+        .flat_map(|block| block.ops.iter())
+    {
         if let SsaInstKind::Value { op, args, .. } = &inst.kind {
             assert!(
                 !matches!(op.primitive(), PrimitiveOpKind::I32Add),

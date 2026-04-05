@@ -206,7 +206,7 @@ fn compute_tentative_block_entries(
             .get(block_index)
             .and_then(|pred| pred.map(|pred| predicted_exits[pred.as_usize()].clone()))
             .unwrap_or_default();
-        let tentative = choose_tentative_block_entry(block_index, &carried, plan);
+        let tentative = choose_tentative_block_entry(cfg, block_index, &carried, plan);
         predicted_exits[block_index] = simulate_block_exit_cached_locals(
             block,
             plan,
@@ -276,6 +276,7 @@ fn simulate_block_exit_cached_locals(
 }
 
 fn choose_tentative_block_entry(
+    cfg: &SemanticCfg,
     block_index: usize,
     carried: &[FrameSlot],
     plan: &FunctionPlan,
@@ -287,6 +288,7 @@ fn choose_tentative_block_entry(
         .unwrap_or(0);
     let base_entry = &plan.entry_states[block_start_index];
     let region = &plan.block_regions[block_index];
+    let successor_bonus = direct_successor_carry_bonus(cfg, block_index, plan);
     let mut scored_locals = Vec::<(FrameSlot, i32, bool, bool)>::new();
     let mut seen = BTreeSet::new();
 
@@ -295,7 +297,29 @@ fn choose_tentative_block_entry(
             let info = region.info(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.entry_hot_score).unwrap_or_default(),
+                info.map(|info| info.entry_hot_score).unwrap_or_default()
+                    + successor_bonus
+                        .get(slot.0 as usize)
+                        .copied()
+                        .unwrap_or_default(),
+                false,
+                matches!(
+                    info.and_then(|info| info.entry_first_access_kind),
+                    Some(FirstAccessKind::ReadFirst)
+                ),
+            ));
+        }
+    }
+    for (slot_index, bonus) in successor_bonus.iter().copied().enumerate() {
+        if bonus <= 0 {
+            continue;
+        }
+        let slot = FrameSlot(slot_index as u16);
+        if seen.insert(slot) {
+            let info = region.info(slot);
+            scored_locals.push((
+                slot,
+                info.map(|info| info.entry_hot_score).unwrap_or_default() + bonus,
                 false,
                 matches!(
                     info.and_then(|info| info.entry_first_access_kind),
@@ -309,7 +333,12 @@ fn choose_tentative_block_entry(
             let info = region.info(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.entry_hot_score + 1024).unwrap_or(1024),
+                info.map(|info| info.entry_hot_score).unwrap_or_default()
+                    + successor_bonus
+                        .get(slot.0 as usize)
+                        .copied()
+                        .unwrap_or_default()
+                    + 1024,
                 true,
                 matches!(
                     info.and_then(|info| info.entry_first_access_kind),
@@ -367,6 +396,33 @@ fn choose_tentative_block_entry(
         transient,
         cached_locals,
     }
+}
+
+fn direct_successor_carry_bonus(
+    cfg: &SemanticCfg,
+    block_index: usize,
+    plan: &FunctionPlan,
+) -> Vec<i32> {
+    let mut bonus = alloc::vec![0; plan.local_slot_types.len()];
+    let Some(block) = cfg.blocks.get(block_index) else {
+        return bonus;
+    };
+
+    for succ in &block.succs {
+        let succ_region = &plan.block_regions[succ.target.as_usize()];
+        for &slot in &succ_region.ranked_slots {
+            if let Some(info) = succ_region.info(slot) {
+                let entry_bonus = info.entry_hot_score;
+                if entry_bonus > 0 {
+                    bonus[slot.0 as usize] += entry_bonus;
+                } else if info.used_anywhere() {
+                    bonus[slot.0 as usize] += 1;
+                }
+            }
+        }
+    }
+
+    bonus
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1595,9 +1651,28 @@ fn spill_all_except_top(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::middle::cfg::{CfgBlock, CfgBlockFlags, CfgBlockId, CfgTerminator, SemanticCfg};
     use crate::vm::middle::joint_plan::facts::{
         BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
     };
+
+    fn test_cfg() -> SemanticCfg {
+        SemanticCfg {
+            entry: CfgBlockId(0),
+            blocks: alloc::vec![CfgBlock {
+                id: CfgBlockId(0),
+                range: 0..1,
+                preds: Vec::new(),
+                succs: Vec::new(),
+                terminator: CfgTerminator::Return { op_index: 0 },
+                flags: CfgBlockFlags {
+                    is_entry: true,
+                    ..CfgBlockFlags::default()
+                },
+            }],
+            semantic_to_block: alloc::vec![CfgBlockId(0)],
+        }
+    }
 
     fn test_plan() -> FunctionPlan {
         FunctionPlan {
@@ -1669,7 +1744,8 @@ mod tests {
     fn tentative_entry_keeps_structural_stack_and_admits_hot_carried_local_when_budget_allows() {
         let mut plan = test_plan();
         plan.gp_dynamic_budget = 3;
-        let tentative = choose_tentative_block_entry(0, &[FrameSlot(0)], &plan);
+        let cfg = test_cfg();
+        let tentative = choose_tentative_block_entry(&cfg, 0, &[FrameSlot(0)], &plan);
         assert_eq!(tentative.transient.spill_depth, 0);
         assert_eq!(
             tentative.transient.live_types,
@@ -1764,7 +1840,8 @@ mod tests {
             blocks: alloc::vec![BlockPlan::default()],
         };
 
-        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        let cfg = test_cfg();
+        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
         assert_eq!(
             tentative.transient.spill_depth, 0,
             "the equal-score/equal-ensure tie should keep the hot stack value and prefer the cheaper i32 cache"
@@ -1840,7 +1917,8 @@ mod tests {
             blocks: alloc::vec![BlockPlan::default()],
         };
 
-        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        let cfg = test_cfg();
+        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
         assert_eq!(tentative.transient.spill_depth, 0);
         assert!(tentative.cached_locals.is_empty());
     }
@@ -1893,7 +1971,8 @@ mod tests {
             blocks: alloc::vec![BlockPlan::default()],
         };
 
-        let tentative = choose_tentative_block_entry(0, &[], &plan);
+        let cfg = test_cfg();
+        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
         assert_eq!(
             tentative.transient.spill_depth, 0,
             "without local admission pressure, tentative entry must keep the structural transient contract unchanged"
@@ -1922,6 +2001,76 @@ mod tests {
                 &[],
             );
         assert!(finalized.is_empty());
+    }
+
+    #[test]
+    fn finalize_entry_trims_write_first_only_tentative_local_that_does_not_survive_exit() {
+        let mut plan = test_plan();
+        plan.block_regions[0].locals.push(Some(BlockLocalInfo {
+            slot: FrameSlot(1),
+            entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+            entry_first_read_distance: None,
+            entry_first_write_distance: Some(0),
+            entry_read_count: 0,
+            entry_write_count: 1,
+            entry_hot_score: 64,
+            first_access_kind: Some(FirstAccessKind::WriteFirst),
+            first_read_distance: None,
+            first_write_distance: Some(0),
+            read_count: 2,
+            write_count: 1,
+            access_offsets: alloc::vec![0, 1, 2],
+            hot_score: 128,
+        }));
+        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+
+        let finalized =
+            crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+                &plan,
+                crate::vm::middle::cfg::CfgBlockId(0),
+                &[FrameSlot(0)],
+            );
+
+        assert_eq!(
+            finalized,
+            alloc::vec![FrameSlot(0)],
+            "a write-first-only local that never survives exit must not stay in the public block entry"
+        );
+    }
+
+    #[test]
+    fn finalize_entry_keeps_write_first_tentative_local_that_survives_exit() {
+        let mut plan = test_plan();
+        plan.block_regions[0].locals.push(Some(BlockLocalInfo {
+            slot: FrameSlot(1),
+            entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+            entry_first_read_distance: None,
+            entry_first_write_distance: Some(0),
+            entry_read_count: 0,
+            entry_write_count: 1,
+            entry_hot_score: 64,
+            first_access_kind: Some(FirstAccessKind::WriteFirst),
+            first_read_distance: None,
+            first_write_distance: Some(0),
+            read_count: 3,
+            write_count: 1,
+            access_offsets: alloc::vec![0, 1, 2, 3],
+            hot_score: 192,
+        }));
+        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+
+        let finalized =
+            crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
+                &plan,
+                crate::vm::middle::cfg::CfgBlockId(0),
+                &[FrameSlot(0), FrameSlot(1)],
+            );
+
+        assert_eq!(
+            finalized,
+            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            "a write-first local that survives exit should stay in the public block entry so hot backedges can carry it and cold edges can reserve it"
+        );
     }
 
     #[test]

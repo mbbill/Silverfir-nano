@@ -128,10 +128,23 @@ pub(crate) fn before_op_decision<'plan>(
 
 /// Finalize a public block entry after lowering once from the tentative entry.
 ///
-/// The only legal post-lowering trim is removing locals that were carried into
-/// the tentative entry, were never used by the block, and did not survive the
-/// actual exit. Used locals stay, and unused locals that naturally carried
-/// through stay too.
+/// The only legal post-lowering trim is removing locals whose *entry presence*
+/// turned out to be unnecessary.
+///
+/// A cached local stays in the public block entry if either:
+/// - the block really needs the incoming value from entry (read-first in the
+///   entry region), or
+/// - it survives to the observed block exit
+///
+/// This is the intended split between residency and materialization:
+/// - read-first locals need a real incoming value
+/// - write-first locals may not need the old value, but they still deserve a
+///   hot boundary lane if the block keeps them live through exit
+///
+/// That lets the cold edge use `LocalReserveCache` while the hot loop backedge
+/// carries the already-materialized value directly. Write-first temporaries
+/// that die before exit are still trimmed automatically because they fail the
+/// `actual_exit.contains(slot)` test below.
 pub(crate) fn finalize_block_entry_cached_locals(
     plan: &FunctionPlan,
     block: CfgBlockId,
@@ -144,11 +157,15 @@ pub(crate) fn finalize_block_entry_cached_locals(
         .iter()
         .copied()
         .filter(|slot| {
-            region
+            let first_access = region
                 .info(*slot)
-                .map(|info| info.used_anywhere())
-                .unwrap_or(false)
-                || actual_exit.contains(slot)
+                .and_then(|info| info.entry_first_access_kind);
+            match first_access {
+                Some(crate::vm::middle::joint_plan::facts::FirstAccessKind::ReadFirst) => true,
+                Some(crate::vm::middle::joint_plan::facts::FirstAccessKind::WriteFirst) | None => {
+                    actual_exit.contains(slot)
+                }
+            }
         })
         .collect()
 }

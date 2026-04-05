@@ -36,7 +36,10 @@ fn write_first_branch_residency_does_not_force_entry_ensure() {
     let then_block = block_for_semantic_index(&pipeline.cfg, 2).as_usize();
 
     assert_eq!(
-        pipeline.planner.block_open(crate::vm::middle::cfg::CfgBlockId(then_block as u32)).cached_locals,
+        pipeline
+            .planner
+            .block_open(crate::vm::middle::cfg::CfgBlockId(then_block as u32))
+            .cached_locals,
         alloc::vec![slot0]
     );
     assert!(
@@ -232,6 +235,196 @@ fn hot_loop_header_needs_repair_on_at_most_one_incoming_edge() {
 }
 
 #[test]
+fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
+    // Reduced func10-style case:
+    // - local3 is the current dispatch character, used in the loop header
+    // - local0/local1/local2 are hot loop-carried values used only in the
+    //   body after the header branch
+    // - a good steady-state boundary should keep those carried locals hot
+    //   through the tiny dispatch header instead of forcing the backedge to
+    //   spill and reload them every iteration
+    let semantic = i32_program(
+        4,
+        1,
+        0,
+        alloc::vec![
+            prim(PrimitiveOpKind::I32Const { value: 7 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            prim(PrimitiveOpKind::I32Const { value: 11 }),
+            op(SemanticOpKind::LocalSet { idx: 1 }),
+            prim(PrimitiveOpKind::I32Const { value: 13 }),
+            op(SemanticOpKind::LocalSet { idx: 2 }),
+            prim(PrimitiveOpKind::I32Const { value: 65 }),
+            op(SemanticOpKind::LocalSet { idx: 3 }),
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 3 }),
+            prim(PrimitiveOpKind::I32Const { value: 44 }),
+            prim(PrimitiveOpKind::I32Eq),
+            op(SemanticOpKind::BrIf {
+                stack_drop: 0,
+                arity: 0,
+                target: target(20),
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::Br {
+                stack_drop: 0,
+                arity: 0,
+                target: target(9),
+            }),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::ReturnVoid),
+        ],
+    );
+
+    let pipeline = plan_i32_program(&semantic, 4, 0);
+    let prepared = prepare_i32_program(&semantic, 4, 0);
+    let slot0 = prepared.frame.local_slot(0);
+    let slot1 = prepared.frame.local_slot(1);
+    let slot2 = prepared.frame.local_slot(2);
+    let header_block = block_for_semantic_index(&pipeline.cfg, 10);
+    let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, header_block.as_usize());
+
+    let entry = &pipeline.planner.block_open(header_block).cached_locals;
+    assert!(
+        entry.contains(&slot0) && entry.contains(&slot1) && entry.contains(&slot2),
+        "a tiny dispatch header should keep the hot pass-through loop locals hot across the backedge; entry={entry:?}"
+    );
+    assert!(
+        repair_blocks.len() <= 1,
+        "once the loop header keeps the carried locals, at most one cold incoming edge should still need repair; repair_blocks={repair_blocks:?}"
+    );
+}
+
+#[test]
+fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
+    // Reduced func10-style interior chain:
+    // - locals 0/1 are hot loop-carried data, used before and after the tiny
+    //   state-only chain
+    // - local3 drives an interior branch block that should behave as pure
+    //   pass-through for the hot data locals
+    // - local2 drives the dispatch block immediately after that branch
+    //
+    // A good steady-state boundary should keep locals 0/1 cached through both
+    // the interior state block and the dispatch block so the later bodies do
+    // not need to repair them back in.
+    let semantic = i32_program(
+        4,
+        1,
+        0,
+        alloc::vec![
+            prim(PrimitiveOpKind::I32Const { value: 7 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            prim(PrimitiveOpKind::I32Const { value: 11 }),
+            op(SemanticOpKind::LocalSet { idx: 1 }),
+            prim(PrimitiveOpKind::I32Const { value: 1 }),
+            op(SemanticOpKind::LocalSet { idx: 2 }),
+            prim(PrimitiveOpKind::I32Const { value: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 3 }),
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 3 }),
+            op(SemanticOpKind::BrIf {
+                stack_drop: 0,
+                arity: 0,
+                target: target(29),
+            }),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            op(SemanticOpKind::If {
+                params: 0,
+                results: 0,
+                else_target: target(23),
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::Else {
+                end_target: target(27),
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::Br {
+                stack_drop: 0,
+                arity: 0,
+                target: target(9),
+            }),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::ReturnVoid),
+        ],
+    );
+
+    let pipeline = plan_i32_program(&semantic, 4, 0);
+    let prepared = prepare_i32_program(&semantic, 4, 0);
+    let slot0 = prepared.frame.local_slot(0);
+    let slot1 = prepared.frame.local_slot(1);
+    let state_block = block_for_semantic_index(&pipeline.cfg, 14).as_usize();
+    let dispatch_block = block_for_semantic_index(&pipeline.cfg, 16).as_usize();
+    let state_entry = &pipeline
+        .planner
+        .block_open(crate::vm::middle::cfg::CfgBlockId(state_block as u32))
+        .cached_locals;
+    let dispatch_entry = &pipeline
+        .planner
+        .block_open(crate::vm::middle::cfg::CfgBlockId(dispatch_block as u32))
+        .cached_locals;
+    let state_ssa_block = &prepared.ssa.blocks[state_block];
+    let dispatch_repairs = incoming_cache_repair_blocks(&prepared.ssa, dispatch_block);
+
+    assert!(
+        state_entry.contains(&slot0)
+            && state_entry.contains(&slot1)
+            && dispatch_entry.contains(&slot0)
+            && dispatch_entry.contains(&slot1),
+        "hot loop-carried data locals should stay cached through the interior state-only chain; state_entry={state_entry:?}, dispatch_entry={dispatch_entry:?}",
+    );
+    assert!(
+        state_ssa_block.ops.iter().all(|inst| {
+            !matches!(
+                inst.kind,
+                SsaInstKind::LocalDropCache { slot } if slot == slot0 || slot == slot1
+            )
+        }),
+        "the interior pass-through state block should not drop the hot loop locals; block={state_ssa_block:?}"
+    );
+    assert!(
+        dispatch_repairs.iter().all(|block| {
+            block.ops.iter().all(|inst| {
+                !matches!(
+                    inst.kind,
+                    SsaInstKind::LocalEnsureCache { slot } if slot == slot0 || slot == slot1
+                )
+            })
+        }),
+        "the dispatch block should not need to re-ensure the hot locals after the interior state block; repair_blocks={dispatch_repairs:?}",
+    );
+}
+
+#[test]
 fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair() {
     // The loop body writes local0 before any read and then reads it later in
     // the same iteration. Finalized entry should therefore keep local0 hot,
@@ -279,12 +472,8 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert!(
-        pipeline
-            .planner
-            .block_open(crate::vm::middle::cfg::CfgBlockId(loop_body as u32))
-            .cached_locals
-            .contains(&slot0),
-        "the write-first loop header should keep the hot local in finalized entry"
+        prepared.ssa.block_entry_cached_slots[loop_body].contains(&slot0),
+        "a surviving write-first loop local should stay in the final loop-entry boundary as a reserved hot lane"
     );
     assert!(
         repair_blocks
@@ -304,11 +493,16 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
             <= 1,
         "the write-first local itself should need repair on at most one incoming edge; loop_body={}, entries={:?}, repair_blocks={:?}",
         loop_body,
-        pipeline
-            .planner
-            .block_open(crate::vm::middle::cfg::CfgBlockId(loop_body as u32))
-            .cached_locals,
+        prepared.ssa.block_entry_cached_slots[loop_body].clone(),
         repair_blocks
+    );
+    assert!(
+        repair_blocks.iter().all(|block| {
+            block.ops.iter().all(|inst| {
+                !matches!(inst.kind, SsaInstKind::LocalEnsureCache { slot } if slot == slot0)
+            })
+        }),
+        "the cold incoming edge should reserve the write-first local, not ensure an old value"
     );
     assert!(
         prepared.ssa.blocks.iter().any(|block| {
@@ -316,15 +510,104 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
                 matches!(inst.kind, SsaInstKind::LocalReserveCache { slot } if slot == slot0)
             })
         }),
-        "the cleaned SSA should still reserve loop-header residency for the write-first local on the cold path"
+        "the cold incoming path should reserve the hot write-first local so the loop can keep that lane hot without loading an old slot value; repair_blocks={repair_blocks:?}, blocks={:?}",
+        prepared.ssa.blocks
+    );
+}
+
+#[test]
+fn write_first_loop_temporary_can_stay_hot_in_final_loop_entry() {
+    // Reduced func6::b7-style case:
+    // - local0 is a carried loop value
+    // - local2 is a write-first temporary that preserves the old local0 value
+    //   across the body and is reused enough that keeping its cache lane hot
+    //   on the loop boundary should be profitable
+    //
+    // The old incoming value for local2 is dead on arrival, so the cold edge
+    // must reserve instead of ensuring. But once the loop is warm, the hot
+    // backedge should be able to keep local2 resident and avoid recreating its
+    // lane every iteration.
+    let semantic = i32_program(
+        3,
+        1,
+        0,
+        alloc::vec![
+            prim(PrimitiveOpKind::I32Const { value: 7 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            prim(PrimitiveOpKind::I32Const { value: 1 }),
+            op(SemanticOpKind::LocalSet { idx: 1 }),
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 2 }),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            prim(PrimitiveOpKind::Drop),
+            prim(PrimitiveOpKind::I32Const { value: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            op(SemanticOpKind::BrIf {
+                stack_drop: 0,
+                arity: 0,
+                target: target(16),
+            }),
+            op(SemanticOpKind::Br {
+                stack_drop: 0,
+                arity: 0,
+                target: target(5),
+            }),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::ReturnVoid),
+        ],
+    );
+
+    let pipeline = plan_i32_program(&semantic, 3, 0);
+    let prepared = prepare_i32_program(&semantic, 3, 0);
+    let slot0 = prepared.frame.local_slot(0);
+    let slot2 = prepared.frame.local_slot(2);
+    let loop_body = block_for_semantic_index(&pipeline.cfg, 6).as_usize();
+    let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
+
+    assert!(
+        prepared.ssa.block_entry_cached_slots[loop_body].contains(&slot0),
+        "the real carried loop local should stay in final loop entry"
+    );
+    assert!(
+        prepared.ssa.block_entry_cached_slots[loop_body].contains(&slot2),
+        "the hot write-first loop scratch should stay in final loop entry so the backedge can keep its lane warm; entries={:?}",
+        prepared.ssa.block_entry_cached_slots,
+    );
+    assert!(
+        repair_blocks
+            .iter()
+            .filter(|block| {
+                block.ops.iter().any(|inst| {
+                    matches!(
+                        inst.kind,
+                        SsaInstKind::LocalReserveCache { slot }
+                            | SsaInstKind::LocalEnsureCache { slot }
+                            | SsaInstKind::LocalDropCache { slot }
+                            if slot == slot2
+                    )
+                })
+            })
+            .count()
+            <= 1,
+        "at most one colder incoming edge should still need to mention the hot write-first scratch; repair_blocks={repair_blocks:?}"
     );
     assert!(
         prepared.ssa.blocks.iter().all(|block| {
             block.ops.iter().all(|inst| {
-                !matches!(inst.kind, SsaInstKind::LocalEnsureCache { slot } if slot == slot0)
+                !matches!(inst.kind, SsaInstKind::LocalEnsureCache { slot } if slot == slot2)
             })
         }),
-        "write-first loop entry should not force an old-value ensure on any incoming repair edge"
+        "the hot write-first scratch must never force an old-value ensure; blocks={:?}",
+        prepared.ssa.blocks
     );
 }
 
@@ -374,7 +657,10 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert_eq!(
-        pipeline.planner.block_open(crate::vm::middle::cfg::CfgBlockId(loop_body as u32)).cached_locals,
+        pipeline
+            .planner
+            .block_open(crate::vm::middle::cfg::CfgBlockId(loop_body as u32))
+            .cached_locals,
         alloc::vec![slot0]
     );
     assert!(

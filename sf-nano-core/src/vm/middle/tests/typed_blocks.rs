@@ -1,5 +1,5 @@
-use alloc::vec;
 use alloc::collections::BTreeSet;
+use alloc::vec;
 
 use crate::value_type::ValueType;
 use crate::vm::middle::tests::helpers::{
@@ -8,10 +8,7 @@ use crate::vm::middle::tests::helpers::{
 };
 use crate::vm::{
     middle::{cfg, frame::plan_frame_layout, joint_plan, slot_ssa},
-    wasm::{
-        primitive_op::PrimitiveOpKind,
-        semantic_ir::SemanticOpKind,
-    },
+    wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind},
 };
 
 #[test]
@@ -39,10 +36,9 @@ fn typed_block_passthrough_keeps_all_param_values_live_on_identity_edge() {
             op(SemanticOpKind::ReturnVoid),
         ],
     );
-    semantic.op_result_types.insert(
-        3,
-        vec![ValueType::I32, ValueType::F64, ValueType::I32],
-    );
+    semantic
+        .op_result_types
+        .insert(3, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -112,15 +108,13 @@ fn typed_block_sequence_from_block_wast_type_use_prepares_successfully() {
         ],
     );
     semantic.op_result_types.insert(2, vec![ValueType::I32]);
-    semantic.op_result_types.insert(
-        11,
-        vec![ValueType::I32, ValueType::F64, ValueType::I32],
-    );
+    semantic
+        .op_result_types
+        .insert(11, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
     semantic.op_result_types.insert(16, vec![ValueType::I32]);
-    semantic.op_result_types.insert(
-        25,
-        vec![ValueType::I32, ValueType::F64, ValueType::I32],
-    );
+    semantic
+        .op_result_types
+        .insert(25, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -152,7 +146,9 @@ fn typed_block_param_identity_preserves_two_live_values_for_following_binary_op(
             op(SemanticOpKind::ReturnOne),
         ],
     );
-    semantic.op_result_types.insert(2, vec![ValueType::I32, ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(2, vec![ValueType::I32, ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }

@@ -170,40 +170,142 @@ fn can_accept_const_operand(kind: &PrimitiveOpKind) -> bool {
     use PrimitiveOpKind as P;
     matches!(
         kind,
-        P::I32Add | P::I32Sub | P::I32Mul | P::I32DivS | P::I32DivU
-            | P::I32RemS | P::I32RemU | P::I32And | P::I32Or | P::I32Xor
-            | P::I32Shl | P::I32ShrS | P::I32ShrU | P::I32Rotl | P::I32Rotr
-            | P::I64Add | P::I64Sub | P::I64Mul | P::I64DivS | P::I64DivU
-            | P::I64RemS | P::I64RemU | P::I64And | P::I64Or | P::I64Xor
-            | P::I64Shl | P::I64ShrS | P::I64ShrU | P::I64Rotl | P::I64Rotr
-            | P::F32Add | P::F32Sub | P::F32Mul | P::F32Div | P::F32Min | P::F32Max
-            | P::F32Copysign | P::F64Add | P::F64Sub | P::F64Mul | P::F64Div
-            | P::F64Min | P::F64Max | P::F64Copysign
-            | P::I32Eq | P::I32Ne | P::I32LtS | P::I32LtU | P::I32GtS | P::I32GtU
-            | P::I32LeS | P::I32LeU | P::I32GeS | P::I32GeU
-            | P::I64Eq | P::I64Ne | P::I64LtS | P::I64LtU | P::I64GtS | P::I64GtU
-            | P::I64LeS | P::I64LeU | P::I64GeS | P::I64GeU
-            | P::F32Eq | P::F32Ne | P::F32Lt | P::F32Gt | P::F32Le | P::F32Ge
-            | P::F64Eq | P::F64Ne | P::F64Lt | P::F64Gt | P::F64Le | P::F64Ge
-            | P::I32Eqz | P::I32Clz | P::I32Ctz | P::I32Popcnt
-            | P::I64Eqz | P::I64Clz | P::I64Ctz | P::I64Popcnt
-            | P::I32Extend8S | P::I32Extend16S
-            | P::I64Extend8S | P::I64Extend16S | P::I64Extend32S
-            | P::F32Abs | P::F32Neg | P::F32Ceil | P::F32Floor | P::F32Trunc
-            | P::F32Nearest | P::F32Sqrt | P::F64Abs | P::F64Neg | P::F64Ceil
-            | P::F64Floor | P::F64Trunc | P::F64Nearest | P::F64Sqrt
-            | P::I32WrapI64 | P::I64ExtendI32S | P::I64ExtendI32U
-            | P::I32TruncF32S | P::I32TruncF32U | P::I32TruncF64S | P::I32TruncF64U
-            | P::I64TruncF32S | P::I64TruncF32U | P::I64TruncF64S | P::I64TruncF64U
-            | P::I32TruncSatF32S | P::I32TruncSatF32U
-            | P::I32TruncSatF64S | P::I32TruncSatF64U
-            | P::I64TruncSatF32S | P::I64TruncSatF32U
-            | P::I64TruncSatF64S | P::I64TruncSatF64U
-            | P::F32ConvertI32S | P::F32ConvertI32U | P::F32ConvertI64S
-            | P::F32ConvertI64U | P::F64ConvertI32S | P::F64ConvertI32U
-            | P::F64ConvertI64S | P::F64ConvertI64U | P::F32DemoteF64
-            | P::F64PromoteF32 | P::I32ReinterpretF32 | P::I64ReinterpretF64
-            | P::F32ReinterpretI32 | P::F64ReinterpretI64
+        P::I32Add
+            | P::I32Sub
+            | P::I32Mul
+            | P::I32DivS
+            | P::I32DivU
+            | P::I32RemS
+            | P::I32RemU
+            | P::I32And
+            | P::I32Or
+            | P::I32Xor
+            | P::I32Shl
+            | P::I32ShrS
+            | P::I32ShrU
+            | P::I32Rotl
+            | P::I32Rotr
+            | P::I64Add
+            | P::I64Sub
+            | P::I64Mul
+            | P::I64DivS
+            | P::I64DivU
+            | P::I64RemS
+            | P::I64RemU
+            | P::I64And
+            | P::I64Or
+            | P::I64Xor
+            | P::I64Shl
+            | P::I64ShrS
+            | P::I64ShrU
+            | P::I64Rotl
+            | P::I64Rotr
+            | P::F32Add
+            | P::F32Sub
+            | P::F32Mul
+            | P::F32Div
+            | P::F32Min
+            | P::F32Max
+            | P::F32Copysign
+            | P::F64Add
+            | P::F64Sub
+            | P::F64Mul
+            | P::F64Div
+            | P::F64Min
+            | P::F64Max
+            | P::F64Copysign
+            | P::I32Eq
+            | P::I32Ne
+            | P::I32LtS
+            | P::I32LtU
+            | P::I32GtS
+            | P::I32GtU
+            | P::I32LeS
+            | P::I32LeU
+            | P::I32GeS
+            | P::I32GeU
+            | P::I64Eq
+            | P::I64Ne
+            | P::I64LtS
+            | P::I64LtU
+            | P::I64GtS
+            | P::I64GtU
+            | P::I64LeS
+            | P::I64LeU
+            | P::I64GeS
+            | P::I64GeU
+            | P::F32Eq
+            | P::F32Ne
+            | P::F32Lt
+            | P::F32Gt
+            | P::F32Le
+            | P::F32Ge
+            | P::F64Eq
+            | P::F64Ne
+            | P::F64Lt
+            | P::F64Gt
+            | P::F64Le
+            | P::F64Ge
+            | P::I32Eqz
+            | P::I32Clz
+            | P::I32Ctz
+            | P::I32Popcnt
+            | P::I64Eqz
+            | P::I64Clz
+            | P::I64Ctz
+            | P::I64Popcnt
+            | P::I32Extend8S
+            | P::I32Extend16S
+            | P::I64Extend8S
+            | P::I64Extend16S
+            | P::I64Extend32S
+            | P::F32Abs
+            | P::F32Neg
+            | P::F32Ceil
+            | P::F32Floor
+            | P::F32Trunc
+            | P::F32Nearest
+            | P::F32Sqrt
+            | P::F64Abs
+            | P::F64Neg
+            | P::F64Ceil
+            | P::F64Floor
+            | P::F64Trunc
+            | P::F64Nearest
+            | P::F64Sqrt
+            | P::I32WrapI64
+            | P::I64ExtendI32S
+            | P::I64ExtendI32U
+            | P::I32TruncF32S
+            | P::I32TruncF32U
+            | P::I32TruncF64S
+            | P::I32TruncF64U
+            | P::I64TruncF32S
+            | P::I64TruncF32U
+            | P::I64TruncF64S
+            | P::I64TruncF64U
+            | P::I32TruncSatF32S
+            | P::I32TruncSatF32U
+            | P::I32TruncSatF64S
+            | P::I32TruncSatF64U
+            | P::I64TruncSatF32S
+            | P::I64TruncSatF32U
+            | P::I64TruncSatF64S
+            | P::I64TruncSatF64U
+            | P::F32ConvertI32S
+            | P::F32ConvertI32U
+            | P::F32ConvertI64S
+            | P::F32ConvertI64U
+            | P::F64ConvertI32S
+            | P::F64ConvertI32U
+            | P::F64ConvertI64S
+            | P::F64ConvertI64U
+            | P::F32DemoteF64
+            | P::F64PromoteF32
+            | P::I32ReinterpretF32
+            | P::I64ReinterpretF64
+            | P::F32ReinterpretI32
+            | P::F64ReinterpretI64
     )
 }
 
@@ -290,20 +392,32 @@ fn try_eval(kind: &PrimitiveOpKind, args: &[u64]) -> Option<(u64, PrimitiveOpKin
         P::I64ShrU => args[0].wrapping_shr((args[1] & 63) as u32),
         P::I64Rotl => args[0].rotate_left((args[1] & 63) as u32),
         P::I64Rotr => args[0].rotate_right((args[1] & 63) as u32),
-        P::F32Add => canon_f32(f32::from_bits(args[0] as u32) + f32::from_bits(args[1] as u32)) as u64,
-        P::F32Sub => canon_f32(f32::from_bits(args[0] as u32) - f32::from_bits(args[1] as u32)) as u64,
-        P::F32Mul => canon_f32(f32::from_bits(args[0] as u32) * f32::from_bits(args[1] as u32)) as u64,
-        P::F32Div => canon_f32(f32::from_bits(args[0] as u32) / f32::from_bits(args[1] as u32)) as u64,
+        P::F32Add => {
+            canon_f32(f32::from_bits(args[0] as u32) + f32::from_bits(args[1] as u32)) as u64
+        }
+        P::F32Sub => {
+            canon_f32(f32::from_bits(args[0] as u32) - f32::from_bits(args[1] as u32)) as u64
+        }
+        P::F32Mul => {
+            canon_f32(f32::from_bits(args[0] as u32) * f32::from_bits(args[1] as u32)) as u64
+        }
+        P::F32Div => {
+            canon_f32(f32::from_bits(args[0] as u32) / f32::from_bits(args[1] as u32)) as u64
+        }
         P::F32Min => wasm_f32_min(args[0] as u32, args[1] as u32) as u64,
         P::F32Max => wasm_f32_max(args[0] as u32, args[1] as u32) as u64,
-        P::F32Copysign => f32::from_bits(args[0] as u32).copysign(f32::from_bits(args[1] as u32)).to_bits() as u64,
+        P::F32Copysign => f32::from_bits(args[0] as u32)
+            .copysign(f32::from_bits(args[1] as u32))
+            .to_bits() as u64,
         P::F64Add => canon_f64(f64::from_bits(args[0]) + f64::from_bits(args[1])),
         P::F64Sub => canon_f64(f64::from_bits(args[0]) - f64::from_bits(args[1])),
         P::F64Mul => canon_f64(f64::from_bits(args[0]) * f64::from_bits(args[1])),
         P::F64Div => canon_f64(f64::from_bits(args[0]) / f64::from_bits(args[1])),
         P::F64Min => wasm_f64_min(args[0], args[1]),
         P::F64Max => wasm_f64_max(args[0], args[1]),
-        P::F64Copysign => f64::from_bits(args[0]).copysign(f64::from_bits(args[1])).to_bits(),
+        P::F64Copysign => f64::from_bits(args[0])
+            .copysign(f64::from_bits(args[1]))
+            .to_bits(),
         P::I32Eq => bool32(args[0] as u32 == args[1] as u32),
         P::I32Ne => bool32(args[0] as u32 != args[1] as u32),
         P::I32LtS => bool32((args[0] as u32 as i32) < (args[1] as u32 as i32)),
@@ -444,11 +558,15 @@ fn try_eval(kind: &PrimitiveOpKind, args: &[u64]) -> Option<(u64, PrimitiveOpKin
             }
             f as u64
         }
-        P::I32TruncSatF32S => (if f32::from_bits(args[0] as u32).is_nan() {
-            0
-        } else {
-            (f32::from_bits(args[0] as u32) as i32).max(i32::MIN).min(i32::MAX)
-        } as u32) as u64,
+        P::I32TruncSatF32S => {
+            (if f32::from_bits(args[0] as u32).is_nan() {
+                0
+            } else {
+                (f32::from_bits(args[0] as u32) as i32)
+                    .max(i32::MIN)
+                    .min(i32::MAX)
+            } as u32) as u64
+        }
         P::I32TruncSatF32U => {
             let f = f32::from_bits(args[0] as u32);
             (if f.is_nan() || f < 0.0 {
@@ -483,7 +601,11 @@ fn try_eval(kind: &PrimitiveOpKind, args: &[u64]) -> Option<(u64, PrimitiveOpKin
         }
         P::I64TruncSatF32S => {
             let f = f32::from_bits(args[0] as u32);
-            (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64
+            (if f.is_nan() {
+                0i64
+            } else {
+                (f as i64).max(i64::MIN).min(i64::MAX)
+            }) as u64
         }
         P::I64TruncSatF32U => {
             let f = f32::from_bits(args[0] as u32);
@@ -497,7 +619,11 @@ fn try_eval(kind: &PrimitiveOpKind, args: &[u64]) -> Option<(u64, PrimitiveOpKin
         }
         P::I64TruncSatF64S => {
             let f = f64::from_bits(args[0]);
-            (if f.is_nan() { 0i64 } else { (f as i64).max(i64::MIN).min(i64::MAX) }) as u64
+            (if f.is_nan() {
+                0i64
+            } else {
+                (f as i64).max(i64::MIN).min(i64::MAX)
+            }) as u64
         }
         P::I64TruncSatF64U => {
             let f = f64::from_bits(args[0]);
@@ -524,7 +650,11 @@ fn try_eval(kind: &PrimitiveOpKind, args: &[u64]) -> Option<(u64, PrimitiveOpKin
 
 #[inline]
 fn bool32(value: bool) -> u64 {
-    if value { 1 } else { 0 }
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 #[inline]
