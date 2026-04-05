@@ -735,6 +735,12 @@ impl<'a> Arm32Backend<'a> {
                         self.core.text.emit_u32(enc::vmov_d(dd, sd));
                     }
                 }
+                ParallelSource::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "armv7a received non-identity reserved cache edge move into {} from {}",
+                        dst.reg.0, reg.0
+                    )));
+                }
                 ParallelSource::Reg { reg, .. } => {
                     // GP → FP
                     let src_gp = map_reg(reg)?;
@@ -776,6 +782,12 @@ impl<'a> Arm32Backend<'a> {
                     self.core
                         .text
                         .emit_u32(enc::vmov_rr_d(dst_gp, Arm32Reg::R1, sd));
+                }
+                ParallelSource::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "armv7a received non-identity reserved cache edge move into {} from {}",
+                        dst.reg.0, reg.0
+                    )));
                 }
                 ParallelSource::Reg { reg, .. } => {
                     let src_gp = map_reg(reg)?;

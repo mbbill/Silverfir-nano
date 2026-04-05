@@ -357,7 +357,10 @@ impl<'a> CompilerCore<'a> {
             .params
             .iter()
             .zip(args.iter())
-            .all(|(param, arg)| matches!(arg, MachineValue::Reg(r) if *r == param.reg))
+            .all(|(param, arg)| match arg {
+                MachineValue::Reg(r) | MachineValue::ReservedReg(r) => *r == param.reg,
+                MachineValue::Imm64(_) => false,
+            })
     }
 
     /// Returns a label for the edge. If the edge is an identity mapping
@@ -390,7 +393,9 @@ impl<'a> CompilerCore<'a> {
             .iter()
             .map(|arg| match arg {
                 MachineValue::Reg(reg) if self.is_fp_reg(*reg) => self.fp_reg_width(*reg).map(Some),
-                MachineValue::Reg(_) | MachineValue::Imm64(_) => Ok(None),
+                MachineValue::ReservedReg(_) | MachineValue::Reg(_) | MachineValue::Imm64(_) => {
+                    Ok(None)
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.edge_stubs.push(EdgeStub {

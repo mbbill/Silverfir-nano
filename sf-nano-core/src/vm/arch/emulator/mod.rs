@@ -1146,6 +1146,7 @@ impl<'a> Emulator<'a> {
     fn value_addr_kind(&self, value: MachineValue) -> RegAddrKind {
         match value {
             MachineValue::Reg(reg) => self.reg_addr_kind(reg),
+            MachineValue::ReservedReg(_) => RegAddrKind::Unknown,
             MachineValue::Imm64(_) => RegAddrKind::Unknown,
         }
     }
@@ -1162,6 +1163,10 @@ impl<'a> Emulator<'a> {
     fn read_value(&self, value: MachineValue) -> Result<u64, WasmError> {
         match value {
             MachineValue::Reg(reg) => self.read_reg(reg),
+            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                "emulator attempted to read reserved cache register {} as a real value",
+                reg.0
+            ))),
             MachineValue::Imm64(value) => Ok(value),
         }
     }
@@ -2429,6 +2434,113 @@ mod tests {
 
         let results = runtime::eval(func_ref, &mut store, &[Value::I32(4)]).expect("runtime eval");
         assert_eq!(results.peek_at_index(0), Value::I32(5).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_emu64_call_indirect_accepts_block_result_as_first_argument() {
+        let _guard = enable_reference_backend();
+
+        let check_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32, ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&check_ty), Rc::clone(&caller_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        // Callee: `(param i32 i32) -> i32 { local.get 0 }`
+        let mut callee_spec = FunctionSpec::new(Rc::clone(&check_ty), 0);
+        callee_spec.set_code((&[0x20, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: callee_spec,
+            type_index: 0,
+        });
+
+        // Caller:
+        //   (block (result i32)
+        //     (call_indirect (type 0)
+        //       (block (result i32) (i32.const 1))
+        //       (i32.const 2)
+        //       (i32.const 0)))
+        let mut caller_spec = FunctionSpec::new(Rc::clone(&caller_ty), 1);
+        caller_spec.set_code(
+            (&[
+                0x02, 0x7f, // block (result i32)
+                0x02, 0x7f, //   block (result i32)
+                0x41, 0x01, //     i32.const 1
+                0x0b, //   end
+                0x41, 0x02, //   i32.const 2
+                0x41, 0x00, //   i32.const 0
+                0x11, 0x00, 0x00, //   call_indirect (type 0) (table 0)
+                0x0b, // end
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: caller_spec,
+            type_index: 1,
+        });
+
+        let mut table = TableInst::new(Limits::new(1, Some(1)).unwrap(), ValueType::funcref());
+        table.elements[0] = crate::vm::value::RefHandle::new(0);
+        module.tables.push(table);
+
+        let mut store = Store::new(module);
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[])
+            .expect("call_indirect with block-produced first arg should run");
+        assert_eq!(results.peek_at_index(0), Value::I32(1).to_raw());
+    }
+
+    #[test]
+    fn runtime_eval_emu64_call_indirect_accepts_simple_local_target() {
+        let _guard = enable_reference_backend();
+
+        let check_ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32, ValueType::I32],
+            vec![ValueType::I32],
+        ));
+        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&check_ty), Rc::clone(&caller_ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut callee_spec = FunctionSpec::new(Rc::clone(&check_ty), 0);
+        callee_spec.set_code((&[0x20, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: callee_spec,
+            type_index: 0,
+        });
+
+        let mut caller_spec = FunctionSpec::new(Rc::clone(&caller_ty), 1);
+        caller_spec.set_code(
+            (&[
+                0x41, 0x01, // i32.const 1
+                0x41, 0x02, // i32.const 2
+                0x41, 0x00, // i32.const 0
+                0x11, 0x00, 0x00, // call_indirect (type 0) (table 0)
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec: caller_spec,
+            type_index: 1,
+        });
+
+        let mut table = TableInst::new(Limits::new(1, Some(1)).unwrap(), ValueType::funcref());
+        table.elements[0] = crate::vm::value::RefHandle::new(0);
+        module.tables.push(table);
+
+        let mut store = Store::new(module);
+        let func_ptr = &store.module().functions[1] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results = runtime::eval(func_ref, &mut store, &[])
+            .expect("simple local call_indirect should run");
+        assert_eq!(results.peek_at_index(0), Value::I32(1).to_raw());
     }
 
     #[test]

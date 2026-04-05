@@ -75,6 +75,9 @@ impl I64Lowering for Gp64Lowering {
         let src_reg = ctx.use_value(src)?;
         let width = canonical_value_mem_width_for_value(ctx.program(), src);
         if let Some(cached_index) = ctx.cached_local_index(slot) {
+            ctx.set_cache_live(cached_index, true);
+            ctx.set_cache_has_value(cached_index, true);
+            ctx.mark_cache_dirty(cached_index);
             let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {
                 return Err(WasmError::internal(alloc::format!(

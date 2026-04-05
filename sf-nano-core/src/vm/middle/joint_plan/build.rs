@@ -156,20 +156,10 @@ fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> Vec<EntryState> 
     let mut entries = Vec::with_capacity(semantic.ops.len());
 
     for (op_index, op) in semantic.ops.iter().enumerate() {
-        entries.push(EntryState {
-            stack_height: state.height,
-            spill_depth: if state.unreachable { state.height } else { 0 },
-            stack_types: if state.unreachable {
-                Vec::new()
-            } else {
-                state.type_stack.clone()
-            },
-            live_types: if state.unreachable {
-                Vec::new()
-            } else {
-                state.type_stack.clone()
-            },
-        });
+        entries.push(snapshot_entry_state(
+            &state,
+            if state.unreachable { state.height } else { 0 },
+        ));
         apply_semantic_effect(op, op_index, &semantic.op_result_types, &mut state);
     }
 
@@ -180,6 +170,26 @@ fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> Vec<EntryState> 
 struct TentativeBlockEntry {
     transient: EntryState,
     cached_locals: Vec<FrameSlot>,
+}
+
+/// Snapshot the planner-visible stack boundary from the current prepare state.
+///
+/// Invariant:
+/// - `stack_types.len() == stack_height`
+/// - `live_types.len() == stack_height - spill_depth`
+///
+/// This must hold even in unreachable regions. Unreachable code can still carry
+/// a semantic stack shape through structured control; it is only the resident
+/// live suffix that collapses to empty when `spill_depth == stack_height`.
+fn snapshot_entry_state(state: &PrepareState, spill_depth: u16) -> EntryState {
+    let spill_depth = spill_depth.min(state.height);
+    let live_count = state.height.saturating_sub(spill_depth);
+    EntryState {
+        stack_height: state.height,
+        spill_depth,
+        stack_types: state.type_stack.clone(),
+        live_types: state.types_at(spill_depth, live_count),
+    }
 }
 
 fn compute_tentative_block_entries(
@@ -277,8 +287,6 @@ fn choose_tentative_block_entry(
         .unwrap_or(0);
     let base_entry = &plan.entry_states[block_start_index];
     let region = &plan.block_regions[block_index];
-    let stack_region = &plan.block_stack_regions[block_index];
-
     let mut scored_locals = Vec::<(FrameSlot, i32, bool, bool)>::new();
     let mut seen = BTreeSet::new();
 
@@ -318,97 +326,43 @@ fn choose_tentative_block_entry(
         )
     });
 
-    let mut best: Option<(EntryState, Vec<FrameSlot>, i32, usize, usize)> = None;
-    for spill_depth in 0..=base_entry.stack_height {
-        let live_types = base_entry.stack_types[spill_depth as usize..].to_vec();
-        let (mut gp_used, mut fp_used) =
-            count_live_bank_budget_units(&live_types, plan.gp_unit_bytes);
-        if gp_used > plan.gp_dynamic_budget as usize || fp_used > plan.fp_dynamic_budget as usize {
+    let mut gp_used;
+    let mut fp_used;
+    (gp_used, fp_used) = count_live_bank_budget_units(&base_entry.live_types, plan.gp_unit_bytes);
+
+    let mut chosen = Vec::new();
+    for (slot, score, carried_slot, _) in &scored_locals {
+        if *score <= 0 && !*carried_slot {
             continue;
         }
-
-        let mut chosen = Vec::new();
-        let mut local_score = 0i32;
-        let mut ensure_count = 0usize;
-        let mut cache_cost = 0usize;
-        for (slot, score, carried_slot, read_first) in &scored_locals {
-            if *score <= 0 && !*carried_slot {
-                continue;
-            }
-            let ty = plan
-                .local_slot_types
-                .get(slot.0 as usize)
-                .copied()
-                .unwrap_or(ValueType::I64);
-            let cost = if ty.is_float() {
-                1
-            } else {
-                gp_value_budget_units(ty, plan.gp_unit_bytes)
-            };
-            let fits = if ty.is_float() {
-                fp_used + cost <= plan.fp_dynamic_budget as usize
-            } else {
-                gp_used + cost <= plan.gp_dynamic_budget as usize
-            };
-            if !fits {
-                continue;
-            }
-            if ty.is_float() {
-                fp_used += cost;
-            } else {
-                gp_used += cost;
-            }
-            chosen.push(*slot);
-            local_score += *score;
-            cache_cost += cost;
-            if !carried_slot && *read_first {
-                ensure_count += 1;
-            }
-        }
-
-        let entry = EntryState {
-            stack_height: base_entry.stack_height,
-            spill_depth,
-            stack_types: base_entry.stack_types.clone(),
-            live_types,
+        let ty = plan
+            .local_slot_types
+            .get(slot.0 as usize)
+            .copied()
+            .unwrap_or(ValueType::I64);
+        let cost = if ty.is_float() {
+            1
+        } else {
+            gp_value_budget_units(ty, plan.gp_unit_bytes)
         };
-        let total_score = stack_region.score_suffix(spill_depth) + local_score;
-        let candidate = (entry, chosen, total_score, ensure_count, cache_cost);
-        match &best {
-            None => best = Some(candidate),
-            Some((_, _, best_score, best_ensures, best_cost)) => {
-                if total_score > *best_score
-                    || (total_score == *best_score
-                        && (ensure_count < *best_ensures
-                            || (ensure_count == *best_ensures
-                                && (cache_cost < *best_cost
-                                    || (cache_cost == *best_cost
-                                        && spill_depth
-                                            > best
-                                                .as_ref()
-                                                .map(|(entry, _, _, _, _)| entry.spill_depth)
-                                                .unwrap_or(0))))))
-                {
-                    best = Some(candidate);
-                }
-            }
+        let fits = if ty.is_float() {
+            fp_used + cost <= plan.fp_dynamic_budget as usize
+        } else {
+            gp_used + cost <= plan.gp_dynamic_budget as usize
+        };
+        if !fits {
+            continue;
         }
+        if ty.is_float() {
+            fp_used += cost;
+        } else {
+            gp_used += cost;
+        }
+        chosen.push(*slot);
     }
 
-    let (transient, cached_locals, _, _, _) = best.unwrap_or_else(|| {
-        (
-            EntryState {
-                stack_height: base_entry.stack_height,
-                spill_depth: base_entry.stack_height,
-                stack_types: base_entry.stack_types.clone(),
-                live_types: Vec::new(),
-            },
-            Vec::new(),
-            0,
-            0,
-            0,
-        )
-    });
+    let transient = base_entry.clone();
+    let cached_locals = chosen;
     TentativeBlockEntry {
         transient,
         cached_locals,
@@ -599,22 +553,7 @@ fn prepare_semantic_ops(
         {
             state.enter_cfg_block();
         }
-        let live_count = state.height.saturating_sub(state.spill_depth);
-        let live_types = if state.unreachable {
-            Vec::new()
-        } else {
-            state.types_at(state.spill_depth, live_count)
-        };
-        entry_states.push(EntryState {
-            stack_height: state.height,
-            spill_depth: state.spill_depth,
-            stack_types: if state.unreachable {
-                Vec::new()
-            } else {
-                state.type_stack.clone()
-            },
-            live_types,
-        });
+        entry_states.push(snapshot_entry_state(&state, state.spill_depth));
         plan_prefix(
             semantic_op,
             op_index,
@@ -630,23 +569,7 @@ fn prepare_semantic_ops(
             &semantic.op_result_types,
         );
         ops.push(OpPlan {
-            before: EntryState {
-                stack_height: state.height,
-                spill_depth: state.spill_depth,
-                stack_types: if state.unreachable {
-                    Vec::new()
-                } else {
-                    state.type_stack.clone()
-                },
-                live_types: if state.unreachable {
-                    Vec::new()
-                } else {
-                    state.types_at(
-                        state.spill_depth,
-                        state.height.saturating_sub(state.spill_depth),
-                    )
-                },
-            },
+            before: snapshot_entry_state(&state, state.spill_depth),
         });
         apply_block_symbolic_effect(semantic_op, &mut state);
         apply_semantic_effect(semantic_op, op_index, &semantic.op_result_types, &mut state);
@@ -792,9 +715,15 @@ fn plan_prefix(
             fill_for_operands(&mut prefix, state, frame, *arity);
             spill_all_except_top(&mut prefix, state, frame, *arity);
         }
-        SemanticOpKind::BrIf { arity, .. } => {
+        SemanticOpKind::BrIf {
+            stack_drop, arity, ..
+        } => {
             drop_all_caches(&mut prefix, state, cache_plan);
-            let keep_live = arity.saturating_add(1);
+            // `br_if` has a real fallthrough path. Keep the condition plus the
+            // full stack slice that remains live when the branch is not taken:
+            // branch payload (`arity`) plus the extra stack values accounted
+            // for by `stack_drop`.
+            let keep_live = stack_drop.saturating_add(*arity as u32).saturating_add(1) as u16;
             fill_for_operands(&mut prefix, state, frame, keep_live);
             spill_all_except_top(&mut prefix, state, frame, keep_live);
         }
@@ -1488,7 +1417,10 @@ fn apply_semantic_effect(
         SemanticOpKind::BrIf { .. } => {
             if !state.unreachable {
                 state.height = state.height.saturating_sub(1);
-                state.spill_depth = state.height;
+                // `br_if` only consumes the condition on the fallthrough path.
+                // Any values that were already live below the condition remain
+                // live for the following instructions.
+                state.spill_depth = state.spill_depth.min(state.height);
                 state.type_stack.truncate(state.height as usize);
             }
         }
@@ -1734,11 +1666,15 @@ mod tests {
     }
 
     #[test]
-    fn tentative_entry_prefers_hot_stack_suffix_and_hot_carried_local() {
-        let plan = test_plan();
+    fn tentative_entry_keeps_structural_stack_and_admits_hot_carried_local_when_budget_allows() {
+        let mut plan = test_plan();
+        plan.gp_dynamic_budget = 3;
         let tentative = choose_tentative_block_entry(0, &[FrameSlot(0)], &plan);
-        assert_eq!(tentative.transient.spill_depth, 1);
-        assert_eq!(tentative.transient.live_types, alloc::vec![ValueType::I32]);
+        assert_eq!(tentative.transient.spill_depth, 0);
+        assert_eq!(
+            tentative.transient.live_types,
+            alloc::vec![ValueType::I32, ValueType::I32]
+        );
         assert_eq!(tentative.cached_locals, alloc::vec![FrameSlot(0)]);
     }
 
@@ -1910,7 +1846,7 @@ mod tests {
     }
 
     #[test]
-    fn tentative_entry_breaks_last_full_tie_by_preferring_colder_stack_spilled() {
+    fn tentative_entry_keeps_structural_stack_when_no_locals_are_admitted() {
         let plan = FunctionPlan {
             gp_unit_bytes: 8,
             gp_dynamic_budget: 2,
@@ -1959,8 +1895,8 @@ mod tests {
 
         let tentative = choose_tentative_block_entry(0, &[], &plan);
         assert_eq!(
-            tentative.transient.spill_depth, 2,
-            "when score, ensure count, and cache cost fully tie, prefer the colder entry stack already spilled"
+            tentative.transient.spill_depth, 0,
+            "without local admission pressure, tentative entry must keep the structural transient contract unchanged"
         );
         assert!(tentative.cached_locals.is_empty());
     }

@@ -8,8 +8,10 @@
 mod boundary;
 mod calls;
 mod cleanup;
+mod const_fold;
 mod entry_state;
 mod helpers;
 mod local_access;
 mod loops;
 mod pressure;
+mod typed_blocks;

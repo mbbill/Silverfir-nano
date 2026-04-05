@@ -72,6 +72,8 @@ pub(crate) enum ParallelSource {
         reg: MachineReg,
         float_width: Option<MachineFloatWidth>,
     },
+    /// Edge-level cached-local reservation with no real incoming value move.
+    ReservedReg(MachineReg),
     Imm(u64),
     /// GP cycle-break temp. The `u8` is the scratch pool index
     /// allocated by `alloc_gp_scratch` and freed by `free_gp_scratch`.

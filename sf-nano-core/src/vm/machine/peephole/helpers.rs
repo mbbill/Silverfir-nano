@@ -411,6 +411,7 @@ pub(super) fn rewrite_move_storage_type(
 fn move_rewrite_supported(dst: MachineReg, src: MachineValue, config: BackendConfig) -> bool {
     match src {
         MachineValue::Reg(src_reg) => reg_move_rewrite_supported(dst, src_reg, config),
+        MachineValue::ReservedReg(_) => false,
         MachineValue::Imm64(_) => crate::vm::machine::machine_ir::is_gp_reg(dst, config),
     }
 }

@@ -13,7 +13,7 @@ use crate::{
     error::WasmError,
     vm::{
         entities::{FunctionInst, GlobalInst, ModuleInst},
-        runtime::code::CompiledNativeModule,
+        runtime::{code::CompiledNativeModule, dispatch_view::NativeDispatchMetadata},
         store::Store,
         value::RefHandle,
     },
@@ -125,8 +125,13 @@ impl NativeContext {
 
     #[inline]
     pub(crate) fn seed_local_call_infos(&mut self, compiled: &CompiledNativeModule) {
-        self.local_call_infos_base = compiled.local_call_infos_base();
-        self.local_call_infos_len = compiled.local_call_infos_len();
+        self.seed_dispatch_metadata(compiled.dispatch_metadata());
+    }
+
+    #[inline]
+    pub(crate) fn seed_dispatch_metadata(&mut self, metadata: &NativeDispatchMetadata) {
+        self.local_call_infos_base = metadata.local_call_infos().base();
+        self.local_call_infos_len = metadata.local_call_infos().len();
     }
 
     #[inline]

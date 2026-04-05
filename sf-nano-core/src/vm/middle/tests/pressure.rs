@@ -140,13 +140,13 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
     // never touched again. Under the same tight budget, the planner should
     // drop the cold cache instead of spilling the live transient.
     let semantic = i32_program(
-        1,
+        2,
         2,
         0,
         alloc::vec![
-            prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
+            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 22 }),
             prim(PrimitiveOpKind::I32Add),
             prim(PrimitiveOpKind::Drop),
@@ -157,30 +157,30 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
     let ops = all_inst_kinds(&prepared.ssa);
-    let const22_idx = ops
+    let add_idx = ops
         .iter()
         .position(|kind| {
             matches!(
                 kind,
                 SsaInstKind::Value { op, .. }
-                    if matches!(op.primitive(), PrimitiveOpKind::I32Const { value } if *value == 22)
+                    if matches!(op.primitive(), PrimitiveOpKind::I32Add)
             )
         })
-        .expect("expected the pressured const push");
+        .expect("expected the pressured add");
 
     assert!(
         contains_drop_cache(&prepared.ssa, slot0),
         "the unused cached local should be dropped under pressure"
     );
     assert!(
-        ops[..const22_idx]
+        ops[..add_idx]
             .iter()
             .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
-        "the cache drop should happen before the pressured const push; ops={:?}",
+        "the cache drop should happen before the pressured add; ops={:?}",
         ops
     );
     assert!(
-        ops[..=const22_idx]
+        ops[..=add_idx]
             .iter()
             .all(|kind| !matches!(kind, SsaInstKind::Spill { .. })),
         "the live transient should stay resident instead of being spilled; ops={:?}",

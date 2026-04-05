@@ -469,6 +469,12 @@ impl<'a> X86_64Backend<'a> {
                     }
                 }
             }
+            ParallelSource::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "x86_64 received non-identity reserved cache edge move into {} from {}",
+                    dst.reg.0, reg.0
+                )));
+            }
             ParallelSource::Imm(value) => {
                 if let Some(width) = dst.ty.float_width() {
                     let dst_fp = self.map_fp_reg(dst.reg)? as u8;

@@ -68,6 +68,7 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
         self.set_cache_live(index, false);
+        self.set_cache_has_value(index, false);
         self.set_cache_dirty(index, false);
         self.clear_cache_binding(index);
         Ok(())

@@ -95,6 +95,8 @@ impl I64Lowering for Gp32Lowering {
         let ty = lir_value_storage_type(ctx.program(), src);
         let (src_lo, src_hi) = ctx.use_i64_value_pair(src)?;
         if let Some(cached_index) = ctx.cached_local_index(slot) {
+            ctx.set_cache_live(cached_index, true);
+            ctx.set_cache_has_value(cached_index, true);
             ctx.mark_cache_dirty(cached_index);
             let cached = ctx.ensure_bound_cached_local(cached_index)?;
             if cached.ty != ty {

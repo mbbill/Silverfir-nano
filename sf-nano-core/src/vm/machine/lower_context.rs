@@ -60,6 +60,10 @@ pub(super) struct ValueRegs {
 pub(super) struct EntryCacheParam {
     pub cached_index: usize,
     pub regs: ValueRegs,
+    /// True when the target block entry needs the actual local value already
+    /// materialized in the cache register. False means the lane is reserved
+    /// for a write-first cached local and may arrive without a valid value.
+    pub needs_value: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +97,11 @@ pub(super) struct BlockLowerContext<'a> {
     /// call. Entry blocks start clean; non-entry blocks receive their carried
     /// dirty state from cross-block analysis.
     cache_live: Vec<bool>,
+    /// Per cached-local validity bit: `true` means the bound cache register
+    /// currently holds the logical local value. `false` means the cache lane
+    /// is merely reserved for a write-first local and must not be threaded as
+    /// a real incoming edge value.
+    cache_has_value: Vec<bool>,
     cache_dirty: Vec<bool>,
     values: Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
@@ -140,6 +149,7 @@ impl<'a> BlockLowerContext<'a> {
         let entry_cache_params =
             target_entry_cache_params(regfile, program, cached_locals, block, gp_reg_width)?;
         let cache_live = alloc::vec![false; cached_locals.len()];
+        let cache_has_value = alloc::vec![false; cached_locals.len()];
         let cache_dirty = alloc::vec![false; cached_locals.len()];
         let mut lower = Self {
             regfile,
@@ -155,6 +165,7 @@ impl<'a> BlockLowerContext<'a> {
             cached_locals: cached_locals.to_vec(),
             cache_bindings: alloc::vec![None; cache_live.len()],
             cache_live,
+            cache_has_value,
             cache_dirty,
             values: Vec::new(),
             remaining_uses: compute_remaining_uses(block),
@@ -199,7 +210,14 @@ impl<'a> BlockLowerContext<'a> {
         let entry_cache_params = lower.entry_cache_params.clone();
         for entry in entry_cache_params {
             if is_entry {
-                lower.materialize_entry_cached_local(entry.cached_index, entry.regs)?;
+                if entry.needs_value {
+                    lower.materialize_entry_cached_local(entry.cached_index, entry.regs)?;
+                } else {
+                    lower.bind_cached_local_to_regs(entry.cached_index, entry.regs.lo, entry.regs.hi)?;
+                    lower.set_cache_live(entry.cached_index, true);
+                    lower.set_cache_has_value(entry.cached_index, false);
+                    lower.set_cache_dirty(entry.cached_index, false);
+                }
             } else {
                 lower.bind_cached_local_to_regs(
                     entry.cached_index,
@@ -207,10 +225,15 @@ impl<'a> BlockLowerContext<'a> {
                     entry.regs.hi,
                 )?;
                 lower.set_cache_live(entry.cached_index, true);
-                let initial_dirty = initial_cache_dirty
-                    .and_then(|bits| bits.get(entry.cached_index))
-                    .copied()
-                    .unwrap_or(true);
+                lower.set_cache_has_value(entry.cached_index, entry.needs_value);
+                let initial_dirty = if entry.needs_value {
+                    initial_cache_dirty
+                        .and_then(|bits| bits.get(entry.cached_index))
+                        .copied()
+                        .unwrap_or(true)
+                } else {
+                    false
+                };
                 lower.set_cache_dirty(entry.cached_index, initial_dirty);
             }
         }
@@ -471,6 +494,16 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
+    pub(super) fn cache_has_value(&self, index: usize) -> bool {
+        self.cache_has_value.get(index).copied().unwrap_or(false)
+    }
+
+    pub(super) fn set_cache_has_value(&mut self, index: usize, has_value: bool) {
+        if index < self.cache_has_value.len() {
+            self.cache_has_value[index] = has_value;
+        }
+    }
+
     pub(super) fn clear_cache_binding(&mut self, index: usize) {
         if let Some(binding) = self.cache_bindings.get_mut(index) {
             *binding = None;
@@ -480,6 +513,9 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn clear_cache_live(&mut self) {
         for live in &mut self.cache_live {
             *live = false;
+        }
+        for has_value in &mut self.cache_has_value {
+            *has_value = false;
         }
         for binding in &mut self.cache_bindings {
             *binding = None;
@@ -899,6 +935,7 @@ impl<'a> BlockLowerContext<'a> {
             });
         }
         self.set_cache_live(cached_index, true);
+        self.set_cache_has_value(cached_index, true);
         self.set_cache_dirty(cached_index, false);
         Ok(())
     }
@@ -945,7 +982,7 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
     entries.into_iter().map(|entry| entry.cached).collect()
 }
 
-fn target_entry_cache_params(
+pub(super) fn target_entry_cache_params(
     regfile: &MachineRegFile,
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
@@ -963,12 +1000,19 @@ fn target_entry_cache_params(
     }
 
     let mut entry_cache_params = Vec::new();
-    for &slot in program
+    let mut entry_slots = program
         .block_entry_cached_slots
         .get(block.id.as_usize())
-        .map(|slots| slots.as_slice())
-        .unwrap_or(&[])
-    {
+        .cloned()
+        .unwrap_or_default();
+    entry_slots.sort_by_key(|slot| {
+        cached_locals
+            .iter()
+            .position(|cached| cached.slot == *slot)
+            .unwrap_or(usize::MAX)
+    });
+
+    for slot in entry_slots {
         let cached_index = cached_locals
             .iter()
             .position(|cached| cached.slot == slot)
@@ -1021,10 +1065,45 @@ fn target_entry_cache_params(
                 ValueRegs { lo: reg, hi: None }
             }
         };
-        entry_cache_params.push(EntryCacheParam { cached_index, regs });
+        entry_cache_params.push(EntryCacheParam {
+            cached_index,
+            regs,
+            needs_value: entry_cache_needs_materialized_value(block, slot),
+        });
     }
 
     Ok(entry_cache_params)
+}
+
+fn entry_cache_needs_materialized_value(block: &SsaBlock, slot: FrameSlot) -> bool {
+    for inst in &block.ops {
+        match inst.kind {
+            SsaInstKind::LocalSetSlot { slot: accessed_slot, .. }
+            | SsaInstKind::LocalSetCache { slot: accessed_slot, .. } => {
+                if accessed_slot == slot {
+                    return false;
+                }
+            }
+            SsaInstKind::LocalGetSlot { slot: accessed_slot, .. }
+            | SsaInstKind::LocalGetCache { slot: accessed_slot, .. }
+            | SsaInstKind::LocalEnsureCache { slot: accessed_slot } => {
+                if accessed_slot == slot {
+                    return true;
+                }
+            }
+            SsaInstKind::LocalReserveCache { slot: accessed_slot } => {
+                if accessed_slot == slot {
+                    continue;
+                }
+            }
+            SsaInstKind::LocalDropCache { .. }
+            | SsaInstKind::Value { .. }
+            | SsaInstKind::Fill { .. }
+            | SsaInstKind::Spill { .. }
+            | SsaInstKind::Call(_) => {}
+        }
+    }
+    true
 }
 
 fn explicit_cached_local_pref_map(program: &SsaProgram) -> BTreeMap<FrameSlot, CachePrefEntry> {

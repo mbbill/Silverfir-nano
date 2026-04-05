@@ -164,10 +164,11 @@ fn transient_contract(entry: &EntryState) -> TransientContract<'_> {
 
 #[inline]
 fn before_op_entry_state(plan: &FunctionPlan, semantic_index: usize) -> &EntryState {
-    let info = &plan.op_info[semantic_index];
-    if info.is_block_start {
-        &plan.blocks[info.block_index as usize].entry
-    } else {
-        &plan.op_plans[semantic_index].before
-    }
+    // `block_open` / `target_entry` expose the structural block boundary.
+    // `before_op` is stricter: it must return the exact transient contract
+    // required immediately before executing this semantic op. For the first op
+    // in a block, that may require filling values from the structural entry
+    // boundary (for example loop params consumed by the first body op), so we
+    // always use the per-op pre-state here instead of the raw block-open entry.
+    &plan.op_plans[semantic_index].before
 }

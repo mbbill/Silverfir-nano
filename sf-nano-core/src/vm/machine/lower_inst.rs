@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    lower_context::BlockLowerContext,
+    lower_context::{target_entry_cache_params, BlockLowerContext},
     lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
 };
 
@@ -220,7 +220,7 @@ impl<'a> BlockLowerContext<'a> {
         cached_index: usize,
         ty: MachineStorageType,
     ) -> Result<(), WasmError> {
-        if self.is_cache_live(cached_index) {
+        if self.is_cache_live(cached_index) && self.cache_has_value(cached_index) {
             return Ok(());
         }
         let cached = self.ensure_bound_cached_local(cached_index)?;
@@ -246,6 +246,7 @@ impl<'a> BlockLowerContext<'a> {
             });
         }
         self.set_cache_live(cached_index, true);
+        self.set_cache_has_value(cached_index, true);
         self.set_cache_dirty(cached_index, false);
         Ok(())
     }
@@ -380,6 +381,7 @@ impl<'a> BlockLowerContext<'a> {
                 ))
             })?;
         self.set_cache_live(cached_index, true);
+        self.set_cache_has_value(cached_index, false);
         self.set_cache_dirty(cached_index, false);
         Ok(())
     }
@@ -445,6 +447,7 @@ impl<'a> BlockLowerContext<'a> {
             )));
         }
         self.set_cache_live(cached_index, true);
+        self.set_cache_has_value(cached_index, true);
         self.mark_cache_dirty(cached_index);
 
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
@@ -689,39 +692,51 @@ impl<'a> BlockLowerContext<'a> {
                 args.push(MachineValue::Reg(hi));
             }
         }
-        if let Some(cached_slots) = self
-            .program()
-            .block_entry_cached_slots
-            .get(edge.target.as_usize())
-        {
-            for &slot in cached_slots {
-                let cached_index = self.cached_local_index(slot).ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "missing cached-local metadata for carried entry slot {:?} on edge to b{}",
-                        slot,
-                        edge.target.as_u32(),
-                    ))
-                })?;
-                let cached = self.bound_cached_local(cached_index).ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} has no binding",
-                        edge.target.as_u32(),
-                        slot,
-                        self.block_id(),
-                    ))
-                })?;
-                if !self.is_cache_live(cached_index) {
-                    return Err(WasmError::internal(alloc::format!(
-                        "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} marked it dead",
-                        edge.target.as_u32(),
-                        slot,
-                        self.block_id(),
-                    )));
-                }
-                args.push(MachineValue::Reg(cached.reg));
-                if let Some(hi) = cached.hi_reg {
-                    args.push(MachineValue::Reg(hi));
-                }
+        let target_entry_cache = target_entry_cache_params(
+            self.regfile(),
+            self.program(),
+            self.cached_locals(),
+            target,
+            self.gp_reg_width(),
+        )?;
+        for entry in target_entry_cache {
+            let cached = self.bound_cached_local(entry.cached_index).ok_or_else(|| {
+                let slot = self.cached_locals()[entry.cached_index].slot;
+                WasmError::internal(alloc::format!(
+                    "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} has no binding",
+                    edge.target.as_u32(),
+                    slot,
+                    self.block_id(),
+                ))
+            })?;
+            let slot = cached.slot;
+            if !self.is_cache_live(entry.cached_index) {
+                return Err(WasmError::internal(alloc::format!(
+                    "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} marked it dead",
+                    edge.target.as_u32(),
+                    slot,
+                    self.block_id(),
+                )));
+            }
+            if entry.needs_value && !self.cache_has_value(entry.cached_index) {
+                return Err(WasmError::internal(alloc::format!(
+                    "edge to b{} expects cached local slot {:?} to carry a real value, but source block b{} only reserved the lane",
+                    edge.target.as_u32(),
+                    slot,
+                    self.block_id(),
+                )));
+            }
+            args.push(if entry.needs_value {
+                MachineValue::Reg(cached.reg)
+            } else {
+                MachineValue::ReservedReg(entry.regs.lo)
+            });
+            if let Some(hi) = cached.hi_reg {
+                args.push(if entry.needs_value {
+                    MachineValue::Reg(hi)
+                } else {
+                    MachineValue::ReservedReg(entry.regs.hi.unwrap_or(hi))
+                });
             }
         }
         Ok(MachineEdge {

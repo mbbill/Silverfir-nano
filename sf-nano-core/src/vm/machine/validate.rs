@@ -627,6 +627,32 @@ impl MachineProgram {
         for value in &edge.args {
             self.validate_value(*value, config)?;
         }
+        for (param, arg) in self.blocks[edge.target.as_usize()]
+            .params
+            .iter()
+            .zip(edge.args.iter())
+        {
+            if let MachineValue::ReservedReg(reg) = arg {
+                if !matches!(param.owner, MachineRegOwner::CachedLocal) {
+                    return Err(WasmError::internal(alloc::format!(
+                        "machine block {} -> {} uses ReservedReg {} for non-cached-local param {}",
+                        source_block,
+                        edge.target.as_usize(),
+                        reg.0,
+                        param.reg.0,
+                    )));
+                }
+                if *reg != param.reg {
+                    return Err(WasmError::internal(alloc::format!(
+                        "machine block {} -> {} must reserve cached-local param {} in-place, got {}",
+                        source_block,
+                        edge.target.as_usize(),
+                        param.reg.0,
+                        reg.0,
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -652,6 +678,7 @@ impl MachineProgram {
     fn validate_value(&self, value: MachineValue, config: BackendConfig) -> ValidateResult {
         match value {
             MachineValue::Reg(reg) => self.validate_reg(reg, config),
+            MachineValue::ReservedReg(reg) => self.validate_reg(reg, config),
             MachineValue::Imm64(_) => Ok(()),
         }
     }

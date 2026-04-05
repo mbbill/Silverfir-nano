@@ -1041,6 +1041,7 @@ fn render_branch_cond(cond: &MachineBranchCond) -> String {
 fn mval(v: &MachineValue) -> String {
     match v {
         MachineValue::Reg(r) => format!("r{}", r.0),
+        MachineValue::ReservedReg(r) => format!("reserve(r{})", r.0),
         MachineValue::Imm64(i) => {
             if *i <= 0xffff {
                 format!("{i}")

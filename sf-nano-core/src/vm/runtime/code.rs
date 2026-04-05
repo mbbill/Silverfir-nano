@@ -1,5 +1,4 @@
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
-use core::cell::Cell;
 
 use crate::{
     error::WasmError,
@@ -9,7 +8,10 @@ use crate::{
         machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineModule, MachineModuleAbi,
         },
-        runtime::context::NativeContext,
+        runtime::{
+            context::NativeContext,
+            dispatch_view::NativeDispatchMetadata,
+        },
     },
 };
 
@@ -57,8 +59,7 @@ pub(crate) struct CompiledNativeModule {
     module: MachineModule,
     abi: MachineModuleAbi,
     aligned_consts: Vec<AlignedConstData>,
-    local_call_infos_base: Cell<*const u8>,
-    local_call_infos_len: Cell<usize>,
+    dispatch_metadata: NativeDispatchMetadata,
 }
 
 impl CompiledNativeModule {
@@ -75,14 +76,14 @@ impl CompiledNativeModule {
         for konst in &module.consts {
             aligned_consts.push(AlignedConstData::new(konst)?);
         }
+        let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
         Ok(Self {
             backend_kind,
             backend,
             module,
             abi,
             aligned_consts,
-            local_call_infos_base: Cell::new(core::ptr::null()),
-            local_call_infos_len: Cell::new(0),
+            dispatch_metadata,
         })
     }
 
@@ -122,20 +123,15 @@ impl CompiledNativeModule {
     }
 
     #[inline]
-    pub(crate) fn publish_local_call_infos(&self, base: *const u8, len: usize) {
-        self.local_call_infos_base.set(base);
-        self.local_call_infos_len.set(len);
+    pub(crate) const fn dispatch_metadata(&self) -> &NativeDispatchMetadata {
+        &self.dispatch_metadata
     }
 
     #[inline]
-    pub(crate) fn local_call_infos_base(&self) -> *const u8 {
-        self.local_call_infos_base.get()
+    pub(crate) fn publish_local_call_infos(&self, base: *const u8) {
+        self.dispatch_metadata.local_call_infos().publish(base);
     }
 
-    #[inline]
-    pub(crate) fn local_call_infos_len(&self) -> usize {
-        self.local_call_infos_len.get()
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -111,5 +111,8 @@ pub(crate) fn is_fallthrough_edge(
         .params
         .iter()
         .zip(args.iter())
-        .all(|(param, arg)| matches!(arg, MachineValue::Reg(r) if *r == param.reg))
+        .all(|(param, arg)| match arg {
+            MachineValue::Reg(r) | MachineValue::ReservedReg(r) => *r == param.reg,
+            MachineValue::Imm64(_) => false,
+        })
 }

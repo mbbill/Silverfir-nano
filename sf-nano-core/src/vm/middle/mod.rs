@@ -13,6 +13,7 @@ mod budget;
 mod cfg;
 mod cleanup;
 mod joint_plan;
+mod optimize;
 mod rewrite;
 mod slot_ssa;
 
@@ -70,6 +71,7 @@ pub(crate) fn prepare_function(
     let mut ssa =
         rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
     cleanup::cleanup_program(&mut ssa);
+    optimize::optimize_program(&mut ssa);
     validate_program(&ssa)?;
 
     Ok(PreparedFunction { frame, ssa })

@@ -112,6 +112,10 @@ fn prepare_gp<'p>(
             Ok(PreparedGp::Scratch(scratch))
         }
         MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(config, reg)?)),
+        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+            "example backend cannot consume reserved cache register {} as a real value",
+            reg.0
+        ))),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             materialize_u64_into(text, *scratch, v);
@@ -413,6 +417,12 @@ impl<'a> super::backend::ExampleBackend<'a> {
                     let src_fp = self.map_fp_reg(reg)?;
                     self.core.text.emit_u32(enc::fmov_d(dst_fp, src_fp));
                 }
+                ParallelSource::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "example backend received non-identity reserved cache edge move into {} from {}",
+                        dst.reg.0, reg.0
+                    )));
+                }
                 ParallelSource::Reg { reg, .. } => {
                     let src_gp = self.map_gp_reg(reg)?;
                     self.core.text.emit_u32(enc::fmov_d_from_gp(dst_fp, src_gp));
@@ -438,6 +448,12 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 ParallelSource::Reg { reg, .. } if self.core.is_fp_reg(reg) => {
                     let src_fp = self.map_fp_reg(reg)?;
                     self.core.text.emit_u32(enc::fmov_gp_from_d(dst_gp, src_fp));
+                }
+                ParallelSource::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "example backend received non-identity reserved cache edge move into {} from {}",
+                        dst.reg.0, reg.0
+                    )));
                 }
                 ParallelSource::Reg { reg, .. } => {
                     let src_gp = self.map_gp_reg(reg)?;

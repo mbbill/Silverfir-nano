@@ -53,7 +53,12 @@ are:
    - per-op lowering and pressure policy
    - edge repair requirements
 4. Let `rewrite.rs` lower once from those chosen decisions.
-5. Hand `machine/` explicit SSA-IR with explicit:
+5. Run structural cleanup on the prepared SSA-IR.
+6. Run middle SSA optimization:
+   - absorb single-use constant producers into `SsaOperand::Const`
+   - fold fully constant pure leaf ops
+   - remove dead constant producers
+7. Hand `machine/` explicit SSA-IR with explicit:
    - blocks and edges
    - SSA values
    - `Spill` / `Fill`
@@ -286,8 +291,11 @@ So:
 This avoids any full recompute loop. The block is lowered once.
 
 At the first semantic op of a CFG block, the chosen `block_open(block)`
-transient state must be authoritative. The planner must not silently fall back
-to an older per-op transient contract at block start.
+transient state is still the authoritative structural boundary. But the first
+`before_op` in that block may legally fill values from that structural entry
+before executing the op. This matters for typed loop headers: the loop params
+may stay structurally spilled at the boundary while the first loop-body op
+still requires them live immediately before execution.
 
 #### 5. Observed block exit cache state
 
@@ -421,6 +429,10 @@ The new `middle/` should be built around this ownership split:
   - merge trivial goto-only successors
   - remove unreachable blocks
   - canonicalize pure cache-materialization runs
+- post-cleanup middle SSA optimization:
+  - absorb constants into leaf operands when backend lowering already supports immediates
+  - fold fully constant pure leaf ops
+  - delete dead const producers
 
 The critical principle is:
 
@@ -587,8 +599,10 @@ For locals:
 
 For stack values:
 
-- chosen resident values stay in the resident entry stack suffix
-- non-chosen deeper values may be spilled before the block needs them
+- the entry transient contract is structural
+- block-open must not rewrite it just to make room for cached locals
+- later mid-block pressure may still spill transients according to the normal
+  pressure policy
 
 Function entry should follow the same planner policy:
 
@@ -601,39 +615,30 @@ Function entry should follow the same planner policy:
 At `block_open(block)`:
 
 1. start from the exact Wasm stack contract
-2. rank entry-region locals and entry-stack SSA values together
-3. prefer values already carried by the canonical predecessor exit
-4. choose the resident stack suffix that is worth keeping hot
-5. choose cached locals under the remaining budget
+2. keep that transient contract unchanged
+3. rank entry-region locals
+4. prefer values already carried by the canonical predecessor exit
+5. choose cached locals under the remaining budget left by the structural
+   transient contract
 6. decide which chosen locals must actually be ensured on entry
 7. allow write-first locals to reserve boundary residency without forcing an
    entry load
 
-This means block entry is chosen from one ranked resident-set policy, not from
-"locals only".
+This means the current boundary choice is about cached locals, not about
+rewriting stack join shape.
 
 ### Pseudocode
 
 ```text
 function plan_block_open(block):
-    entry_stack = wasm_entry_stack(block)
+    structural_transient = exact_structural_entry_transient(block)
     canonical_pred = canonical_predecessor(block)
     carried_locals = []
     if canonical_pred exists:
         carried_locals = exit_cached_locals(canonical_pred)
     budgets = dynamic_bank_budgets(block)   // {gp, fp}
     region = scan_entry_region(block)
-
-    stack_candidates = []
-    for each entry stack value v in entry_stack:
-        info = region.stack_info(v)
-        stack_candidates.push({
-            value: v,
-            touched: info.touched_before_barrier,
-            first_touch: info.first_touch_distance,
-            touch_count: info.touch_count,
-            score: score_stack_value(info),
-        })
+    remaining_budget = budgets - cost_by_bank(structural_transient.live_values)
 
     local_candidates = []
     for each local L touched in region:
@@ -649,50 +654,13 @@ function plan_block_open(block):
             score: score_local(info, L in carried_locals),
         })
 
-    best = none
-    for each feasible stack suffix S of entry_stack:
-        stack_score = sum(score(v) for v in S)
-        stack_cost = cost_by_bank(S)   // {gp, fp}
-        if not fits_in_bank_budget(stack_cost, budgets):
-            continue
-
-        remaining_budget = subtract_bank_budget(budgets, stack_cost)
-        chosen_locals = choose_best_locals_under_budget(
-            local_candidates,
-            remaining_budget,
-        )
-        local_score = sum(score(L) for L in chosen_locals)
-
-        candidate = {
-            resident_stack_suffix: S,
-            entry_cached_locals: chosen_locals,
-            total_score: stack_score + local_score,
-        }
-        if best is none:
-            best = candidate
-        else if candidate.total_score > best.total_score:
-            best = candidate
-        else if candidate.total_score == best.total_score:
-            // Prefer the cheaper boundary when the value score is the same.
-            if count_entry_ensures(candidate) < count_entry_ensures(best):
-                best = candidate
-            else if count_entry_ensures(candidate) == count_entry_ensures(best):
-                if local_cache_cost(candidate) < local_cache_cost(best):
-                    best = candidate
-                else if local_cache_cost(candidate) == local_cache_cost(best):
-                    if spill_depth(candidate.resident_stack_suffix)
-                        > spill_depth(best.resident_stack_suffix):
-                        best = candidate
-
-    if best is none:
-        best = {
-            resident_stack_suffix: [],
-            entry_cached_locals: [],
-            total_score: 0,
-        }
+    chosen_locals = choose_best_locals_under_budget(
+        local_candidates,
+        remaining_budget,
+    )
 
     ensure_on_entry = []
-    for each chosen local C in best.entry_cached_locals:
+    for each chosen local C in chosen_locals:
         if C.carried:
             continue
         if C.first_access == ReadFirst:
@@ -703,8 +671,8 @@ function plan_block_open(block):
             continue
 
     return BlockOpenDecision {
-        resident_stack_suffix: best.resident_stack_suffix,
-        entry_cached_locals: best.entry_cached_locals,
+        structural_transient: structural_transient,
+        entry_cached_locals: chosen_locals,
         ensure_on_entry: ensure_on_entry,
     }
 
@@ -727,29 +695,16 @@ function score_local(info, carried):
 
     return score
 
-
-function score_stack_value(info):
-    if not info.touched_before_barrier:
-        return VERY_LOW
-    score = 0
-    score += EARLY_USE_BONUS / (1 + info.first_touch_distance)
-    score += REUSE_BONUS * info.touch_count
-    return score
 ```
 
 This pseudocode is intentionally simple:
 
-- locals and entry-stack SSA values compete under one shared resident-set
-  policy, subject to per-bank budgets
-- stack realization still becomes a resident suffix, so the planner only needs
-  to try feasible suffixes
+- transient entry shape is structural and is not optimized at block-open
+- cached locals are the real boundary-choice problem
 - write-first locals can be boundary-resident without forcing an entry load
 - canonical predecessor carry-through is the base hot-edge signal
 - single-use early locals are still eligible; later `machine/` local aliasing
   may delete the reg-to-reg copy path
-- when scores tie, prefer the boundary with fewer cold-edge entry materializations
-- if score, ensure count, and cache cost all tie, prefer the colder boundary
-  with a larger spilled entry-stack prefix
 - the same value ordering should later guide cache eviction; otherwise the
   `dropped_before_first_use` diagnostic will expose an inconsistent planner
 

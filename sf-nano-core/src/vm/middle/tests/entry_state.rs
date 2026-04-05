@@ -51,11 +51,12 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
 }
 
 #[test]
-fn block_open_spills_cold_bottom_entry_stack_value_to_keep_hot_top_and_local() {
-    // Two entry-stack values arrive at the then-block, but only the top one is
-    // used meaningfully before the barrier. Under a 2-unit GP budget the
-    // planner should spill the cold bottom entry value so the hot local can
-    // still be cached.
+fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_local_cache() {
+    // The later plan simplification treats stack/SSA join shape as structural:
+    // block_open may choose cached locals, but it must not rewrite the entry
+    // spill depth just to make room for them. Here both entry stack values are
+    // structurally live at the branch target, so under a 2-unit GP budget the
+    // hot local simply cannot be admitted at entry.
     let semantic = i32_program(
         1,
         4,
@@ -87,8 +88,15 @@ fn block_open_spills_cold_bottom_entry_stack_value_to_keep_hot_top_and_local() {
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.stack_height, 2);
-    assert_eq!(block_open.transient.spill_depth, 1);
-    assert_eq!(block_open.cached_locals, &[slot0]);
+    assert_eq!(block_open.transient.spill_depth, 0);
+    assert!(
+        block_open.cached_locals.is_empty(),
+        "when structural entry stack already consumes the whole budget, block_open must leave cached locals empty rather than changing stack join shape"
+    );
+    assert!(
+        !block_open.cached_locals.contains(&slot0),
+        "the hot local should only be admitted later if pressure allows, not by rewriting the structural entry stack"
+    );
 }
 
 #[test]

@@ -106,6 +106,12 @@ impl<'a> super::backend::ExampleBackend<'a> {
                 self.lower_cbnz(reg, then_label);
                 self.lower_b(else_label);
             }
+            MachineBranchCond::Value(MachineValue::ReservedReg(reg)) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "example backend branch cannot consume reserved cache register {}",
+                    reg.0
+                )));
+            }
             MachineBranchCond::IntCompare {
                 width,
                 kind,
@@ -142,6 +148,12 @@ impl<'a> super::backend::ExampleBackend<'a> {
             MachineBranchCond::Value(MachineValue::Reg(reg)) => {
                 let reg = self.map_gp_reg(reg)?;
                 self.lower_cbnz(reg, trap_label);
+            }
+            MachineBranchCond::Value(MachineValue::ReservedReg(reg)) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "example backend trap-if cannot consume reserved cache register {}",
+                    reg.0
+                )));
             }
             MachineBranchCond::IntCompare {
                 width,

@@ -46,6 +46,15 @@ pub(crate) struct MachineConstId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineValue {
     Reg(MachineReg),
+    /// Reserve ownership of a cached-local lane across an edge without
+    /// claiming that the source register carries a semantically valid local
+    /// value.
+    ///
+    /// This is the machine-level counterpart of middle-layer
+    /// `LocalReserveCache`: the target block still owns the cached-local
+    /// register at entry, but predecessors must not be forced to materialize
+    /// or move an old value just to satisfy the edge contract.
+    ReservedReg(MachineReg),
     Imm64(u64),
 }
 

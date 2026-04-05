@@ -160,9 +160,12 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
     {
         let src = match arg {
             MachineValue::Reg(reg) => ParallelSource::Reg { reg, float_width },
+            MachineValue::ReservedReg(reg) => ParallelSource::ReservedReg(reg),
             MachineValue::Imm64(value) => ParallelSource::Imm(value),
         };
-        if matches!(src, ParallelSource::Reg { reg, .. } if reg == dst.reg) {
+        if matches!(src, ParallelSource::Reg { reg, .. } if reg == dst.reg)
+            || matches!(src, ParallelSource::ReservedReg(reg) if reg == dst.reg)
+        {
             continue;
         }
         pending.push((dst, src));
@@ -207,6 +210,9 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
             float_width,
         } = src
         else {
+            if let ParallelSource::ReservedReg(_) = src {
+                continue;
+            }
             backend.lower_source_move(dst, src)?;
             continue;
         };
@@ -356,10 +362,7 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
-    compiled.publish_local_call_infos(
-        unsafe { executable.as_ptr().add(function_info_table_offset) },
-        compiled.abi().functions.len(),
-    );
+    compiled.publish_local_call_infos(unsafe { executable.as_ptr().add(function_info_table_offset) });
 
     // Construct compiled entries.
     let mut entries = Vec::with_capacity(emitted.len());

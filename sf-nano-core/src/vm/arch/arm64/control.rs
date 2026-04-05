@@ -123,6 +123,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.lower_b(else_label);
                     }
                 }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "arm64 branch condition cannot read reserved cache register {}",
+                        reg.0
+                    )));
+                }
             },
             MachineBranchCond::IntCompare {
                 width,
@@ -202,6 +208,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
                     self.lower_cbnz(reg, trap_label);
+                }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "arm64 trap-if cannot read reserved cache register {}",
+                        reg.0
+                    )));
                 }
             },
             MachineBranchCond::IntCompare {

@@ -100,6 +100,10 @@ pub(super) fn prepare_gp<'p>(
             Ok(PreparedGp::Scratch(scratch))
         }
         MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(config, reg)?)),
+        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+            "arm64 prepare_gp cannot consume reserved cache register {} as a real value",
+            reg.0
+        ))),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             materialize_u64_into(text, *scratch, v);
@@ -243,6 +247,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
     ) -> Result<(), WasmError> {
         let src_gp = match src {
             MachineValue::Reg(r) => PreparedGp::Mapped(map_gp(self.core.compiled.backend(), r)?),
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 lower_tst_values cannot consume reserved cache register {} as a source",
+                    reg.0
+                )));
+            }
             MachineValue::Imm64(imm) => prepare_gp(
                 self.core.compiled.backend(),
                 &self.core.fp_reg_widths,
@@ -292,6 +302,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                             .emit_u32(enc::tst_reg_64(src_phys, mask_phys));
                     }
                 }
+            }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 lower_tst_values cannot consume reserved cache register {} as a mask",
+                    reg.0
+                )));
             }
         }
         Ok(())
@@ -551,6 +567,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
             }
+            ParallelSource::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 received non-identity reserved cache edge move into {} from {}",
+                    dst.reg.0, reg.0
+                )));
+            }
             ParallelSource::Imm(value) => {
                 if let Some(width) = dst.ty.float_width() {
                     let dst_fp = self.map_fp_reg(dst.reg)?;
@@ -624,6 +646,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "arm64 lower_move cannot read reserved cache register {} as an FP source",
+                        reg.0
+                    )));
+                }
                 MachineValue::Imm64(value) => {
                     let scratch = *self.gp_scratch.scoped_alloc();
                     self.materialize_u64(scratch, value);
@@ -656,6 +684,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.core.text.emit_u32(enc::mov_reg_64(dst_gp, src_gp));
                     }
                     Ok(())
+                }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "arm64 lower_move cannot read reserved cache register {} as a GP source",
+                        reg.0
+                    )));
                 }
                 MachineValue::Imm64(value) => {
                     self.materialize_u64(dst_gp, value);
@@ -1843,6 +1877,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
             }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 TestBits cannot consume reserved cache register {} as a mask",
+                    reg.0
+                )));
+            }
         }
 
         // TST sets Z flag. Eq → Z=1, Ne → Z=0.
@@ -1917,6 +1957,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
+                MachineValue::ReservedReg(reg) => {
+                    Err(WasmError::internal(alloc::format!(
+                        "arm64 select cannot consume reserved cache register {} as a condition",
+                        reg.0
+                    )))
+                }
             }
         } else {
             let dst = self.map_gp_reg(dst)?;
@@ -1939,6 +1985,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core
                         .text
                         .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "arm64 select cannot consume reserved cache register {} as a condition",
+                        reg.0
+                    )));
                 }
             }
             let true_reg = prepare_gp(

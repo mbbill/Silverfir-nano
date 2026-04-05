@@ -2274,16 +2274,17 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
         "LocalReserveCache edge block should not reload the old slot value; ops={:?}",
         reserve_block.ops
     );
-    let carried_reg = match &reserve_block.terminator {
+    match &reserve_block.terminator {
         MachineTerminator::Jump(edge) => {
             assert_eq!(edge.args.len(), 1, "expected one hidden cache edge arg");
-            match edge.args[0] {
-                MachineValue::Reg(reg) => reg,
-                other => panic!("expected reserved cache edge arg register, got {other:?}"),
-            }
+            assert!(
+                !matches!(edge.args[0], MachineValue::Reg(_)),
+                "reserve-only cached locals must not be threaded as real incoming values; edge args={:?}",
+                edge.args
+            );
         }
         other => panic!("expected jump terminator from reserve edge block, got {other:?}"),
-    };
+    }
     assert_eq!(target_block.params.len(), 1);
     assert!(
         target_block
@@ -2293,7 +2294,140 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
         "target block should receive reserved cache state through params, not reload it from frame; ops={:?}",
         target_block.ops
     );
-    assert_ne!(carried_reg.0, 0);
+}
+
+#[test]
+fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
+    let frame = plan_frame_layout(3, 1, 6);
+    let slot0 = frame.local_slot(0);
+    let slot1 = frame.local_slot(1);
+    let slot2 = frame.local_slot(2);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        local_slot_info: alloc::vec![
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+        ],
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    // Reverse first-mention order so explicit cached-local
+                    // metadata does not accidentally match the target entry
+                    // slot order.
+                    SsaInst {
+                        kind: SsaInstKind::LocalReserveCache { slot: slot2 },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalReserveCache { slot: slot1 },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalReserveCache { slot: slot0 },
+                    },
+                ],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(0)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot0,
+                            src: SsaValue(0),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 2 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(1)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot1,
+                            src: SsaValue(1),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 3 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(2)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot2,
+                            src: SsaValue(2),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![
+            alloc::vec![],
+            alloc::vec![slot0, slot1, slot2],
+        ],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(3, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("multi-slot reserve edge should lower");
+
+    let program = &lowered.module.functions[0].program;
+    let reserve_block = &program.blocks[0];
+    let target_block = &program.blocks[1];
+    let MachineTerminator::Jump(edge) = &reserve_block.terminator else {
+        panic!("expected jump terminator for reserve edge");
+    };
+    assert_eq!(edge.args.len(), target_block.params.len());
+    for (arg, param) in edge.args.iter().zip(target_block.params.iter()) {
+        assert!(
+            matches!(arg, MachineValue::ReservedReg(reg) if *reg == param.reg),
+            "reserve-only edge args must line up with target cached-local params in-place; args={:?} params={:?}",
+            edge.args,
+            target_block.params
+        );
+    }
 }
 
 #[test]

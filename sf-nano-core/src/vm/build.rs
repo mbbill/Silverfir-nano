@@ -448,10 +448,11 @@ mod tests {
     use super::ensure_module_compiled;
     use crate::{
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        utils::limits::Limits,
         value_type::ValueType,
         vm::{
             arch::{backend_mode_test_lock, set_reference_backend_mode},
-            entities::{FunctionInst, ModuleInst},
+            entities::{FunctionInst, MemInst, ModuleInst},
             store::Store,
         },
         ReferenceBackendMode,
@@ -557,6 +558,49 @@ mod tests {
     }
 
     #[test]
+    fn emu64_compiled_module_publishes_local_call_info_table() {
+        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu64);
+
+        let types = TypeContext::new(vec![
+            Rc::new(FunctionType::new(vec![], vec![])),
+            Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32])),
+        ]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        let mut spec0 = FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
+        spec0.set_code((&[0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: spec0,
+            type_index: 0,
+        });
+
+        let mut spec1 = FunctionSpec::new(
+            Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32])),
+            1,
+        );
+        spec1.set_code((&[0x20, 0x00, 0x0b][..]).into());
+        module.functions.push(FunctionInst::Local {
+            spec: spec1,
+            type_index: 1,
+        });
+
+        let store = Box::new(Store::new(module));
+        ensure_module_compiled(&store).expect("emu64 native compile should succeed");
+
+        let compiled = store.module().functions[0]
+            .spec()
+            .and_then(|spec| spec.get_native_code())
+            .expect("first native code")
+            .compiled();
+        let local_call_infos = compiled.dispatch_metadata().local_call_infos();
+        assert_eq!(local_call_infos.len(), 2);
+        assert!(
+            !local_call_infos.base().is_null(),
+            "reference-backend compiled module must publish local call infos for indirect local calls"
+        );
+    }
+
+    #[test]
     fn compiles_function_with_f64_local() {
         // (func (param f64) (result f64) (local.get 0))
         // Bytecode: local.get 0, end
@@ -654,6 +698,71 @@ mod tests {
         let store = Box::new(Store::new(module));
 
         ensure_module_compiled(&store).expect("f32 if/else function should compile");
+    }
+
+    #[test]
+    fn compiles_f32_kahan_sum_style_loop() {
+        // Reduced from `float_exprs.wast` `f32.kahan_sum`.
+        //
+        // The important shape is:
+        // - three F32 locals
+        // - nested `local.tee` on F32 values
+        // - a loop backedge guarded by `br_if`
+        // - a live F32 value carried through the block right up to the
+        //   terminator
+        //
+        // Native ARM64 compilation was previously failing here with:
+        // "missing float-width tracking for machine reg ... at bN terminator".
+        let ty = Rc::new(FunctionType::new(
+            vec![ValueType::I32, ValueType::I32],
+            vec![ValueType::F32],
+        ));
+        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
+        spec.set_locals(vec![ValueType::F32, ValueType::F32, ValueType::F32]);
+        spec.set_code(
+            (&[
+                0x02, 0x40, // block
+                0x03, 0x40, // loop
+                0x20, 0x00, // local.get 0
+                0x2a, 0x02, 0x00, // f32.load align=2 offset=0
+                0x20, 0x04, // local.get 4
+                0x93, // f32.sub
+                0x22, 0x04, // local.tee 4
+                0x20, 0x03, // local.get 3
+                0x92, // f32.add
+                0x22, 0x02, // local.tee 2
+                0x20, 0x03, // local.get 3
+                0x93, // f32.sub
+                0x20, 0x04, // local.get 4
+                0x93, // f32.sub
+                0x21, 0x04, // local.set 4
+                0x20, 0x00, // local.get 0
+                0x41, 0x04, // i32.const 4
+                0x6a, // i32.add
+                0x21, 0x00, // local.set 0
+                0x20, 0x02, // local.get 2
+                0x21, 0x03, // local.set 3
+                0x20, 0x01, // local.get 1
+                0x41, 0x7f, // i32.const -1
+                0x6a, // i32.add
+                0x22, 0x01, // local.tee 1
+                0x0d, 0x00, // br_if 0
+                0x0b, // end loop
+                0x0b, // end block
+                0x20, 0x02, // local.get 2
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local { spec, type_index: 0 });
+        module
+            .memories
+            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        let store = Box::new(Store::new(module));
+
+        ensure_module_compiled(&store).expect("f32 kahan-style loop should compile");
     }
 
     #[test]

@@ -120,17 +120,6 @@ pub(crate) struct BlockEntryStackRegion {
     pub values: Vec<BlockStackValueInfo>,
 }
 
-impl BlockEntryStackRegion {
-    #[inline]
-    pub(crate) fn score_suffix(&self, spill_depth: u16) -> i32 {
-        self.values
-            .iter()
-            .filter(|info| info.stack_index >= spill_depth)
-            .map(|info| info.hot_score)
-            .sum()
-    }
-}
-
 /// Whole-block use summary for one transient stack symbol.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TransientSymbolInfo {
