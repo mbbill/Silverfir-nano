@@ -324,15 +324,10 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(());
         }
 
-        let dst_reg = self.alloc_slot_load_value(dst)?;
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                ty: cached.ty,
-                dst: dst_reg,
-                src: MachineValue::Reg(cached.reg),
-            },
-        });
+        // Source-alias: map value directly to cache register, no emit.
+        // materialize_cache_aliases will copy aliased values out before the
+        // cache register is overwritten by a later LocalSetCache or drop.
+        self.push_value_location(dst, cached.reg, None);
         Ok(())
     }
 
