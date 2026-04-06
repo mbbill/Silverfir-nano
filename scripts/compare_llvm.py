@@ -182,16 +182,27 @@ def parse_hotspots_from_profile(profile_path: Path, limit: int = 100) -> List[Ho
         return []
 
     entries = []
-    # Expected format:  "  12.3%   15.4%  jit::main::func6::b7_..."
-    pct_re = re.compile(r"^\s*([\d.]+)%\s+([\d.]+)%\s+(.+)$")
-    for line in result.stdout.splitlines():
-        m = pct_re.match(line)
-        if m:
+    # samply-for-ai outputs JSON
+    try:
+        data = json.loads(result.stdout)
+        for item in data.get("data", []):
+            func = item.get("function", {})
             entries.append(HotspotEntry(
-                symbol=m.group(3).strip(),
-                self_pct=float(m.group(1)),
-                total_pct=float(m.group(2)),
+                symbol=func.get("name", ""),
+                self_pct=item.get("self_percent", 0.0),
+                total_pct=item.get("total_percent", 0.0),
             ))
+    except json.JSONDecodeError:
+        # Fallback: try text format "  12.3%   15.4%  symbol"
+        pct_re = re.compile(r"^\s*([\d.]+)%\s+([\d.]+)%\s+(.+)$")
+        for line in result.stdout.splitlines():
+            m = pct_re.match(line)
+            if m:
+                entries.append(HotspotEntry(
+                    symbol=m.group(3).strip(),
+                    self_pct=float(m.group(1)),
+                    total_pct=float(m.group(2)),
+                ))
     return entries
 
 
@@ -400,7 +411,7 @@ def print_side_by_side(
     llvm_postopt = read_file_text(llvm_hash_dir / f"function_{llvm_idx}.postopt.ll")
     if llvm_postopt:
         print("=" * 80)
-        print(f"LLVM OPTIMIZED IR (function_{llvm_local_idx}.postopt.ll)")
+        print(f"LLVM OPTIMIZED IR (function_{llvm_idx}.postopt.ll)")
         print("=" * 80)
         print(llvm_postopt)
 

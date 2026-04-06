@@ -240,6 +240,27 @@ in machine lowering. If SSA IR is already bloated compared to LLVM's
 optimized IR, the problem is in the middle layer. Let the numbers and
 the comparison tell you where to look.
 
+### Read the design docs and code structure before fixing
+
+Before writing any fix, read the relevant design documents and the
+surrounding code in the layer where the problem lives:
+
+- **Middle layer** (`sf-nano-core/src/vm/middle/`): region solver
+  (`joint_plan/region_solver.rs`), rewriter (`rewrite/function.rs`),
+  SSA IR (`ssa_ir/ir.rs`), cache planning (`joint_plan/build.rs`)
+- **Machine layer** (`sf-nano-core/src/vm/machine/`): lowering context
+  (`lower_context.rs`), instruction lowering (`lower_inst.rs`),
+  register allocation (`lower_regalloc.rs`), cache layout
+  (`lower_cache_layout.rs`), peephole passes (`peephole/`)
+- **Design docs**: `ALGORITHM4.md` (cost-optimal public residency via
+  region-tree DP), `LANE_MAPPING.md` (order-aware cache placement)
+
+The fix must be aligned with the existing architecture. A local hack
+that ignores the design will break invariants or conflict with planned
+work. If the design doc describes a mechanism that should handle your
+case but does not, the fix belongs in that mechanism — not in a new
+ad-hoc path.
+
 ### Do not speculate about correctness
 
 When you find a conservative code path (e.g., always emitting a copy),
