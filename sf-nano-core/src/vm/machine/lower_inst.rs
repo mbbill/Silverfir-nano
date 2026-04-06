@@ -109,7 +109,13 @@ impl<'a> BlockLowerContext<'a> {
         let Some(cached_index) = self.cached_local_index(sink_slot) else {
             return Ok(());
         };
-        let cached = self.ensure_bound_cached_local(cached_index)?;
+        // Only premap when the cache is already bound. If not yet bound,
+        // skip — the later LocalSetCache will handle binding via
+        // try_bind_cached_local_from_dying_value without needing an
+        // extra register.
+        let Some(cached) = self.bound_cached_local(cached_index) else {
+            return Ok(());
+        };
         let cache_reg = cached.reg;
         let cache_hi_reg = cached.hi_reg;
         let mut arg_vals = [SsaValue(u32::MAX); 4];

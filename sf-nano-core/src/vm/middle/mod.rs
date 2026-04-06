@@ -15,6 +15,7 @@ mod cleanup;
 mod joint_plan;
 mod optimize;
 mod rewrite;
+mod sink_plan;
 mod slot_ssa;
 
 #[cfg(test)]
@@ -72,6 +73,7 @@ pub(crate) fn prepare_function(
         rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
     cleanup::cleanup_program(&mut ssa);
     optimize::optimize_program(&mut ssa);
+    sink_plan::plan_sinks(&mut ssa);
     validate_program(&ssa)?;
 
     Ok(PreparedFunction { frame, ssa })
