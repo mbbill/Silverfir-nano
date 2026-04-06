@@ -20,6 +20,17 @@ use crate::vm::{
     },
 };
 
+fn total_gp_budget_for_allocatable(allocatable_gp_budget: u8, gp_unit_bytes: u8) -> u8 {
+    if allocatable_gp_budget == 0 {
+        return 0;
+    }
+    if gp_unit_bytes == 4 {
+        allocatable_gp_budget.saturating_add(if allocatable_gp_budget == 1 { 1 } else { 2 })
+    } else {
+        allocatable_gp_budget.saturating_add(1)
+    }
+}
+
 pub(super) struct PlannedPipeline {
     pub frame: FrameLayoutPlan,
     pub cfg: SemanticCfg,
@@ -30,7 +41,12 @@ pub(super) struct PlannedPipeline {
 pub(super) fn host_config(gp_dynamic_budget: u8, fp_dynamic_budget: u8) -> BackendConfig {
     // The middle-end tests only care about relative pressure behavior, so the
     // host-sized GP unit and normal 64-bit scratch layout are enough.
-    BackendConfig::new(gp_dynamic_budget, fp_dynamic_budget, 8, 3)
+    BackendConfig::new(
+        total_gp_budget_for_allocatable(gp_dynamic_budget, 8),
+        fp_dynamic_budget,
+        8,
+        3,
+    )
 }
 
 #[inline]
@@ -164,29 +180,6 @@ pub(super) fn first_local_get_for(program: &SsaProgram, slot: FrameSlot) -> Opti
     })
 }
 
-pub(super) fn local_set_kinds_for<'a>(
-    program: &'a SsaProgram,
-    slot: FrameSlot,
-) -> Vec<&'a SsaInstKind> {
-    all_inst_kinds(program)
-        .into_iter()
-        .filter(|kind| {
-            matches!(
-                kind,
-                SsaInstKind::LocalSetSlot { slot: got, .. }
-                    | SsaInstKind::LocalSetCache { slot: got, .. }
-                    if *got == slot
-            )
-        })
-        .collect()
-}
-
-pub(super) fn contains_drop_cache(program: &SsaProgram, slot: FrameSlot) -> bool {
-    all_inst_kinds(program)
-        .into_iter()
-        .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot: got } if *got == slot))
-}
-
 pub(super) fn contains_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> bool {
     all_inst_kinds(program)
         .into_iter()
@@ -231,4 +224,22 @@ pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize)
     *cfg.semantic_to_block
         .get(semantic_index)
         .unwrap_or_else(|| panic!("semantic index {semantic_index} should map to one CFG block"))
+}
+
+pub(super) fn prepared_block_for_semantic_index(
+    prepared: &PreparedFunction,
+    cfg: &SemanticCfg,
+    semantic_index: usize,
+) -> usize {
+    let cfg_block = block_for_semantic_index(cfg, semantic_index);
+    prepared
+        .ssa
+        .final_block_for_cfg_block(cfg_block.0)
+        .unwrap_or_else(|| {
+            panic!(
+                "final SSA program should preserve a block origin for CFG block {} (semantic index {semantic_index})",
+                cfg_block.0
+            )
+        })
+        .as_usize()
 }

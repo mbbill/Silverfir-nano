@@ -1,25 +1,23 @@
-//! Boundary-shaping helpers.
+//! Rewrite-facing block and op boundary decisions.
 //!
-//! Cached-local entry is the real boundary policy problem in the current
-//! middle-end. Stack/SSA edge shape is already mostly solved by Wasm semantics
-//! plus block params. The planner chooses a tentative cached-local entry set
-//! per block, rewrite lowers once from it, and then finalizes the public block
-//! entry from actual use/exit feedback.
+//! Under `ALGORITHM4`, cached-local public residency is solved before rewrite.
+//! Every block simply opens with its solved public set, and cached-local
+//! membership no longer changes as a side effect of local accesses.
 
-use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::vm::middle::cfg::CfgBlockId;
+use crate::vm::middle::frame::FrameSlot;
+use crate::vm::middle::{
+    budget::count_live_bank_budget_units,
+    joint_plan::pressure::{keep_key, slot_bank, slot_cost, weakest_cached_local, CacheBank},
+};
 
 use super::{
-    facts::{EntryState, FunctionPlan, LocalOpKind},
+    facts::{EntryState, FunctionPlan},
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, TargetEntryDecision, TransientContract,
-    },
-    local_access::decide_local_access,
-    pressure::{
-        drop_until_fits, fits_with_extra_cached_local, keep_key, slot_bank,
-        target_keep_key_after_local_access, weakest_cached_local,
+        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, PressureFallbackQuery,
+        TargetEntryDecision, TransientContract,
     },
 };
 
@@ -52,122 +50,113 @@ pub(crate) fn target_entry_decision(
     }
 }
 
+#[inline]
 pub(crate) fn before_op_decision<'plan>(
     plan: &'plan FunctionPlan,
-    op_force_drop_all_caches: &[bool],
     query: BeforeOpQuery<'_>,
 ) -> BeforeOpDecision<'plan> {
+    let _ = query.resident_cache;
+    BeforeOpDecision {
+        transient: transient_contract(&plan.op_plans[query.semantic_index].before),
+        drop_cached_locals: Vec::new(),
+    }
+}
+
+#[inline]
+pub(crate) fn finalize_block_entry_cached_locals(
+    plan: &FunctionPlan,
+    block: CfgBlockId,
+    _actual_exit: &[crate::vm::middle::frame::FrameSlot],
+) -> Vec<crate::vm::middle::frame::FrameSlot> {
+    plan.blocks[block.as_usize()]
+        .tentative_entry_cached_locals
+        .clone()
+}
+
+pub(crate) fn pressure_fallback_drops(
+    plan: &FunctionPlan,
+    query: PressureFallbackQuery<'_>,
+) -> Vec<FrameSlot> {
+    let effective_live_types = query
+        .live_types
+        .iter()
+        .zip(query.live_aliases.iter())
+        .filter_map(|(ty, alias)| {
+            alias
+                .and_then(|slot| query.resident_cache.contains(&slot).then_some(()))
+                .is_none()
+                .then_some(*ty)
+        })
+        .collect::<Vec<_>>();
+    let (gp_live, fp_live) = count_live_bank_budget_units(&effective_live_types, plan.gp_unit_bytes);
+    let mut gp_cache = 0usize;
+    let mut fp_cache = 0usize;
+    for &slot in query.resident_cache {
+        match slot_bank(&plan.local_slot_types, slot) {
+            CacheBank::Gp => gp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot),
+            CacheBank::Fp => fp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot),
+        }
+    }
+
     let mut working = query
         .resident_cache
         .iter()
         .copied()
-        .collect::<BTreeSet<_>>();
-    let mut drop_cached_locals = Vec::new();
+        .collect::<alloc::collections::BTreeSet<_>>();
+    let mut dropped = Vec::new();
 
-    // Hard barriers flush all cached locals unconditionally.
-    if op_force_drop_all_caches
-        .get(query.semantic_index)
-        .copied()
-        .unwrap_or(false)
+    while gp_live + gp_cache > plan.gp_dynamic_budget as usize
+        || fp_live + fp_cache > plan.fp_dynamic_budget as usize
     {
-        drop_cached_locals.extend(working.iter().copied());
-        working.clear();
-    }
-
-    // For get/tee, decide whether the target local deserves one extra cache
-    // slot after the op. If yes and budgets are tight, drop the weakest cached
-    // local in the same bank before lowering the op.
-    if let Some((slot, kind)) = plan.op_info[query.semantic_index].local_op {
-        if matches!(kind, LocalOpKind::Get | LocalOpKind::Tee) && !working.contains(&slot) {
-            let access = decide_local_access(
+        let need_gp = gp_live + gp_cache > plan.gp_dynamic_budget as usize;
+        let need_fp = fp_live + fp_cache > plan.fp_dynamic_budget as usize;
+        let gp_victim = need_gp.then(|| {
+            weakest_cached_local(
                 plan,
-                super::interface::LocalAccessQuery {
-                    semantic_index: query.semantic_index,
-                    slot,
-                    resident_cache: &working,
-                },
-            );
-            if matches!(access, super::interface::LocalAccessDecision::Cache)
-                && !fits_with_extra_cached_local(plan, query.semantic_index, &working, slot)
-            {
-                let target_keep =
-                    target_keep_key_after_local_access(plan, query.semantic_index, slot);
-                while !fits_with_extra_cached_local(plan, query.semantic_index, &working, slot) {
-                    let Some(victim) = weakest_cached_local(
-                        plan,
-                        query.semantic_index,
-                        &working,
-                        slot_bank(&plan.local_slot_types, slot),
-                        None,
-                    ) else {
-                        break;
-                    };
-                    if keep_key(plan, query.semantic_index, victim, None, false) >= target_keep {
-                        break;
-                    }
-                    working.remove(&victim);
-                    drop_cached_locals.push(victim);
+                query.semantic_index,
+                &working,
+                CacheBank::Gp,
+                None,
+            )
+        }).flatten();
+        let fp_victim = need_fp.then(|| {
+            weakest_cached_local(
+                plan,
+                query.semantic_index,
+                &working,
+                CacheBank::Fp,
+                None,
+            )
+        }).flatten();
+
+        let victim = match (gp_victim, fp_victim) {
+            (Some(gp_slot), Some(fp_slot)) => {
+                let gp_keep = keep_key(plan, query.semantic_index, gp_slot, None, false);
+                let fp_keep = keep_key(plan, query.semantic_index, fp_slot, None, false);
+                if gp_keep <= fp_keep {
+                    gp_slot
+                } else {
+                    fp_slot
                 }
             }
-        }
-    }
-
-    // After optional admission drops, trim any cached locals that still make
-    // the current transient live window overflow the dynamic bank budgets.
-    for slot in drop_until_fits(plan, query.semantic_index, &working, None, None) {
-        if working.remove(&slot) {
-            drop_cached_locals.push(slot);
-        }
-    }
-
-    BeforeOpDecision {
-        transient: transient_contract(before_op_entry_state(plan, query.semantic_index)),
-        drop_cached_locals,
-    }
-}
-
-/// Finalize a public block entry after lowering once from the tentative entry.
-///
-/// The only legal post-lowering trim is removing locals whose *entry presence*
-/// turned out to be unnecessary.
-///
-/// A cached local stays in the public block entry if either:
-/// - the block really needs the incoming value from entry (read-first in the
-///   entry region), or
-/// - it survives to the observed block exit
-///
-/// This is the intended split between residency and materialization:
-/// - read-first locals need a real incoming value
-/// - write-first locals may not need the old value, but they still deserve a
-///   hot boundary lane if the block keeps them live through exit
-///
-/// That lets the cold edge use `LocalReserveCache` while the hot loop backedge
-/// carries the already-materialized value directly. Write-first temporaries
-/// that die before exit are still trimmed automatically because they fail the
-/// `actual_exit.contains(slot)` test below.
-pub(crate) fn finalize_block_entry_cached_locals(
-    plan: &FunctionPlan,
-    block: CfgBlockId,
-    actual_exit: &[crate::vm::middle::frame::FrameSlot],
-) -> Vec<crate::vm::middle::frame::FrameSlot> {
-    let block_index = block.as_usize();
-    let tentative_entry = &plan.blocks[block_index].tentative_entry_cached_locals;
-    let region = &plan.block_regions[block_index];
-    tentative_entry
-        .iter()
-        .copied()
-        .filter(|slot| {
-            let first_access = region
-                .info(*slot)
-                .and_then(|info| info.entry_first_access_kind);
-            match first_access {
-                Some(crate::vm::middle::joint_plan::facts::FirstAccessKind::ReadFirst) => true,
-                Some(crate::vm::middle::joint_plan::facts::FirstAccessKind::WriteFirst) | None => {
-                    actual_exit.contains(slot)
-                }
+            (Some(slot), None) | (None, Some(slot)) => slot,
+            (None, None) => break,
+        };
+        working.remove(&victim);
+        match slot_bank(&plan.local_slot_types, victim) {
+            CacheBank::Gp => {
+                gp_cache = gp_cache
+                    .saturating_sub(slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, victim))
             }
-        })
-        .collect()
+            CacheBank::Fp => {
+                fp_cache = fp_cache
+                    .saturating_sub(slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, victim))
+            }
+        }
+        dropped.push(victim);
+    }
+
+    dropped
 }
 
 #[inline]
@@ -177,15 +166,4 @@ fn transient_contract(entry: &EntryState) -> TransientContract<'_> {
         spill_depth: entry.spill_depth,
         live_types: &entry.live_types,
     }
-}
-
-#[inline]
-fn before_op_entry_state(plan: &FunctionPlan, semantic_index: usize) -> &EntryState {
-    // `block_open` / `target_entry` expose the structural block boundary.
-    // `before_op` is stricter: it must return the exact transient contract
-    // required immediately before executing this semantic op. For the first op
-    // in a block, that may require filling values from the structural entry
-    // boundary (for example loop params consumed by the first body op), so we
-    // always use the per-op pre-state here instead of the raw block-open entry.
-    &plan.op_plans[semantic_index].before
 }

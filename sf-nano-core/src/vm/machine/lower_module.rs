@@ -879,7 +879,7 @@ pub(super) fn preferred_gp_dynamic_reg(
     regfile: &MachineRegFile,
     ordinal: usize,
 ) -> Option<MachineReg> {
-    regfile.ordered_gp_dynamic(ordinal)
+    regfile.ordered_gp_allocatable(ordinal)
 }
 
 pub(super) fn preferred_fp_dynamic_reg(

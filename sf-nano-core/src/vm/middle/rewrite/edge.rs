@@ -6,24 +6,29 @@
 use alloc::vec::Vec;
 
 use crate::vm::middle::{
-    cfg::CfgBlockId,
     frame::FrameSlot,
-    joint_plan::{EdgeRepairQuery, JointPlanner},
     ssa_ir::{
         ir::{
-            SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaProgram, SsaTerminator,
-            SsaValue,
+            entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge,
+            SsaInst, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
         },
         target::SsaTarget,
     },
 };
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RepairActions {
+    ensure_cached_locals: Vec<FrameSlot>,
+    reserve_cached_locals: Vec<FrameSlot>,
+    drop_cached_locals: Vec<FrameSlot>,
+}
+
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
     exit_cached_slots: &[Vec<FrameSlot>],
-    planner: &JointPlanner,
 ) {
     let original_len = program.blocks.len();
+    let target_blocks = program.blocks.clone();
     let target_params = program
         .blocks
         .iter()
@@ -42,12 +47,13 @@ pub(super) fn insert_boundary_repair_blocks(
             SsaTerminator::Goto(edge) => maybe_repair_edge(
                 edge,
                 &pred_exit,
+                &target_blocks,
                 &target_entries,
                 &target_params,
                 &mut extra_blocks,
                 &mut program.block_entry_cached_slots,
+                &mut program.block_cfg_origins,
                 original_len,
-                planner,
             ),
             SsaTerminator::Branch {
                 then_edge,
@@ -57,22 +63,24 @@ pub(super) fn insert_boundary_repair_blocks(
                 maybe_repair_edge(
                     then_edge,
                     &pred_exit,
+                    &target_blocks,
                     &target_entries,
                     &target_params,
                     &mut extra_blocks,
                     &mut program.block_entry_cached_slots,
+                    &mut program.block_cfg_origins,
                     original_len,
-                    planner,
                 );
                 maybe_repair_edge(
                     else_edge,
                     &pred_exit,
+                    &target_blocks,
                     &target_entries,
                     &target_params,
                     &mut extra_blocks,
                     &mut program.block_entry_cached_slots,
+                    &mut program.block_cfg_origins,
                     original_len,
-                    planner,
                 );
             }
             SsaTerminator::BrTable { entries, .. } => {
@@ -80,12 +88,13 @@ pub(super) fn insert_boundary_repair_blocks(
                     maybe_repair_edge(
                         edge,
                         &pred_exit,
+                        &target_blocks,
                         &target_entries,
                         &target_params,
                         &mut extra_blocks,
                         &mut program.block_entry_cached_slots,
+                        &mut program.block_cfg_origins,
                         original_len,
-                        planner,
                     );
                 }
             }
@@ -95,11 +104,11 @@ pub(super) fn insert_boundary_repair_blocks(
 
     maybe_repair_entry(
         program,
+        &target_blocks,
         &target_entries,
         &target_params,
         &mut extra_blocks,
         original_len,
-        planner,
     );
     program.blocks.extend(extra_blocks);
 }
@@ -107,20 +116,21 @@ pub(super) fn insert_boundary_repair_blocks(
 fn maybe_repair_edge(
     edge: &mut SsaEdge,
     pred_exit: &[FrameSlot],
+    target_blocks: &[SsaBlock],
     target_entries: &[Vec<FrameSlot>],
     target_params: &[Vec<SsaValue>],
     extra_blocks: &mut Vec<SsaBlock>,
     block_entry_cached_slots: &mut Vec<Vec<FrameSlot>>,
+    block_cfg_origins: &mut Vec<Vec<u32>>,
     original_len: usize,
-    planner: &JointPlanner,
 ) {
     let target_id = edge.target.as_usize();
     let target_entry = target_entries.get(target_id).cloned().unwrap_or_default();
-    let repair = planner.edge_repair(EdgeRepairQuery {
-        succ_block: (target_id < original_len).then_some(CfgBlockId(target_id as u32)),
-        pred_exit,
-        succ_entry: &target_entry,
-    });
+    let target_ops = target_blocks
+        .get(target_id)
+        .map(|block| block.ops.as_slice())
+        .unwrap_or(&[]);
+    let repair = derive_edge_repair(pred_exit, &target_entry, target_ops);
     if repair.ensure_cached_locals.is_empty()
         && repair.reserve_cached_locals.is_empty()
         && repair.drop_cached_locals.is_empty()
@@ -164,27 +174,28 @@ fn maybe_repair_edge(
         terminator: SsaTerminator::Goto(repair_edge),
     });
     block_entry_cached_slots.push(pred_exit.to_vec());
+    block_cfg_origins.push(Vec::new());
     edge.target = repair_id;
 }
 
 fn maybe_repair_entry(
     program: &mut SsaProgram,
+    target_blocks: &[SsaBlock],
     target_entries: &[Vec<FrameSlot>],
     target_params: &[Vec<SsaValue>],
     extra_blocks: &mut Vec<SsaBlock>,
     original_len: usize,
-    planner: &JointPlanner,
 ) {
     let entry_target = program.entry.as_usize();
     let entry_cached = target_entries
         .get(entry_target)
         .cloned()
         .unwrap_or_default();
-    let repair = planner.edge_repair(EdgeRepairQuery {
-        succ_block: (entry_target < original_len).then_some(CfgBlockId(entry_target as u32)),
-        pred_exit: &[],
-        succ_entry: &entry_cached,
-    });
+    let target_ops = target_blocks
+        .get(entry_target)
+        .map(|block| block.ops.as_slice())
+        .unwrap_or(&[]);
+    let repair = derive_edge_repair(&[], &entry_cached, target_ops);
     if repair.ensure_cached_locals.is_empty()
         && repair.reserve_cached_locals.is_empty()
         && repair.drop_cached_locals.is_empty()
@@ -228,5 +239,30 @@ fn maybe_repair_entry(
         terminator: SsaTerminator::Goto(repair_edge),
     });
     program.block_entry_cached_slots.push(Vec::new());
+    program.block_cfg_origins.push(Vec::new());
     program.entry = repair_id;
+}
+
+fn derive_edge_repair(
+    pred_exit: &[FrameSlot],
+    succ_entry: &[FrameSlot],
+    target_ops: &[SsaInst],
+) -> RepairActions {
+    let mut repair = RepairActions::default();
+    for &slot in pred_exit {
+        if !succ_entry.contains(&slot) {
+            repair.drop_cached_locals.push(slot);
+        }
+    }
+    for &slot in succ_entry {
+        if pred_exit.contains(&slot) {
+            continue;
+        }
+        match entry_cache_requirement(target_ops, slot, succ_entry.contains(&slot)) {
+            Some(EntryCacheRequirement::Ensure) => repair.ensure_cached_locals.push(slot),
+            Some(EntryCacheRequirement::Reserve) => repair.reserve_cached_locals.push(slot),
+            None => {}
+        }
+    }
+    repair
 }

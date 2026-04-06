@@ -14,6 +14,7 @@ use crate::{
     value_type::ValueType,
     vm::middle::{
         budget::count_live_bank_budget_units,
+        frame::FrameSlot,
         joint_plan::TransientContract,
         ssa_ir::ir::{SsaInst, SsaValue},
     },
@@ -65,6 +66,7 @@ pub(super) struct BlockState {
     spill_depth: u16,
     live: Vec<SsaValue>,
     pub(super) live_types: Vec<ValueType>,
+    live_aliases: Vec<Option<FrameSlot>>,
     pub(super) ops: Vec<SsaInst>,
 }
 
@@ -84,6 +86,7 @@ impl BlockState {
             spill_depth: entry.spill_depth,
             live: params.to_vec(),
             live_types: entry.live_types.to_vec(),
+            live_aliases: alloc::vec![None; params.len()],
             ops: Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
@@ -124,6 +127,7 @@ impl BlockState {
             .pop()
             .ok_or_else(|| WasmError::internal("transient underflow".into()))?;
         self.live_types.pop();
+        self.live_aliases.pop();
         self.stack_height = self.stack_height.saturating_sub(1);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(value)
@@ -140,6 +144,7 @@ impl BlockState {
         let new_len = self.live.len().saturating_sub(count);
         self.live.truncate(new_len);
         self.live_types.truncate(new_len);
+        self.live_aliases.truncate(new_len);
         self.stack_height = self.stack_height.saturating_sub(count as u16);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(())
@@ -150,9 +155,22 @@ impl BlockState {
         results: Vec<SsaValue>,
         result_types: Vec<ValueType>,
     ) -> Result<(), WasmError> {
+        let alias_len = results.len();
+        self.push_results_with_aliases(results, result_types, alloc::vec![None; alias_len])
+    }
+
+    pub(super) fn push_results_with_aliases(
+        &mut self,
+        results: Vec<SsaValue>,
+        result_types: Vec<ValueType>,
+        result_aliases: Vec<Option<FrameSlot>>,
+    ) -> Result<(), WasmError> {
+        debug_assert_eq!(results.len(), result_types.len());
+        debug_assert_eq!(results.len(), result_aliases.len());
         self.stack_height = self.stack_height.saturating_add(results.len() as u16);
         self.live.extend(results);
         self.live_types.extend(result_types);
+        self.live_aliases.extend(result_aliases);
         self.ensure_live_fit("value push")
     }
 
@@ -167,6 +185,7 @@ impl BlockState {
         }
         let spilled = self.live.drain(..count).collect::<Vec<_>>();
         self.live_types.drain(..count);
+        self.live_aliases.drain(..count);
         self.spill_depth = self.spill_depth.saturating_add(count as u16);
         Ok(spilled)
     }
@@ -176,13 +195,17 @@ impl BlockState {
         values: Vec<SsaValue>,
         value_types: Vec<ValueType>,
     ) -> Result<(), WasmError> {
-        self.spill_depth = self.spill_depth.saturating_sub(values.len() as u16);
+        let fill_count = values.len();
+        self.spill_depth = self.spill_depth.saturating_sub(fill_count as u16);
         let mut new_live = values;
         new_live.extend(self.live.drain(..));
         self.live = new_live;
         let mut new_live_types = value_types;
         new_live_types.extend(self.live_types.drain(..));
         self.live_types = new_live_types;
+        let mut new_live_aliases = alloc::vec![None; fill_count];
+        new_live_aliases.extend(self.live_aliases.drain(..));
+        self.live_aliases = new_live_aliases;
         self.ensure_live_fit("prefix fill")
     }
 
@@ -194,10 +217,22 @@ impl BlockState {
         self.spill_depth = self.stack_height;
         self.live.clear();
         self.live_types.clear();
+        self.live_aliases.clear();
+    }
+
+    pub(super) fn live_aliases(&self) -> &[Option<FrameSlot>] {
+        &self.live_aliases
     }
 
     fn ensure_live_fit(&self, context: &str) -> Result<(), WasmError> {
-        let (gp_live, fp_live) = count_live_bank_budget_units(&self.live_types, self.gp_unit_bytes);
+        let effective_live_types = self
+            .live_types
+            .iter()
+            .zip(self.live_aliases.iter())
+            .filter_map(|(ty, alias)| alias.is_none().then_some(*ty))
+            .collect::<Vec<_>>();
+        let (gp_live, fp_live) =
+            count_live_bank_budget_units(&effective_live_types, self.gp_unit_bytes);
         if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {
             return Err(WasmError::internal(alloc::format!(
                 "SSA-IR exceeds configured dynamic bank budget during {context}: gp {} > {} or fp {} > {}",

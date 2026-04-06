@@ -193,6 +193,15 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
             if !params.is_empty() || !out_edge.bindings.is_empty() {
                 continue;
             }
+            if program
+                .block_entry_cached_slots
+                .get(out_edge.target.as_usize())
+                .map(|slots| !slots.is_empty())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            merge_block_origins_into_target(program, block_index, out_edge.target.as_usize());
             program.entry = out_edge.target;
             remove_blocks(program, &[block_index]);
             return true;
@@ -219,6 +228,7 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
         for (loc, new_edge) in incoming.into_iter().zip(composed.into_iter()) {
             *edge_at_mut(program, loc) = new_edge;
         }
+        merge_block_origins_into_target(program, block_index, out_edge.target.as_usize());
         remove_blocks(program, &[block_index]);
         return true;
     }
@@ -258,6 +268,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
 
         program.blocks[pred_index].ops.extend(merged_ops);
         program.blocks[pred_index].terminator = merged_terminator;
+        merge_block_origins(pred_index, succ_index, &mut program.block_cfg_origins);
         remove_blocks(program, &[succ_index]);
         return true;
     }
@@ -492,6 +503,17 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
             .len()
             .saturating_sub(removed.len()),
     );
+    let keep_origins = !program.block_cfg_origins.is_empty();
+    let mut new_origins = if keep_origins {
+        Vec::with_capacity(
+            program
+                .block_cfg_origins
+                .len()
+                .saturating_sub(removed.len()),
+        )
+    } else {
+        Vec::new()
+    };
     for (old_index, mut block) in program.blocks.drain(..).enumerate() {
         if removed.contains(&old_index) {
             continue;
@@ -500,11 +522,47 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
         block.id = mapping[old_index];
         new_blocks.push(block);
         new_entries.push(program.block_entry_cached_slots[old_index].clone());
+        if keep_origins {
+            new_origins.push(program.block_cfg_origins[old_index].clone());
+        }
     }
 
     program.entry = mapping[program.entry.as_usize()];
     program.blocks = new_blocks;
     program.block_entry_cached_slots = new_entries;
+    if keep_origins {
+        program.block_cfg_origins = new_origins;
+    }
+}
+
+fn merge_block_origins_into_target(program: &mut SsaProgram, from: usize, to: usize) {
+    if program.block_cfg_origins.is_empty()
+        || from == to
+        || from >= program.block_cfg_origins.len()
+        || to >= program.block_cfg_origins.len()
+    {
+        return;
+    }
+    let from_origins = program.block_cfg_origins[from].clone();
+    for origin in from_origins {
+        if !program.block_cfg_origins[to].contains(&origin) {
+            program.block_cfg_origins[to].push(origin);
+        }
+    }
+    program.block_cfg_origins[to].sort_unstable();
+}
+
+fn merge_block_origins(dst: usize, src: usize, origins: &mut [Vec<u32>]) {
+    if origins.is_empty() || dst == src || dst >= origins.len() || src >= origins.len() {
+        return;
+    }
+    let src_origins = origins[src].clone();
+    for origin in src_origins {
+        if !origins[dst].contains(&origin) {
+            origins[dst].push(origin);
+        }
+    }
+    origins[dst].sort_unstable();
 }
 
 fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
@@ -666,6 +724,7 @@ mod tests {
             local_slot_types: Vec::new(),
             local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
+        block_cfg_origins: alloc::vec![],
             value_types: alloc::vec![crate::value_type::ValueType::I32; 32],
             value_sink_local: alloc::vec![None; 32],
         };
@@ -719,6 +778,7 @@ mod tests {
             local_slot_types: alloc::vec![crate::value_type::ValueType::I32],
             local_slot_info: alloc::vec![Default::default()],
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new()],
+        block_cfg_origins: alloc::vec![],
             value_types: alloc::vec![crate::value_type::ValueType::I32; 16],
             value_sink_local: alloc::vec![None; 16],
         };
@@ -770,6 +830,7 @@ mod tests {
             local_slot_types: Vec::new(),
             local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
+        block_cfg_origins: alloc::vec![],
             value_types: Vec::new(),
             value_sink_local: Vec::new(),
         };

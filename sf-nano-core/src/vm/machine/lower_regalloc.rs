@@ -39,6 +39,7 @@ use super::lower_context::BlockLowerContext;
 pub(super) struct MachineRegFile {
     gp_dynamic: Vec<MachineReg>,
     fp_dynamic: Vec<MachineReg>,
+    gp_allocatable_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
 }
@@ -53,6 +54,7 @@ impl MachineRegFile {
 
         let mut next = MACHINE_FIXED_REG_COUNT;
         let gp_dynamic = collect_regs(&mut next, config.gp_dynamic_budget);
+        let gp_allocatable_count = usize::from(config.allocatable_gp_dynamic_budget());
         let first_fp_reg = next;
         let fp_dynamic = collect_regs(&mut next, config.fp_dynamic_budget);
 
@@ -60,6 +62,7 @@ impl MachineRegFile {
         Ok(Self {
             gp_dynamic,
             fp_dynamic,
+            gp_allocatable_count,
             first_fp_reg,
             reg_count: next,
         })
@@ -98,6 +101,18 @@ impl MachineRegFile {
     #[inline]
     pub(super) fn ordered_gp_dynamic(&self, index: usize) -> Option<MachineReg> {
         self.gp_dynamic.get(index).copied()
+    }
+
+    #[inline]
+    pub(super) fn gp_allocatable_count(&self) -> usize {
+        self.gp_allocatable_count
+    }
+
+    #[inline]
+    pub(super) fn ordered_gp_allocatable(&self, index: usize) -> Option<MachineReg> {
+        (index < self.gp_allocatable_count)
+            .then(|| self.gp_dynamic.get(index).copied())
+            .flatten()
     }
 
     #[inline]
@@ -526,7 +541,7 @@ impl<'a> BlockLowerContext<'a> {
         let count = if ty.is_fp() {
             regfile.fp_dynamic_count()
         } else {
-            regfile.gp_dynamic_count()
+            regfile.gp_allocatable_count()
         };
         for ordinal in 0..count {
             let reg = if ty.is_fp() {
@@ -544,7 +559,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn first_free_gp_linear_value_pair(&self) -> Option<(MachineReg, MachineReg)> {
         let regfile = self.regfile();
         let mut first = None;
-        for ordinal in 0..regfile.gp_dynamic_count() {
+        for ordinal in 0..regfile.gp_allocatable_count() {
             let reg = preferred_gp_dynamic_reg(regfile, ordinal)?;
             if !self.dynamic_reg_available(reg) {
                 continue;
@@ -729,7 +744,7 @@ pub(super) fn canonical_storage_mem_width(ty: MachineStorageType) -> MachineMemW
 }
 
 fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
-    regfile.ordered_gp_dynamic(ordinal)
+    regfile.ordered_gp_allocatable(ordinal)
 }
 
 fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
@@ -1155,6 +1170,7 @@ mod tests {
             local_slot_types: Vec::new(),
             local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![alloc::vec![]],
+            block_cfg_origins: alloc::vec![],
             value_types,
             value_sink_local: alloc::vec![],
         }));

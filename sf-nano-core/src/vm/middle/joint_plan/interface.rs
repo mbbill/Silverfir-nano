@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use crate::{
     value_type::ValueType,
-    vm::middle::{cfg::CfgBlockId, frame::FrameSlot},
+    vm::middle::frame::FrameSlot,
 };
 
 /// Function-wide setup facts needed by the rewriter.
@@ -62,6 +62,15 @@ pub(crate) struct BeforeOpQuery<'a> {
     pub resident_cache: &'a BTreeSet<FrameSlot>,
 }
 
+/// Query for rare post-contract public-cache fallback drops.
+#[derive(Clone, Debug)]
+pub(crate) struct PressureFallbackQuery<'a> {
+    pub semantic_index: usize,
+    pub resident_cache: &'a BTreeSet<FrameSlot>,
+    pub live_types: &'a [ValueType],
+    pub live_aliases: &'a [Option<FrameSlot>],
+}
+
 /// Query for slot-vs-cache lowering of a local op.
 #[derive(Clone, Debug)]
 pub(crate) struct LocalAccessQuery<'a> {
@@ -75,20 +84,4 @@ pub(crate) struct LocalAccessQuery<'a> {
 pub(crate) enum LocalAccessDecision {
     Slot,
     Cache,
-}
-
-/// Query for repairing a block edge.
-#[derive(Clone, Debug)]
-pub(crate) struct EdgeRepairQuery<'a> {
-    pub succ_block: Option<CfgBlockId>,
-    pub pred_exit: &'a [FrameSlot],
-    pub succ_entry: &'a [FrameSlot],
-}
-
-/// Required repair actions for a mismatching edge.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EdgeRepairDecision {
-    pub ensure_cached_locals: Vec<FrameSlot>,
-    pub reserve_cached_locals: Vec<FrameSlot>,
-    pub drop_cached_locals: Vec<FrameSlot>,
 }

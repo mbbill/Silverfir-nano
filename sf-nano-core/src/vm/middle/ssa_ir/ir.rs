@@ -43,8 +43,15 @@ pub(crate) struct SsaProgram {
     pub local_slot_types: Vec<ValueType>,
     pub local_slot_info: Vec<LocalSlotInfo>,
     pub block_entry_cached_slots: Vec<Vec<FrameSlot>>,
+    pub block_cfg_origins: Vec<Vec<u32>>,
     pub value_types: Vec<ValueType>,
     pub value_sink_local: Vec<Option<FrameSlot>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryCacheRequirement {
+    Ensure,
+    Reserve,
 }
 
 impl SsaProgram {
@@ -55,6 +62,72 @@ impl SsaProgram {
             .copied()
             .flatten()
     }
+
+    pub(crate) fn final_block_for_cfg_block(&self, cfg_block: u32) -> Option<SsaTarget> {
+        self.block_cfg_origins
+            .iter()
+            .position(|origins| origins.contains(&cfg_block))
+            .map(|index| SsaTarget(index as u32))
+    }
+}
+
+pub(crate) fn entry_cache_requirement_from_ops(
+    ops: &[SsaInst],
+    slot: FrameSlot,
+) -> Option<EntryCacheRequirement> {
+    for inst in ops {
+        match inst.kind {
+            SsaInstKind::LocalGetCache {
+                slot: accessed_slot, ..
+            }
+            | SsaInstKind::LocalEnsureCache { slot: accessed_slot } => {
+                if accessed_slot == slot {
+                    return Some(EntryCacheRequirement::Ensure);
+                }
+            }
+            SsaInstKind::LocalSetCache {
+                slot: accessed_slot, ..
+            }
+            | SsaInstKind::LocalReserveCache { slot: accessed_slot } => {
+                if accessed_slot == slot {
+                    return Some(EntryCacheRequirement::Reserve);
+                }
+            }
+            SsaInstKind::LocalGetSlot {
+                slot: accessed_slot, ..
+            }
+            | SsaInstKind::LocalSetSlot {
+                slot: accessed_slot, ..
+            }
+            | SsaInstKind::LocalDropCache { slot: accessed_slot } => {
+                if accessed_slot == slot {
+                    return None;
+                }
+            }
+            SsaInstKind::Call(_) => return None,
+            SsaInstKind::Value { .. } | SsaInstKind::Fill { .. } | SsaInstKind::Spill { .. } => {}
+        }
+    }
+    None
+}
+
+#[inline]
+pub(crate) fn entry_cache_requirement(
+    ops: &[SsaInst],
+    slot: FrameSlot,
+    carried_through: bool,
+) -> Option<EntryCacheRequirement> {
+    entry_cache_requirement_from_ops(ops, slot)
+        .or_else(|| carried_through.then_some(EntryCacheRequirement::Ensure))
+}
+
+#[inline]
+pub(crate) fn block_entry_cache_requirement(
+    entry_slots: &[FrameSlot],
+    block: &SsaBlock,
+    slot: FrameSlot,
+) -> Option<EntryCacheRequirement> {
+    entry_cache_requirement(&block.ops, slot, entry_slots.contains(&slot))
 }
 
 /// One SSA-IR basic block.

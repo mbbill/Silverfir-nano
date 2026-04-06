@@ -86,6 +86,7 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         local_slot_types: semantic.local_types.clone(),
         local_slot_info: alloc::vec![Default::default(); semantic.local_count as usize],
         block_entry_cached_slots: Vec::new(),
+        block_cfg_origins: Vec::new(),
         value_types: Vec::new(),
         value_sink_local: Vec::new(),
     }

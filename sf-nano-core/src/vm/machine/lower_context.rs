@@ -12,7 +12,10 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
+            ssa_ir::ir::{
+                block_entry_cache_requirement, LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram,
+                SsaValue,
+            },
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -758,15 +761,17 @@ impl<'a> BlockLowerContext<'a> {
         }
 
         if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
-            let dynamic_count = self.regfile.gp_dynamic_count();
+            let dynamic_count = self.regfile.gp_allocatable_count();
             for gp_index in 0..dynamic_count {
-                let Some(lo) = self.regfile.gp_dynamic(gp_index) else {
+                let Some(lo) = super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index)
+                else {
                     continue;
                 };
                 if self.dynamic_reg_unavailable(lo) {
                     continue;
                 }
-                let Some(hi) = self.regfile.gp_dynamic(gp_index + 1) else {
+                let Some(hi) = super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index + 1)
+                else {
                     break;
                 };
                 if self.dynamic_reg_unavailable(hi) {
@@ -786,8 +791,9 @@ impl<'a> BlockLowerContext<'a> {
             )));
         }
 
-        for gp_index in 0..self.regfile.gp_dynamic_count() {
-            let Some(reg) = self.regfile.gp_dynamic(gp_index) else {
+        for gp_index in 0..self.regfile.gp_allocatable_count() {
+            let Some(reg) = super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index)
+            else {
                 continue;
             };
             if self.dynamic_reg_unavailable(reg) {
@@ -1012,7 +1018,7 @@ pub(super) fn target_entry_cache_params(
             .unwrap_or(usize::MAX)
     });
 
-    for slot in entry_slots {
+    for &slot in &entry_slots {
         let cached_index = cached_locals
             .iter()
             .position(|cached| cached.slot == slot)
@@ -1065,45 +1071,20 @@ pub(super) fn target_entry_cache_params(
                 ValueRegs { lo: reg, hi: None }
             }
         };
+        let Some(requirement) = block_entry_cache_requirement(&entry_slots, block, slot) else {
+            continue;
+        };
         entry_cache_params.push(EntryCacheParam {
             cached_index,
             regs,
-            needs_value: entry_cache_needs_materialized_value(block, slot),
+            needs_value: matches!(
+                requirement,
+                crate::vm::middle::ssa_ir::ir::EntryCacheRequirement::Ensure
+            ),
         });
     }
 
     Ok(entry_cache_params)
-}
-
-fn entry_cache_needs_materialized_value(block: &SsaBlock, slot: FrameSlot) -> bool {
-    for inst in &block.ops {
-        match inst.kind {
-            SsaInstKind::LocalSetSlot { slot: accessed_slot, .. }
-            | SsaInstKind::LocalSetCache { slot: accessed_slot, .. } => {
-                if accessed_slot == slot {
-                    return false;
-                }
-            }
-            SsaInstKind::LocalGetSlot { slot: accessed_slot, .. }
-            | SsaInstKind::LocalGetCache { slot: accessed_slot, .. }
-            | SsaInstKind::LocalEnsureCache { slot: accessed_slot } => {
-                if accessed_slot == slot {
-                    return true;
-                }
-            }
-            SsaInstKind::LocalReserveCache { slot: accessed_slot } => {
-                if accessed_slot == slot {
-                    continue;
-                }
-            }
-            SsaInstKind::LocalDropCache { .. }
-            | SsaInstKind::Value { .. }
-            | SsaInstKind::Fill { .. }
-            | SsaInstKind::Spill { .. }
-            | SsaInstKind::Call(_) => {}
-        }
-    }
-    true
 }
 
 fn explicit_cached_local_pref_map(program: &SsaProgram) -> BTreeMap<FrameSlot, CachePrefEntry> {

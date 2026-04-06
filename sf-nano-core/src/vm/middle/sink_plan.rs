@@ -172,6 +172,7 @@ mod tests {
             value_types: vec![crate::value_type::ValueType::I32; value_count],
             value_sink_local: vec![None; value_count],
             block_entry_cached_slots: vec![],
+        block_cfg_origins: alloc::vec![],
         }
     }
 

@@ -22,17 +22,15 @@ use crate::{
 use super::{
     block_open::{
         before_op_decision, block_open_decision, finalize_block_entry_cached_locals,
-        target_entry_decision,
+        pressure_fallback_drops, target_entry_decision,
     },
     build,
     facts::FunctionPlan,
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, EdgeRepairDecision, EdgeRepairQuery,
-        FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery, TargetEntryDecision,
+        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, FunctionSetupDecision,
+        LocalAccessDecision, LocalAccessQuery, PressureFallbackQuery, TargetEntryDecision,
     },
     local_access::decide_local_access,
-    policy::op_must_drop_all_caches,
-    repair::derive_edge_repair,
     validate,
 };
 
@@ -40,7 +38,6 @@ use super::{
 #[derive(Clone, Debug)]
 pub(crate) struct JointPlanner {
     plan: FunctionPlan,
-    op_force_drop_all_caches: Vec<bool>,
 }
 
 impl JointPlanner {
@@ -53,14 +50,7 @@ impl JointPlanner {
     ) -> Result<Self, WasmError> {
         let plan = build::build_plan(semantic, cfg, slot_program, frame, config)?;
         validate::validate_plan(cfg, slot_program, &plan)?;
-        Ok(Self {
-            plan,
-            op_force_drop_all_caches: semantic
-                .ops
-                .iter()
-                .map(|op| op_must_drop_all_caches(&op.kind))
-                .collect(),
-        })
+        Ok(Self { plan })
     }
 
     #[inline]
@@ -84,7 +74,7 @@ impl JointPlanner {
 
     #[inline]
     pub(crate) fn before_op<'a>(&'a self, query: BeforeOpQuery<'_>) -> BeforeOpDecision<'a> {
-        before_op_decision(&self.plan, &self.op_force_drop_all_caches, query)
+        before_op_decision(&self.plan, query)
     }
 
     #[inline]
@@ -100,8 +90,11 @@ impl JointPlanner {
     ) -> Vec<crate::vm::middle::frame::FrameSlot> {
         finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
     }
-
-    pub(crate) fn edge_repair(&self, query: EdgeRepairQuery<'_>) -> EdgeRepairDecision {
-        derive_edge_repair(&self.plan, query)
+    #[inline]
+    pub(crate) fn pressure_fallback_drops(
+        &self,
+        query: PressureFallbackQuery<'_>,
+    ) -> Vec<crate::vm::middle::frame::FrameSlot> {
+        pressure_fallback_drops(&self.plan, query)
     }
 }

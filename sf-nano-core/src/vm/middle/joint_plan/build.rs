@@ -1,11 +1,9 @@
 //! Joint-plan builder from first-pass SSA.
 //!
-//! This builder is strict about transient legality and now computes the
-//! planner-owned boundary seed from block-local value ranking. It produces:
-//! - exact transient spill/fill behavior per semantic op
-//! - a canonical predecessor per block
-//! - a tentative entry boundary per block
-//! - block-local facts needed to finalize the public entry after one lowering pass
+//! Under `ALGORITHM4`, the builder has a simple split of responsibilities:
+//! - transient legality is still solved per semantic op
+//! - public cached-local residency is solved separately on a region tree
+//! - block boundaries see one fixed public set, not a tentative per-block seed
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -31,7 +29,6 @@ use crate::{
 
 use super::{
     block_open::before_op_decision,
-    canonical::choose_canonical_predecessors,
     entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
     facts::{
         BlockPlan, EntryState, FirstAccessKind, FunctionPlan, LocalOpKind, OpInfo, OpPlan,
@@ -39,8 +36,8 @@ use super::{
     },
     interface::BeforeOpQuery,
     local_access::decide_local_access,
-    policy::op_must_drop_all_caches,
     pressure::fits_with_cached_locals,
+    region_solver::solve_public_cache_sets,
 };
 
 pub(crate) fn build_plan(
@@ -50,7 +47,7 @@ pub(crate) fn build_plan(
     frame: FrameLayoutPlan,
     config: BackendConfig,
 ) -> Result<FunctionPlan, WasmError> {
-    let gp_dynamic_budget = config.gp_dynamic_budget;
+    let gp_dynamic_budget = config.allocatable_gp_dynamic_budget();
     let fp_dynamic_budget = config.fp_dynamic_budget;
 
     let op_info = build_op_info(semantic, cfg, frame);
@@ -69,13 +66,28 @@ pub(crate) fn build_plan(
         &block_regions,
         &block_transient_regions,
     )?;
-    let canonical = choose_canonical_predecessors(cfg);
-    let op_force_drop_all_caches = semantic
-        .ops
+    let block_entry_cached_locals = solve_public_cache_sets(
+        semantic,
+        cfg,
+        config.gp_unit_bytes,
+        gp_dynamic_budget,
+        fp_dynamic_budget,
+        &op_plans,
+        &block_regions,
+    );
+    let blocks = cfg
+        .blocks
         .iter()
-        .map(|op| op_must_drop_all_caches(&op.kind))
-        .collect::<Vec<_>>();
-    let mut plan = FunctionPlan {
+        .enumerate()
+        .map(|(block_index, block)| BlockPlan {
+            entry: entry_states[block.range.start].clone(),
+            tentative_entry_cached_locals: block_entry_cached_locals
+                .get(block_index)
+                .cloned()
+                .unwrap_or_default(),
+        })
+        .collect();
+    let plan = FunctionPlan {
         gp_unit_bytes: config.gp_unit_bytes,
         gp_dynamic_budget,
         fp_dynamic_budget,
@@ -86,30 +98,8 @@ pub(crate) fn build_plan(
         block_regions,
         block_stack_regions,
         block_transient_regions,
-        blocks: alloc::vec![BlockPlan::default(); cfg.blocks.len()],
+        blocks,
     };
-    let block_entries =
-        compute_tentative_block_entries(cfg, &plan, &op_force_drop_all_caches, &canonical.by_block);
-
-    plan.blocks =
-        canonical
-            .by_block
-            .into_iter()
-            .enumerate()
-            .map(|(block_index, _canonical_predecessor)| {
-                let block = &cfg.blocks[block_index];
-                let tentative = block_entries.get(block_index).cloned().unwrap_or_else(|| {
-                    TentativeBlockEntry {
-                        transient: plan.entry_states[block.range.start].clone(),
-                        cached_locals: Vec::new(),
-                    }
-                });
-                BlockPlan {
-                    entry: tentative.transient,
-                    tentative_entry_cached_locals: tentative.cached_locals,
-                }
-            })
-            .collect();
 
     Ok(plan)
 }
@@ -192,44 +182,16 @@ fn snapshot_entry_state(state: &PrepareState, spill_depth: u16) -> EntryState {
     }
 }
 
-fn compute_tentative_block_entries(
-    cfg: &SemanticCfg,
-    plan: &FunctionPlan,
-    op_force_drop_all_caches: &[bool],
-    canonical_predecessors: &[Option<crate::vm::middle::cfg::CfgBlockId>],
-) -> Vec<TentativeBlockEntry> {
-    let mut entries = alloc::vec![TentativeBlockEntry::default(); cfg.blocks.len()];
-    let mut predicted_exits = alloc::vec![Vec::new(); cfg.blocks.len()];
-
-    for (block_index, block) in cfg.blocks.iter().enumerate() {
-        let carried = canonical_predecessors
-            .get(block_index)
-            .and_then(|pred| pred.map(|pred| predicted_exits[pred.as_usize()].clone()))
-            .unwrap_or_default();
-        let tentative = choose_tentative_block_entry(cfg, block_index, &carried, plan);
-        predicted_exits[block_index] = simulate_block_exit_cached_locals(
-            block,
-            plan,
-            op_force_drop_all_caches,
-            &tentative.cached_locals,
-        );
-        entries[block_index] = tentative;
-    }
-
-    entries
-}
-
 fn simulate_block_exit_cached_locals(
     block: &crate::vm::middle::cfg::CfgBlock,
     plan: &FunctionPlan,
-    op_force_drop_all_caches: &[bool],
+    _op_force_drop_all_caches: &[bool],
     entry_cached_locals: &[FrameSlot],
 ) -> Vec<FrameSlot> {
     let mut resident = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
     for semantic_index in block.range.clone() {
         let before = before_op_decision(
             plan,
-            op_force_drop_all_caches,
             BeforeOpQuery {
                 semantic_index,
                 resident_cache: &resident,
@@ -803,37 +765,12 @@ fn plan_prefix(
 
 fn build_cache_plan(
     semantic: &SemanticProgram,
-    frame: FrameLayoutPlan,
-    gp_unit_bytes: u8,
+    _frame: FrameLayoutPlan,
+    _gp_unit_bytes: u8,
 ) -> CachePlan {
-    let mut candidates = Vec::new();
-    let mut local_to_candidate = alloc::vec![None; semantic.local_count as usize];
-    for local_idx in 0..semantic.local_count as usize {
-        let ty = semantic
-            .local_types
-            .get(local_idx)
-            .copied()
-            .unwrap_or(ValueType::I64);
-        let index = candidates.len();
-        candidates.push(CacheCandidate {
-            slot: frame.local_slot(local_idx as u16),
-            bank: if ty.is_float() {
-                CacheBank::Fp
-            } else {
-                CacheBank::Gp
-            },
-            cost: if ty.is_float() {
-                1
-            } else {
-                gp_value_budget_units(ty, gp_unit_bytes)
-            },
-            rank: local_idx,
-        });
-        local_to_candidate[local_idx] = Some(index);
-    }
     CachePlan {
-        candidates,
-        local_to_candidate,
+        candidates: Vec::new(),
+        local_to_candidate: alloc::vec![None; semantic.local_count as usize],
     }
 }
 
@@ -2000,11 +1937,11 @@ mod tests {
                 crate::vm::middle::cfg::CfgBlockId(0),
                 &[],
             );
-        assert!(finalized.is_empty());
+        assert_eq!(finalized, alloc::vec![FrameSlot(1)]);
     }
 
     #[test]
-    fn finalize_entry_trims_write_first_only_tentative_local_that_does_not_survive_exit() {
+    fn finalize_entry_keeps_write_first_only_tentative_local_when_public_state_chose_it() {
         let mut plan = test_plan();
         plan.block_regions[0].locals.push(Some(BlockLocalInfo {
             slot: FrameSlot(1),
@@ -2033,8 +1970,8 @@ mod tests {
 
         assert_eq!(
             finalized,
-            alloc::vec![FrameSlot(0)],
-            "a write-first-only local that never survives exit must not stay in the public block entry"
+            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            "under ALGORITHM4 the block-open public state is fixed before rewrite, so finalize no longer trims write-first locals based on one lowering pass"
         );
     }
 

@@ -20,11 +20,10 @@ use crate::vm::{
                 BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
                 BlockTransientRegion, EntryState, FirstAccessKind, TransientSymbolInfo,
             },
-            policy::clears_cache_region,
         },
     },
     wasm::{
-        primitive_op,
+        primitive_op::{self, PrimitiveOpKind},
         semantic_ir::{SemanticOpKind, SemanticProgram},
     },
 };
@@ -147,6 +146,25 @@ fn record_local_access(
     if info.first_access_kind.is_none() {
         info.first_access_kind = Some(access_kind);
     }
+}
+
+fn clears_cache_region(kind: &SemanticOpKind) -> bool {
+    matches!(
+        kind,
+        SemanticOpKind::Loop { .. }
+            | SemanticOpKind::If { .. }
+            | SemanticOpKind::Else { .. }
+            | SemanticOpKind::End
+            | SemanticOpKind::Br { .. }
+            | SemanticOpKind::BrIf { .. }
+            | SemanticOpKind::BrTable { .. }
+            | SemanticOpKind::CallDirect { .. }
+            | SemanticOpKind::CallIndirect { .. }
+            | SemanticOpKind::ReturnVoid
+            | SemanticOpKind::ReturnOne
+            | SemanticOpKind::Return { .. }
+            | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+    )
 }
 
 /// Summarize whole-block transient-symbol usage for each CFG block.

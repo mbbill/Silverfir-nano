@@ -100,17 +100,6 @@ pub(crate) fn fits_with_cached_locals(
     )
 }
 
-pub(crate) fn fits_with_extra_cached_local(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-    slot: FrameSlot,
-) -> bool {
-    let mut augmented = resident_cache.clone();
-    augmented.insert(slot);
-    fits_with_cached_locals(plan, semantic_index, &augmented)
-}
-
 pub(crate) fn weakest_cached_local(
     plan: &FunctionPlan,
     semantic_index: usize,
@@ -129,38 +118,6 @@ pub(crate) fn weakest_cached_local(
         }
     }
     best.map(|(slot, _)| slot)
-}
-
-pub(crate) fn drop_until_fits(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-    protected_slot: Option<FrameSlot>,
-    admission_keep: Option<KeepKey>,
-) -> Vec<FrameSlot> {
-    let mut working = resident_cache.clone();
-    let mut dropped = Vec::new();
-
-    while !fits_with_cached_locals(plan, semantic_index, &working) {
-        let need_gp = overflowing_gp(plan, semantic_index, &working);
-        let need_fp = overflowing_fp(plan, semantic_index, &working);
-        let victim = choose_budget_victim(
-            plan,
-            semantic_index,
-            &working,
-            protected_slot,
-            admission_keep,
-            need_gp,
-            need_fp,
-        );
-        let Some(victim) = victim else {
-            break;
-        };
-        working.remove(&victim);
-        dropped.push(victim);
-    }
-
-    dropped
 }
 
 pub(crate) fn keep_key(
@@ -199,28 +156,6 @@ pub(crate) fn keep_key(
     }
 
     KeepKey::weakest()
-}
-
-pub(crate) fn target_keep_key_after_local_access(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    slot: FrameSlot,
-) -> KeepKey {
-    let op_info = &plan.op_info[semantic_index];
-    let block = &plan.block_regions[op_info.block_index as usize];
-    let Some(info) = block.info(slot) else {
-        return KeepKey::weakest();
-    };
-    if !info.used_after(op_info.block_offset) {
-        return KeepKey::weakest();
-    }
-    let next_distance = i32::from(info.next_use_distance(op_info.block_offset).unwrap_or(0));
-    let remaining = i32::from(info.remaining_use_count(op_info.block_offset));
-    KeepKey {
-        class: 2,
-        score: info.hot_score + remaining * REMAINING_USE_WEIGHT
-            - next_distance * NEXT_USE_DISTANCE_PENALTY,
-    }
 }
 
 fn count_cache_units(
@@ -313,84 +248,6 @@ fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) ->
     block_entry
         .spill_depth
         .saturating_sub(semantic_entry.spill_depth)
-}
-
-fn overflowing_gp(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-) -> bool {
-    let entry = &plan.op_plans[semantic_index].before;
-    let (gp_live, _) = count_live_bank_budget_units(&entry.live_types, plan.gp_unit_bytes);
-    let (gp_cache, _) = count_cache_units(
-        &plan.local_slot_types,
-        plan.gp_unit_bytes,
-        resident_cache.iter().copied(),
-    );
-    gp_live + gp_cache > plan.gp_dynamic_budget as usize
-}
-
-fn overflowing_fp(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-) -> bool {
-    let entry = &plan.op_plans[semantic_index].before;
-    let (_, fp_live) = count_live_bank_budget_units(&entry.live_types, plan.gp_unit_bytes);
-    let (_, fp_cache) = count_cache_units(
-        &plan.local_slot_types,
-        plan.gp_unit_bytes,
-        resident_cache.iter().copied(),
-    );
-    fp_live + fp_cache > plan.fp_dynamic_budget as usize
-}
-
-fn choose_budget_victim(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-    protected_slot: Option<FrameSlot>,
-    admission_keep: Option<KeepKey>,
-    need_gp: bool,
-    need_fp: bool,
-) -> Option<FrameSlot> {
-    let mut best: Option<(FrameSlot, KeepKey)> = None;
-    for &slot in resident_cache {
-        if Some(slot) == protected_slot {
-            continue;
-        }
-        let bank = slot_bank(&plan.local_slot_types, slot);
-        if (need_gp && bank != CacheBank::Gp) || (need_fp && bank != CacheBank::Fp) {
-            continue;
-        }
-        let key = keep_key(plan, semantic_index, slot, None, false);
-        if admission_keep.map(|target| key >= target).unwrap_or(false) {
-            continue;
-        }
-        if best.map(|(_, current)| key < current).unwrap_or(true) {
-            best = Some((slot, key));
-        }
-    }
-
-    if best.is_some() || (!need_gp && !need_fp) {
-        return best.map(|(slot, _)| slot);
-    }
-
-    // If no bank-specific victim exists, fall back to the globally weakest one.
-    resident_cache
-        .iter()
-        .copied()
-        .filter(|slot| Some(*slot) != protected_slot)
-        .filter_map(|slot| {
-            let key = keep_key(plan, semantic_index, slot, None, false);
-            if admission_keep.map(|target| key >= target).unwrap_or(false) {
-                None
-            } else {
-                Some((slot, key))
-            }
-        })
-        .min_by_key(|(_, key)| *key)
-        .map(|(slot, _)| slot)
 }
 
 #[cfg(test)]

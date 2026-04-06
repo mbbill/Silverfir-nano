@@ -68,6 +68,29 @@ impl BackendConfig {
         self.gp_unit_bytes == 4
     }
 
+    /// GP dynamic lanes kept out of normal value/cache placement so machine
+    /// lowering still has a small internal scratch tail when a helper needs an
+    /// extra temporary beyond the semantic live set.
+    #[inline]
+    pub(crate) const fn gp_internal_scratch_reserve(self) -> u8 {
+        let preferred = if self.is_32bit_gp_target() { 2 } else { 1 };
+        let max_reserve = self.gp_dynamic_budget.saturating_sub(1);
+        if preferred > max_reserve {
+            max_reserve
+        } else {
+            preferred
+        }
+    }
+
+    /// GP dynamic budget exposed to the middle-end and normal native
+    /// allocation. The remaining tail, if any, is reserved for lowering-only
+    /// scratch borrowing.
+    #[inline]
+    pub(crate) const fn allocatable_gp_dynamic_budget(self) -> u8 {
+        self.gp_dynamic_budget
+            .saturating_sub(self.gp_internal_scratch_reserve())
+    }
+
     // ── Register layout helpers ──────────────────────────────────────────
     //
     // Layout: [fixed(4) | gp_dynamic | fp_dynamic]

@@ -40,6 +40,26 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         )));
     }
 
+    if !program.block_entry_cached_slots.is_empty()
+        && program.blocks.len() != program.block_entry_cached_slots.len()
+    {
+        return Err(WasmError::internal(alloc::format!(
+            "SSA-IR has {} blocks but {} block-entry cache rows",
+            program.blocks.len(),
+            program.block_entry_cached_slots.len(),
+        )));
+    }
+
+    if !program.block_cfg_origins.is_empty()
+        && program.blocks.len() != program.block_cfg_origins.len()
+    {
+        return Err(WasmError::internal(alloc::format!(
+            "SSA-IR has {} blocks but {} CFG-origin rows",
+            program.blocks.len(),
+            program.block_cfg_origins.len(),
+        )));
+    }
+
     for (index, block) in program.blocks.iter().enumerate() {
         validate_block_id(block, index)?;
         validate_params(&block.params, alloc::format!("block b{index} params"))?;
