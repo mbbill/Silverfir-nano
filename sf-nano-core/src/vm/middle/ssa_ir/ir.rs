@@ -1,4 +1,10 @@
 //! Prepared backend-facing SSA-IR.
+//!
+//! This is the frontend/native handoff for the engine's prepared pipeline:
+//! - canonical locals and deep stack values live in frame slots
+//! - only a bounded set of transient values stays live as SSA values
+//! - explicit slot traffic publishes and reloads transient values through
+//!   operand slots so the backend never needs general register allocation
 
 use alloc::vec::Vec;
 
@@ -11,7 +17,14 @@ use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SsaValue(pub u32);
 
-/// An operand to a leaf SSA operation.
+/// An operand to a leaf SSA operation: either a transient value reference or
+/// an inline constant absorbed from a preceding const definition.
+///
+/// The constant-folding pass in [`crate::vm::middle::optimize`] rewrites
+/// `Value(v)` operands to `Const(bits)` when `v` was produced by a const
+/// instruction and has no other uses. The machine layer lowers `Const`
+/// operands via `MachineValue::Imm64`; it may encode the constant as a native
+/// immediate or materialize it into a scratch register as a fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SsaOperand {
     Value(SsaValue),
@@ -19,6 +32,11 @@ pub(crate) enum SsaOperand {
 }
 
 impl SsaOperand {
+    /// Extract the SSA value, panicking if this is an inline constant.
+    ///
+    /// Use this only in lowering paths that do not yet support inline
+    /// constants. Paths that handle `Const` should match on the operand
+    /// directly.
     #[inline]
     pub(crate) fn unwrap_value(self) -> SsaValue {
         match self {

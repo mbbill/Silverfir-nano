@@ -945,3 +945,106 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
 
     max_value
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::fold_constants_into_operands;
+    use crate::vm::{
+        middle::ssa_ir::{
+            ir::{SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
+            leaf::SsaLeafOp,
+            target::SsaTarget,
+        },
+        wasm::primitive_op::PrimitiveOpKind,
+    };
+
+    #[test]
+    fn folds_single_use_const_into_value_operand() {
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: Vec::new(),
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
+                            .unwrap(),
+                        args: Vec::new(),
+                        results: alloc::vec![SsaValue(0)],
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
+                        args: alloc::vec![
+                            SsaOperand::Value(SsaValue(1)),
+                            SsaOperand::Value(SsaValue(0))
+                        ],
+                        results: alloc::vec![SsaValue(2)],
+                    },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        };
+
+        fold_constants_into_operands(&mut block);
+
+        assert_eq!(
+            block.ops.len(),
+            1,
+            "dead const producer should be removed after folding"
+        );
+        let SsaInstKind::Value { args, .. } = &block.ops[0].kind else {
+            panic!("expected value op after folding");
+        };
+        assert!(
+            args.iter().any(|arg| matches!(arg, SsaOperand::Const(7))),
+            "mixed arithmetic should absorb the const operand"
+        );
+    }
+
+    #[test]
+    fn keeps_const_producer_when_value_is_used_by_terminator() {
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: Vec::new(),
+            ops: alloc::vec![SsaInst {
+                kind: SsaInstKind::Value {
+                    op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
+                    args: Vec::new(),
+                    results: alloc::vec![SsaValue(0)],
+                },
+            }],
+            terminator: SsaTerminator::Branch {
+                cond: SsaValue(0),
+                then_edge: SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: Vec::new(),
+                },
+                else_edge: SsaEdge {
+                    target: SsaTarget(2),
+                    bindings: Vec::new(),
+                },
+            },
+        };
+
+        fold_constants_into_operands(&mut block);
+
+        assert_eq!(
+            block.ops.len(),
+            1,
+            "terminator users must keep the const producer live"
+        );
+        assert!(matches!(
+            &block.ops[0].kind,
+            SsaInstKind::Value {
+                op,
+                ref args,
+                ref results,
+            } if matches!(op.primitive(), PrimitiveOpKind::I32Const { value: 1 })
+                && args.is_empty()
+                && results == &alloc::vec![SsaValue(0)]
+        ));
+    }
+}

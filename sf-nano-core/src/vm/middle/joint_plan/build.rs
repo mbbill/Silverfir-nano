@@ -30,21 +30,17 @@ use crate::{
 };
 
 #[cfg(test)]
+use super::facts::FirstAccessKind;
+#[cfg(test)]
 use super::{
-    block_open::before_op_decision,
-    interface::BeforeOpQuery,
-    local_access::decide_local_access,
+    block_open::before_op_decision, interface::BeforeOpQuery, local_access::decide_local_access,
     pressure::fits_with_cached_locals,
 };
 use super::{
     entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
-    facts::{
-        BlockPlan, EntryState, FunctionPlan, LocalOpKind, OpInfo, OpPlan, PrepAction,
-    },
+    facts::{BlockPlan, EntryState, FunctionPlan, LocalOpKind, OpInfo, OpPlan, PrepAction},
     region_solver::solve_public_cache_sets,
 };
-#[cfg(test)]
-use super::facts::FirstAccessKind;
 #[cfg(test)]
 use crate::vm::middle::budget::gp_value_budget_units;
 
