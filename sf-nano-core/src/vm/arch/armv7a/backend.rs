@@ -738,7 +738,8 @@ impl<'a> Arm32Backend<'a> {
                 ParallelSource::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
                         "armv7a received non-identity reserved cache edge move into {} from {}",
-                        dst.reg.0, reg.0
+                        dst.reg.0,
+                        reg.0
                     )));
                 }
                 ParallelSource::Reg { reg, .. } => {
@@ -786,7 +787,8 @@ impl<'a> Arm32Backend<'a> {
                 ParallelSource::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
                         "armv7a received non-identity reserved cache edge move into {} from {}",
-                        dst.reg.0, reg.0
+                        dst.reg.0,
+                        reg.0
                     )));
                 }
                 ParallelSource::Reg { reg, .. } => {

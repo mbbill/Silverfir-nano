@@ -88,13 +88,18 @@ pub(crate) fn pressure_fallback_drops(
                 .then_some(*ty)
         })
         .collect::<Vec<_>>();
-    let (gp_live, fp_live) = count_live_bank_budget_units(&effective_live_types, plan.gp_unit_bytes);
+    let (gp_live, fp_live) =
+        count_live_bank_budget_units(&effective_live_types, plan.gp_unit_bytes);
     let mut gp_cache = 0usize;
     let mut fp_cache = 0usize;
     for &slot in query.resident_cache {
         match slot_bank(&plan.local_slot_types, slot) {
-            CacheBank::Gp => gp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot),
-            CacheBank::Fp => fp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot),
+            CacheBank::Gp => {
+                gp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot)
+            }
+            CacheBank::Fp => {
+                fp_cache += slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, slot)
+            }
         }
     }
 
@@ -110,24 +115,16 @@ pub(crate) fn pressure_fallback_drops(
     {
         let need_gp = gp_live + gp_cache > plan.gp_dynamic_budget as usize;
         let need_fp = fp_live + fp_cache > plan.fp_dynamic_budget as usize;
-        let gp_victim = need_gp.then(|| {
-            weakest_cached_local(
-                plan,
-                query.semantic_index,
-                &working,
-                CacheBank::Gp,
-                None,
-            )
-        }).flatten();
-        let fp_victim = need_fp.then(|| {
-            weakest_cached_local(
-                plan,
-                query.semantic_index,
-                &working,
-                CacheBank::Fp,
-                None,
-            )
-        }).flatten();
+        let gp_victim = need_gp
+            .then(|| {
+                weakest_cached_local(plan, query.semantic_index, &working, CacheBank::Gp, None)
+            })
+            .flatten();
+        let fp_victim = need_fp
+            .then(|| {
+                weakest_cached_local(plan, query.semantic_index, &working, CacheBank::Fp, None)
+            })
+            .flatten();
 
         let victim = match (gp_victim, fp_victim) {
             (Some(gp_slot), Some(fp_slot)) => {
@@ -145,12 +142,18 @@ pub(crate) fn pressure_fallback_drops(
         working.remove(&victim);
         match slot_bank(&plan.local_slot_types, victim) {
             CacheBank::Gp => {
-                gp_cache = gp_cache
-                    .saturating_sub(slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, victim))
+                gp_cache = gp_cache.saturating_sub(slot_cost(
+                    &plan.local_slot_types,
+                    plan.gp_unit_bytes,
+                    victim,
+                ))
             }
             CacheBank::Fp => {
-                fp_cache = fp_cache
-                    .saturating_sub(slot_cost(&plan.local_slot_types, plan.gp_unit_bytes, victim))
+                fp_cache = fp_cache.saturating_sub(slot_cost(
+                    &plan.local_slot_types,
+                    plan.gp_unit_bytes,
+                    victim,
+                ))
             }
         }
         dropped.push(victim);

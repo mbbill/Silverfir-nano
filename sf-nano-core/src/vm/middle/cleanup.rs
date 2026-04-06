@@ -724,7 +724,7 @@ mod tests {
             local_slot_types: Vec::new(),
             local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
-        block_cfg_origins: alloc::vec![],
+            block_cfg_origins: alloc::vec![],
             value_types: alloc::vec![crate::value_type::ValueType::I32; 32],
             value_sink_local: alloc::vec![None; 32],
         };
@@ -778,7 +778,7 @@ mod tests {
             local_slot_types: alloc::vec![crate::value_type::ValueType::I32],
             local_slot_info: alloc::vec![Default::default()],
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new()],
-        block_cfg_origins: alloc::vec![],
+            block_cfg_origins: alloc::vec![],
             value_types: alloc::vec![crate::value_type::ValueType::I32; 16],
             value_sink_local: alloc::vec![None; 16],
         };
@@ -830,7 +830,7 @@ mod tests {
             local_slot_types: Vec::new(),
             local_slot_info: Vec::new(),
             block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
-        block_cfg_origins: alloc::vec![],
+            block_cfg_origins: alloc::vec![],
             value_types: Vec::new(),
             value_sink_local: Vec::new(),
         };

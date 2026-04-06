@@ -24,9 +24,8 @@ use crate::{
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
                 ir::{
-                    entry_cache_requirement,
-                    LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaInstKind,
-                    SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                    entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp,
+                    SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
                 },
                 leaf::SsaLeafOp,
                 target::SsaTarget,
@@ -175,7 +174,9 @@ fn filter_block_entry_cached_slots(
     entry_slots
         .iter()
         .copied()
-        .filter(|slot| entry_cache_requirement(ops, *slot, actual_exit_slots.contains(slot)).is_some())
+        .filter(|slot| {
+            entry_cache_requirement(ops, *slot, actual_exit_slots.contains(slot)).is_some()
+        })
         .collect()
 }
 
@@ -183,12 +184,8 @@ fn simulate_materialized_cache_exit(entry_slots: &[FrameSlot], ops: &[SsaInst]) 
     let mut materialized = entry_slots.iter().copied().collect::<BTreeSet<_>>();
     for inst in ops {
         match inst.kind {
-            SsaInstKind::LocalGetCache {
-                slot, ..
-            }
-            | SsaInstKind::LocalSetCache {
-                slot, ..
-            }
+            SsaInstKind::LocalGetCache { slot, .. }
+            | SsaInstKind::LocalSetCache { slot, .. }
             | SsaInstKind::LocalEnsureCache { slot } => {
                 materialized.insert(slot);
             }

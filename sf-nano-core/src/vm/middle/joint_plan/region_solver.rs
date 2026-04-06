@@ -238,6 +238,7 @@ fn solve_bank(
         }
     }
 
+    let zero_lambdas = vec![0.0; regions.nodes.len()];
     for (slot_pos, &slot_index) in slots.iter().enumerate() {
         compute_slot_dp(
             slot_index,
@@ -245,7 +246,7 @@ fn solve_bank(
             regions,
             benefit,
             call_tax,
-            &lambdas,
+            &zero_lambdas,
             &mut slot_dps[slot_pos],
         );
     }
@@ -275,7 +276,8 @@ fn compute_slot_dp(
     let units = meta.units as f64;
     for region_id in (0..regions.nodes.len()).rev() {
         let region = &regions.nodes[region_id];
-        let reward = benefit[region_id][slot_index] - call_tax[region_id][slot_index]
+        let reward = benefit[region_id][slot_index]
+            - call_tax[region_id][slot_index]
             - lambdas[region_id] * units;
 
         let mut child_if_absent = 0.0;
@@ -301,8 +303,8 @@ fn extract_unconstrained_states(
     dp: &SlotDp,
     out: &mut [bool],
 ) {
-    let resident = dp.force_value[region_id][parent_state][1]
-        > dp.force_value[region_id][parent_state][0];
+    let resident =
+        dp.force_value[region_id][parent_state][1] > dp.force_value[region_id][parent_state][0];
     out[region_id] = resident;
     let child_parent = usize::from(resident);
     for &child in &regions.nodes[region_id].children {
@@ -499,7 +501,11 @@ fn current_parent_region(stack: &[StructuredFrame]) -> usize {
         .unwrap_or(0)
 }
 
-fn build_local_meta(local_types: &[ValueType], local_count: usize, gp_unit_bytes: u8) -> Vec<LocalMeta> {
+fn build_local_meta(
+    local_types: &[ValueType],
+    local_count: usize,
+    gp_unit_bytes: u8,
+) -> Vec<LocalMeta> {
     (0..local_count)
         .map(|slot_index| {
             let ty = local_types
@@ -533,7 +539,7 @@ fn compute_block_weights(regions: &RegionTree) -> Vec<f64> {
 fn block_weight(depth: usize) -> f64 {
     let mut weight = 1.0;
     for _ in 0..depth {
-        weight *= 10.0;
+        weight *= ASSUMED_TRIP_COUNT;
     }
     weight
 }
@@ -542,7 +548,8 @@ fn compute_block_call_counts(semantic: &SemanticProgram, cfg: &SemanticCfg) -> V
     cfg.blocks
         .iter()
         .map(|block| {
-            block.range
+            block
+                .range
                 .clone()
                 .filter(|&semantic_index| {
                     matches!(

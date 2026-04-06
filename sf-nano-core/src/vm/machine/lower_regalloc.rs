@@ -1188,11 +1188,21 @@ mod tests {
         let explicit_cache = Box::leak(Box::new(
             super::super::lower_context::explicit_cached_locals(program),
         ));
+        let entry_cache_params = Box::leak(Box::new(
+            super::super::lower_cache_layout::compute_block_entry_cache_params(
+                regfile,
+                program,
+                explicit_cache,
+                4,
+            )
+            .expect("entry cache layouts"),
+        ));
 
         BlockLowerContext::new(
             regfile,
             program,
             explicit_cache,
+            entry_cache_params,
             &program.blocks[0],
             all_runtime,
             call_link,

@@ -7,6 +7,7 @@
 //! - MachineIR transforms (peephole optimization, validation)
 
 mod gp32;
+mod lower_cache_layout;
 mod lower_cached;
 mod lower_call;
 mod lower_const_pool;

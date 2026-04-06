@@ -362,7 +362,8 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len().saturating_sub(written_start);
     executable.finish_write(written_start, written_len);
-    compiled.publish_local_call_infos(unsafe { executable.as_ptr().add(function_info_table_offset) });
+    compiled
+        .publish_local_call_infos(unsafe { executable.as_ptr().add(function_info_table_offset) });
 
     // Construct compiled entries.
     let mut entries = Vec::with_capacity(emitted.len());

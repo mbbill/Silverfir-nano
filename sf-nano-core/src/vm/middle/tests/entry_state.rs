@@ -7,10 +7,11 @@ use super::helpers::{
 
 #[test]
 fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_stack_pressure() {
-    // The then-block starts with one meaningfully-used entry stack value, so
-    // with a 2-unit GP budget only one cached local can fit at entry. local1
-    // is both earlier and more heavily reused than local0 inside the entry
-    // region, so block_open should keep local1.
+    // The then-block peaks at two live GP transients (entry value + local1 for
+    // the add), so under the exact-headroom solver a 3-unit GP budget leaves
+    // room for exactly one cached local. local1 is both earlier and more
+    // heavily reused than local0 inside the entry region, so block_open should
+    // keep local1.
     let semantic = i32_program(
         2,
         3,
@@ -39,7 +40,7 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 2, 0);
+    let pipeline = plan_i32_program(&semantic, 3, 0);
     let block = block_for_semantic_index(&pipeline.cfg, 3);
     let slot0 = pipeline.frame.local_slot(0);
     let slot1 = pipeline.frame.local_slot(1);
@@ -103,7 +104,7 @@ fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_loc
 fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() {
     // The entry GP stack value is used meaningfully, so it really consumes the
     // only GP dynamic unit. The hot local is F32 and should still be admitted
-    // into the separate FP budget.
+    // into the separate FP budget when that bank has its own spare headroom.
     let semantic = typed_program(
         alloc::vec![ValueType::F32],
         alloc::vec![],
@@ -132,7 +133,7 @@ fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() 
         ],
     );
 
-    let pipeline = plan_program(&semantic, 1, 1);
+    let pipeline = plan_program(&semantic, 1, 3);
     let block = block_for_semantic_index(&pipeline.cfg, 3);
     let slot0 = pipeline.frame.local_slot(0);
     let block_open = pipeline.planner.block_open(block);

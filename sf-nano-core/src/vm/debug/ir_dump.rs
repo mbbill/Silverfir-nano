@@ -270,7 +270,11 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
     }
 }
 
-fn render_lir_block(out: &mut String, block: &SsaBlock, cached: &[crate::vm::middle::frame::FrameSlot]) {
+fn render_lir_block(
+    out: &mut String,
+    block: &SsaBlock,
+    cached: &[crate::vm::middle::frame::FrameSlot],
+) {
     if cached.is_empty() {
         let _ = writeln!(
             out,

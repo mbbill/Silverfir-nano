@@ -8,10 +8,7 @@ use crate::{
         machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineModule, MachineModuleAbi,
         },
-        runtime::{
-            context::NativeContext,
-            dispatch_view::NativeDispatchMetadata,
-        },
+        runtime::{context::NativeContext, dispatch_view::NativeDispatchMetadata},
     },
 };
 
@@ -131,7 +128,6 @@ impl CompiledNativeModule {
     pub(crate) fn publish_local_call_infos(&self, base: *const u8) {
         self.dispatch_metadata.local_call_infos().publish(base);
     }
-
 }
 
 #[derive(Clone, Debug)]

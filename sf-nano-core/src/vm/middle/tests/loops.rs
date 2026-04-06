@@ -21,7 +21,7 @@ fn entry_block_hot_local_preload_uses_one_synthetic_entry_repair() {
         ],
     );
 
-    let prepared = prepare_i32_program(&semantic, 2, 0);
+    let prepared = prepare_i32_program(&semantic, 3, 0);
     let slot0 = prepared.frame.local_slot(0);
 
     assert_eq!(prepared.ssa.blocks.len(), 1);
@@ -237,8 +237,8 @@ fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 4, 0);
-    let prepared = prepare_i32_program(&semantic, 4, 0);
+    let pipeline = plan_i32_program(&semantic, 5, 0);
+    let prepared = prepare_i32_program(&semantic, 5, 0);
     let slot0 = prepared.frame.local_slot(0);
     let slot1 = prepared.frame.local_slot(1);
     let slot2 = prepared.frame.local_slot(2);
@@ -336,10 +336,7 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
     let dispatch_block_cfg = block_for_semantic_index(&pipeline.cfg, 16);
     let state_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 14);
     let dispatch_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 16);
-    let state_entry = &pipeline
-        .planner
-        .block_open(state_block_cfg)
-        .cached_locals;
+    let state_entry = &pipeline.planner.block_open(state_block_cfg).cached_locals;
     let dispatch_entry = &pipeline
         .planner
         .block_open(dispatch_block_cfg)
@@ -466,7 +463,6 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
         prepared.ssa.blocks
     );
 }
-
 
 #[test]
 fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match() {

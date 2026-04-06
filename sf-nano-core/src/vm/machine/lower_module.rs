@@ -33,6 +33,7 @@ use crate::{
 
 use super::{
     gp32::Gp32Lowering,
+    lower_cache_layout::compute_block_entry_cache_params,
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
         explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs,
@@ -192,6 +193,8 @@ fn lower_function(
         &Gp64Lowering
     };
     let explicit_cache = explicit_cached_locals(input.ssa);
+    let entry_cache_params =
+        compute_block_entry_cache_params(regfile, input.ssa, &explicit_cache, gp_reg_width)?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(input.ssa, &explicit_cache);
 
     for block in &input.ssa.blocks {
@@ -200,6 +203,7 @@ fn lower_function(
             regfile,
             input.ssa,
             &explicit_cache,
+            &entry_cache_params,
             block,
             runtime,
             call_link,

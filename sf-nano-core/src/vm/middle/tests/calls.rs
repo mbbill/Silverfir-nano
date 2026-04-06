@@ -29,7 +29,7 @@ fn entry_block_does_not_preload_local_used_only_after_call_barrier() {
         ],
     );
 
-    let prepared = prepare_i32_program(&semantic, 2, 0);
+    let prepared = prepare_i32_program(&semantic, 3, 0);
     let slot0 = prepared.frame.local_slot(0);
 
     assert!(
@@ -92,7 +92,7 @@ fn call_barrier_rebuilds_local_access_after_flush() {
 fn hot_repeated_local_can_stay_public_across_call() {
     let semantic = i32_program(
         1,
-        2,
+        4,
         1,
         alloc::vec![
             op(SemanticOpKind::Primitive(
@@ -109,11 +109,19 @@ fn hot_repeated_local_can_stay_public_across_call() {
             op(SemanticOpKind::Primitive(
                 crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Add,
             )),
+            op(SemanticOpKind::Primitive(
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::Drop,
+            )),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::Primitive(
+                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Add,
+            )),
             op(SemanticOpKind::ReturnOne),
         ],
     );
 
-    let prepared = prepare_i32_program(&semantic, 2, 0);
+    let prepared = prepare_i32_program(&semantic, 4, 0);
     let slot0 = prepared.frame.local_slot(0);
     let first_get =
         first_local_get_for(&prepared.ssa, slot0).expect("expected one local.get after the call");

@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    lower_context::{target_entry_cache_params, BlockLowerContext},
+    lower_context::BlockLowerContext,
     lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
 };
 
@@ -693,14 +693,7 @@ impl<'a> BlockLowerContext<'a> {
                 args.push(MachineValue::Reg(hi));
             }
         }
-        let target_entry_cache = target_entry_cache_params(
-            self.regfile(),
-            self.program(),
-            self.cached_locals(),
-            target,
-            self.gp_reg_width(),
-        )?;
-        for entry in target_entry_cache {
+        for entry in self.block_entry_cache_params(target.id.0).iter().copied() {
             let cached = self.bound_cached_local(entry.cached_index).ok_or_else(|| {
                 let slot = self.cached_locals()[entry.cached_index].slot;
                 WasmError::internal(alloc::format!(

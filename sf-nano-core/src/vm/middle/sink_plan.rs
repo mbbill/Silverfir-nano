@@ -172,7 +172,7 @@ mod tests {
             value_types: vec![crate::value_type::ValueType::I32; value_count],
             value_sink_local: vec![None; value_count],
             block_entry_cached_slots: vec![],
-        block_cfg_origins: alloc::vec![],
+            block_cfg_origins: alloc::vec![],
         }
     }
 
@@ -246,19 +246,17 @@ mod tests {
                     },
                 },
                 SsaInst {
-                    kind: SsaInstKind::Call(
-                        crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
-                            callee: 1,
-                            args: crate::vm::middle::frame::FrameSpan {
-                                start: FrameSlot(0),
-                                count: 0,
-                            },
-                            results: crate::vm::middle::frame::FrameSpan {
-                                start: FrameSlot(0),
-                                count: 0,
-                            },
+                    kind: SsaInstKind::Call(crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
+                        callee: 1,
+                        args: crate::vm::middle::frame::FrameSpan {
+                            start: FrameSlot(0),
+                            count: 0,
                         },
-                    ),
+                        results: crate::vm::middle::frame::FrameSpan {
+                            start: FrameSlot(0),
+                            count: 0,
+                        },
+                    }),
                 },
                 SsaInst {
                     kind: SsaInstKind::LocalSetCache {
@@ -320,10 +318,7 @@ mod tests {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: vec![
-                            SsaOperand::Value(SsaValue(0)),
-                            SsaOperand::Const(1),
-                        ],
+                        args: vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Const(1)],
                         results: vec![SsaValue(1)],
                     },
                 },

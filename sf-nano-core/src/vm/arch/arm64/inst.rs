@@ -570,7 +570,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
             ParallelSource::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
                     "arm64 received non-identity reserved cache edge move into {} from {}",
-                    dst.reg.0, reg.0
+                    dst.reg.0,
+                    reg.0
                 )));
             }
             ParallelSource::Imm(value) => {
@@ -1957,12 +1958,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => {
-                    Err(WasmError::internal(alloc::format!(
-                        "arm64 select cannot consume reserved cache register {} as a condition",
-                        reg.0
-                    )))
-                }
+                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                    "arm64 select cannot consume reserved cache register {} as a condition",
+                    reg.0
+                ))),
             }
         } else {
             let dst = self.map_gp_reg(dst)?;

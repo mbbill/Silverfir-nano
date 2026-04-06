@@ -15,11 +15,9 @@ use crate::vm::{
     middle::{
         cfg::SemanticCfg,
         frame::FrameLayoutPlan,
-        joint_plan::{
-            facts::{
-                BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
-                BlockTransientRegion, EntryState, FirstAccessKind, TransientSymbolInfo,
-            },
+        joint_plan::facts::{
+            BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
+            BlockTransientRegion, EntryState, FirstAccessKind, TransientSymbolInfo,
         },
     },
     wasm::{

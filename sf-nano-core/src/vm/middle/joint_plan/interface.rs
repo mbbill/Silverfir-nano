@@ -7,10 +7,7 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::{
-    value_type::ValueType,
-    vm::middle::frame::FrameSlot,
-};
+use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
 
 /// Function-wide setup facts needed by the rewriter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

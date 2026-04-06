@@ -12,10 +12,7 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{
-                block_entry_cache_requirement, LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram,
-                SsaValue,
-            },
+            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -90,6 +87,7 @@ pub(super) struct BlockLowerContext<'a> {
     call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
     entry_cache_params: Vec<EntryCacheParam>,
+    all_entry_cache_params: &'a [Vec<EntryCacheParam>],
     gp_reg_width: u8,
     i64_ops: &'static dyn I64Lowering,
     ops: Vec<MachineInst>,
@@ -139,6 +137,7 @@ impl<'a> BlockLowerContext<'a> {
         regfile: &'a MachineRegFile,
         program: &'a SsaProgram,
         cached_locals: &'a [CachedLocal],
+        all_entry_cache_params: &'a [Vec<EntryCacheParam>],
         block: &'a SsaBlock,
         all_runtime: &'a [MachineFunctionAbi],
         call_link: MachineCallLinkLayout,
@@ -149,8 +148,10 @@ impl<'a> BlockLowerContext<'a> {
         #[cfg(has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
-        let entry_cache_params =
-            target_entry_cache_params(regfile, program, cached_locals, block, gp_reg_width)?;
+        let entry_cache_params = all_entry_cache_params
+            .get(block.id.as_usize())
+            .cloned()
+            .unwrap_or_default();
         let cache_live = alloc::vec![false; cached_locals.len()];
         let cache_has_value = alloc::vec![false; cached_locals.len()];
         let cache_dirty = alloc::vec![false; cached_locals.len()];
@@ -162,6 +163,7 @@ impl<'a> BlockLowerContext<'a> {
             call_link,
             machine_params,
             entry_cache_params,
+            all_entry_cache_params,
             gp_reg_width,
             i64_ops,
             ops: Vec::new(),
@@ -216,7 +218,11 @@ impl<'a> BlockLowerContext<'a> {
                 if entry.needs_value {
                     lower.materialize_entry_cached_local(entry.cached_index, entry.regs)?;
                 } else {
-                    lower.bind_cached_local_to_regs(entry.cached_index, entry.regs.lo, entry.regs.hi)?;
+                    lower.bind_cached_local_to_regs(
+                        entry.cached_index,
+                        entry.regs.lo,
+                        entry.regs.hi,
+                    )?;
                     lower.set_cache_live(entry.cached_index, true);
                     lower.set_cache_has_value(entry.cached_index, false);
                     lower.set_cache_dirty(entry.cached_index, false);
@@ -251,6 +257,13 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn entry_cache_params(&self) -> &[EntryCacheParam] {
         &self.entry_cache_params
+    }
+
+    pub(super) fn block_entry_cache_params(&self, block_id: u32) -> &[EntryCacheParam] {
+        self.all_entry_cache_params
+            .get(block_id as usize)
+            .map(|params| params.as_slice())
+            .unwrap_or(&[])
     }
 
     pub(super) fn take_ops(&mut self) -> Vec<MachineInst> {
@@ -460,7 +473,11 @@ impl<'a> BlockLowerContext<'a> {
         index: usize,
     ) -> Result<BoundCachedLocal, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_none() {
-            let preferred = self.allocate_cache_binding(index)?;
+            let preferred = if let Some(preferred) = self.preferred_cache_binding(index) {
+                preferred
+            } else {
+                self.allocate_cache_binding(index)?
+            };
             let slot = self.cache_bindings.get_mut(index).ok_or_else(|| {
                 WasmError::internal("cached local binding is out of range".into())
             })?;
@@ -736,6 +753,69 @@ impl<'a> BlockLowerContext<'a> {
             .any(|binding| binding.reg == reg || binding.hi_reg == Some(reg))
     }
 
+    fn preferred_cache_binding(&self, index: usize) -> Option<CachedLocalBinding> {
+        self.entry_cache_params
+            .iter()
+            .find(|entry| entry.cached_index == index)
+            .and_then(|entry| self.try_binding_from_regs(index, entry.regs))
+            .or_else(|| {
+                let target = self.single_successor_target()?;
+                self.block_entry_cache_params(target)
+                    .iter()
+                    .find(|entry| entry.cached_index == index)
+                    .and_then(|entry| self.try_binding_from_regs(index, entry.regs))
+            })
+    }
+
+    fn single_successor_target(&self) -> Option<u32> {
+        match &self.block.terminator {
+            crate::vm::middle::ssa_ir::ir::SsaTerminator::Goto(edge) => Some(edge.target.0),
+            crate::vm::middle::ssa_ir::ir::SsaTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } if then_edge.target == else_edge.target => Some(then_edge.target.0),
+            crate::vm::middle::ssa_ir::ir::SsaTerminator::BrTable { entries, .. }
+                if entries
+                    .first()
+                    .map(|first| entries.iter().all(|entry| entry.target == first.target))
+                    .unwrap_or(false) =>
+            {
+                entries.first().map(|entry| entry.target.0)
+            }
+            crate::vm::middle::ssa_ir::ir::SsaTerminator::Branch { .. }
+            | crate::vm::middle::ssa_ir::ir::SsaTerminator::BrTable { .. }
+            | crate::vm::middle::ssa_ir::ir::SsaTerminator::Return { .. }
+            | crate::vm::middle::ssa_ir::ir::SsaTerminator::TrapUnreachable => None,
+        }
+    }
+
+    fn try_binding_from_regs(&self, index: usize, regs: ValueRegs) -> Option<CachedLocalBinding> {
+        let cached = self.cached_locals.get(index)?;
+        if cached.ty.is_fp() != self.is_fp_reg(regs.lo) {
+            return None;
+        }
+        if self.dynamic_reg_unavailable(regs.lo) {
+            return None;
+        }
+        match (cached.ty, regs.hi) {
+            (MachineStorageType::GpI64, Some(hi)) if self.gp_reg_width == 4 => {
+                if self.is_fp_reg(hi) || self.dynamic_reg_unavailable(hi) {
+                    return None;
+                }
+                Some(CachedLocalBinding {
+                    reg: regs.lo,
+                    hi_reg: Some(hi),
+                })
+            }
+            (MachineStorageType::GpI64, None) if self.gp_reg_width == 4 => None,
+            (_, hi_reg) => Some(CachedLocalBinding {
+                reg: regs.lo,
+                hi_reg,
+            }),
+        }
+    }
+
     fn allocate_cache_binding(&self, index: usize) -> Result<CachedLocalBinding, WasmError> {
         let cached = self.cached_locals.get(index).copied().ok_or_else(|| {
             WasmError::internal("cached local binding request is out of range".into())
@@ -763,14 +843,16 @@ impl<'a> BlockLowerContext<'a> {
         if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
             let dynamic_count = self.regfile.gp_allocatable_count();
             for gp_index in 0..dynamic_count {
-                let Some(lo) = super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index)
+                let Some(lo) =
+                    super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index)
                 else {
                     continue;
                 };
                 if self.dynamic_reg_unavailable(lo) {
                     continue;
                 }
-                let Some(hi) = super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index + 1)
+                let Some(hi) =
+                    super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index + 1)
                 else {
                     break;
                 };
@@ -986,105 +1068,6 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
     let mut entries = explicit.into_values().collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.order);
     entries.into_iter().map(|entry| entry.cached).collect()
-}
-
-pub(super) fn target_entry_cache_params(
-    regfile: &MachineRegFile,
-    program: &SsaProgram,
-    cached_locals: &[CachedLocal],
-    block: &SsaBlock,
-    gp_reg_width: u8,
-) -> Result<Vec<EntryCacheParam>, WasmError> {
-    let mut gp_index = 0usize;
-    let mut fp_index = 0usize;
-    for &param in &block.params {
-        match lir_value_storage_type(program, param) {
-            MachineStorageType::Fp32 | MachineStorageType::Fp64 => fp_index += 1,
-            MachineStorageType::GpI64 if gp_reg_width == 4 => gp_index += 2,
-            _ => gp_index += 1,
-        }
-    }
-
-    let mut entry_cache_params = Vec::new();
-    let mut entry_slots = program
-        .block_entry_cached_slots
-        .get(block.id.as_usize())
-        .cloned()
-        .unwrap_or_default();
-    entry_slots.sort_by_key(|slot| {
-        cached_locals
-            .iter()
-            .position(|cached| cached.slot == *slot)
-            .unwrap_or(usize::MAX)
-    });
-
-    for &slot in &entry_slots {
-        let cached_index = cached_locals
-            .iter()
-            .position(|cached| cached.slot == slot)
-            .ok_or_else(|| {
-                WasmError::internal(alloc::format!(
-                    "missing cached-local metadata for carried entry slot {:?} in block b{}",
-                    slot,
-                    block.id.0,
-                ))
-            })?;
-        let regs = match cached_locals[cached_index].ty {
-            MachineStorageType::Fp32 | MachineStorageType::Fp64 => {
-                let reg = super::lower_module::preferred_fp_dynamic_reg(regfile, fp_index)
-                    .ok_or_else(|| {
-                        WasmError::internal(alloc::format!(
-                            "block b{} entry cached locals exceed FP dynamic register budget",
-                            block.id.0,
-                        ))
-                    })?;
-                fp_index += 1;
-                ValueRegs { lo: reg, hi: None }
-            }
-            MachineStorageType::GpI64 if gp_reg_width == 4 => {
-                let lo = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index)
-                    .ok_or_else(|| {
-                        WasmError::internal(alloc::format!(
-                            "block b{} entry cached i64 locals exceed GP dynamic pair budget",
-                            block.id.0,
-                        ))
-                    })?;
-                let hi = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index + 1)
-                    .ok_or_else(|| {
-                        WasmError::internal(alloc::format!(
-                            "block b{} entry cached i64 locals exceed GP dynamic pair budget",
-                            block.id.0,
-                        ))
-                    })?;
-                gp_index += 2;
-                ValueRegs { lo, hi: Some(hi) }
-            }
-            _ => {
-                let reg = super::lower_module::preferred_gp_dynamic_reg(regfile, gp_index)
-                    .ok_or_else(|| {
-                        WasmError::internal(alloc::format!(
-                            "block b{} entry cached locals exceed GP dynamic register budget",
-                            block.id.0,
-                        ))
-                    })?;
-                gp_index += 1;
-                ValueRegs { lo: reg, hi: None }
-            }
-        };
-        let Some(requirement) = block_entry_cache_requirement(&entry_slots, block, slot) else {
-            continue;
-        };
-        entry_cache_params.push(EntryCacheParam {
-            cached_index,
-            regs,
-            needs_value: matches!(
-                requirement,
-                crate::vm::middle::ssa_ir::ir::EntryCacheRequirement::Ensure
-            ),
-        });
-    }
-
-    Ok(entry_cache_params)
 }
 
 fn explicit_cached_local_pref_map(program: &SsaProgram) -> BTreeMap<FrameSlot, CachePrefEntry> {

@@ -68,10 +68,8 @@ fn gp32_backend_config(
     // 32-bit GP targets need at least 5 GP dynamic budget units to satisfy
     // the backend-wide worst-case operand pressure invariant.
     let gp_linear_budget = gp_linear_budget.max(5);
-    let gp_dynamic_budget = total_gp_budget_for_allocatable(
-        gp_cache_budget.saturating_add(gp_linear_budget),
-        4,
-    );
+    let gp_dynamic_budget =
+        total_gp_budget_for_allocatable(gp_cache_budget.saturating_add(gp_linear_budget), 4);
     let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
     BackendConfig::new(gp_dynamic_budget, fp_dynamic_budget, 4, 8)
 }
@@ -2093,10 +2091,13 @@ fn threads_cached_locals_through_block_edge_params() {
     // register (block param), and the subsequent LocalSetCache of v1 back to
     // the same slot is a no-op. Block 1 should have zero Move ops.
     assert!(
-        program.blocks[1]
-            .ops
-            .iter()
-            .all(|inst| !matches!(inst.kind, MachineInstKind::Move { src: MachineValue::Reg(_), .. })),
+        program.blocks[1].ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Move {
+                src: MachineValue::Reg(_),
+                ..
+            }
+        )),
         "identity get+set through carried cache should produce no reg-to-reg Move; ops={:?}",
         program.blocks[1].ops
     );
@@ -2108,6 +2109,122 @@ fn threads_cached_locals_through_block_edge_params() {
         "carried cache edge should not reload the cached local from frame"
     );
     assert_ne!(carried_reg.0, 0);
+}
+
+#[test]
+fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
+    let frame = plan_frame_layout(2, 1, 4);
+    let slot0 = frame.local_slot(0);
+    let slot1 = frame.local_slot(1);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: alloc::vec![
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+        ],
+        blocks: alloc::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(0)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot0,
+                            src: SsaValue(0),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::Value {
+                            op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 2 })
+                                .unwrap(),
+                            args: alloc::vec![],
+                            results: alloc::vec![SsaValue(1)],
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot1,
+                            src: SsaValue(1),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: alloc::vec![],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: alloc::vec![],
+                ops: alloc::vec![
+                    SsaInst {
+                        kind: SsaInstKind::LocalGetCache {
+                            slot: slot1,
+                            dst: SsaValue(2),
+                        },
+                    },
+                    SsaInst {
+                        kind: SsaInstKind::LocalSetCache {
+                            slot: slot1,
+                            src: SsaValue(2),
+                        },
+                    },
+                ],
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ],
+        value_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot1]],
+        block_cfg_origins: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(2, 4, 0, 2),
+        #[cfg(has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("lane-preserving cache edge lowering should succeed");
+
+    let program = &lowered.module.functions[0].program;
+    let carried_reg = match &program.blocks[0].terminator {
+        MachineTerminator::Jump(edge) => match edge.args.as_slice() {
+            [MachineValue::Reg(reg)] => *reg,
+            other => panic!("expected one real carried cache edge arg, got {other:?}"),
+        },
+        other => panic!("expected jump terminator, got {other:?}"),
+    };
+
+    assert_eq!(
+        program.blocks[1].params.len(),
+        1,
+        "target block should receive one carried cache param"
+    );
+    assert_eq!(
+        program.blocks[1].params[0].reg, carried_reg,
+        "dropping an earlier cached local should leave a hole, not compact the shared local onto a new lane"
+    );
 }
 
 #[test]
@@ -2404,10 +2521,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
         ],
         value_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
         value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![
-            alloc::vec![],
-            alloc::vec![slot0, slot1, slot2],
-        ],
+        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot0, slot1, slot2],],
         block_cfg_origins: alloc::vec![],
     };
 
@@ -4647,10 +4761,7 @@ fn local_get_cache_source_aliases_without_move() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![
-                            SsaOperand::Value(SsaValue(0)),
-                            SsaOperand::Const(1),
-                        ],
+                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Const(1),],
                         results: alloc::vec![SsaValue(1)],
                     },
                 },
@@ -4687,19 +4798,24 @@ fn local_get_cache_source_aliases_without_move() {
     // NO Move from cache→linear for LocalGetCache.
     let cache_to_linear_moves: Vec<_> = ops
         .iter()
-        .filter(|inst| matches!(
-            inst.kind,
-            MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                src: MachineValue::Reg(_),
-                ..
-            }
-        ))
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    src: MachineValue::Reg(_),
+                    ..
+                }
+            )
+        })
         .collect();
     assert!(
         cache_to_linear_moves.is_empty(),
         "LocalGetCache must source-alias without emitting a cache-to-linear Move; found {:?}",
-        cache_to_linear_moves.iter().map(|i| &i.kind).collect::<Vec<_>>()
+        cache_to_linear_moves
+            .iter()
+            .map(|i| &i.kind)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -4714,8 +4830,14 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
         entry: SsaTarget(0),
         local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
         local_slot_info: alloc::vec![
-            LocalSlotInfo { is_param: true, reads_before_write: true },
-            LocalSlotInfo { is_param: true, reads_before_write: true },
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true
+            },
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true
+            },
         ],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
@@ -4723,21 +4845,33 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             ops: alloc::vec![
                 // v0 aliases cache_reg of fp[0]
                 SsaInst {
-                    kind: SsaInstKind::LocalGetCache { slot: slot0, dst: SsaValue(0) },
+                    kind: SsaInstKind::LocalGetCache {
+                        slot: slot0,
+                        dst: SsaValue(0)
+                    },
                 },
                 // v1 aliases cache_reg of fp[1]
                 SsaInst {
-                    kind: SsaInstKind::LocalGetCache { slot: slot1, dst: SsaValue(1) },
+                    kind: SsaInstKind::LocalGetCache {
+                        slot: slot1,
+                        dst: SsaValue(1)
+                    },
                 },
                 // Now overwrite fp[0] with v1 — v0 is still live (used below)
                 // This must materialize v0 out of cache_reg(fp[0]) first.
                 SsaInst {
-                    kind: SsaInstKind::LocalSetCache { slot: slot0, src: SsaValue(1) },
+                    kind: SsaInstKind::LocalSetCache {
+                        slot: slot0,
+                        src: SsaValue(1)
+                    },
                 },
                 // Use v0 — if alias wasn't materialized, this would read the
                 // new value (wrong).
                 SsaInst {
-                    kind: SsaInstKind::LocalSetSlot { slot: slot1, src: SsaValue(0) },
+                    kind: SsaInstKind::LocalSetSlot {
+                        slot: slot1,
+                        src: SsaValue(0)
+                    },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
@@ -4766,14 +4900,16 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
     // aliased value out of the cache register before the overwrite.
     let materialization_moves: Vec<_> = ops
         .iter()
-        .filter(|inst| matches!(
-            inst.kind,
-            MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                src: MachineValue::Reg(_),
-                ..
-            }
-        ))
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    src: MachineValue::Reg(_),
+                    ..
+                }
+            )
+        })
         .collect();
     assert!(
         !materialization_moves.is_empty(),
@@ -4794,8 +4930,14 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
         entry: SsaTarget(0),
         local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
         local_slot_info: alloc::vec![
-            LocalSlotInfo { is_param: true, reads_before_write: true },
-            LocalSlotInfo { is_param: true, reads_before_write: true },
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true
+            },
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true
+            },
         ],
         blocks: alloc::vec![SsaBlock {
             id: SsaTarget(0),
@@ -4803,11 +4945,17 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             ops: alloc::vec![
                 // v0 aliases cache_reg of fp[0]
                 SsaInst {
-                    kind: SsaInstKind::LocalGetCache { slot: slot0, dst: SsaValue(0) },
+                    kind: SsaInstKind::LocalGetCache {
+                        slot: slot0,
+                        dst: SsaValue(0)
+                    },
                 },
                 // set fp[1] = v0 (v0's last use)
                 SsaInst {
-                    kind: SsaInstKind::LocalSetCache { slot: slot1, src: SsaValue(0) },
+                    kind: SsaInstKind::LocalSetCache {
+                        slot: slot1,
+                        src: SsaValue(0)
+                    },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
@@ -4836,10 +4984,15 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
     // The Move from LocalGetCache→LocalSetCache should be a single CachedLocal move.
     let reg_moves: Vec<_> = ops
         .iter()
-        .filter(|inst| matches!(
-            inst.kind,
-            MachineInstKind::Move { src: MachineValue::Reg(_), .. }
-        ))
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    src: MachineValue::Reg(_),
+                    ..
+                }
+            )
+        })
         .collect();
     assert_eq!(
         reg_moves.len(),

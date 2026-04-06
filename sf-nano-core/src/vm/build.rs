@@ -563,7 +563,10 @@ mod tests {
 
         let types = TypeContext::new(vec![
             Rc::new(FunctionType::new(vec![], vec![])),
-            Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32])),
+            Rc::new(FunctionType::new(
+                vec![ValueType::I32],
+                vec![ValueType::I32],
+            )),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
@@ -575,7 +578,10 @@ mod tests {
         });
 
         let mut spec1 = FunctionSpec::new(
-            Rc::new(FunctionType::new(vec![ValueType::I32], vec![ValueType::I32])),
+            Rc::new(FunctionType::new(
+                vec![ValueType::I32],
+                vec![ValueType::I32],
+            )),
             1,
         );
         spec1.set_code((&[0x20, 0x00, 0x0b][..]).into());
@@ -756,7 +762,10 @@ mod tests {
             ][..])
                 .into(),
         );
-        module.functions.push(FunctionInst::Local { spec, type_index: 0 });
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
         module
             .memories
             .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));

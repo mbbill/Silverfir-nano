@@ -78,28 +78,38 @@ pub(crate) fn entry_cache_requirement_from_ops(
     for inst in ops {
         match inst.kind {
             SsaInstKind::LocalGetCache {
-                slot: accessed_slot, ..
+                slot: accessed_slot,
+                ..
             }
-            | SsaInstKind::LocalEnsureCache { slot: accessed_slot } => {
+            | SsaInstKind::LocalEnsureCache {
+                slot: accessed_slot,
+            } => {
                 if accessed_slot == slot {
                     return Some(EntryCacheRequirement::Ensure);
                 }
             }
             SsaInstKind::LocalSetCache {
-                slot: accessed_slot, ..
+                slot: accessed_slot,
+                ..
             }
-            | SsaInstKind::LocalReserveCache { slot: accessed_slot } => {
+            | SsaInstKind::LocalReserveCache {
+                slot: accessed_slot,
+            } => {
                 if accessed_slot == slot {
                     return Some(EntryCacheRequirement::Reserve);
                 }
             }
             SsaInstKind::LocalGetSlot {
-                slot: accessed_slot, ..
+                slot: accessed_slot,
+                ..
             }
             | SsaInstKind::LocalSetSlot {
-                slot: accessed_slot, ..
+                slot: accessed_slot,
+                ..
             }
-            | SsaInstKind::LocalDropCache { slot: accessed_slot } => {
+            | SsaInstKind::LocalDropCache {
+                slot: accessed_slot,
+            } => {
                 if accessed_slot == slot {
                     return None;
                 }

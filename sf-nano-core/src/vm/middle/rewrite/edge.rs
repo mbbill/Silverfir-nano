@@ -9,8 +9,8 @@ use crate::vm::middle::{
     frame::FrameSlot,
     ssa_ir::{
         ir::{
-            entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge,
-            SsaInst, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
+            entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst,
+            SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
         },
         target::SsaTarget,
     },
