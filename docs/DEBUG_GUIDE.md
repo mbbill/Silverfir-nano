@@ -1,9 +1,12 @@
-# Performance Debugging Guide
+# Performance Optimization Guide
 
-This document captures the disciplined process for diagnosing and fixing
-performance regressions in the native backend. It exists because rushing
-to code changes without concrete evidence consistently fails. Every rule
-below was learned from a real debugging session.
+This document captures the disciplined process for finding and fixing
+codegen inefficiencies in the native backend. The reference point is
+wasmer's LLVM backend: for any function where Silverfir emits
+significantly more instructions than LLVM, there is optimization work
+to do.
+
+Every rule below was learned from a real debugging session.
 
 ## Core Principle
 
@@ -17,144 +20,156 @@ Previous sessions failed because they:
 - made speculative fixes that introduced new bugs or had no measurable effect
 - tried to fix multiple things at once
 
-This session succeeded because it followed a strict sequence:
-measure → pick one block → show the full IR chain → find the root cause
-in code → add tests → fix → verify.
+The correct sequence is:
+measure → compare against LLVM → pick one function → show the full IR
+chain → find the root cause in code → add tests → fix → verify.
+
+## Prerequisites
+
+Silverfir (this repo):
+
+```bash
+cargo build --release --bin sf-nano-cli
+```
+
+Wasmer with LLVM backend (see `~/Dev/wasmer/LLVM.md`):
+
+```bash
+cd ~/Dev/wasmer
+export LLVM_SYS_211_PREFIX=/opt/homebrew/opt/llvm
+cargo build --release -p wasmer-cli --features llvm
+```
 
 ## The Process
 
-### Step 1: Measure the baseline
-
-Run CoreMark (or the relevant benchmark) on both the old and new code.
-Record the exact numbers.
+### Step 1: Generate Silverfir and LLVM dumps
 
 ```bash
-# Build both
+# Silverfir
 cargo build --release --bin sf-nano-cli
-cd /tmp/sf-nano-old-XXXX && cargo build --release --bin sf-nano-cli
-
-# Run both with dumps
-rm -rf /tmp/coremark-new-dump
-SF_NATIVE_DUMP_DIR=/tmp/coremark-new-dump \
+rm -rf /tmp/coremark-sf-dump
+SF_NATIVE_DUMP_DIR=/tmp/coremark-sf-dump \
   ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 
-rm -rf /tmp/coremark-old-dump
-SF_NATIVE_DUMP_DIR=/tmp/coremark-old-dump \
-  /tmp/sf-nano-old-XXXX/target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
+# Wasmer LLVM
+rm -rf /tmp/coremark-llvm-debug
+mkdir -p /tmp/coremark-llvm-debug
+~/Dev/wasmer/target/release/wasmer compile --llvm \
+  --compiler-debug-dir /tmp/coremark-llvm-debug \
+  -o /tmp/coremark.wasmu \
+  benchmarks/wasi/coremark/coremark.wasm
 ```
 
-Write down the summary line:
+### Step 2: Postprocess and compare
 
+```bash
+python3 scripts/postprocess_native_dump.py \
+  --wasm benchmarks/wasi/coremark/coremark.wasm \
+  --dump-dir /tmp/coremark-sf-dump \
+  --out-dir /tmp/coremark-sf-pp
+
+python3 scripts/compare_llvm.py \
+  --sf-dir /tmp/coremark-sf-pp \
+  --llvm-dir /tmp/coremark-llvm-debug
 ```
-[arm64] (func:35, ssa:19893, mir:18822, code:167448)   # new
-[arm64] (func:35, ssa:12872, mir:10985, code:83056)    # old
-```
 
-If SSA and MIR counts are close, the problem is in codegen or runtime.
-If SSA counts diverge, the problem is in middle layer lowering.
-If only MIR diverges (SSA similar), the problem is in machine lowering.
+This prints a summary table of every function with SF and LLVM
+instruction counts and their ratio (SF / LLVM), sorted worst first.
 
-### Step 2: Profile and pick ONE hot block
+### Step 3: Profile for hotness and pick ONE function
 
 ```bash
 SF_JITDUMP=1 samply-for-ai record --save-only --output /tmp/profile.json.gz -- \
   ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 
-samply-for-ai query --profile /tmp/profile.json.gz hotspots --limit 20
+python3 scripts/compare_llvm.py \
+  --sf-dir /tmp/coremark-sf-pp \
+  --llvm-dir /tmp/coremark-llvm-debug \
+  --profile /tmp/profile.json.gz
 ```
 
-Pick the hottest block that is representative of the regression. Do not
-pick an edge block or a block that looks unusual. A hot inner loop body
-is ideal.
+Pick the function with the highest `ratio * hotness%`. The ideal
+candidate is hot in the profile, has a high ratio, and is representative
+of a general pattern (not a one-off edge case).
 
-### Step 3: Post-process and show the full IR chain
+### Step 4: Drill down into the full IR chain
 
 ```bash
-python3 scripts/postprocess_native_dump.py \
-  --wasm benchmarks/wasi/coremark/coremark.wasm \
-  --dump-dir /tmp/coremark-new-dump \
-  --out-dir /tmp/coremark-new-pp \
-  --function 6
-
-python3 scripts/postprocess_native_dump.py \
-  --wasm benchmarks/wasi/coremark/coremark.wasm \
-  --dump-dir /tmp/coremark-old-dump \
-  --out-dir /tmp/coremark-old-pp \
+python3 scripts/compare_llvm.py \
+  --sf-dir /tmp/coremark-sf-pp \
+  --llvm-dir /tmp/coremark-llvm-debug \
   --function 6
 ```
 
-For the chosen hot block, show the complete chain side by side:
+This shows, for the chosen function:
 
-1. **Wasm source** — what the original code does
-2. **SSA IR** — old vs new, side by side
-3. **Machine IR** — old vs new, side by side
-4. **Native assembly** — old vs new, side by side
+1. **Wasm disassembly** — what the original code does
+2. **SSA IR** — Silverfir's middle-layer representation
+3. **Machine IR** — Silverfir's machine-level representation
+4. **Silverfir assembly** — what we emit (with instruction count)
+5. **LLVM assembly** — what LLVM emits (with instruction count)
+6. **LLVM optimized IR** — what LLVM's optimizer produced
 
-Write out the comparison in a table or diff format. Be explicit about
-every instruction. Do not summarize — list them.
+### Step 5: Identify the pattern
 
-### Step 4: Identify the pattern
+Compare the two assemblies instruction by instruction. Categorize every
+extra Silverfir instruction:
 
-From the side-by-side comparison, categorize every extra instruction in
-the new code:
+- Redundant moves (register-to-register copies LLVM avoids)
+- Missing strength reductions (LLVM uses a cheaper instruction)
+- Redundant loads/stores (LLVM keeps values in registers)
+- Missed constant folding (LLVM evaluates at compile time)
+- Extra branch overhead (block layout, unnecessary jumps)
+- Calling convention overhead (spill/fill around calls)
 
-- Is it a redundant move? Between what domains?
-- Is it a missing optimization that the old code had?
-- Is it a new instruction category that did not exist before?
+Count them. For example:
 
-Count the extras. For example:
+> "12 of 28 extra instructions are redundant GP moves. 8 are redundant
+> loads from the linear memory base. 4 are from suboptimal block layout."
 
-> "7 of 11 MIR ops are cache↔linear moves. The old code had 4 ops total."
-
-### Step 5: Find the root cause in code
+### Step 6: Find the root cause in code
 
 Now — and only now — go into the source code. You know exactly what
 pattern to look for because you have the concrete IR.
 
 Trace through the lowering of the specific SSA ops that produce the
-extra instructions. Compare the old code path and the new code path
-line by line.
+extra instructions.
 
 Key questions:
 
-- Did the old code have an optimization that the new code dropped?
-- Is the new code adding a copy for safety that turns out to be
-  unnecessary?
-- Is there a missing analysis pass (like `sink_plan`) that the old
-  pipeline had?
+- What does LLVM's optimized IR do that Silverfir's SSA IR does not?
+- Is there a conservative copy that could be eliminated?
+- Is there a missing analysis pass that would avoid the extra instructions?
+- Is the machine lowering choosing a suboptimal instruction sequence?
 
-### Step 6: Verify correctness constraints before fixing
+### Step 7: Verify correctness constraints before fixing
 
 Before writing the fix, verify that the optimization is safe:
 
 - Read every function that touches the affected state
-  (e.g., `release_dead_values`, `materialize_cache_aliases`,
-  `emit_drop_cached_local`)
 - Confirm that the safety mechanisms are already in place
-- Check for new invariants in the refactored code that might have
-  motivated the conservative approach
+- Check for invariants that might have motivated the conservative approach
 
-### Step 7: Write tests FIRST
+### Step 8: Write tests FIRST
 
 Write tests that cover:
 
 1. **The optimization itself** — verify that the redundant instruction
    is gone
 2. **The safety invariant** — verify that the mechanism that makes the
-   optimization safe actually fires (e.g., alias materialization before
-   overwrite)
+   optimization safe actually fires
 3. **The common pattern** — verify the end-to-end pattern that will
-   appear in real code (e.g., get→set to different slot produces one move)
+   appear in real code
 
 Run the existing test suite to establish the baseline of what currently
 passes.
 
-### Step 8: Apply the fix
+### Step 9: Apply the fix
 
 Make the minimal code change. Do not refactor surrounding code. Do not
 add features. Do not clean up.
 
-### Step 9: Verify
+### Step 10: Verify
 
 Run in this exact order:
 
@@ -165,31 +180,34 @@ cargo test -p sf-nano-core --features micro-jit --lib
 # 2. Spectests
 cargo run --bin sf-nano-spectest -- --backend native
 
-# 3. Rebuild release and run CoreMark with dump
+# 3. Rebuild release and re-run comparison
 cargo build --release --bin sf-nano-cli
 rm -rf /tmp/coremark-fixed-dump
 SF_NATIVE_DUMP_DIR=/tmp/coremark-fixed-dump \
   ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 
-# 4. Post-process and verify the hot block improved
 python3 scripts/postprocess_native_dump.py \
   --wasm benchmarks/wasi/coremark/coremark.wasm \
   --dump-dir /tmp/coremark-fixed-dump \
-  --out-dir /tmp/coremark-fixed-pp \
+  --out-dir /tmp/coremark-fixed-pp
+
+python3 scripts/compare_llvm.py \
+  --sf-dir /tmp/coremark-fixed-pp \
+  --llvm-dir /tmp/coremark-llvm-debug \
   --function 6
 ```
 
-Show the before/after comparison of the same hot block to confirm the
-fix did what was expected.
+Confirm the ratio improved for the target function.
 
-### Step 10: Record the result
+### Step 11: Record the result
 
-Write down the final numbers in a comparison table:
+Write down the final numbers:
 
-| Metric | Old | Before fix | After fix |
-|--------|-----|------------|-----------|
-| CoreMark | ... | ... | ... |
-| MIR ops | ... | ... | ... |
+| Metric | Before | After | LLVM |
+|--------|--------|-------|------|
+| CoreMark | ... | ... | N/A |
+| Insn count (func N) | ... | ... | ... |
+| Ratio (func N) | ... | ... | 1.00 |
 | Code size | ... | ... | ... |
 
 Note what gap remains and what the next optimization target would be.
@@ -204,50 +222,42 @@ improvements or diagnose regressions.
 
 ### Always pick the highest-value target
 
-Use the profile to pick the optimization that affects the hottest code.
-A 10% improvement in a block that runs 15% of the time is worth more
-than a 50% improvement in a block that runs 0.1% of the time.
+Use the profile-weighted comparison to pick the optimization that
+affects the hottest code with the worst ratio. A 10% improvement in a
+block that runs 15% of the time is worth more than a 50% improvement in
+a block that runs 0.1% of the time.
 
 ### The concrete example is mandatory
 
-If you cannot show a specific block with specific old-vs-new IR and
-assembly, you do not understand the problem well enough to fix it. Go
-back to Step 3.
+If you cannot show a specific function with specific SF-vs-LLVM assembly
+side by side, you do not understand the problem well enough to fix it.
+Go back to Step 4.
 
 ### Trust the data, not the hypothesis
 
-If the SSA IR is identical but MIR diverges, the problem is in machine
-lowering — do not investigate the middle layer. If SSA diverges, the
-problem is in the middle layer — do not investigate machine lowering.
-Let the numbers tell you where to look.
-
-### Trace the old code path
-
-When the old code was faster, the question is always "what did the old
-code do that the new code does not?" Read the old lowering path for the
-specific op that produces extra instructions. The answer is usually a
-concrete optimization (like source-aliasing or sink planning) that was
-not carried forward.
+If the SSA IR is clean but machine IR diverges from LLVM, the problem is
+in machine lowering. If SSA IR is already bloated compared to LLVM's
+optimized IR, the problem is in the middle layer. Let the numbers and
+the comparison tell you where to look.
 
 ### Do not speculate about correctness
 
 When you find a conservative code path (e.g., always emitting a copy),
 do not assume it was conservative for a reason. Read the safety
-mechanisms. Check whether the old code had the same mechanisms. If the
-safety infrastructure is already in place, the conservative path is
-just a bug.
+mechanisms. If the safety infrastructure is already in place, the
+conservative path is just a bug.
 
 ## Example: Cache↔Linear Move Explosion (April 2025)
 
 This is a concrete example of applying the process above.
 
-### Step 1–2: Measure and profile
+### Measure and profile
 
-CoreMark dropped from 33,111 (old) to 22,484 (new). MIR ops went from
-10,985 to 18,822. Profiling showed `func6::b7` (a linked-list reversal
-loop) at 8.6% of execution time.
+CoreMark dropped from 33,111 to 22,484. MIR ops went from 10,985 to
+18,822. Profiling showed `func6::b7` (a linked-list reversal loop) at
+8.6% of execution time.
 
-### Step 3: Show the full IR chain
+### Show the full IR chain
 
 The Wasm source is a simple loop over three locals:
 
@@ -260,91 +270,41 @@ loop $L9
 end
 ```
 
-SSA IR was nearly identical between old and new. The divergence was
-entirely in MIR:
+The divergence was entirely in MIR. The bloated version had 11 ops
+where 7 were cache↔linear register copies. The lean version had 4 ops.
 
-Old MIR (4 ops):
-```
-move.gp          r4  <- r9
-indexed_load.u32 r9  <- [base + r4]
-indexed_store.u32     [base + r4] <- r12
-move.gp          r12 <- r4
-branch r9 then b10 else b11
-```
-
-New MIR (11 ops):
-```
-move.linear.gp  r7 <- r4
-move.cache.gp   r6 <- r7
-move.linear.gp  r7 <- r6
-indexed_load    r7 <- [base + r7]
-move.cache.gp   r4 <- r7
-move.linear.gp  r7 <- r6
-move.linear.gp  r8 <- r5
-indexed_store   [base + r7] <- r8
-move.linear.gp  r7 <- r6
-move.cache.gp   r5 <- r7
-move.linear.gp  r7 <- r4
-branch r7 then b7 else b76
-```
-
-7 of 11 ops were cache↔linear register copies.
-
-### Step 4: Identify the pattern
+### Identify the pattern
 
 Every `local.get_cache` produced a `move.linear` (cache → linear copy).
 Every `local.set_cache` consumed a linear value with a `move.cache`
-(linear → cache copy). The old code had neither.
+(linear → cache copy).
 
-### Step 5: Find the root cause
+### Find the root cause
 
-Tracing the old code path for `LocalGet` on a cached local:
+The old code path source-aliased cache registers (zero instructions).
+The new code path always allocated + copied (one instruction per get).
+All safety mechanisms (`materialize_cache_aliases` at every mutation
+point) were already in place. The conservative copy was not protecting
+against anything.
 
-```rust
-// Old: source-alias, zero instructions
-self.push_value_location(*dst, cached.reg, None);
-```
+### Test, fix, verify
 
-The new `lower_local_get_cache` instead:
+Three tests were added. The fix was a three-line change in
+`lower_local_get_cache`. Result:
 
-```rust
-// New: allocate + copy, one instruction per get
-let dst_reg = self.alloc_slot_load_value(dst)?;
-self.emit_machine_inst(Move { dst: dst_reg, src: Reg(cached.reg) });
-```
+| Metric | Before | After |
+|--------|--------|-------|
+| CoreMark | 22,484 | 29,263 |
+| MIR ops | 18,822 | 14,232 |
+| Hot loop ops | 11 | 5 |
+| move.linear (func6) | 267 | 29 |
 
-### Step 6: Verify safety
+## Quick Reference
 
-The aliasing approach requires that when a cache register is about to be
-overwritten, any live SSA values aliased to it are copied out first.
-
-Checked all mutation points:
-- `lower_local_set_cache` calls `materialize_cache_aliases` before
-  overwriting
-- `emit_drop_cached_local` calls `materialize_cache_aliases` before
-  unbinding
-- `release_dead_values` knows cache regs are not linear and does not
-  free them
-- `apply_sink_premap` calls `materialize_cache_aliases` before
-  pre-mapping a result to a cache register
-
-All safety mechanisms were already in place. The conservative copy was
-not protecting against anything.
-
-### Step 7–9: Test, fix, verify
-
-Three tests were added:
-1. `local_get_cache_source_aliases_without_move` — no Move emitted
-2. `local_set_cache_materializes_live_alias_before_overwrite` — safety
-   mechanism fires
-3. `local_get_cache_to_set_cache_different_slot_single_move` — common
-   copy pattern produces one move, not two
-
-The fix was a three-line change in `lower_local_get_cache`. Result:
-
-| Metric | Old | Before | After |
-|--------|-----|--------|-------|
-| CoreMark | 33,111 | 22,484 | 29,263 |
-| MIR ops | 10,985 | 18,822 | 14,232 |
-| Hot loop ops | 4 | 11 | 5 |
-| move.linear (func6) | 0 | 267 | 29 |
+| What | Silverfir | Wasmer LLVM |
+|------|-----------|-------------|
+| Build | `cargo build --release --bin sf-nano-cli` | `cargo build --release -p wasmer-cli --features llvm` |
+| Dump | `SF_NATIVE_DUMP_DIR=/tmp/sf` | `--compiler-debug-dir /tmp/llvm` |
+| Assembly | `functions/NNNN/native_disasm.txt` | `llvm/<hash>/function_N.s` |
+| IR | `functions/NNNN/ssa_ir.txt` + `machine_ir.txt` | `function_N.postopt.ll` |
+| Index | Global wasm (includes imports) | Global wasm (includes imports) |
