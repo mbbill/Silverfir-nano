@@ -412,6 +412,387 @@ def build_overview(
     return "\n".join(parts)
 
 
+###############################################################################
+# Pressure analysis
+###############################################################################
+
+# Old ARM64 register split (static banks, from commit 40cfc0e)
+OLD_GP_LOCAL_CACHE = 13
+OLD_GP_TRANSIENT = 9
+OLD_FP_LOCAL_CACHE = 19
+OLD_FP_TRANSIENT = 10
+
+# New ARM64 unified budget
+NEW_GP_DYNAMIC = 22
+NEW_FP_DYNAMIC = 29
+
+BLOCK_HEADER_RE = re.compile(
+    r"^\s*block b(\d+)\s+params=\[([^\]]*)\](?:\s+cached=\[(.*)\])?\s*$"
+)
+LOCAL_TYPES_RE = re.compile(r"^\s*local_types=\[([^\]]*)\]\s*$")
+LOCAL_SLOTS_RE = re.compile(r"^\s*local_slots=(\d+)\s*$")
+SSA_VALUE_DEF_RE = re.compile(r"v(\d+)")
+
+
+@dataclass
+class BlockPressure:
+    block_id: int
+    cached_count: int
+    cached_gp: int
+    cached_fp: int
+    param_count: int
+    ensure_count: int
+    drop_count: int
+    leaf_count: int
+    get_cache: int
+    set_cache: int
+    get_slot: int
+    set_slot: int
+
+
+@dataclass
+class FunctionPressure:
+    index: int
+    code_size: int
+    local_count: int
+    gp_locals: int
+    fp_locals: int
+    block_count: int
+    blocks: List[BlockPressure]
+    total_ensure: int
+    total_drop: int
+
+
+def parse_local_types(ssa_text: str) -> List[str]:
+    """Extract local types from the SSA IR text."""
+    for line in ssa_text.splitlines():
+        m = LOCAL_TYPES_RE.match(line)
+        if m and m.group(1).strip():
+            return [t.strip() for t in m.group(1).split(",")]
+    return []
+
+
+def is_fp_type(ty: str) -> bool:
+    return ty in ("f32", "f64")
+
+
+def analyze_function_pressure(
+    native: NativeFunctionDump,
+) -> Optional[FunctionPressure]:
+    ssa = native.ssa_ir
+    if not ssa or ssa.strip() == "<unavailable>":
+        return None
+
+    # Parse local_slots
+    local_count = 0
+    for line in ssa.splitlines():
+        m = LOCAL_SLOTS_RE.match(line)
+        if m:
+            local_count = int(m.group(1))
+            break
+
+    if local_count == 0:
+        return None
+
+    # Parse local types
+    local_types = parse_local_types(ssa)
+    gp_locals = sum(1 for t in local_types if not is_fp_type(t))
+    fp_locals = sum(1 for t in local_types if is_fp_type(t))
+
+    # Parse code_size from meta
+    code_size = parse_int_field(native.meta, "code_size") or 0
+
+    # Split into blocks and analyze each
+    blocks: List[BlockPressure] = []
+    current_block_id: Optional[int] = None
+    current_cached: List[str] = []
+    current_params: List[str] = []
+    current_lines: List[str] = []
+
+    def flush_block() -> None:
+        nonlocal current_block_id, current_cached, current_params, current_lines
+        if current_block_id is None:
+            return
+        body = "\n".join(current_lines)
+
+        # Classify cached slots as GP/FP
+        cached_gp = 0
+        cached_fp = 0
+        for slot_str in current_cached:
+            m = re.match(r"fp\[(\d+)\]", slot_str.strip())
+            if m:
+                idx = int(m.group(1))
+                if idx < len(local_types) and is_fp_type(local_types[idx]):
+                    cached_fp += 1
+                else:
+                    cached_gp += 1
+
+        blocks.append(BlockPressure(
+            block_id=current_block_id,
+            cached_count=len(current_cached),
+            cached_gp=cached_gp,
+            cached_fp=cached_fp,
+            param_count=len([p for p in current_params if p.strip()]),
+            ensure_count=body.count("local.ensure_cache"),
+            drop_count=body.count("local.drop_cache"),
+            leaf_count=body.count("leaf "),
+            get_cache=body.count("local.get_cache"),
+            set_cache=body.count("local.set_cache"),
+            get_slot=body.count("local.get_slot"),
+            set_slot=body.count("local.set_slot"),
+        ))
+        current_block_id = None
+        current_cached = []
+        current_params = []
+        current_lines = []
+
+    for line in ssa.splitlines():
+        m = BLOCK_HEADER_RE.match(line)
+        if m:
+            flush_block()
+            current_block_id = int(m.group(1))
+            current_params = [p for p in m.group(2).split(",") if p.strip()]
+            cached_str = m.group(3)
+            current_cached = (
+                [c for c in cached_str.split(",") if c.strip()]
+                if cached_str and cached_str.strip()
+                else []
+            )
+            continue
+        if current_block_id is not None:
+            current_lines.append(line)
+
+    flush_block()
+
+    total_ensure = sum(b.ensure_count for b in blocks)
+    total_drop = sum(b.drop_count for b in blocks)
+
+    return FunctionPressure(
+        index=native.index,
+        code_size=code_size,
+        local_count=local_count,
+        gp_locals=gp_locals,
+        fp_locals=fp_locals,
+        block_count=len(blocks),
+        blocks=blocks,
+        total_ensure=total_ensure,
+        total_drop=total_drop,
+    )
+
+
+def build_pressure_report(
+    native_functions: Dict[int, NativeFunctionDump],
+    indices: List[int],
+) -> str:
+    parts: List[str] = []
+    parts.append("=" * 80)
+    parts.append("CACHE PRESSURE ANALYSIS")
+    parts.append("=" * 80)
+    parts.append("")
+    parts.append(
+        f"Old ARM64 model: GP cache={OLD_GP_LOCAL_CACHE}, "
+        f"GP transient={OLD_GP_TRANSIENT}, "
+        f"FP cache={OLD_FP_LOCAL_CACHE}, FP transient={OLD_FP_TRANSIENT}"
+    )
+    parts.append(
+        f"New ARM64 model: GP dynamic={NEW_GP_DYNAMIC}, "
+        f"FP dynamic={NEW_FP_DYNAMIC}"
+    )
+    parts.append("")
+
+    results: List[FunctionPressure] = []
+    for idx in indices:
+        native = native_functions.get(idx)
+        if native is None:
+            continue
+        fp = analyze_function_pressure(native)
+        if fp is not None:
+            results.append(fp)
+
+    if not results:
+        parts.append("No functions with pressure data found.")
+        return "\n".join(parts)
+
+    # --- Module summary table ---
+    parts.append("-" * 80)
+    parts.append("PER-FUNCTION SUMMARY (sorted by code size)")
+    parts.append("-" * 80)
+    hdr = (
+        f"{'func':>6} {'locals':>6} {'gp':>4} {'fp':>4} "
+        f"{'blks':>5} {'code':>7} "
+        f"{'ensure':>7} {'drop':>6} {'fix%':>5} "
+        f"{'cache_min':>9} {'cache_max':>9} {'cache_avg':>9} "
+        f"{'old_press':>9}"
+    )
+    parts.append(hdr)
+
+    results.sort(key=lambda r: r.code_size, reverse=True)
+    total_code = 0
+    total_ensure = 0
+    total_drop = 0
+    total_blocks = 0
+
+    for fp in results:
+        total_code += fp.code_size
+        total_ensure += fp.total_ensure
+        total_drop += fp.total_drop
+        total_blocks += fp.block_count
+
+        cache_sizes = [b.cached_count for b in fp.blocks]
+        cache_min = min(cache_sizes) if cache_sizes else 0
+        cache_max = max(cache_sizes) if cache_sizes else 0
+        cache_avg = sum(cache_sizes) / len(cache_sizes) if cache_sizes else 0
+
+        # Old model pressure: would any local exceed the fixed cache budget?
+        old_gp_pressure = fp.gp_locals > OLD_GP_LOCAL_CACHE
+        old_fp_pressure = fp.fp_locals > OLD_FP_LOCAL_CACHE
+        old_press = "GP" if old_gp_pressure else ""
+        if old_fp_pressure:
+            old_press += "+FP" if old_press else "FP"
+        if not old_press:
+            old_press = "none"
+
+        # Boundary fixup percentage: ensure+drop as fraction of all SSA ops
+        total_ops = sum(
+            b.ensure_count + b.drop_count + b.leaf_count
+            + b.get_cache + b.set_cache + b.get_slot + b.set_slot
+            for b in fp.blocks
+        )
+        fix_pct = (
+            (fp.total_ensure + fp.total_drop) / total_ops * 100
+            if total_ops > 0
+            else 0
+        )
+
+        parts.append(
+            f"{fp.index:>6} {fp.local_count:>6} {fp.gp_locals:>4} {fp.fp_locals:>4} "
+            f"{fp.block_count:>5} {fp.code_size:>7} "
+            f"{fp.total_ensure:>7} {fp.total_drop:>6} {fix_pct:>4.0f}% "
+            f"{cache_min:>9} {cache_max:>9} {cache_avg:>9.1f} "
+            f"{old_press:>9}"
+        )
+
+    parts.append("")
+    parts.append(
+        f"TOTALS: {len(results)} functions, {total_blocks} blocks, "
+        f"code={total_code}, ensure={total_ensure}, drop={total_drop}"
+    )
+
+    # --- Per-block cache distribution ---
+    parts.append("")
+    parts.append("-" * 80)
+    parts.append("BLOCK CACHE SIZE DISTRIBUTION (all functions)")
+    parts.append("-" * 80)
+
+    all_cache_sizes: List[int] = []
+    for fp in results:
+        for b in fp.blocks:
+            all_cache_sizes.append(b.cached_count)
+
+    if all_cache_sizes:
+        from collections import Counter
+
+        dist = Counter(all_cache_sizes)
+        parts.append(f"{'cached':>8} {'blocks':>8} {'pct':>6}")
+        for size in sorted(dist.keys()):
+            pct = dist[size] / len(all_cache_sizes) * 100
+            parts.append(f"{size:>8} {dist[size]:>8} {pct:>5.1f}%")
+        parts.append(f"{'total':>8} {len(all_cache_sizes):>8}")
+
+    # --- Boundary-only block analysis ---
+    parts.append("")
+    parts.append("-" * 80)
+    parts.append("BOUNDARY-ONLY BLOCKS (blocks with ensure/drop but no leaf ops)")
+    parts.append("-" * 80)
+
+    boundary_only = 0
+    mixed = 0
+    pure_logic = 0
+    for fp in results:
+        for b in fp.blocks:
+            has_boundary = b.ensure_count > 0 or b.drop_count > 0
+            has_logic = b.leaf_count > 0 or b.get_cache > 0 or b.set_cache > 0
+            if has_boundary and not has_logic:
+                boundary_only += 1
+            elif has_boundary and has_logic:
+                mixed += 1
+            else:
+                pure_logic += 1
+
+    parts.append(f"Pure logic blocks:      {pure_logic:>6}")
+    parts.append(f"Boundary-only blocks:   {boundary_only:>6}")
+    parts.append(f"Mixed blocks:           {mixed:>6}")
+    parts.append(f"Total:                  {pure_logic + boundary_only + mixed:>6}")
+
+    # --- Cache stability analysis ---
+    parts.append("")
+    parts.append("-" * 80)
+    parts.append("CACHE STABILITY (per function: how much does the cached set change?)")
+    parts.append("-" * 80)
+    parts.append(
+        f"{'func':>6} {'locals':>6} {'blks':>5} "
+        f"{'unique':>6} {'ratio':>6} "
+        f"{'union':>6} {'isect':>6} {'empty':>6}"
+    )
+
+    for fp in sorted(results, key=lambda r: r.code_size, reverse=True):
+        if not fp.blocks:
+            continue
+        native = native_functions[fp.index]
+        block_sets: List[frozenset] = []
+        for line in native.ssa_ir.splitlines():
+            m = BLOCK_HEADER_RE.match(line)
+            if m and m.group(3) and m.group(3).strip():
+                slots = frozenset(
+                    s.strip() for s in m.group(3).split(",") if s.strip()
+                )
+                block_sets.append(slots)
+            elif m:
+                block_sets.append(frozenset())
+
+        if not block_sets:
+            continue
+        nonempty = [s for s in block_sets if s]
+        empty_count = len(block_sets) - len(nonempty)
+        unique_sets = len(set(block_sets))
+        union_size = len(frozenset().union(*block_sets)) if block_sets else 0
+        intersect_size = (
+            len(frozenset.intersection(*nonempty))
+            if nonempty
+            else 0
+        )
+        set_ratio = unique_sets / len(block_sets) if block_sets else 0
+
+        parts.append(
+            f"{fp.index:>6} {fp.local_count:>6} {len(block_sets):>5} "
+            f"{unique_sets:>6} {set_ratio:>5.2f}x "
+            f"{union_size:>6} {intersect_size:>6} {empty_count:>6}"
+        )
+
+    parts.append("")
+    parts.append("=" * 80)
+    parts.append("LEGEND")
+    parts.append("=" * 80)
+    parts.append("locals      : total Wasm locals in the function")
+    parts.append("gp/fp       : locals split by register class (integer vs float)")
+    parts.append("blks        : SSA-IR block count")
+    parts.append("code        : native code size in bytes")
+    parts.append("ensure/drop : cache management ops (boundary fixup overhead)")
+    parts.append("fix%        : ensure+drop as % of all SSA ops")
+    parts.append("cache_min/max/avg : per-block cached-local count range")
+    parts.append("old_press   : would old static-split model have local pressure?")
+    parts.append(f"              (GP pressure if gp_locals > {OLD_GP_LOCAL_CACHE},"
+                 f" FP if fp_locals > {OLD_FP_LOCAL_CACHE})")
+    parts.append("unique      : distinct cached-slot sets across blocks")
+    parts.append("ratio       : unique / block_count (1.0 = every block different)")
+    parts.append("union       : distinct locals cached anywhere in the function")
+    parts.append("isect       : locals cached in every non-empty block (stable core)")
+    parts.append("empty       : blocks with no cached locals")
+    parts.append("")
+
+    return "\n".join(parts)
+
+
 def selected_indices(
     available: Iterable[int], requested: Optional[List[int]]
 ) -> List[int]:
@@ -537,6 +918,10 @@ def main() -> None:
     }
     write_json(out_dir / "module.json", module_summary)
     write_json(out_dir / "function_map.json", function_map)
+
+    # Pressure analysis report
+    pressure_report = build_pressure_report(native_functions, indices)
+    write_text(out_dir / "pressure_report.txt", pressure_report)
 
 
 if __name__ == "__main__":

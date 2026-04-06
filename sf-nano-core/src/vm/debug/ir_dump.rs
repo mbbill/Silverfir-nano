@@ -249,23 +249,58 @@ fn write_dump_impl(
 fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
     let _ = writeln!(out, "  local_slots={}", program.local_slot_types.len());
+    // Emit local types so analysis tools can compute GP/FP pressure split.
+    if !program.local_slot_types.is_empty() {
+        let _ = write!(out, "  local_types=[");
+        for (i, ty) in program.local_slot_types.iter().enumerate() {
+            if i > 0 {
+                let _ = write!(out, ", ");
+            }
+            let _ = write!(out, "{ty}");
+        }
+        let _ = writeln!(out, "]");
+    }
     for block in &program.blocks {
-        render_lir_block(out, block);
+        let cached = program
+            .block_entry_cached_slots
+            .get(block.id.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        render_lir_block(out, block, &cached);
     }
 }
 
-fn render_lir_block(out: &mut String, block: &SsaBlock) {
-    let _ = writeln!(
-        out,
-        "  block b{} params=[{}]",
-        block.id.0,
-        block
-            .params
-            .iter()
-            .map(|v| format!("v{}", v.0))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+fn render_lir_block(out: &mut String, block: &SsaBlock, cached: &[crate::vm::middle::frame::FrameSlot]) {
+    if cached.is_empty() {
+        let _ = writeln!(
+            out,
+            "  block b{} params=[{}]",
+            block.id.0,
+            block
+                .params
+                .iter()
+                .map(|v| format!("v{}", v.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "  block b{} params=[{}] cached=[{}]",
+            block.id.0,
+            block
+                .params
+                .iter()
+                .map(|v| format!("v{}", v.0))
+                .collect::<Vec<_>>()
+                .join(", "),
+            cached
+                .iter()
+                .map(|s| format!("fp[{}]", s.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     for (i, inst) in block.ops.iter().enumerate() {
         let _ = writeln!(out, "    {i:02}: {}", render_lir_inst(&inst.kind));
     }
