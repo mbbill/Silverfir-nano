@@ -63,6 +63,7 @@ impl SsaProgram {
             .flatten()
     }
 
+    #[cfg(test)]
     pub(crate) fn final_block_for_cfg_block(&self, cfg_block: u32) -> Option<SsaTarget> {
         self.block_cfg_origins
             .iter()

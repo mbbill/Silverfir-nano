@@ -11,15 +11,16 @@
 //!   giving them the strongest keep key
 
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 use crate::{
     value_type::ValueType,
     vm::middle::{
-        budget::{count_live_bank_budget_units, gp_value_budget_units},
+        budget::gp_value_budget_units,
         frame::FrameSlot,
     },
 };
+#[cfg(test)]
+use crate::vm::middle::budget::count_live_bank_budget_units;
 
 use super::facts::FunctionPlan;
 
@@ -84,6 +85,7 @@ pub(crate) fn slot_cost(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn fits_with_cached_locals(
     plan: &FunctionPlan,
     semantic_index: usize,
@@ -158,6 +160,7 @@ pub(crate) fn keep_key(
     KeepKey::weakest()
 }
 
+#[cfg(test)]
 fn count_cache_units(
     local_slot_types: &[ValueType],
     gp_unit_bytes: u8,
@@ -174,6 +177,7 @@ fn count_cache_units(
     (gp, fp)
 }
 
+#[cfg(test)]
 fn fits_with_live_types(
     plan: &FunctionPlan,
     live_types: &[ValueType],
@@ -189,6 +193,7 @@ fn fits_with_live_types(
         && fp_live + fp_cache <= plan.fp_dynamic_budget as usize
 }
 
+#[cfg(test)]
 fn semantic_successor_live_types(plan: &FunctionPlan, semantic_index: usize) -> &[ValueType] {
     let Some(next_index) = semantic_index.checked_add(1) else {
         return current_live_types(plan, semantic_index);
@@ -214,6 +219,7 @@ fn semantic_successor_live_types(plan: &FunctionPlan, semantic_index: usize) -> 
     &next_state.stack_types[spill_depth..]
 }
 
+#[cfg(test)]
 fn current_live_types(plan: &FunctionPlan, semantic_index: usize) -> &[ValueType] {
     let Some(info) = plan.op_info.get(semantic_index) else {
         return &plan.op_plans[semantic_index].before.live_types;
@@ -228,6 +234,7 @@ fn current_live_types(plan: &FunctionPlan, semantic_index: usize) -> &[ValueType
     &plan.op_plans[semantic_index].before.live_types
 }
 
+#[cfg(test)]
 fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) -> u16 {
     let Some(info) = plan.op_info.get(semantic_index) else {
         return 0;
@@ -253,6 +260,7 @@ fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) ->
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeSet;
+    use alloc::vec::Vec;
 
     use super::*;
     use crate::vm::middle::joint_plan::facts::{
@@ -268,6 +276,12 @@ mod tests {
             local_slot_types: alloc::vec![ValueType::I32],
             op_plans: alloc::vec![OpPlan {
                 before: EntryState {
+                    stack_height: 1,
+                    spill_depth: 0,
+                    stack_types: alloc::vec![ValueType::I32],
+                    live_types: alloc::vec![ValueType::I32],
+                },
+                after: EntryState {
                     stack_height: 1,
                     spill_depth: 0,
                     stack_types: alloc::vec![ValueType::I32],

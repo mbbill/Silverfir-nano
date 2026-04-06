@@ -5,7 +5,9 @@
 //! - public cached-local residency is solved separately on a region tree
 //! - block boundaries see one fixed public set, not a tentative per-block seed
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
+#[cfg(test)]
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::{
@@ -14,7 +16,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
-            budget::{count_live_bank_budget_units, gp_value_budget_units},
+            budget::count_live_bank_budget_units,
             cfg::SemanticCfg,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             slot_ssa::SlotSsaProgram,
@@ -27,18 +29,24 @@ use crate::{
     },
 };
 
+#[cfg(test)]
 use super::{
     block_open::before_op_decision,
-    entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
-    facts::{
-        BlockPlan, EntryState, FirstAccessKind, FunctionPlan, LocalOpKind, OpInfo, OpPlan,
-        PrepAction,
-    },
     interface::BeforeOpQuery,
     local_access::decide_local_access,
     pressure::fits_with_cached_locals,
+};
+use super::{
+    entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
+    facts::{
+        BlockPlan, EntryState, FunctionPlan, LocalOpKind, OpInfo, OpPlan, PrepAction,
+    },
     region_solver::solve_public_cache_sets,
 };
+#[cfg(test)]
+use super::facts::FirstAccessKind;
+#[cfg(test)]
+use crate::vm::middle::budget::gp_value_budget_units;
 
 pub(crate) fn build_plan(
     semantic: &SemanticProgram,
@@ -156,6 +164,7 @@ fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> Vec<EntryState> 
     entries
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TentativeBlockEntry {
     transient: EntryState,
@@ -182,6 +191,7 @@ fn snapshot_entry_state(state: &PrepareState, spill_depth: u16) -> EntryState {
     }
 }
 
+#[cfg(test)]
 fn simulate_block_exit_cached_locals(
     block: &crate::vm::middle::cfg::CfgBlock,
     plan: &FunctionPlan,
@@ -237,6 +247,7 @@ fn simulate_block_exit_cached_locals(
     resident.into_iter().collect()
 }
 
+#[cfg(test)]
 fn choose_tentative_block_entry(
     cfg: &SemanticCfg,
     block_index: usize,
@@ -360,6 +371,7 @@ fn choose_tentative_block_entry(
     }
 }
 
+#[cfg(test)]
 fn direct_successor_carry_bonus(
     cfg: &SemanticCfg,
     block_index: usize,
@@ -586,11 +598,16 @@ fn prepare_semantic_ops(
             block_transient_regions,
             &semantic.op_result_types,
         );
+        let before = snapshot_entry_state(&state, state.spill_depth);
         ops.push(OpPlan {
-            before: snapshot_entry_state(&state, state.spill_depth),
+            before,
+            after: EntryState::default(),
         });
         apply_block_symbolic_effect(semantic_op, &mut state);
         apply_semantic_effect(semantic_op, op_index, &semantic.op_result_types, &mut state);
+        if let Some(op_plan) = ops.last_mut() {
+            op_plan.after = snapshot_entry_state(&state, state.spill_depth);
+        }
     }
 
     Ok((ops, entry_states))
@@ -2022,9 +2039,21 @@ mod tests {
                     stack_types: Vec::new(),
                     live_types: Vec::new(),
                 },
+                after: EntryState {
+                    stack_height: 0,
+                    spill_depth: 0,
+                    stack_types: Vec::new(),
+                    live_types: Vec::new(),
+                },
             },
             OpPlan {
                 before: EntryState {
+                    stack_height: 0,
+                    spill_depth: 0,
+                    stack_types: Vec::new(),
+                    live_types: Vec::new(),
+                },
+                after: EntryState {
                     stack_height: 0,
                     spill_depth: 0,
                     stack_types: Vec::new(),

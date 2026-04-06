@@ -195,6 +195,7 @@ pub(crate) struct OpInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OpPlan {
     pub before: EntryState,
+    pub after: EntryState,
 }
 
 /// Planned block boundary state used by the planner facade.
