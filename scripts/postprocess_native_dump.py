@@ -448,6 +448,7 @@ class BlockPressure:
     set_cache: int
     get_slot: int
     set_slot: int
+    peak_live: int  # peak simultaneously live SSA values during block
 
 
 @dataclass
@@ -461,6 +462,99 @@ class FunctionPressure:
     blocks: List[BlockPressure]
     total_ensure: int
     total_drop: int
+
+
+# Regexes for liveness analysis within a block.
+_DEF_GET_CACHE_RE = re.compile(r"local\.get_cache (v\d+)")
+_DEF_GET_SLOT_RE = re.compile(r"local\.get_slot (v\d+)")
+_DEF_FILL_RE = re.compile(r"fill (v\d+)")
+_DEF_RESULTS_RE = re.compile(r"results=\[([^\]]*)\]")
+_USE_ARGS_RE = re.compile(r"args=\[([^\]]*)\]")
+_USE_SET_CACHE_RE = re.compile(r"local\.set_cache fp\[\d+\] <- (v\d+)")
+_USE_SET_SLOT_RE = re.compile(r"local\.set_slot fp\[\d+\] <- (v\d+)")
+_USE_SPILL_RE = re.compile(r"spill fp\[\d+\] <- (v\d+)")
+_TERM_VALS_RE = re.compile(r"v\d+")
+
+
+def _compute_peak_live(params_str: str, body_lines: List[str]) -> int:
+    """Compute peak simultaneously-live SSA values in a block.
+
+    Walk instructions forward. Before each instruction, kill consumed values
+    (last use), then add defined values. Track the maximum live set size.
+    """
+    # Collect all value defs and their last-use positions.
+    defs: Dict[str, int] = {}  # value -> instruction index where defined
+    last_use: Dict[str, int] = {}  # value -> last instruction index that uses it
+
+    # Params are defined at position -1 (block entry).
+    if params_str.strip():
+        for p in params_str.split(","):
+            p = p.strip()
+            if p:
+                defs[p] = -1
+
+    for idx, line in enumerate(body_lines):
+        line_s = line.strip()
+        # Definitions: get_cache, get_slot, fill, leaf results
+        for pattern in (_DEF_GET_CACHE_RE, _DEF_GET_SLOT_RE, _DEF_FILL_RE):
+            m = pattern.search(line_s)
+            if m:
+                defs[m.group(1)] = idx
+
+        m = _DEF_RESULTS_RE.search(line_s)
+        if m and m.group(1).strip():
+            for v in m.group(1).split(","):
+                v = v.strip()
+                if v:
+                    defs[v] = idx
+
+        # Uses: args, set_cache src, set_slot src, spill src, terminator values
+        used_here: List[str] = []
+        m = _USE_ARGS_RE.search(line_s)
+        if m and m.group(1).strip():
+            for tok in m.group(1).split(","):
+                tok = tok.strip()
+                if tok.startswith("v"):
+                    used_here.append(tok)
+
+        for pattern in (_USE_SET_CACHE_RE, _USE_SET_SLOT_RE, _USE_SPILL_RE):
+            m = pattern.search(line_s)
+            if m:
+                used_here.append(m.group(1))
+
+        if line_s.startswith("term:"):
+            for v in _TERM_VALS_RE.findall(line_s):
+                used_here.append(v)
+
+        for v in used_here:
+            last_use[v] = idx
+
+    # Walk forward computing live set size.
+    # A value is live from its def until its last use (inclusive).
+    # At each instruction: live = values defined at or before this point
+    # whose last use is at or after this point.
+    # For efficiency, track add/remove events.
+    if not defs:
+        return 0
+
+    max_inst = len(body_lines)
+    # Build timeline: (position, +1 for def, -1 for last-use-end)
+    events: List[tuple] = []
+    for v, d in defs.items():
+        lu = last_use.get(v, d)  # if never used, dies at def
+        events.append((d, 0, +1, v))      # def: add to live
+        events.append((lu, 1, -1, v))      # last use: remove after
+
+    events.sort()
+
+    live = 0
+    peak = 0
+    for _pos, phase, delta, _v in events:
+        live += delta
+        if live > peak:
+            peak = live
+
+    return peak
 
 
 def parse_local_types(ssa_text: str) -> List[str]:
@@ -527,6 +621,9 @@ def analyze_function_pressure(
                 else:
                     cached_gp += 1
 
+        params_str = ", ".join(current_params)
+        peak_live = _compute_peak_live(params_str, current_lines)
+
         blocks.append(BlockPressure(
             block_id=current_block_id,
             cached_count=len(current_cached),
@@ -540,6 +637,7 @@ def analyze_function_pressure(
             set_cache=body.count("local.set_cache"),
             get_slot=body.count("local.get_slot"),
             set_slot=body.count("local.set_slot"),
+            peak_live=peak_live,
         ))
         current_block_id = None
         current_cached = []
@@ -617,14 +715,15 @@ def build_pressure_report(
     parts.append("-" * 80)
     parts.append("PER-FUNCTION SUMMARY (sorted by code size)")
     parts.append("-" * 80)
-    hdr = (
+    parts.append(
         f"{'func':>6} {'locals':>6} {'gp':>4} {'fp':>4} "
         f"{'blks':>5} {'code':>7} "
-        f"{'ensure':>7} {'drop':>6} {'fix%':>5} "
-        f"{'cache_min':>9} {'cache_max':>9} {'cache_avg':>9} "
-        f"{'old_press':>9}"
+        f"{'ensure':>7} {'drop':>6} {'fix%':>5}  "
+        f"{'c_avg':>5} {'c_max':>5}  "
+        f"{'t_avg':>5} {'t_max':>5}  "
+        f"{'pk_avg':>6} {'pk_max':>6}  "
+        f"{'old_c':>5} {'old_t':>5}"
     )
-    parts.append(hdr)
 
     results.sort(key=lambda r: r.code_size, reverse=True)
     total_code = 0
@@ -639,20 +738,27 @@ def build_pressure_report(
         total_blocks += fp.block_count
 
         cache_sizes = [b.cached_count for b in fp.blocks]
-        cache_min = min(cache_sizes) if cache_sizes else 0
+        live_peaks = [b.peak_live for b in fp.blocks]
+        combined = [b.cached_count + b.peak_live for b in fp.blocks]
+
         cache_max = max(cache_sizes) if cache_sizes else 0
         cache_avg = sum(cache_sizes) / len(cache_sizes) if cache_sizes else 0
+        live_max = max(live_peaks) if live_peaks else 0
+        live_avg = sum(live_peaks) / len(live_peaks) if live_peaks else 0
+        comb_max = max(combined) if combined else 0
+        comb_avg = sum(combined) / len(combined) if combined else 0
 
-        # Old model pressure: would any local exceed the fixed cache budget?
-        old_gp_pressure = fp.gp_locals > OLD_GP_LOCAL_CACHE
-        old_fp_pressure = fp.fp_locals > OLD_FP_LOCAL_CACHE
-        old_press = "GP" if old_gp_pressure else ""
-        if old_fp_pressure:
-            old_press += "+FP" if old_press else "FP"
-        if not old_press:
-            old_press = "none"
+        # Old model: how much of each bank would be used?
+        # Cache: min(gp_locals, OLD_GP_LOCAL_CACHE)
+        # Transient: peak stack values needed (live_max approximation)
+        old_cache_used = min(fp.gp_locals, OLD_GP_LOCAL_CACHE)
+        old_trans_need = live_max  # approximation
 
-        # Boundary fixup percentage: ensure+drop as fraction of all SSA ops
+        # Old model pressure flags
+        old_c_flag = "!" if fp.gp_locals > OLD_GP_LOCAL_CACHE else ""
+        old_t_flag = "!" if old_trans_need > OLD_GP_TRANSIENT else ""
+
+        # Boundary fixup percentage
         total_ops = sum(
             b.ensure_count + b.drop_count + b.leaf_count
             + b.get_cache + b.set_cache + b.get_slot + b.set_slot
@@ -667,9 +773,11 @@ def build_pressure_report(
         parts.append(
             f"{fp.index:>6} {fp.local_count:>6} {fp.gp_locals:>4} {fp.fp_locals:>4} "
             f"{fp.block_count:>5} {fp.code_size:>7} "
-            f"{fp.total_ensure:>7} {fp.total_drop:>6} {fix_pct:>4.0f}% "
-            f"{cache_min:>9} {cache_max:>9} {cache_avg:>9.1f} "
-            f"{old_press:>9}"
+            f"{fp.total_ensure:>7} {fp.total_drop:>6} {fix_pct:>4.0f}%  "
+            f"{cache_avg:>5.1f} {cache_max:>5}  "
+            f"{live_avg:>5.1f} {live_max:>5}  "
+            f"{comb_avg:>6.1f} {comb_max:>6}  "
+            f"{old_cache_used:>4}{old_c_flag} {old_trans_need:>4}{old_t_flag}"
         )
 
     parts.append("")
@@ -678,26 +786,59 @@ def build_pressure_report(
         f"code={total_code}, ensure={total_ensure}, drop={total_drop}"
     )
 
-    # --- Per-block cache distribution ---
+    # --- Combined pressure distribution ---
     parts.append("")
     parts.append("-" * 80)
-    parts.append("BLOCK CACHE SIZE DISTRIBUTION (all functions)")
+    parts.append(
+        f"COMBINED PRESSURE DISTRIBUTION  (cache + transient vs budget={NEW_GP_DYNAMIC})"
+    )
     parts.append("-" * 80)
 
+    from collections import Counter
+
+    all_combined: List[int] = []
     all_cache_sizes: List[int] = []
+    all_transient: List[int] = []
     for fp in results:
         for b in fp.blocks:
+            all_combined.append(b.cached_count + b.peak_live)
             all_cache_sizes.append(b.cached_count)
+            all_transient.append(b.peak_live)
 
-    if all_cache_sizes:
-        from collections import Counter
-
-        dist = Counter(all_cache_sizes)
-        parts.append(f"{'cached':>8} {'blocks':>8} {'pct':>6}")
+    if all_combined:
+        dist = Counter(all_combined)
+        over_budget = sum(1 for c in all_combined if c > NEW_GP_DYNAMIC)
+        parts.append(
+            f"{'combined':>8} {'blocks':>8} {'pct':>6}   "
+            f"(blocks over budget={NEW_GP_DYNAMIC}: {over_budget})"
+        )
         for size in sorted(dist.keys()):
-            pct = dist[size] / len(all_cache_sizes) * 100
-            parts.append(f"{size:>8} {dist[size]:>8} {pct:>5.1f}%")
-        parts.append(f"{'total':>8} {len(all_cache_sizes):>8}")
+            pct = dist[size] / len(all_combined) * 100
+            marker = " <-- budget" if size == NEW_GP_DYNAMIC else ""
+            parts.append(f"{size:>8} {dist[size]:>8} {pct:>5.1f}%{marker}")
+        parts.append(f"{'total':>8} {len(all_combined):>8}")
+
+    # --- Separate cache and transient distributions ---
+    parts.append("")
+    parts.append("-" * 80)
+    parts.append("CACHE vs TRANSIENT DISTRIBUTIONS")
+    parts.append("-" * 80)
+
+    if all_cache_sizes and all_transient:
+        cache_dist = Counter(all_cache_sizes)
+        trans_dist = Counter(all_transient)
+        max_key = max(
+            max(cache_dist.keys(), default=0), max(trans_dist.keys(), default=0)
+        )
+        parts.append(f"{'size':>6}  {'cache_blks':>10} {'cache%':>7}  {'trans_blks':>10} {'trans%':>7}")
+        for size in range(max_key + 1):
+            cb = cache_dist.get(size, 0)
+            tb = trans_dist.get(size, 0)
+            if cb == 0 and tb == 0:
+                continue
+            cp = cb / len(all_cache_sizes) * 100
+            tp = tb / len(all_transient) * 100
+            parts.append(f"{size:>6}  {cb:>10} {cp:>6.1f}%  {tb:>10} {tp:>6.1f}%")
 
     # --- Boundary-only block analysis ---
     parts.append("")
@@ -779,10 +920,12 @@ def build_pressure_report(
     parts.append("code        : native code size in bytes")
     parts.append("ensure/drop : cache management ops (boundary fixup overhead)")
     parts.append("fix%        : ensure+drop as % of all SSA ops")
-    parts.append("cache_min/max/avg : per-block cached-local count range")
-    parts.append("old_press   : would old static-split model have local pressure?")
-    parts.append(f"              (GP pressure if gp_locals > {OLD_GP_LOCAL_CACHE},"
-                 f" FP if fp_locals > {OLD_FP_LOCAL_CACHE})")
+    parts.append("c_avg/c_max : cached-local count per block (average / max)")
+    parts.append("t_avg/t_max : peak live transient SSA values per block (average / max)")
+    parts.append("pk_avg/pk_max : combined (cache + transient) per block")
+    parts.append(f"old_c       : locals old system would cache (min(gp, {OLD_GP_LOCAL_CACHE})),"
+                 f" ! = exceeds budget")
+    parts.append(f"old_t       : peak transient in old model, ! = exceeds {OLD_GP_TRANSIENT}")
     parts.append("unique      : distinct cached-slot sets across blocks")
     parts.append("ratio       : unique / block_count (1.0 = every block different)")
     parts.append("union       : distinct locals cached anywhere in the function")
