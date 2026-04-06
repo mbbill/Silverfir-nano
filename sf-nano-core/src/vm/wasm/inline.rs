@@ -15,29 +15,43 @@ use super::common::{BrTableEntry, SemanticTarget};
 use super::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram};
 
 /// Maximum number of semantic ops in a callee for it to be inlined.
-const MAX_INLINE_OPS: usize = 200;
+const MAX_INLINE_OPS: usize = 600;
 
 /// Multiplier applied to `MAX_INLINE_OPS` when the call site is inside a loop.
-const LOOP_INLINE_MULTIPLIER: usize = 1; // disabled for now.
+const LOOP_INLINE_MULTIPLIER: usize = 10; // disabled for now.
 
 /// Maximum number of parameters for an inline candidate.
-const MAX_INLINE_PARAMS: usize = 8;
+const MAX_INLINE_PARAMS: usize = 16;
 
-/// Check whether a callee is structurally eligible for inlining: must be a leaf
-/// (no calls) with few enough parameters.  Size is checked separately per call
-/// site so that loop context can raise the budget.
+/// Check whether a callee is structurally eligible for inlining.
+///
+/// The current inliner is only proven on straight-line leaf helpers. Raising
+/// the size thresholds is fine for larger arithmetic/local-only bodies, but it
+/// must not silently start inlining structured control-flow callees, because
+/// the `Return -> Br`/wrapper lowering is not robust enough there yet.
 fn is_leaf_inline_candidate(callee: &SemanticProgram) -> bool {
     if callee.params as usize > MAX_INLINE_PARAMS {
         return false;
     }
-    for op in &callee.ops {
+    let len = callee.ops.len();
+    for (index, op) in callee.ops.iter().enumerate() {
+        let is_trailing_end = index + 2 == len && matches!(op.kind, SemanticOpKind::End);
+        let is_trailing_return = index + 1 == len
+            && matches!(
+                op.kind,
+                SemanticOpKind::ReturnVoid
+                    | SemanticOpKind::ReturnOne
+                    | SemanticOpKind::Return { .. }
+            );
+        if is_trailing_end || is_trailing_return {
+            continue;
+        }
         match &op.kind {
-            // Leaf: no nested calls
-            SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. } => {
-                return false
-            }
-            // Explicit returns are handled via Return → Br conversion.
-            _ => {}
+            SemanticOpKind::Primitive(_)
+            | SemanticOpKind::LocalGet { .. }
+            | SemanticOpKind::LocalSet { .. }
+            | SemanticOpKind::LocalTee { .. } => {}
+            _ => return false,
         }
     }
     true
@@ -97,7 +111,6 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                         depth = h + r as i32;
                         unreachable = false;
                     }
-                    // else: function-level End, stay unreachable
                 }
                 _ => {}
             }
@@ -112,7 +125,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
             SemanticOpKind::If {
                 params, results, ..
             } => {
-                depth -= 1; // consume condition
+                depth -= 1;
                 control.push((depth - *params as i32, *params, *results));
             }
             SemanticOpKind::Else { .. } => {
@@ -129,7 +142,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
                 unreachable = true;
             }
             SemanticOpKind::BrIf { .. } => {
-                depth -= 1; // consume condition
+                depth -= 1;
             }
             SemanticOpKind::ReturnVoid => {
                 sites.push(ReturnSite {
@@ -164,7 +177,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
             SemanticOpKind::CallIndirect {
                 params, results, ..
             } => {
-                depth -= 1; // consume table index
+                depth -= 1;
                 depth -= *params as i32;
                 depth += *results as i32;
             }
@@ -175,7 +188,7 @@ fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
             }
             SemanticOpKind::LocalGet { .. } => depth += 1,
             SemanticOpKind::LocalSet { .. } => depth -= 1,
-            SemanticOpKind::LocalTee { .. } => {} // no change
+            SemanticOpKind::LocalTee { .. } => {}
         }
     }
 
@@ -436,7 +449,7 @@ fn merge_inlined_local_types(
 fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
     let mut depth: i32 = 0;
     let mut max_depth: i32 = 0;
-    let mut control: Vec<(i32, u16, u16)> = Vec::new(); // (height_below_params, params, results)
+    let mut control: Vec<(i32, u16, u16)> = Vec::new();
     let mut unreachable = false;
 
     for op in &program.ops {
@@ -772,5 +785,55 @@ mod tests {
 
         assert_eq!(caller.local_count, 1);
         assert_eq!(caller.local_types, alloc::vec![ValueType::I32]);
+    }
+
+    #[test]
+    fn structured_control_callee_is_not_inline_candidate() {
+        let callee = SemanticProgram {
+            params: 1,
+            results: 1,
+            local_count: 1,
+            max_stack_height: 2,
+            ops: alloc::vec![
+                SemanticOp {
+                    kind: SemanticOpKind::LocalGet { idx: 0 },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::If {
+                        params: 0,
+                        results: 1,
+                        else_target: SemanticTarget::new(4),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Else {
+                        end_target: SemanticTarget::new(5),
+                    },
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 0 }),
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::End,
+                },
+                SemanticOp {
+                    kind: SemanticOpKind::ReturnOne,
+                },
+            ],
+            local_types: alloc::vec![ValueType::I32],
+            result_types: alloc::vec![ValueType::I32],
+            op_result_types: alloc::collections::BTreeMap::from([(
+                1usize,
+                alloc::vec![ValueType::I32],
+            )]),
+        };
+
+        assert!(
+            !is_leaf_inline_candidate(&callee),
+            "raising the inline size budget must not silently admit structured-control callees into the current straight-line inliner"
+        );
     }
 }
