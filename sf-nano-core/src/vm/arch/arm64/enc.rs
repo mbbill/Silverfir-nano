@@ -228,6 +228,16 @@ pub(crate) fn add_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(1, 0, 0, rd, rn, rm)
 }
 
+/// `add Xd, Xn, Wm, UXTW #0` — 64-bit add of base Xn and zero-extended 32-bit Wm.
+/// Encoding: sf=1, op=0, S=0, 01011 001 Rm 010 000 Rn Rd
+pub(crate) fn add_reg_64_uxtw(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    // ADD (extended register), 64-bit, option=010 (UXTW), shift=0
+    0x8B20_4000
+        | (rm.index() << 16)
+        | (rn.index() << 5)
+        | rd.index()
+}
+
 pub(crate) fn sub_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     add_sub_shifted_reg(0, 1, 0, rd, rn, rm)
 }
@@ -560,6 +570,42 @@ pub(crate) fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
     ldst_unsigned_offset(0b11, 0b01, rt, rn, imm12)
 }
 
+pub(crate) fn ldr_32(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b10, 0b01, rt, rn, imm12)
+}
+
+pub(crate) fn ldrb_imm(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b00, 0b01, rt, rn, imm12)
+}
+
+pub(crate) fn ldrh_imm(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b01, 0b01, rt, rn, imm12)
+}
+
+pub(crate) fn ldrsb_imm_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b00, 0b10, rt, rn, imm12)
+}
+
+pub(crate) fn ldrsh_imm_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b01, 0b10, rt, rn, imm12)
+}
+
+pub(crate) fn ldrsw_imm(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b10, 0b10, rt, rn, imm12)
+}
+
+pub(crate) fn str_32(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b10, 0b00, rt, rn, imm12)
+}
+
+pub(crate) fn strb_imm(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b00, 0b00, rt, rn, imm12)
+}
+
+pub(crate) fn strh_imm(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {
+    ldst_unsigned_offset(0b01, 0b00, rt, rn, imm12)
+}
+
 pub(crate) fn ldr_reg_64(rt: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     ldst_register_offset(0xf860_6800, rt, rn, rm, false)
 }
@@ -757,6 +803,19 @@ pub(crate) fn stp_64(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u3
 
 pub(crate) fn ldp_64(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {
     load_store_pair(0xa940_0000, rt, rt2, rn, imm7)
+}
+
+/// `stp Dt, Dt2, [Xn, #imm]` — store pair of 64-bit FP registers (signed offset).
+/// `imm7` is the byte offset divided by 8 (this fn does not scale).
+pub(crate) fn stp_d(rt: Arm64FpReg, rt2: Arm64FpReg, rn: Arm64Reg, imm7: i32) -> u32 {
+    let imm7_bits = (imm7 as u32) & 0x7f;
+    0x6d00_0000 | (imm7_bits << 15) | (rt2.index() << 10) | (rn.index() << 5) | rt.index()
+}
+
+/// `ldp Dt, Dt2, [Xn, #imm]` — load pair of 64-bit FP registers (signed offset).
+pub(crate) fn ldp_d(rt: Arm64FpReg, rt2: Arm64FpReg, rn: Arm64Reg, imm7: i32) -> u32 {
+    let imm7_bits = (imm7 as u32) & 0x7f;
+    0x6d40_0000 | (imm7_bits << 15) | (rt2.index() << 10) | (rn.index() << 5) | rt.index()
 }
 
 /// `stp Xt, Xt2, [Xn, #imm]!` — 64-bit pre-index store-pair (atomic 16-byte

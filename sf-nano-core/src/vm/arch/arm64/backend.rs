@@ -163,12 +163,26 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
-        for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
-            self.core.text.emit_u32(enc::str_d(
-                reg,
+        // Save callee-saved FP regs in pairs via stp_d.
+        let fp_regs = abi::callee_saved_fp_regs();
+        let mut fp_idx = 0usize;
+        while fp_idx + 1 < fp_regs.len() {
+            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            self.core.text.emit_u32(enc::stp_d(
+                fp_regs[fp_idx],
+                fp_regs[fp_idx + 1],
                 abi::stack_reg(),
-                stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
+                stack_pair_imm(byte_off),
             ));
+            fp_idx += 2;
+        }
+        // Tail FP register, if the count is odd.
+        while fp_idx < fp_regs.len() {
+            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            self.core
+                .text
+                .emit_u32(enc::str_d(fp_regs[fp_idx], abi::stack_reg(), stack_u64_slot(byte_off)));
+            fp_idx += 1;
         }
 
         // Move entry arguments into pinned roles.
@@ -189,13 +203,25 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn lower_epilogue(&mut self) {
-        // Restore callee-saved FP registers.
-        for (index, reg) in abi::callee_saved_fp_regs().iter().copied().enumerate() {
-            self.core.text.emit_u32(enc::ldr_d(
-                reg,
+        // Restore callee-saved FP registers in pairs via ldp_d.
+        let fp_regs = abi::callee_saved_fp_regs();
+        let mut fp_idx = 0usize;
+        while fp_idx + 1 < fp_regs.len() {
+            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            self.core.text.emit_u32(enc::ldp_d(
+                fp_regs[fp_idx],
+                fp_regs[fp_idx + 1],
                 abi::stack_reg(),
-                stack_u64_slot(CALLEE_SAVED_FP_FRAME_OFFSET + index as u32 * STACK_SLOT_BYTES),
+                stack_pair_imm(byte_off),
             ));
+            fp_idx += 2;
+        }
+        while fp_idx < fp_regs.len() {
+            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            self.core
+                .text
+                .emit_u32(enc::ldr_d(fp_regs[fp_idx], abi::stack_reg(), stack_u64_slot(byte_off)));
+            fp_idx += 1;
         }
         // Restore callee-saved GP registers and deallocate frame.
         for (index, (lhs, rhs)) in abi::callee_saved_gp_pairs().iter().copied().enumerate() {
@@ -367,6 +393,56 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 index += 2;
+                continue;
+            }
+            // ── DO NOT re-enable a burst-fuse pass here that groups consecutive
+            // IndexedLoad/Store ops sharing (base, index, extend) into a single
+            // shared `add Xs, Xb, Wi, UXTW` followed by N immediate-offset
+            // loads/stores. It looks like an obvious win — N loads instead of N
+            // (mov + add + reg-indexed load) — but it is *measurably slower* on
+            // Apple Silicon (M-series) for the same reason described in the
+            // long comment in `lower_indexed_load_with_offset`.
+            //
+            // Measured (2026-04, M-series):
+            //
+            //   benchmark   burst on   burst off
+            //   coremark    32044      34048    (+6.3% with burst off)
+            //   c-ray       2820 ms    2789 ms  (−1.1%, lower=faster)
+            //   sha256      272 MB/s   272 MB/s (neutral)
+            //   bzip2       17.95 MB/s 17.94 MB/s (neutral)
+            //
+            // Why: M-series can macro-fuse `add x, x, #imm` with the following
+            // `ldr w, [base, x]` into a single AGU op, and `mov w, w` is a
+            // zero-latency rename. So the "old" 3-instruction sequence
+            // `mov + add + ldr-reg` effectively executes as a single load.
+            //
+            // The burst form emits `add x, base, w_idx, UXTW` (not fusable with
+            // the load AGU on M-series) followed by N `ldr [x, #imm]`. The N
+            // loads can issue in parallel after the add, but they all wait for
+            // it — adding 1 cycle of dependent latency to the whole group. The
+            // raw instruction count goes down but the per-group critical-path
+            // length goes up.
+            //
+            // The independent inner LDP/STP D pair fusion that lived inside
+            // try_emit_burst_pair is gone with this change. It was the only
+            // path that produced LDP/STP D for c-ray's hot loops, but the
+            // measured loss on c-ray (~30 ms) is smaller than the gain on
+            // coremark (~6%). For workloads that are FP-pair-heavy and not
+            // integer-load-bottlenecked, a future redesign that emits LDP/STP
+            // D *without* the shared add might recover that gain. Don't put it
+            // back as a "burst" pattern.
+            //
+            // try_lower_indexed_burst and try_emit_burst_pair are kept in
+            // inst.rs as dead code with `#[allow(dead_code)]` so the work is
+            // documented and easy to reanimate behind a `cfg` for
+            // microarchitectures where the tradeoff inverts (e.g. cores
+            // without macro-op fusion / move elimination).
+            // Pair-fuse consecutive Store/Load ops at adjacent offsets with
+            // consecutive d-registers into stp_d / ldp_d.
+            if let Some(pair_count) = self.try_lower_fp_pair(block, index)? {
+                self.gp_scratch.assert_all_free();
+                self.fp_scratch.assert_all_free();
+                index += pair_count;
                 continue;
             }
             self.lower_inst(&block.ops[index])?;
@@ -561,3 +637,4 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         }
     }
 }
+

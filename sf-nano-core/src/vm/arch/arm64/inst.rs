@@ -2,11 +2,11 @@
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineBlockParam, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
-    MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionAbi, MachineIndexExtend,
-    MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-    MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
-    MachineStorageType, MachineTrapKind, MachineValue,
+    MachineAddr, MachineBlock, MachineBlockParam, MachineCompareKind, MachineConvertOp,
+    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionAbi,
+    MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
+    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp,
+    MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
 };
 
 use super::abi::{fp_machine_reg, map_reg};
@@ -139,6 +139,30 @@ pub(super) fn prepare_fp<'p>(
     });
     // gp dropped here — GP scratch slot freed immediately
     Ok(PreparedFp::Scratch(fp_scratch))
+}
+
+/// Encode a byte offset as the scaled imm12 for an immediate-offset load/store
+/// of the given width. Returns `None` when the offset is negative, misaligned,
+/// or too large to fit the 12-bit scaled field.
+fn encode_load_imm12(offset: i32, width: MachineMemWidth) -> Option<u32> {
+    if offset < 0 {
+        return None;
+    }
+    let off = offset as u32;
+    let (scale_log2, max_scaled) = match width {
+        MachineMemWidth::U8 => (0u32, 4095u32),
+        MachineMemWidth::U16 => (1, 8190),
+        MachineMemWidth::U32 => (2, 16380),
+        MachineMemWidth::U64 => (3, 32760),
+    };
+    if off > max_scaled {
+        return None;
+    }
+    let mask = (1u32 << scale_log2) - 1;
+    if off & mask != 0 {
+        return None;
+    }
+    Some(off >> scale_log2)
 }
 
 impl<'a> super::backend::Arm64Backend<'a> {
@@ -779,21 +803,33 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    /// Add an immediate offset to an already-mapped ARM64 register in-place.
-    fn lower_add_imm_to_reg(&mut self, reg: Arm64Reg, off: i64) {
+    /// Compute `dst = src + off` in as few instructions as possible.
+    /// Always operates in 64-bit: callers requiring uxtw must zero-extend
+    /// the source first via [`lower_zext_w_to_x`] or use the extended-register
+    /// add path.
+    fn lower_add_imm_3op(&mut self, dst: Arm64Reg, src: Arm64Reg, off: i64) {
+        if off == 0 {
+            if dst != src {
+                self.core.text.emit_u32(enc::mov_reg_64(dst, src));
+            }
+            return;
+        }
         if off > 0 && off < 4096 {
             self.core
                 .text
-                .emit_u32(enc::add_imm_64(reg, reg, off as u32));
-        } else if off < 0 && -off < 4096 {
+                .emit_u32(enc::add_imm_64(dst, src, off as u32));
+            return;
+        }
+        if off < 0 && -off < 4096 {
             self.core
                 .text
-                .emit_u32(enc::sub_imm_64(reg, reg, (-off) as u32));
-        } else {
-            let tmp = *self.gp_scratch.scoped_alloc();
-            materialize_u64_into(&mut self.core.text, tmp, off as u64);
-            self.core.text.emit_u32(enc::add_reg_64(reg, reg, tmp));
+                .emit_u32(enc::sub_imm_64(dst, src, (-off) as u32));
+            return;
         }
+        // Fall back: materialize the offset and add.
+        let tmp = *self.gp_scratch.scoped_alloc();
+        materialize_u64_into(&mut self.core.text, tmp, off as u64);
+        self.core.text.emit_u32(enc::add_reg_64(dst, src, tmp));
     }
 
     // ── Load / Store ─────────────────────────────────────────────────────────────
@@ -1135,8 +1171,463 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    /// Indexed load with a non-zero offset: fold index + offset into a scratch,
-    /// then register-indexed load with the ORIGINAL memory base.
+    /// Try to emit a "burst" of consecutive `IndexedLoad`/`IndexedStore` ops
+    /// that share the same `(base, index, index_extend)` tuple as a single
+    /// shared base+index addition followed by immediate-offset loads/stores.
+    ///
+    /// Returns `Some(count)` if a burst of `count >= 2` ops was emitted (the
+    /// caller must advance the block index by `count`), or `None` to fall back
+    /// to single-op lowering.
+    ///
+    /// **Currently unused.** This pass is a measured loss on Apple Silicon
+    /// (M-series) for integer-load-bottlenecked workloads such as coremark and
+    /// sha256, because the extended-register `add` it relies on does not
+    /// macro-fuse with the load AGU and the dependency latency cost outweighs
+    /// the instruction-count savings. See the long comment in
+    /// `lower_block` (backend.rs) for the measured numbers and the rationale
+    /// for keeping it as dead code instead of deleting it outright.
+    #[allow(dead_code)]
+    pub(super) fn try_lower_indexed_burst(
+        &mut self,
+        block: &MachineBlock,
+        start: usize,
+    ) -> Result<Option<usize>, WasmError> {
+        if start + 1 >= block.ops.len() {
+            return Ok(None);
+        }
+        // First op must be an IndexedLoad/IndexedStore with an offset that fits
+        // the imm12 form for its width. Otherwise no burst-shape applies.
+        let (base_reg, index_reg, index_extend) = match block.ops[start].kind {
+            MachineInstKind::IndexedLoad {
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                ..
+            } => {
+                if encode_load_imm12(offset, width).is_none() {
+                    return Ok(None);
+                }
+                (base, index, index_extend)
+            }
+            MachineInstKind::IndexedStore {
+                base,
+                index,
+                index_extend,
+                offset,
+                width,
+                ..
+            } => {
+                if encode_load_imm12(offset, width).is_none() {
+                    return Ok(None);
+                }
+                (base, index, index_extend)
+            }
+            _ => return Ok(None),
+        };
+
+        // Scan how many consecutive ops match.
+        let mut count = 0usize;
+        let mut idx = start;
+        while idx < block.ops.len() {
+            let matches = match block.ops[idx].kind {
+                MachineInstKind::IndexedLoad {
+                    base,
+                    index,
+                    index_extend: ext,
+                    offset,
+                    width,
+                    dst,
+                    ..
+                } => {
+                    base == base_reg
+                        && index == index_reg
+                        && ext == index_extend
+                        && encode_load_imm12(offset, width).is_some()
+                        // The load's destination must not clobber the base or index
+                        // before subsequent burst ops can use them.
+                        && dst != base_reg
+                        && dst != index_reg
+                }
+                MachineInstKind::IndexedStore {
+                    base,
+                    index,
+                    index_extend: ext,
+                    offset,
+                    width,
+                    ..
+                } => {
+                    base == base_reg
+                        && index == index_reg
+                        && ext == index_extend
+                        && encode_load_imm12(offset, width).is_some()
+                }
+                _ => false,
+            };
+            if !matches {
+                break;
+            }
+            count += 1;
+            idx += 1;
+        }
+
+        if count < 2 {
+            return Ok(None);
+        }
+
+        // Materialize base + index once.
+        let uxtw = index_extend == MachineIndexExtend::ZeroExtend32;
+        let base_arm = self.map_gp_reg(base_reg)?;
+        let index_arm = self.map_gp_reg(index_reg)?;
+        // Use raw alloc/free so the scratch's borrow on self.gp_scratch ends
+        // immediately, letting subsequent &mut self method calls (e.g.
+        // try_emit_burst_pair) compile.
+        let scratch_idx = self.gp_scratch.alloc();
+        let scratch = self.gp_scratch.reg(scratch_idx);
+        if uxtw {
+            self.core
+                .text
+                .emit_u32(enc::add_reg_64_uxtw(scratch, base_arm, index_arm));
+        } else {
+            self.core
+                .text
+                .emit_u32(enc::add_reg_64(scratch, base_arm, index_arm));
+        }
+
+        // Emit each load/store using the shared scratch.
+        let mut k = 0;
+        while k < count {
+            // Try to emit a paired LDP D / STP D when the next op is an
+            // adjacent FP load/store with consecutive d-registers.
+            if k + 1 < count {
+                let kind0 = block.ops[start + k].kind.clone();
+                let kind1 = block.ops[start + k + 1].kind.clone();
+                if self.try_emit_burst_pair(kind0, kind1, scratch)? {
+                    k += 2;
+                    continue;
+                }
+            }
+            let kind = &block.ops[start + k].kind;
+            match *kind {
+                MachineInstKind::IndexedLoad {
+                    dst,
+                    offset,
+                    width,
+                    extension,
+                    ..
+                } => {
+                    let imm12 = encode_load_imm12(offset, width).unwrap();
+                    if self.core.is_fp_reg(dst) {
+                        let dst_fp = self.map_fp_reg(dst)?;
+                        let inst = match width {
+                            MachineMemWidth::U32 => enc::ldr_s(dst_fp, scratch, imm12),
+                            MachineMemWidth::U64 => enc::ldr_d(dst_fp, scratch, imm12),
+                            _ => {
+                                return Err(WasmError::invalid(
+                                    "arm64: narrow FP indexed load not supported".into(),
+                                ))
+                            }
+                        };
+                        self.core.text.emit_u32(inst);
+                        let tracked = if width == MachineMemWidth::U32 {
+                            MachineFloatWidth::F32
+                        } else {
+                            MachineFloatWidth::F64
+                        };
+                        self.core.set_fp_reg_width(dst, tracked)?;
+                    } else {
+                        let dst_arm = self.map_gp_reg(dst)?;
+                        let inst = match (width, extension) {
+                            (MachineMemWidth::U8, MachineLoadExtension::None)
+                            | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
+                                enc::ldrb_imm(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
+                                enc::ldrsb_imm_64(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U16, MachineLoadExtension::None)
+                            | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
+                                enc::ldrh_imm(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
+                                enc::ldrsh_imm_64(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U32, MachineLoadExtension::None)
+                            | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
+                                enc::ldr_32(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
+                                enc::ldrsw_imm(dst_arm, scratch, imm12)
+                            }
+                            (MachineMemWidth::U64, MachineLoadExtension::None)
+                            | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
+                                enc::ldr_64(dst_arm, scratch, imm12)
+                            }
+                            _ => {
+                                return Err(WasmError::invalid(
+                                    "arm64: unsupported indexed load extension".into(),
+                                ))
+                            }
+                        };
+                        self.core.text.emit_u32(inst);
+                    }
+                }
+                MachineInstKind::IndexedStore {
+                    offset,
+                    width,
+                    src,
+                    ..
+                } => {
+                    let imm12 = encode_load_imm12(offset, width).unwrap();
+                    let mut handled_fp = false;
+                    if let MachineValue::Reg(src_reg) = src {
+                        if self.core.is_fp_reg(src_reg) {
+                            let src_fp = self.map_fp_reg(src_reg)?;
+                            let inst = match width {
+                                MachineMemWidth::U32 => enc::str_s(src_fp, scratch, imm12),
+                                MachineMemWidth::U64 => enc::str_d(src_fp, scratch, imm12),
+                                _ => {
+                                    return Err(WasmError::invalid(
+                                        "arm64: narrow FP indexed store not supported".into(),
+                                    ))
+                                }
+                            };
+                            self.core.text.emit_u32(inst);
+                            handled_fp = true;
+                        }
+                    }
+                    if !handled_fp {
+                        let src_arm = prepare_gp(
+                            self.core.compiled.backend(),
+                            &self.core.fp_reg_widths,
+                            &mut self.core.text,
+                            &self.gp_scratch,
+                            src,
+                        )?;
+                        let inst = match width {
+                            MachineMemWidth::U8 => enc::strb_imm(*src_arm, scratch, imm12),
+                            MachineMemWidth::U16 => enc::strh_imm(*src_arm, scratch, imm12),
+                            MachineMemWidth::U32 => enc::str_32(*src_arm, scratch, imm12),
+                            MachineMemWidth::U64 => enc::str_64(*src_arm, scratch, imm12),
+                        };
+                        self.core.text.emit_u32(inst);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            k += 1;
+        }
+        self.gp_scratch.free_index(scratch_idx);
+        Ok(Some(count))
+    }
+
+    /// Within a burst of consecutive same-base IndexedLoad/Store ops, try to
+    /// fuse two adjacent ops into a single LDP D / STP D when:
+    /// - both are u64 FP loads (or u64 FP stores) of register sources/dests
+    /// - offsets differ by exactly 8 (and both fit imm7 scaled by 8)
+    /// - destination/source d-registers are physically consecutive
+    ///
+    /// **Currently unused** because its only caller `try_lower_indexed_burst`
+    /// is itself disabled (see comment there). Top-level FP pair fusion lives
+    /// in `try_lower_fp_pair`, which handles the same shapes without needing
+    /// the burst's shared base+index add.
+    #[allow(dead_code)]
+    fn try_emit_burst_pair(
+        &mut self,
+        kind0: MachineInstKind,
+        kind1: MachineInstKind,
+        scratch: Arm64Reg,
+    ) -> Result<bool, WasmError> {
+        match (kind0, kind1) {
+            (
+                MachineInstKind::IndexedLoad {
+                    dst: d0,
+                    offset: o0,
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                    ..
+                },
+                MachineInstKind::IndexedLoad {
+                    dst: d1,
+                    offset: o1,
+                    width: MachineMemWidth::U64,
+                    extension: MachineLoadExtension::None,
+                    ..
+                },
+            ) => {
+                let off0 = o0 as i64;
+                let off1 = o1 as i64;
+                if off1 - off0 != 8 {
+                    return Ok(false);
+                }
+                if !self.core.is_fp_reg(d0) || !self.core.is_fp_reg(d1) {
+                    return Ok(false);
+                }
+                let r0 = self.map_fp_reg(d0)?;
+                let r1_reg = self.map_fp_reg(d1)?;
+                if r1_reg.index() != r0.index() + 1 {
+                    return Ok(false);
+                }
+                if (off0 % 8) != 0 || off0 < -512 || off0 >= 504 {
+                    return Ok(false);
+                }
+                self.core
+                    .text
+                    .emit_u32(enc::ldp_d(r0, r1_reg, scratch, (off0 / 8) as i32));
+                self.core.set_fp_reg_width(d0, MachineFloatWidth::F64)?;
+                self.core.set_fp_reg_width(d1, MachineFloatWidth::F64)?;
+                Ok(true)
+            }
+            (
+                MachineInstKind::IndexedStore {
+                    offset: o0,
+                    width: MachineMemWidth::U64,
+                    src: MachineValue::Reg(s0),
+                    ..
+                },
+                MachineInstKind::IndexedStore {
+                    offset: o1,
+                    width: MachineMemWidth::U64,
+                    src: MachineValue::Reg(s1),
+                    ..
+                },
+            ) => {
+                let off0 = o0 as i64;
+                let off1 = o1 as i64;
+                if off1 - off0 != 8 {
+                    return Ok(false);
+                }
+                if !self.core.is_fp_reg(s0) || !self.core.is_fp_reg(s1) {
+                    return Ok(false);
+                }
+                let r0 = self.map_fp_reg(s0)?;
+                let r1_reg = self.map_fp_reg(s1)?;
+                if r1_reg.index() != r0.index() + 1 {
+                    return Ok(false);
+                }
+                if (off0 % 8) != 0 || off0 < -512 || off0 >= 504 {
+                    return Ok(false);
+                }
+                self.core
+                    .text
+                    .emit_u32(enc::stp_d(r0, r1_reg, scratch, (off0 / 8) as i32));
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Try to fuse a pair of consecutive `Store`/`Load` MIR ops into a single
+    /// `STP D` / `LDP D` when:
+    /// - both have the same base
+    /// - offsets differ by exactly 8 bytes
+    /// - operand registers are physically consecutive d-registers
+    /// - the offsets are u64 width and the resulting imm7 fits the encoding
+    ///
+    /// Returns `Some(2)` when a pair was emitted, otherwise `None` for the
+    /// caller to fall back to single-op lowering.
+    pub(super) fn try_lower_fp_pair(
+        &mut self,
+        block: &MachineBlock,
+        start: usize,
+    ) -> Result<Option<usize>, WasmError> {
+        if start + 1 >= block.ops.len() {
+            return Ok(None);
+        }
+        // --- Two consecutive `Store` ops sharing the same base ---
+        if let (
+            MachineInstKind::Store {
+                addr: a0,
+                width: w0,
+                src: MachineValue::Reg(s0),
+                ..
+            },
+            MachineInstKind::Store {
+                addr: a1,
+                width: w1,
+                src: MachineValue::Reg(s1),
+                ..
+            },
+        ) = (&block.ops[start].kind, &block.ops[start + 1].kind)
+        {
+            if *w0 == MachineMemWidth::U64
+                && *w1 == MachineMemWidth::U64
+                && a0.base == a1.base
+                && (a1.offset as i64 - a0.offset as i64) == 8
+                && self.core.is_fp_reg(*s0)
+                && self.core.is_fp_reg(*s1)
+            {
+                let base_arm = self.map_gp_reg(a0.base)?;
+                let r0 = self.map_fp_reg(*s0)?;
+                let r1_reg = self.map_fp_reg(*s1)?;
+                if r1_reg.index() == r0.index() + 1 {
+                    let off = a0.offset as i64;
+                    if off >= -512 && off < 504 && (off % 8) == 0 {
+                        self.core
+                            .text
+                            .emit_u32(enc::stp_d(r0, r1_reg, base_arm, (off / 8) as i32));
+                        return Ok(Some(2));
+                    }
+                }
+            }
+        }
+        // --- Two consecutive `Load` ops sharing the same base ---
+        if let (
+            MachineInstKind::Load {
+                dst: d0,
+                addr: a0,
+                width: w0,
+                extension: e0,
+                ..
+            },
+            MachineInstKind::Load {
+                dst: d1,
+                addr: a1,
+                width: w1,
+                extension: e1,
+                ..
+            },
+        ) = (&block.ops[start].kind, &block.ops[start + 1].kind)
+        {
+            if *w0 == MachineMemWidth::U64
+                && *w1 == MachineMemWidth::U64
+                && matches!(e0, MachineLoadExtension::None)
+                && matches!(e1, MachineLoadExtension::None)
+                && a0.base == a1.base
+                && (a1.offset as i64 - a0.offset as i64) == 8
+                && self.core.is_fp_reg(*d0)
+                && self.core.is_fp_reg(*d1)
+                && d0 != d1
+                && *d0 != a0.base
+                && *d1 != a0.base
+            {
+                let base_arm = self.map_gp_reg(a0.base)?;
+                let r0 = self.map_fp_reg(*d0)?;
+                let r1_reg = self.map_fp_reg(*d1)?;
+                if r1_reg.index() == r0.index() + 1 {
+                    let off = a0.offset as i64;
+                    if off >= -512 && off < 504 && (off % 8) == 0 {
+                        self.core
+                            .text
+                            .emit_u32(enc::ldp_d(r0, r1_reg, base_arm, (off / 8) as i32));
+                        self.core.set_fp_reg_width(*d0, MachineFloatWidth::F64)?;
+                        self.core.set_fp_reg_width(*d1, MachineFloatWidth::F64)?;
+                        return Ok(Some(2));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Indexed load with a non-zero offset.
+    ///
+    /// Strategy:
+    /// 1. Try the 2-op fast path: `add Xs, Xb, Wi, UXTW` (or 64-bit add for non-uxtw)
+    ///    followed by an immediate-offset load. Requires the offset to fit
+    ///    the scaled imm12 for the load width and to be non-negative.
+    /// 2. Otherwise fall back to "compute scratch index, register-indexed load".
     fn lower_indexed_load_with_offset(
         &mut self,
         dst: MachineReg,
@@ -1148,18 +1639,48 @@ impl<'a> super::backend::Arm64Backend<'a> {
         uxtw: bool,
     ) -> Result<(), WasmError> {
         let index_arm = self.map_gp_reg(index_reg)?;
-        // Keep the base and destination mappings intact while materializing the
-        // adjusted index. Reusing the GP destination register here is unsafe when
-        // the load writes back into the same machine reg as the base.
+        let base_arm = self.map_gp_reg(base_reg)?;
+
+        // ── DO NOT add a "fast path" that emits `add Xs, Xb, Wi, UXTW` followed
+        // by an immediate-offset load here. It looks like a clear win because it
+        // is one fewer instruction than the fallback below, but it is measurably
+        // SLOWER than the fallback on Apple Silicon (M-series).
+        //
+        // Measured on sha256.wasm (2026-04, M-series):
+        //   fallback (mov + add + ldr-reg, 3 ops): 267 MB/s
+        //   "fast" path (add-extended + ldr-imm, 2 ops): 224 MB/s   ← 16% slower
+        //
+        // Why: the fallback is `mov w_s, w_idx; add x_s, x_s, #imm; ldr w_d,
+        // [x_base, x_s]`. On M-series, `mov w, w` is renamed at zero latency,
+        // and the resulting `add x, x, #imm` + `ldr [base, reg]` macro-fuses
+        // with the load's address generator. So the dependency depth is
+        // effectively just the load itself.
+        //
+        // The "fast" path emits `add x_s, x_base, w_idx, UXTW` + `ldr [x_s,
+        // #imm]`. The extended-register `add` is *not* renamed and does not
+        // macro-fuse with the load's AGU on M-series the same way, so the
+        // load's address generation gets serialized behind a real ALU op.
+        //
+        // Net: the integer hot loop in sha256_transform regressed 16% throughput.
+        // Code size went down ~4 bytes per access — but the hot loop got slower,
+        // not faster. This bit me once. Don't re-add it without benchmarking
+        // sha256 on the same microarchitecture you're targeting.
+        //
+        // The store side of this same trick *does* help slightly (~3-4% on
+        // sha256) and is kept in lower_indexed_store_with_offset, because
+        // stores have no destination register dependency to lengthen.
+
+        // Fallback: compute adjusted index in 64-bit, then register-indexed load.
         let scratch = *self.gp_scratch.scoped_alloc();
         if uxtw {
-            self.core.text.emit_u32(enc::mov_reg_32(scratch, index_arm));
+            // Zero-extend then add (still 2-op total but offset doesn't fit imm12).
+            self.core
+                .text
+                .emit_u32(enc::mov_reg_32(scratch, index_arm));
+            self.lower_add_imm_3op(scratch, scratch, offset as i64);
         } else {
-            self.core.text.emit_u32(enc::mov_reg_64(scratch, index_arm));
+            self.lower_add_imm_3op(scratch, index_arm, offset as i64);
         }
-        self.lower_add_imm_to_reg(scratch, offset as i64);
-        // Register-indexed load using the pre-computed scratch as the index.
-        let base_arm = self.map_gp_reg(base_reg)?;
         if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)?;
             let inst = match width {
@@ -1304,8 +1825,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    /// Indexed store with a non-zero offset: fold index + offset into a scratch,
-    /// then register-indexed store with the ORIGINAL memory base.
+    /// Indexed store with a non-zero offset.
+    ///
+    /// Strategy mirrors `lower_indexed_load_with_offset`: try the 2-op fast path
+    /// (extended add + immediate-offset store), otherwise fall back.
     fn lower_indexed_store_with_offset(
         &mut self,
         base_reg: MachineReg,
@@ -1316,20 +1839,72 @@ impl<'a> super::backend::Arm64Backend<'a> {
         uxtw: bool,
     ) -> Result<(), WasmError> {
         let index_arm = self.map_gp_reg(index_reg)?;
+        let base_arm = self.map_gp_reg(base_reg)?;
+
+        // Fast path: base + index folded into scratch, immediate-offset store.
+        //
+        // Note: this is asymmetric with `lower_indexed_load_with_offset`, which
+        // intentionally does NOT have an analogous fast path. Stores have no
+        // destination register that the consumer chain can wait on, so the
+        // shorter `add (extended) + str` form does not introduce the
+        // dependency-chain serialization that hurt sha256 on the load side.
+        // See the long comment in `lower_indexed_load_with_offset` for the
+        // microarchitectural reasoning. Measured net-positive on sha256
+        // (~3-4%) and measured neutral on c-ray.
+        if let Some(imm12) = encode_load_imm12(offset, width) {
+            let scratch = *self.gp_scratch.scoped_alloc();
+            if uxtw {
+                self.core
+                    .text
+                    .emit_u32(enc::add_reg_64_uxtw(scratch, base_arm, index_arm));
+            } else {
+                self.core
+                    .text
+                    .emit_u32(enc::add_reg_64(scratch, base_arm, index_arm));
+            }
+            if let MachineValue::Reg(src_reg) = src {
+                if self.core.is_fp_reg(src_reg) {
+                    let src_fp = self.map_fp_reg(src_reg)?;
+                    let inst = match width {
+                        MachineMemWidth::U32 => enc::str_s(src_fp, scratch, imm12),
+                        MachineMemWidth::U64 => enc::str_d(src_fp, scratch, imm12),
+                        _ => {
+                            return Err(WasmError::invalid(
+                                "arm64: narrow FP indexed store not supported".into(),
+                            ))
+                        }
+                    };
+                    self.core.text.emit_u32(inst);
+                    return Ok(());
+                }
+            }
+            let src_arm = prepare_gp(
+                self.core.compiled.backend(),
+                &self.core.fp_reg_widths,
+                &mut self.core.text,
+                &self.gp_scratch,
+                src,
+            )?;
+            let inst = match width {
+                MachineMemWidth::U8 => enc::strb_imm(*src_arm, scratch, imm12),
+                MachineMemWidth::U16 => enc::strh_imm(*src_arm, scratch, imm12),
+                MachineMemWidth::U32 => enc::str_32(*src_arm, scratch, imm12),
+                MachineMemWidth::U64 => enc::str_64(*src_arm, scratch, imm12),
+            };
+            self.core.text.emit_u32(inst);
+            return Ok(());
+        }
+
+        // Fallback: compute adjusted index in 64-bit, then register-indexed store.
         let idx_scratch = *self.gp_scratch.scoped_alloc();
         if uxtw {
             self.core
                 .text
                 .emit_u32(enc::mov_reg_32(idx_scratch, index_arm));
+            self.lower_add_imm_3op(idx_scratch, idx_scratch, offset as i64);
         } else {
-            self.core
-                .text
-                .emit_u32(enc::mov_reg_64(idx_scratch, index_arm));
+            self.lower_add_imm_3op(idx_scratch, index_arm, offset as i64);
         }
-        self.lower_add_imm_to_reg(idx_scratch, offset as i64);
-
-        // Register-indexed store using pre-mapped index register.
-        let base_arm = self.map_gp_reg(base_reg)?;
         if let MachineValue::Reg(src_reg) = src {
             if self.core.is_fp_reg(src_reg) {
                 let src_fp = self.map_fp_reg(src_reg)?;
