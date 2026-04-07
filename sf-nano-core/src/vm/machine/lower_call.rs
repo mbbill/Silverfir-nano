@@ -3,9 +3,9 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal,
-            MachineCompareKind, MachineConstId, MachineFrameRegion, MachineFuncId, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg,
-            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineCompareKind, MachineConstId, MachineFuncId, MachineInst, MachineInstKind,
+            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
         runtime::external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
@@ -30,25 +30,33 @@ impl<'a> BlockLowerContext<'a> {
         )?;
 
         let callee_id = MachineFuncId(callee);
-        let callee_runtime = self.runtime_for_func(callee_id)?;
-        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("direct local call requires callee call scratch".into())
-        })?;
+        let (call_scratch, callee_frame_prefix_slots, callee_total_frame_slots, callee_results) = {
+            let callee_runtime = self.runtime_for_func(callee_id)?;
+            let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
+                WasmError::internal("direct local call requires callee call scratch".into())
+            })?;
+            let results_count = callee_runtime
+                .return_results
+                .map(|region| region.slots)
+                .unwrap_or(0);
+            (
+                call_scratch,
+                callee_runtime.frame_prefix_slots,
+                callee_runtime.total_frame_slots,
+                results_count,
+            )
+        };
         if call_scratch.slots < self.call_link_layout().slot_count {
             return Err(WasmError::internal(
                 "callee call scratch is smaller than the machine call-link layout".into(),
             ));
         }
-        if args.count > callee_runtime.frame_prefix_slots {
+        if args.count > callee_frame_prefix_slots {
             return Err(WasmError::internal(
                 "direct local call passes more arguments than fit in the callee local prefix"
                     .into(),
             ));
         }
-        let callee_results = callee_runtime
-            .return_results
-            .map(|region| region.slots)
-            .unwrap_or(0);
         if callee_results != results.count {
             return Err(WasmError::internal(
                 "direct local call result span does not match the callee return-result contract"
@@ -77,7 +85,7 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_direct_call_stack_precheck(
             callee_frame_base,
             stack_limit,
-            callee_runtime.total_frame_slots,
+            callee_total_frame_slots,
         )?;
 
         // Reuse the second borrowed temp after the stack precheck. From this
@@ -97,53 +105,10 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
 
-        // Zero the rest of the callee frame prefix beyond the argument span so
-        // the callee sees a fully initialized local-prefix window. Arguments
-        // already occupy the low part of the prefix because the caller operand
-        // span is being reused in place as the callee frame base.
-        for slot in args.count..callee_runtime.frame_prefix_slots {
-            if self.gp_reg_width() == 4 {
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord,
-                        addr: self.frame_region_addr(
-                            callee_frame_base,
-                            MachineFrameRegion {
-                                base_slot: slot,
-                                slots: 1,
-                            },
-                            0,
-                        )?,
-                        width: MachineMemWidth::U32,
-                        src: MachineValue::Imm64(0),
-                    },
-                });
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpWord,
-                        addr: self.frame_region_addr(
-                            callee_frame_base,
-                            MachineFrameRegion {
-                                base_slot: slot,
-                                slots: 1,
-                            },
-                            4,
-                        )?,
-                        width: MachineMemWidth::U32,
-                        src: MachineValue::Imm64(0),
-                    },
-                });
-            } else {
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty: MachineStorageType::GpI64,
-                        addr: self.frame_addr_from(callee_frame_base, FrameSlot(slot))?,
-                        width: MachineMemWidth::U64,
-                        src: MachineValue::Imm64(0),
-                    },
-                });
-            }
-        }
+        // Note: zero-init of the callee's non-param locals is now performed by
+        // the callee itself at function entry, only for slots flagged by the
+        // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
+        // that are guaranteed to be written before any read need no init.
 
         // MachineIR writes the logical call-link fields now. The backend only
         // needs to turn `continuation` into a native code address at the

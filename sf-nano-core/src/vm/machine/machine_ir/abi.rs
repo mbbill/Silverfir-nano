@@ -28,7 +28,7 @@ pub(crate) struct MachineFrameRegion {
 }
 
 /// One per-function ABI record derived from the shared frame plan.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct MachineFunctionAbi {
     pub id: MachineFuncId,
     pub frame_prefix_slots: u16,
@@ -36,6 +36,11 @@ pub(crate) struct MachineFunctionAbi {
     pub call_scratch: Option<MachineFrameRegion>,
     pub helper_scratch: Option<MachineFrameRegion>,
     pub return_results: Option<MachineFrameRegion>,
+    /// Non-param local slot indices that may be read before being written.
+    /// These slots must be zero-initialized by the callee at function entry.
+    /// Locals not listed here are guaranteed to be written before any read,
+    /// so the wasm zero-init contract is satisfied without an explicit store.
+    pub init_locals: alloc::vec::Vec<u16>,
 }
 
 /// Module-wide ABI metadata carried alongside MachineIR.

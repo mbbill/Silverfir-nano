@@ -1597,7 +1597,11 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    assert_eq!(call_block.ops.len(), 9);
+    // The callee now zero-inits its own non-param locals at function entry,
+    // so the caller no longer emits a Store Imm64(0) before the call link
+    // metadata. The expected sequence is now: addr setup, stack precheck,
+    // call_link addr setup, then 3 call-link stores.
+    assert_eq!(call_block.ops.len(), 8);
     assert!(matches!(
         call_block.ops[1].kind,
         MachineInstKind::Load { .. }
@@ -1636,26 +1640,19 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert!(matches!(
         call_block.ops[5].kind,
         MachineInstKind::Store {
-            src: MachineValue::Imm64(0),
+            src: MachineValue::Imm64(1),
             ..
         }
     ));
     assert!(matches!(
         call_block.ops[6].kind,
         MachineInstKind::Store {
-            src: MachineValue::Imm64(1),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[7].kind,
-        MachineInstKind::Store {
             src: MachineValue::Reg(MachineReg(1)),
             ..
         }
     ));
     assert!(matches!(
-        call_block.ops[8].kind,
+        call_block.ops[7].kind,
         MachineInstKind::Store {
             src: MachineValue::Imm64(40),
             ..
@@ -3561,11 +3558,14 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             _ => None,
         })
         .collect();
+    // The callee now zero-inits its own non-param locals at function entry, so
+    // the caller no longer emits Store Imm64(0) instructions for the unused
+    // slots before the call link metadata. The remaining stores are the 3
+    // call link entries (continuation id, caller frame, result base), each a
+    // single U32 on 32-bit targets.
     assert_eq!(
         store_widths,
         alloc::vec![
-            MachineMemWidth::U32,
-            MachineMemWidth::U32,
             MachineMemWidth::U32,
             MachineMemWidth::U32,
             MachineMemWidth::U32,

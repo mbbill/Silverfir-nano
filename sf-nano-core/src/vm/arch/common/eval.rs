@@ -66,13 +66,10 @@ pub(crate) fn eval(
         for (index, arg) in args.iter().enumerate() {
             *stack_base.add(index) = arg.to_raw();
         }
-        if runtime.frame_prefix_slots as usize > args.len() {
-            core::ptr::write_bytes(
-                stack_base.add(args.len()),
-                0,
-                runtime.frame_prefix_slots as usize - args.len(),
-            );
-        }
+        // Note: zero-init of non-param locals is now performed by the callee
+        // itself at function entry, only for slots flagged by the SsaProgram's
+        // `local_slot_info.reads_before_write` analysis. The C entry path no
+        // longer needs to pre-zero the frame prefix.
     }
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
 

@@ -16,6 +16,7 @@ pub(super) mod canonical;
 pub(super) mod entry_region;
 mod facade;
 pub(super) mod facts;
+pub(super) mod init_locals;
 mod interface;
 mod local_access;
 mod pressure;

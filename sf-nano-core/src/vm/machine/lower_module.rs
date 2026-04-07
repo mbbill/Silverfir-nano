@@ -162,6 +162,15 @@ fn lower_function_runtime(
         return_results = Some(frame_span_region(result_span));
     }
 
+    let init_locals = input
+        .ssa
+        .local_slot_info
+        .iter()
+        .enumerate()
+        .filter(|(_, info)| !info.is_param && info.reads_before_write)
+        .map(|(i, _)| i as u16)
+        .collect();
+
     Ok(MachineFunctionAbi {
         id: input.id,
         frame_prefix_slots: input.frame.frame_prefix_size,
@@ -169,6 +178,7 @@ fn lower_function_runtime(
         call_scratch,
         helper_scratch,
         return_results,
+        init_locals,
     })
 }
 
@@ -235,6 +245,16 @@ fn lower_function(
                 lower.entry_cache_params(),
                 &explicit_cache,
             );
+        } else {
+            // Entry block: zero-init non-param locals that may be read before
+            // being written. The caller no longer pre-zeros the callee frame;
+            // each function is responsible for satisfying the wasm zero-init
+            // contract for its own locals at function entry.
+            let init_locals = runtime
+                .get(input.id.0 as usize)
+                .map(|abi| abi.init_locals.clone())
+                .unwrap_or_default();
+            lower.emit_zero_init_locals(&init_locals)?;
         }
 
         for inst in &block.ops {

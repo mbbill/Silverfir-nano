@@ -2,12 +2,19 @@
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{
-        MachineInst, MachineInstKind, MachineLoadExtension, MachineStorageType, MachineValue,
+    vm::{
+        machine::machine_ir::{
+            MachineAddr, MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth,
+            MachineStorageType, MachineValue,
+        },
+        middle::frame::FrameSlot,
     },
 };
 
-use super::{lower_context::BlockLowerContext, lower_regalloc::canonical_cached_local_mem_width};
+use super::{
+    lower_context::BlockLowerContext, lower_module::slot_offset_bytes,
+    lower_regalloc::canonical_cached_local_mem_width,
+};
 
 impl<'a> BlockLowerContext<'a> {
     /// Save only cached locals that have been written since the last save.
@@ -71,6 +78,64 @@ impl<'a> BlockLowerContext<'a> {
         self.set_cache_has_value(index, false);
         self.set_cache_dirty(index, false);
         self.clear_cache_binding(index);
+        Ok(())
+    }
+
+    /// Emit zero stores for the listed local slots into the function's own
+    /// frame. Used at the entry block to satisfy the wasm zero-init contract
+    /// for non-param locals that may be read before being written. Locals not
+    /// in `slots` are guaranteed to be written before any read, so they need
+    /// no explicit init store.
+    pub(super) fn emit_zero_init_locals(&mut self, slots: &[u16]) -> Result<(), WasmError> {
+        if slots.is_empty() {
+            return Ok(());
+        }
+        let base = self.frame_base_reg();
+        let gp_reg_width = self.gp_reg_width();
+        for &slot_idx in slots {
+            let slot = FrameSlot(slot_idx);
+            let base_offset = slot_offset_bytes(slot)?;
+            if gp_reg_width == 4 {
+                // 32-bit target: two 4-byte stores per i64-sized slot.
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base,
+                            offset: base_offset,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+                let hi_offset = base_offset.checked_add(4).ok_or_else(|| {
+                    WasmError::internal("frame slot zero-init offset overflow".into())
+                })?;
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base,
+                            offset: hi_offset,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+            } else {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpI64,
+                        addr: MachineAddr {
+                            base,
+                            offset: base_offset,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Imm64(0),
+                    },
+                });
+            }
+        }
         Ok(())
     }
 

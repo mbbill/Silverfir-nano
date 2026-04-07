@@ -6,7 +6,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineCallLinkLayout, MachineFrameRegion, MachineFuncId,
+            MachineAddr, MachineCallLinkLayout, MachineFuncId,
             MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
         },
@@ -315,29 +315,13 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
-    pub(super) fn frame_region_addr(
-        &self,
-        base: MachineReg,
-        region: MachineFrameRegion,
-        byte_offset: i32,
-    ) -> Result<MachineAddr, WasmError> {
-        let region_offset = slot_offset_bytes(FrameSlot(region.base_slot))?;
-        let offset = region_offset
-            .checked_add(byte_offset)
-            .ok_or_else(|| WasmError::internal("frame region byte offset overflow".into()))?;
-        Ok(MachineAddr { base, offset })
-    }
-
     pub(super) fn runtime_for_func(
         &self,
         func: MachineFuncId,
-    ) -> Result<MachineFunctionAbi, WasmError> {
-        self.all_runtime
-            .get(func.0 as usize)
-            .copied()
-            .ok_or_else(|| {
-                WasmError::internal("machine runtime metadata missing for callee".into())
-            })
+    ) -> Result<&MachineFunctionAbi, WasmError> {
+        self.all_runtime.get(func.0 as usize).ok_or_else(|| {
+            WasmError::internal("machine runtime metadata missing for callee".into())
+        })
     }
 
     // -----------------------------------------------------------------------

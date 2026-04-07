@@ -948,7 +948,7 @@ impl<'a> Emulator<'a> {
     }
 
     fn handle_return(&mut self) -> Result<bool, WasmError> {
-        let current_runtime = *self.runtime_for(self.func_id)?;
+        let current_runtime = self.runtime_for(self.func_id)?.clone();
         let results = current_runtime.return_results;
         if let Some(saved) = self.call_stack.pop() {
             let call_scratch = current_runtime.call_scratch.ok_or_else(|| {

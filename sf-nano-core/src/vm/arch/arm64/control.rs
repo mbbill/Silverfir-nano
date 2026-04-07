@@ -388,7 +388,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
     // ── Return sequence ──────────────────────────────────────────────────────────
 
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = *self.runtime_for(self.core.function.id)?;
+        let runtime = self.runtime_for(self.core.function.id)?.clone();
         let call_scratch = runtime.call_scratch.ok_or_else(|| {
             WasmError::internal("arm64 local return requires call scratch".into())
         })?;
