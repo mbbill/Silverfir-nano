@@ -410,30 +410,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             let native_entry = arm64_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(
-                native_entry.map(|e| e.entry),
-                native_entry.map(|e| e.root_return),
-            );
+            code = code.with_entry(native_entry.map(|e| e.entry));
         }
         #[cfg(target_arch = "arm")]
         {
             let native_entry = armv7a_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(
-                native_entry.map(|e| e.entry),
-                native_entry.map(|e| e.root_return),
-            );
+            code = code.with_entry(native_entry.map(|e| e.entry));
         }
         #[cfg(target_arch = "x86_64")]
         {
             let native_entry = x86_64_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(
-                native_entry.map(|e| e.entry),
-                native_entry.map(|e| e.root_return),
-            );
+            code = code.with_entry(native_entry.map(|e| e.entry));
         }
         spec.set_native_code(code, NativeCodeCache::compiled());
     }

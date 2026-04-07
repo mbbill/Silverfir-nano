@@ -314,23 +314,23 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
         }
         MachineTerminator::CallDirect {
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
         } => {
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
-            *call_link_base = resolve_alias(*call_link_base, aliases);
+            *caller_result_base = resolve_alias(*caller_result_base, aliases);
         }
         MachineTerminator::CallIndirect {
             callee_target,
             callee_entry,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
         } => {
             *callee_target = resolve_alias(*callee_target, aliases);
             *callee_entry = resolve_alias(*callee_entry, aliases);
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
-            *call_link_base = resolve_alias(*call_link_base, aliases);
+            *caller_result_base = resolve_alias(*caller_result_base, aliases);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }

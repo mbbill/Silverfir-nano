@@ -112,9 +112,10 @@ impl<'a> Arm64Backend<'a> {
             abi::PRESERVED_HELPER_FRAME_SIZE,
         ));
 
-        // Check status.
-        let return_error_label = self.core.return_error_label;
-        self.lower_cbnz(status_scratch, return_error_label);
+        // Check status. Non-zero means the helper trapped — branch to the
+        // body-local error tail to propagate via the unified Return.
+        let body_local_error_label = self.core.body_local_error_label;
+        self.lower_cbnz(status_scratch, body_local_error_label);
 
         self.gp_scratch.free_index(status_scratch_idx);
         if result_scratch_idx.is_none() {

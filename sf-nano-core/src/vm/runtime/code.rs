@@ -14,6 +14,13 @@ use crate::{
 
 /// Native entry point: identical signature across all architectures.
 pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
+
+/// Raw native code pointer used by backends that still expose split
+/// success / error tail entries. Only the deferred x86_64 and armv7a
+/// backends reference this — see `docs/ABI_PLAN.md` §12 backend gap
+/// audit. arm64 collapsed both tails into the body so it has no use
+/// for this alias.
+#[cfg(any(target_arch = "x86_64", target_arch = "arm"))]
 pub(crate) type NativeCodePtr = *const u8;
 
 #[derive(Clone, Debug)]
@@ -135,7 +142,6 @@ pub(crate) struct NativeCode {
     compiled: Rc<CompiledNativeModule>,
     func_id: MachineFuncId,
     entry: Option<NativeRootEntry>,
-    root_return: Option<NativeCodePtr>,
 }
 
 impl NativeCode {
@@ -145,18 +151,12 @@ impl NativeCode {
             compiled,
             func_id,
             entry: None,
-            root_return: None,
         }
     }
 
     #[inline]
-    pub(crate) fn with_entry(
-        mut self,
-        entry: Option<NativeRootEntry>,
-        root_return: Option<NativeCodePtr>,
-    ) -> Self {
+    pub(crate) fn with_entry(mut self, entry: Option<NativeRootEntry>) -> Self {
         self.entry = entry;
-        self.root_return = root_return;
         self
     }
 
@@ -178,11 +178,6 @@ impl NativeCode {
     #[inline]
     pub(crate) fn native_entry(&self) -> Option<NativeRootEntry> {
         self.entry
-    }
-
-    #[inline]
-    pub(crate) fn native_root_return(&self) -> Option<NativeCodePtr> {
-        self.root_return
     }
 }
 

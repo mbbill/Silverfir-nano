@@ -1042,23 +1042,23 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
         }
         MachineTerminator::CallDirect {
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
         } => {
             visit(*callee_frame_base);
-            visit(*call_link_base);
+            visit(*caller_result_base);
         }
         MachineTerminator::CallIndirect {
             callee_target,
             callee_entry,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
         } => {
             visit(*callee_target);
             visit(*callee_entry);
             visit(*callee_frame_base);
-            visit(*call_link_base);
+            visit(*caller_result_base);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
@@ -1147,7 +1147,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             backend::BackendConfig,
-            machine::machine_ir::{MachineCallLinkLayout, MachineFunctionAbi, MachineStorageType},
+            machine::machine_ir::{MachineFunctionAbi, MachineStorageType},
             middle::ssa_ir::{
                 ir::{SsaBlock, SsaProgram, SsaTerminator, SsaValue},
                 target::SsaTarget,
@@ -1179,12 +1179,6 @@ mod tests {
         ));
         let runtime = MachineFunctionAbi::default();
         let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
-        let call_link = MachineCallLinkLayout {
-            continuation_offset: 0,
-            caller_frame_offset: 8,
-            caller_result_base_offset: 16,
-            slot_count: 3,
-        };
         let explicit_cache = Box::leak(Box::new(
             super::super::lower_context::explicit_cached_locals(program),
         ));
@@ -1205,7 +1199,6 @@ mod tests {
             entry_cache_params,
             &program.blocks[0],
             all_runtime,
-            call_link,
             4,
             &super::super::gp32::Gp32Lowering,
             true,

@@ -6,7 +6,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineCallLinkLayout, MachineFuncId,
+            MachineAddr, MachineFuncId,
             MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
         },
@@ -84,7 +84,6 @@ pub(super) struct BlockLowerContext<'a> {
     program: &'a SsaProgram,
     block: &'a SsaBlock,
     all_runtime: &'a [MachineFunctionAbi],
-    call_link: MachineCallLinkLayout,
     machine_params: Vec<ValueRegs>,
     entry_cache_params: Vec<EntryCacheParam>,
     all_entry_cache_params: &'a [Vec<EntryCacheParam>],
@@ -140,7 +139,6 @@ impl<'a> BlockLowerContext<'a> {
         all_entry_cache_params: &'a [Vec<EntryCacheParam>],
         block: &'a SsaBlock,
         all_runtime: &'a [MachineFunctionAbi],
-        call_link: MachineCallLinkLayout,
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
@@ -160,7 +158,6 @@ impl<'a> BlockLowerContext<'a> {
             program,
             block,
             all_runtime,
-            call_link,
             machine_params,
             entry_cache_params,
             all_entry_cache_params,
@@ -355,10 +352,6 @@ impl<'a> BlockLowerContext<'a> {
     #[cfg(has_guard_pages)]
     pub(super) fn use_guard_pages(&self) -> bool {
         self.guard_pages
-    }
-
-    pub(super) fn call_link_layout(&self) -> MachineCallLinkLayout {
-        self.call_link
     }
 
     pub(super) fn frame_base_reg(&self) -> MachineReg {

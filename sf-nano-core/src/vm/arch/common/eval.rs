@@ -12,7 +12,7 @@ use crate::{
     vm::{
         result_buffer::ResultBuffer,
         runtime::{
-            code::{CompiledNativeModule, NativeCode},
+            code::NativeCode,
             context::NativeContext,
         },
         store::Store,
@@ -54,9 +54,6 @@ pub(crate) fn eval(
     let entry = code
         .native_entry()
         .ok_or_else(|| WasmError::internal("native entry is missing finalized code".into()))?;
-    let root_return = code
-        .native_root_return()
-        .ok_or_else(|| WasmError::internal("native root return continuation is missing".into()))?;
 
     let mut stack = vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
@@ -66,7 +63,7 @@ pub(crate) fn eval(
         for (index, arg) in args.iter().enumerate() {
             *stack_base.add(index) = arg.to_raw();
         }
-        // Note: zero-init of non-param locals is now performed by the callee
+        // Note: zero-init of non-param locals is performed by the callee
         // itself at function entry, only for slots flagged by the SsaProgram's
         // `local_slot_info.reads_before_write` analysis. The C entry path no
         // longer needs to pre-zero the frame prefix.
@@ -75,7 +72,12 @@ pub(crate) fn eval(
 
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
     ctx.seed_local_call_infos(compiled);
-    seed_root_call_link(compiled, runtime, stack_base, root_return)?;
+    // Under the new local-call ABI, no software call-link record is needed
+    // at the root. The public-entry caller stub builds a backend-private
+    // call record on the host stack itself, calls the internal entry, and
+    // the body's unified Return copies results into the bytes at
+    // `stack_base` (the root frame), which is exactly what
+    // `collect_native_results_from_stack` reads from below.
     #[cfg(feature = "function-trace")]
     {
         function_trace::init_from_env();
@@ -124,28 +126,6 @@ pub(crate) fn eval(
         function_trace::native_root_exit(&mut ctx, spec, results);
     }
     Ok(out)
-}
-
-fn seed_root_call_link(
-    compiled: &CompiledNativeModule,
-    runtime: &crate::vm::machine::machine_ir::MachineFunctionAbi,
-    fp: *mut u64,
-    root_return: *const u8,
-) -> Result<(), WasmError> {
-    let call_scratch = runtime.call_scratch.ok_or_else(|| {
-        WasmError::internal("native root entry requires call scratch for unified return".into())
-    })?;
-    let layout = compiled.abi().call_link;
-    unsafe {
-        *fp.add(call_scratch.base_slot as usize + (layout.continuation_offset / 8) as usize) =
-            root_return as u64;
-        *fp.add(call_scratch.base_slot as usize + (layout.caller_frame_offset / 8) as usize) =
-            fp as u64;
-        *fp.add(
-            call_scratch.base_slot as usize + (layout.caller_result_base_offset / 8) as usize,
-        ) = 0;
-    }
-    Ok(())
 }
 
 pub(crate) fn ensure_stack_capacity(

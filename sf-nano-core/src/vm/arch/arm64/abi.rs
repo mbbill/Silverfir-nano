@@ -239,6 +239,21 @@ pub(super) const fn link_reg() -> Arm64Reg {
     gp(30)
 }
 
+/// AArch64 host frame-pointer register (`x29`). Used by the body prelude
+/// pairing along with `link_reg()` (`x30`) to back up the link state on the
+/// host stack across nested local calls.
+#[inline]
+pub(super) const fn host_fp_reg() -> Arm64Reg {
+    gp(29)
+}
+
+/// AArch64 host link register (`x30`). Same physical register as
+/// `link_reg()`; the alias clarifies intent at body-prelude / Return sites.
+#[inline]
+pub(super) const fn host_lr_reg() -> Arm64Reg {
+    gp(30)
+}
+
 #[inline]
 pub(super) const fn fp_zero_reg() -> Arm64FpReg {
     fp(0)

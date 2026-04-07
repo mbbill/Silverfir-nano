@@ -29,7 +29,6 @@ pub(crate) struct LocalCallInfoAbiLayout {
     pub entry_offset: u32,
     pub total_frame_bytes_offset: u32,
     pub frame_prefix_slots_offset: u32,
-    pub call_scratch_base_slot_offset: u32,
     pub stride: u32,
 }
 
@@ -98,16 +97,12 @@ pub(crate) const fn local_call_info_abi_layout(gp_unit_bytes: u8) -> LocalCallIn
             entry_offset: offset_of!(NativeLocalCallInfo32, entry) as u32,
             total_frame_bytes_offset: offset_of!(NativeLocalCallInfo32, total_frame_bytes) as u32,
             frame_prefix_slots_offset: offset_of!(NativeLocalCallInfo32, frame_prefix_slots) as u32,
-            call_scratch_base_slot_offset: offset_of!(NativeLocalCallInfo32, call_scratch_base_slot)
-                as u32,
             stride: size_of::<NativeLocalCallInfo32>() as u32,
         },
         8 => LocalCallInfoAbiLayout {
             entry_offset: offset_of!(NativeLocalCallInfo64, entry) as u32,
             total_frame_bytes_offset: offset_of!(NativeLocalCallInfo64, total_frame_bytes) as u32,
             frame_prefix_slots_offset: offset_of!(NativeLocalCallInfo64, frame_prefix_slots) as u32,
-            call_scratch_base_slot_offset: offset_of!(NativeLocalCallInfo64, call_scratch_base_slot)
-                as u32,
             stride: size_of::<NativeLocalCallInfo64>() as u32,
         },
         _ => panic!("unsupported GP unit size"),
@@ -280,10 +275,6 @@ mod tests {
             core::mem::offset_of!(NativeLocalCallInfo32, frame_prefix_slots) as u32
         );
         assert_eq!(
-            layout.call_scratch_base_slot_offset,
-            core::mem::offset_of!(NativeLocalCallInfo32, call_scratch_base_slot) as u32
-        );
-        assert_eq!(
             layout.stride,
             core::mem::size_of::<NativeLocalCallInfo32>() as u32
         );
@@ -303,10 +294,6 @@ mod tests {
         assert_eq!(
             layout.frame_prefix_slots_offset,
             core::mem::offset_of!(NativeLocalCallInfo64, frame_prefix_slots) as u32
-        );
-        assert_eq!(
-            layout.call_scratch_base_slot_offset,
-            core::mem::offset_of!(NativeLocalCallInfo64, call_scratch_base_slot) as u32
         );
         assert_eq!(
             layout.stride,

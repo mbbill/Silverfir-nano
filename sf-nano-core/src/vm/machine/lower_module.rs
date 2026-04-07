@@ -11,7 +11,7 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallLinkLayout, MachineCompareKind, MachineEdge, MachineFloatWidth,
+            MachineCompareKind, MachineEdge, MachineFloatWidth,
             MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
             MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
             MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineSign,
@@ -74,12 +74,6 @@ pub(crate) struct LoweredMachineModule {
 
 pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule, WasmError> {
     let max_regfile = MachineRegFile::new(input.backend)?;
-    let call_link = MachineCallLinkLayout {
-        continuation_offset: 0,
-        caller_frame_offset: 8,
-        caller_result_base_offset: 16,
-        slot_count: 3,
-    };
 
     let function_count = input
         .functions
@@ -100,7 +94,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
     for function in input.functions {
         validate_program(function.ssa)?;
         is_local_func[function.id.0 as usize] = true;
-        function_abis[function.id.0 as usize] = lower_function_runtime(*function, call_link)?;
+        function_abis[function.id.0 as usize] = lower_function_runtime(*function)?;
     }
     #[cfg(has_guard_pages)]
     let guard_pages = input.use_guard_pages;
@@ -113,13 +107,11 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
             &max_regfile,
             &function_abis,
             &is_local_func,
-            call_link,
             &mut const_pool,
             guard_pages,
         )?);
     }
     let abi = MachineModuleAbi {
-        call_link,
         functions: function_abis,
     };
 
@@ -143,16 +135,12 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
 
 fn lower_function_runtime(
     input: LowerFunctionInput<'_>,
-    call_link: MachineCallLinkLayout,
 ) -> Result<MachineFunctionAbi, WasmError> {
-    let call_scratch = input.frame.call_scratch.map(frame_span_region);
-    let helper_scratch = input.frame.call_scratch.and_then(|span| {
-        let link_slots = call_link.slot_count;
-        (span.count > link_slots).then(|| MachineFrameRegion {
-            base_slot: span.start.0 + link_slots,
-            slots: span.count - link_slots,
-        })
-    });
+    // Under the new local-call ABI, the dead "call_link" half of
+    // `call_scratch` is gone — `FrameLayoutPlan::call_scratch` now only
+    // carries helper-scratch slots (the live half). Expose the whole region
+    // as the `helper_scratch`.
+    let helper_scratch = input.frame.call_scratch.map(frame_span_region);
     let mut return_results = derive_return_results(input.ssa)?;
     // Fallback: if no Return terminators exist (all paths trap/unreachable),
     // use the declared result count from the type signature so that callers
@@ -175,7 +163,6 @@ fn lower_function_runtime(
         id: input.id,
         frame_prefix_slots: input.frame.frame_prefix_size,
         total_frame_slots: input.frame.total_slots(),
-        call_scratch,
         helper_scratch,
         return_results,
         init_locals,
@@ -188,7 +175,6 @@ fn lower_function(
     regfile: &MachineRegFile,
     runtime: &[MachineFunctionAbi],
     is_local_func: &[bool],
-    call_link: MachineCallLinkLayout,
     const_pool: &mut ConstPoolBuilder,
     guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
@@ -216,7 +202,6 @@ fn lower_function(
             &entry_cache_params,
             block,
             runtime,
-            call_link,
             gp_reg_width,
             i64_ops,
             target == input.ssa.entry,
@@ -634,7 +619,7 @@ fn lower_function(
                                 callee_target: indirect_temps.lane0,
                                 callee_entry: indirect_temps.lane2,
                                 callee_frame_base: indirect_temps.lane1,
-                                call_link_base: indirect_temps.lane3,
+                                caller_result_base: indirect_temps.lane3,
                                 continuation,
                             },
                         )?;
@@ -1328,67 +1313,47 @@ fn build_call_indirect_local_zero_loop_block(
 
 fn build_call_indirect_local_transfer_block(
     lower: &mut BlockLowerContext<'_>,
-    continuation: MachineBlockId,
+    _continuation: MachineBlockId,
     results: FrameSpan,
 ) -> Result<Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
     let callee_target = temps.lane0;
-    let callee_frame_base = temps.lane1;
+    // lane1 is `callee_frame_base`, populated by the earlier checks block.
     let callee_entry = temps.lane2;
-    let call_link_base = temps.lane3;
+    let caller_result_base = temps.lane3;
 
-    emit_local_call_info_entry_addr(lower, callee_target, call_link_base, callee_entry)?;
+    // Use lane3 first as a scratch to find the call info record, then load
+    // the callee entry address from it. After that, we overwrite lane3 with
+    // the absolute caller_result_base address.
+    emit_local_call_info_entry_addr(lower, callee_target, caller_result_base, callee_entry)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: callee_entry,
             addr: MachineAddr {
-                base: call_link_base,
+                base: caller_result_base,
                 offset: call_info.entry_offset as i32,
             },
             width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
         },
     });
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: call_link_base,
-            addr: MachineAddr {
-                base: call_link_base,
-                offset: call_info.call_scratch_base_slot_offset as i32,
-            },
-            width: lower.gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
-        },
-    });
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::IntBinary {
-            width: lower.gp_word_int_width(),
-            op: MachineIntBinaryOp::Mul,
-            dst: call_link_base,
-            lhs: MachineValue::Reg(call_link_base),
-            rhs: MachineValue::Imm64(8),
-        },
-    });
+    // caller_result_base = caller_fp + results.start_offset.
+    // This is purely caller-side state — it does not depend on the callee's
+    // frame layout, so we can compute it without consulting the call info
+    // table at all.
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::IntBinary {
             width: lower.gp_word_int_width(),
             op: MachineIntBinaryOp::Add,
-            dst: call_link_base,
-            lhs: MachineValue::Reg(call_link_base),
-            rhs: MachineValue::Reg(callee_frame_base),
+            dst: caller_result_base,
+            lhs: MachineValue::Reg(lower.frame_base_reg()),
+            rhs: MachineValue::Imm64(slot_offset_bytes(results.start)? as u64),
         },
     });
-    lower.store_call_link_absolute(
-        call_link_base,
-        continuation,
-        slot_offset_bytes(results.start)? as u64,
-    )?;
     Ok(lower.take_ops())
 }
 

@@ -42,8 +42,24 @@ pub(crate) struct CompilerCore<'a> {
     pub current_op_index: Option<usize>,
     pub current_edge_target: Option<MachineBlockId>,
     pub stack_overflow_label: usize,
-    pub return_ok_label: usize,
-    pub return_error_label: usize,
+    /// Trap propagation label inside a function body. Reached from trap
+    /// stubs (`lower_trap_dispatch`), `CallExternal` post-helper status
+    /// checks, and post-BL status checks at every local-call site. Lowered
+    /// as the body-local error tail (pop link save, pop call record,
+    /// restore fp_reg, native return) — does NOT touch `C_RET0` so the
+    /// caller's status check sees the propagated error code.
+    ///
+    /// Replaces the old function-wide `return_error_label` whose body was
+    /// `lower_epilogue()` + `ret`. That old label assumed the C-ABI
+    /// prologue had run, which is no longer true for locally-entered
+    /// callees. See `docs/ABI_PLAN.md` §9.
+    pub body_local_error_label: usize,
+    /// Label bound to the function's internal entry point — i.e. the first
+    /// instruction of the body prelude that local SF→SF calls patch
+    /// against. Distinct from "the byte right after `lower_prologue()`"
+    /// because the public entry contains a caller stub between the
+    /// prologue and the body.
+    pub internal_entry_label: usize,
     pub shared_trap_labels: [Option<usize>; MACHINE_TRAP_KIND_COUNT],
 }
 
@@ -74,9 +90,9 @@ impl<'a> CompilerCore<'a> {
         }
         let stack_overflow_label = labels.len();
         labels.push(None);
-        let return_ok_label = labels.len();
+        let body_local_error_label = labels.len();
         labels.push(None);
-        let return_error_label = labels.len();
+        let internal_entry_label = labels.len();
         labels.push(None);
         let mut shared_trap_labels = [None; MACHINE_TRAP_KIND_COUNT];
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
@@ -100,8 +116,8 @@ impl<'a> CompilerCore<'a> {
             current_op_index: None,
             current_edge_target: None,
             stack_overflow_label,
-            return_ok_label,
-            return_error_label,
+            body_local_error_label,
+            internal_entry_label,
             shared_trap_labels,
         }
     }
@@ -464,8 +480,7 @@ impl<'a> CompilerCore<'a> {
     pub(crate) fn finish_artifact(
         self,
         internal_entry_offset: usize,
-        root_return_offset: usize,
-        #[cfg(has_guard_pages)] return_error_offset: usize,
+        #[cfg(has_guard_pages)] body_local_error_offset: usize,
         debug_regions: Vec<DebugRegion>,
     ) -> Result<FunctionArtifact, WasmError> {
         let mut local_ptr_patches = self.resolved_ptr_patches;
@@ -487,9 +502,8 @@ impl<'a> CompilerCore<'a> {
             text: self.text,
             local_ptr_patches,
             direct_call_patches: self.direct_call_patches,
-            root_return_offset,
             #[cfg(has_guard_pages)]
-            return_error_offset,
+            body_local_error_offset,
             internal_entry_offset,
             debug_regions,
         })

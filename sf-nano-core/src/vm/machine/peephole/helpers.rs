@@ -359,20 +359,20 @@ pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
         }
         MachineTerminator::CallDirect {
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
-        } => *callee_frame_base == reg || *call_link_base == reg,
+        } => *callee_frame_base == reg || *caller_result_base == reg,
         MachineTerminator::CallIndirect {
             callee_target,
             callee_entry,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             ..
         } => {
             *callee_target == reg
                 || *callee_entry == reg
                 || *callee_frame_base == reg
-                || *call_link_base == reg
+                || *caller_result_base == reg
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
     }

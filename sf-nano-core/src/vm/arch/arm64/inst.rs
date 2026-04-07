@@ -176,6 +176,18 @@ impl<'a> super::backend::Arm64Backend<'a> {
         });
     }
 
+    /// `bl <label>` — branch with link, populates LR. Used by the public-
+    /// entry caller stub and by `CallDirect` lowering. Resolved at
+    /// `patch_fixups()` time.
+    pub(super) fn lower_bl(&mut self, label: usize) {
+        let inst_offset = self.core.text.emit_u32(enc::bl(0));
+        self.fixups.push(BranchFixup {
+            inst_offset,
+            label,
+            kind: super::backend::BranchFixupKind::Bl,
+        });
+    }
+
     pub(super) fn lower_b_cond(&mut self, cond: enc::Cond, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::b_cond(cond, 0));
         self.fixups.push(BranchFixup {

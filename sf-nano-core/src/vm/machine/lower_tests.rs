@@ -147,21 +147,25 @@ fn lowers_simple_slot_and_add_block() {
 
     let MachineModule { functions, .. } = lowered.module;
     let MachineFunction { program, .. } = &functions[0];
-    assert_eq!(lowered.abi.call_link.slot_count, 3);
     assert_eq!(lowered.abi.functions.len(), 1);
     assert_eq!(lowered.abi.functions[0].frame_prefix_slots, 1);
     assert_eq!(
         lowered.abi.functions[0].total_frame_slots,
         frame.total_slots()
     );
+    // Under the new local-call ABI the dead call-link half of the frame
+    // plan is gone; what `FrameLayoutPlan::call_scratch` carries today is
+    // the live helper-scratch half, exposed unchanged on the per-function
+    // ABI as `helper_scratch`.
     assert_eq!(
-        lowered.abi.functions[0].call_scratch,
-        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
-            base_slot: frame.call_scratch.unwrap().start.0,
-            slots: frame.call_scratch.unwrap().count,
+        lowered.abi.functions[0].helper_scratch,
+        frame.call_scratch.map(|span| {
+            crate::vm::machine::machine_ir::MachineFrameRegion {
+                base_slot: span.start.0,
+                slots: span.count,
+            }
         })
     );
-    assert_eq!(lowered.abi.functions[0].helper_scratch, None);
     assert_eq!(lowered.abi.functions[0].return_results, None);
     assert_eq!(program.entry, MachineBlockId(0));
     assert_eq!(program.blocks.len(), 1);
@@ -357,12 +361,14 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     .expect("lowering should succeed");
 
     let runtime = &lowered.abi;
-    assert_eq!(runtime.call_link.caller_result_base_offset, 16);
+    // The dead call-link half of the frame plan is gone; the helper_scratch
+    // exposed by the per-function ABI is now the entire span the frame
+    // planner reserved.
     assert_eq!(
         runtime.functions[0].helper_scratch,
         Some(crate::vm::machine::machine_ir::MachineFrameRegion {
-            base_slot: frame.call_scratch.unwrap().start.0 + runtime.call_link.slot_count,
-            slots: frame.call_scratch.unwrap().count - runtime.call_link.slot_count,
+            base_slot: frame.call_scratch.unwrap().start.0,
+            slots: frame.call_scratch.unwrap().count,
         })
     );
     assert_eq!(
@@ -1199,7 +1205,11 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     .expect("external helper lowering should succeed");
 
     assert_eq!(lowered.module.consts.len(), 1);
-    assert!(lowered.abi.functions[0].helper_scratch.is_none());
+    // Under the new local-call ABI the dead call-link half of the frame
+    // plan is gone, so the helper_scratch field directly mirrors whatever
+    // the frame planner reserved. For 1A this still includes the
+    // historical 3-slot reservation from `HOST_CALL_SCRATCH_SLOTS`; a
+    // future cleanup can drop it to 0 when no helper actually needs it.
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 3);
     assert!(matches!(ops[0].kind, MachineInstKind::CallExternal(_)));
@@ -1575,16 +1585,16 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller_program = &lowered.module.functions[0].program;
     assert_eq!(caller_program.blocks.len(), 2);
     let call_block = &caller_program.blocks[0];
-    let (callee_frame_base, call_link_base) = match call_block.terminator {
+    let (callee_frame_base, caller_result_base) = match call_block.terminator {
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             continuation,
         } => {
             assert_eq!(callee, crate::vm::machine::machine_ir::MachineFuncId(1));
             assert_eq!(continuation, MachineBlockId(1));
-            (callee_frame_base, call_link_base)
+            (callee_frame_base, caller_result_base)
         }
         ref other => panic!("expected direct call terminator, got {other:?}"),
     };
@@ -1597,11 +1607,17 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    // The callee now zero-inits its own non-param locals at function entry,
-    // so the caller no longer emits a Store Imm64(0) before the call link
-    // metadata. The expected sequence is now: addr setup, stack precheck,
-    // call_link addr setup, then 3 call-link stores.
-    assert_eq!(call_block.ops.len(), 8);
+    // After the new local-call ABI rewrite, the call site emits:
+    //   0. add callee_frame_base, fp, args_offset
+    //   1. load stack_end
+    //   2. sub stack_limit, callee_total_frame_bytes
+    //   3. trap_if Gt callee_frame_base, stack_limit
+    //   4. add caller_result_base, fp, results_offset
+    // — five ops total, with no call-link memory writes. The continuation
+    // block id and the caller frame pointer travel via the backend-private
+    // call record set up by the per-arch lowering of `CallDirect`, not via
+    // any MIR-visible store.
+    assert_eq!(call_block.ops.len(), 5);
     assert!(matches!(
         call_block.ops[1].kind,
         MachineInstKind::Load { .. }
@@ -1627,36 +1643,16 @@ fn lowers_direct_local_call_with_continuation_block() {
             kind: crate::vm::machine::machine_ir::MachineTrapKind::StackOverflow,
         } if lhs == callee_frame_base
     ));
+    // The fifth op computes `caller_result_base = caller_fp + results_offset`
+    // and is consumed by the `CallDirect` terminator below.
     assert!(matches!(
         call_block.ops[4].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             dst,
-            lhs: MachineValue::Reg(lhs),
-            rhs: MachineValue::Imm64(offset),
+            lhs: MachineValue::Reg(MachineReg(1)),
             ..
-        } if dst == call_link_base && lhs == callee_frame_base && offset == 24
-    ));
-    assert!(matches!(
-        call_block.ops[5].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Imm64(1),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[6].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Reg(MachineReg(1)),
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[7].kind,
-        MachineInstKind::Store {
-            src: MachineValue::Imm64(40),
-            ..
-        }
+        } if dst == caller_result_base
     ));
 
     let continuation = &caller_program.blocks[1];
@@ -3558,18 +3554,14 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             _ => None,
         })
         .collect();
-    // The callee now zero-inits its own non-param locals at function entry, so
-    // the caller no longer emits Store Imm64(0) instructions for the unused
-    // slots before the call link metadata. The remaining stores are the 3
-    // call link entries (continuation id, caller frame, result base), each a
-    // single U32 on 32-bit targets.
-    assert_eq!(
-        store_widths,
-        alloc::vec![
-            MachineMemWidth::U32,
-            MachineMemWidth::U32,
-            MachineMemWidth::U32,
-        ]
+    // After the new local-call ABI rewrite, the call site emits no MIR-visible
+    // stores at all: there is no software call-link record to write, so no
+    // stores appear in the caller's pre-terminator op stream. The continuation
+    // and caller-state propagation now travels via the backend-private call
+    // record set up by the per-arch terminator lowering.
+    assert!(
+        store_widths.is_empty(),
+        "expected no MIR-visible stores in the new call ABI, got {store_widths:?}"
     );
 }
 

@@ -244,3 +244,182 @@ consume the same finalized legal 32-bit MachineIR contract.
 That means shared 32-bit lowering, legalization, and finalization bugs should
 be exposed by `emu32`. Backend-specific instruction-selection or encoding bugs
 may still be target-only.
+
+## Local Call ABI
+
+Direct and indirect local calls between MachineIR functions use a
+backend-private host-stack call record. The MIR-level contract is just
+the `CallDirect` / `CallIndirect` terminator with `callee_frame_base`,
+`caller_result_base`, and `continuation`; the call record layout itself
+is target-private and never appears in the abstract MIR.
+
+### Public entry vs internal entry
+
+Each function gets two entry points in the emitted code:
+
+- The **public entry** is the function start. It runs the C-ABI prologue
+  (save callee-saved registers, move C arg regs into the fixed MachineIR
+  roles), then the **public-entry caller stub** that builds a "root"
+  call record on the host stack and `bl/call`s the internal entry. When
+  the body returns, the stub falls through to the C-ABI epilogue and
+  the platform `ret`.
+- The **internal entry** is the body's true start, bound at
+  `internal_entry_label` (allocated in `CompilerCore::new`). All local
+  call sites and direct-call relocations resolve to this label, never
+  to "the byte after the prologue".
+
+This split keeps direct local calls free of the C-ABI prologue cost
+while leaving the public entry usable from C code (root invocation,
+external callbacks).
+
+### Body prelude and terminal sequences
+
+If the body emits any native call (direct, indirect, external, or trap
+helper), the function starts with a backend-specific **body prelude**
+between `internal_entry_label` and the first body block:
+
+| Backend  | Body prelude                                |
+|----------|---------------------------------------------|
+| arm64    | `stp x29, x30, [sp, #-16]!` — link save     |
+| armv7a   | link save                                   |
+| x86_64   | `sub rsp, 8` — alignment shim               |
+| emulator | none                                        |
+
+`MachineFunctionAbi::body_emits_native_call` records whether the body
+needs the prelude, computed during machine lowering by walking the MIR
+and asking `mir_op_emits_host_call(&kind)` for each op (true for
+`CallDirect`, `CallIndirect`, `CallExternal`, `Trap`, and `TrapIf`).
+A pure leaf body skips the prelude — and the matching epilogue cost in
+both terminal sequences below — entirely.
+
+The body has exactly two terminal sequences:
+
+1. **Success Return** — emitted inline at every `Return` terminator.
+   Pops the body prelude link save, pops the caller's call record,
+   copies `MachineFunctionAbi::return_results` from the callee frame to
+   `*caller_result_base`, restores `MACHINE_FP_REG`, sets `C_RET0 = 0`,
+   and executes the platform `ret`.
+2. **`body_local_error_label`** — bound by the pipeline tail, reached
+   from every trap stub and from every post-call status check. A
+   near-copy of the success path: same prelude pop and same call-record
+   pop, but **no** result copy and **no** touch of `C_RET0` (which
+   already holds the trap kind set by the trap stub or inherited from a
+   trapped descendant's BL). Trap stubs end with `bl raise_trap; b
+   body_local_error_label`. There is no shared `return_error_label`.
+
+### Call sequence (arm64, reference implementation)
+
+For `CallDirect` (with `caller_result_base` and `callee_frame_base`
+already materialised in registers by earlier MIR ops):
+
+```
+stp caller_result_base, fp_reg, [sp, #-16]!   ; push call record
+mov fp_reg, callee_fp                         ; switch frame pointer
+ldr s0, =callee_literal                       ; deferred literal pool
+blr s0                                        ; native call
+cbnz w0, body_local_error_label               ; status check on C_RET0
+                                              ; (continuation falls through
+                                              ;  if it is the next emitted
+                                              ;  block — see "Block layout"
+                                              ;  below)
+```
+
+`CallIndirect` is identical except it uses the runtime register
+`callee_entry` directly instead of a deferred literal.
+
+The 16-byte record pushed before each call contains:
+
+| offset | content              |
+|-------:|----------------------|
+|    0   | caller_result_base   |
+|    8   | caller fp            |
+
+The body prelude link save (a separate 16-byte `stp x29, x30`) sits
+above this record. Both the success Return and `body_local_error_label`
+pop them in the matching order.
+
+### Trap propagation via C_RET0
+
+Local-call trap status flows through `C_RET0`:
+
+- **Success**: the body's Return path sets `C_RET0 = 0` before its
+  native return.
+- **Error**: trap stubs execute `bl raise_trap` (which records the
+  WasmError on the runtime context and sets `C_RET0` to a non-zero
+  trap kind), then `b body_local_error_label`. `body_local_error_label`
+  preserves `C_RET0` across its prelude/record pop and through the
+  native return, so the caller's post-BL `cbnz w0` sees the propagated
+  error code and re-branches to its own `body_local_error_label`. The
+  whole chain unwinds to the public-entry caller stub, whose epilogue
+  hands the C_RET0 value back to the C caller as the function return
+  value.
+
+`CallExternal`'s post-helper `cbnz w0` targets the same
+`body_local_error_label`, so external-helper failures use the same
+unwind path.
+
+### Block layout — continuation fall-through
+
+The shared block layout pass in
+`CompilerCore::extend_block_trace`/`block_layout` treats every
+`CallDirect` / `CallIndirect` continuation as a preferred fall-through
+target. When the layout pass succeeds in placing the continuation block
+immediately after the call site, the backend's `lower_call_direct` /
+`lower_call_indirect` elides the trailing `b continuation_label` (or
+`jmp` / `b` on other architectures).
+
+For backends that emit per-call inline literals (arm64 uses an
+`ldr_lit_64` to load the patchable callee address), the literal must
+not sit in the fall-through path between the call and the continuation
+block, or it would be executed as garbage instructions. The arm64
+backend handles this by **deferring** each call's literal to a
+per-function literal pool flushed after edge stubs and before the body
+tail labels — see `Arm64Backend::lower_function_literal_pool` and the
+`lower_function_literal_pool` hook on `ArchBackend`. The default impl is
+a no-op; backends without inline-literal call sequences (x86_64,
+emulator) do not need it.
+
+### Public-entry caller stub
+
+The root call record built by `lower_root_caller_stub` uses
+`caller_fp = caller_result_base = MACHINE_FP_REG` (the root frame
+pointer). That makes the body's unified Return copy results into the
+same bytes that `eval.rs::collect_native_results_from_stack` reads
+afterwards, so root invocation needs no special-case wiring.
+
+### Frame metadata
+
+`MachineFunctionAbi` carries the static call-side data each function
+publishes:
+
+- `frame_prefix_slots` / `total_frame_slots` — the function's frame
+  geometry produced by `FrameLayoutPlan`.
+- `helper_scratch: Option<MachineFrameRegion>` — frame region for
+  runtime helpers that take a frame-relative scratch base. This is the
+  only frame slot region the call ABI now reserves; the older
+  `call_scratch` (which used to hold a MIR-visible call link) is gone.
+- `return_results: Option<MachineFrameRegion>` — region the callee
+  writes its return values into; the unified Return copies from here
+  to `*caller_result_base`.
+- `init_locals` — non-param local slots that may be read before being
+  written. The callee zero-initialises these at function entry; locals
+  not listed here are written before any read.
+- `body_emits_native_call` — see above.
+
+### Host-stack-depth caveat
+
+The local-call ABI consumes host stack proportional to native call
+depth: each nested local call pushes a 16-byte backend-private call
+record, and on arm64/armv7a a non-leaf body also pushes 16 bytes for
+its link save. For a wasm program that recurses W levels deep, host
+stack consumption is roughly `16 * W + 16 * (non_leaves on the path)`
+bytes.
+
+`vm/runtime/context.rs` does **not** maintain a `native_call_depth`
+guard today. The current assumption is that the wasm-side stack
+overflow check (still emitted on indirect/SCC-internal calls and at
+function entry) bounds nesting to whatever fits in the wasm stack. If
+a future embedding ships with a small thread stack or runs untrusted
+deeply recursive modules, the right fix is a separate host-stack-depth
+counter on `NativeContext`, decremented at the body-entry prelude and
+checked against a configurable cap.

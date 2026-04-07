@@ -34,15 +34,46 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     let mut b = A::new(compiled, function);
     let mut debug_regions = Vec::new();
 
-    // Prologue
-    let prologue_start = b.core().text.len();
+    // Public entry (C ABI lands here):
+    //
+    //   [prologue]              — save C callee-saved, set up fixed regs
+    //   [root caller stub]      — push root call record, bl internal_entry
+    //   [epilogue]              — restore C callee-saved, ret
+    //
+    // After the bl, control eventually returns through the body's unified
+    // return mechanism with C_RET0 = 0 (success) or non-zero (trap kind).
+    // The epilogue preserves C_RET0 and rets to the C caller.
+    let public_entry_start = b.core().text.len();
     b.lower_prologue();
-    let internal_entry_offset = b.core().text.len();
+    b.lower_root_caller_stub();
+    b.lower_epilogue();
     debug_regions.push(DebugRegion {
-        offset: prologue_start,
-        len: internal_entry_offset - prologue_start,
-        label: String::from("prologue"),
+        offset: public_entry_start,
+        len: b.core().text.len() - public_entry_start,
+        label: String::from("public_entry"),
     });
+
+    // Internal entry (local SF→SF calls and the public stub's bl land here):
+    //
+    //   [internal_entry_label]
+    //   [body prelude]          — per-arch non-leaf setup (link save /
+    //                             alignment shim). Always-on in 1A.
+    //   [body blocks]
+    //
+    // Direct call patches resolve against `internal_entry_label`, NOT
+    // against "the byte right after lower_prologue".
+    let internal_entry_label = b.core().internal_entry_label;
+    b.core_mut().bind_label(internal_entry_label);
+    let internal_entry_offset = b.core().text.len();
+    let body_prelude_start = internal_entry_offset;
+    b.lower_body_prelude();
+    if b.core().text.len() > body_prelude_start {
+        debug_regions.push(DebugRegion {
+            offset: body_prelude_start,
+            len: b.core().text.len() - body_prelude_start,
+            label: String::from("body_prelude"),
+        });
+    }
 
     // Blocks
     let block_layout = b.core().block_layout();
@@ -89,21 +120,37 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         });
     }
 
-    // Tail: return_ok, stack_overflow, return_error, deferred traps
+    // Per-function literal pool. Backends that accumulate deferred literals
+    // (e.g. arm64's per-call patchable callee addresses) flush them here so
+    // they sit at end-of-body but inside the pc-relative load range of any
+    // call site. Default impl is a no-op.
+    let pool_start = b.core().text.len();
+    b.lower_function_literal_pool()?;
+    let pool_end = b.core().text.len();
+    if pool_end > pool_start {
+        debug_regions.push(DebugRegion {
+            offset: pool_start,
+            len: pool_end - pool_start,
+            label: String::from("literal_pool"),
+        });
+    }
+
+    // Tail: body_local_error_label, stack_overflow_label, deferred traps.
+    //
+    // The new tail does NOT contain a `return_ok_label` or
+    // `return_error_label` — the body's success-path Return is lowered
+    // inline at every Return terminator (sets `C_RET0 = 0`, native return),
+    // and the body's error-path tail is `body_local_error_label`, which
+    // every trap stub and post-BL status check branches to.
     let tail_start = b.core().text.len();
 
-    let return_ok_label = b.core().return_ok_label;
-    b.core_mut().bind_label(return_ok_label);
-    b.lower_return_ok_status();
-    b.lower_epilogue();
+    let body_local_error_label = b.core().body_local_error_label;
+    b.core_mut().bind_label(body_local_error_label);
+    b.lower_body_local_error_tail();
 
     let stack_overflow_label = b.core().stack_overflow_label;
     b.core_mut().bind_label(stack_overflow_label);
     b.lower_trap(MachineTrapKind::StackOverflow);
-
-    let return_error_label = b.core().return_error_label;
-    b.core_mut().bind_label(return_error_label);
-    b.lower_epilogue();
 
     let deferred = core::mem::take(&mut b.core_mut().deferred_traps);
     for (label, kind) in deferred {
@@ -123,25 +170,18 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // Patch fixups
     b.patch_fixups()?;
 
-    let root_return_offset = b
-        .core()
-        .labels
-        .get(b.core().return_ok_label)
-        .and_then(|offset| *offset)
-        .ok_or_else(|| WasmError::internal("root return label is unresolved".into()))?;
     #[cfg(has_guard_pages)]
-    let return_error_offset = b
+    let body_local_error_offset = b
         .core()
         .labels
-        .get(b.core().return_error_label)
+        .get(b.core().body_local_error_label)
         .and_then(|offset| *offset)
-        .ok_or_else(|| WasmError::internal("return error label is unresolved".into()))?;
+        .ok_or_else(|| WasmError::internal("body_local_error label is unresolved".into()))?;
 
     b.into_core().finish_artifact(
         internal_entry_offset,
-        root_return_offset,
         #[cfg(has_guard_pages)]
-        return_error_offset,
+        body_local_error_offset,
         debug_regions,
     )
 }
@@ -247,9 +287,11 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
 pub(crate) struct EmittedFunction {
     pub text_offset: usize,
     pub text_len: usize,
-    pub root_return_offset: usize,
+    /// Offset of `body_local_error_label` within the function's text. Used
+    /// by the guard-page signal handler to redirect a faulting PC to the
+    /// trap propagation tail.
     #[cfg(has_guard_pages)]
-    pub return_error_offset: usize,
+    pub body_local_error_offset: usize,
     pub debug_regions: Vec<DebugRegion>,
 }
 
@@ -316,17 +358,10 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
                 as u64,
             total_frame_bytes: u64::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u64::from(runtime.frame_prefix_slots),
-            call_scratch_base_slot: u64::from(
-                runtime
-                    .call_scratch
-                    .map(|region| region.base_slot)
-                    .unwrap_or(0),
-            ),
         };
         function_info_bytes.extend_from_slice(&info.entry.to_le_bytes());
         function_info_bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
         function_info_bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
-        function_info_bytes.extend_from_slice(&info.call_scratch_base_slot.to_le_bytes());
     }
 
     // Emit into executable code buffer.
@@ -353,9 +388,8 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
         emitted.push(EmittedFunction {
             text_offset,
             text_len,
-            root_return_offset: artifact.root_return_offset,
             #[cfg(has_guard_pages)]
-            return_error_offset: artifact.return_error_offset,
+            body_local_error_offset: artifact.body_local_error_offset,
             debug_regions: artifact.debug_regions,
         });
     }
@@ -385,7 +419,11 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
         }
     }
 
-    // Register JIT ranges for signal-based trap handling.
+    // Register JIT ranges for signal-based trap handling. The signal
+    // handler redirects a faulting PC to the function's
+    // `body_local_error_label`, which is the trap propagation tail under
+    // the new ABI (replaces the old `return_error_label` that ran the
+    // C-ABI epilogue).
     #[cfg(has_guard_pages)]
     {
         let ranges: Vec<_> = emitted
@@ -394,8 +432,8 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
             .map(|(func_idx, ef)| {
                 let func_start = unsafe { base_ptr.add(base_offsets[func_idx]) } as usize;
                 let func_end = func_start + ef.text_len;
-                let return_error = func_start + ef.return_error_offset;
-                (func_start, func_end, return_error)
+                let body_local_error = func_start + ef.body_local_error_offset;
+                (func_start, func_end, body_local_error)
             })
             .collect();
         crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);

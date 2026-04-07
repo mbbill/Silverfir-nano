@@ -60,6 +60,16 @@ struct SavedCaller {
     func_id: MachineFuncId,
     regs: Vec<u64>,
     addr_kinds: Vec<RegAddrKind>,
+    /// CFG block to resume on return. The new local-call ABI carries the
+    /// continuation as an explicit MIR field rather than as a memory slot in
+    /// the callee's frame, so the emulator stashes it on its logical call
+    /// stack instead of reading it back from frame memory.
+    continuation: MachineBlockId,
+    /// Caller frame pointer to restore on return.
+    caller_fp: *mut u64,
+    /// Absolute pointer to the caller's result-receive region. The callee's
+    /// `Return` will copy its `return_results` slots here.
+    caller_result_base: *mut u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -235,16 +245,26 @@ impl<'a> Emulator<'a> {
                 MachineTerminator::CallDirect {
                     callee,
                     callee_frame_base,
-                    call_link_base: _,
-                    ..
-                } => self.enter_direct_call(*callee, *callee_frame_base),
+                    caller_result_base,
+                    continuation,
+                } => self.enter_direct_call(
+                    *callee,
+                    *callee_frame_base,
+                    *caller_result_base,
+                    *continuation,
+                ),
                 MachineTerminator::CallIndirect {
                     callee_target,
                     callee_entry: _,
                     callee_frame_base,
-                    call_link_base: _,
+                    caller_result_base,
                     continuation,
-                } => self.enter_indirect_call(*callee_target, *callee_frame_base, *continuation),
+                } => self.enter_indirect_call(
+                    *callee_target,
+                    *callee_frame_base,
+                    *caller_result_base,
+                    *continuation,
+                ),
                 MachineTerminator::Return => {
                     if self.handle_return()? {
                         return Ok(());
@@ -874,43 +894,41 @@ impl<'a> Emulator<'a> {
         &mut self,
         callee: MachineFuncId,
         callee_frame_base: MachineReg,
+        caller_result_base: MachineReg,
+        continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
         let callee_fp = self
             .address_space
             .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        self.enter_callee(callee, callee_fp, false)
+        let result_base_ptr = self
+            .address_space
+            .host_stack_ptr(self.read_reg(caller_result_base)?)?;
+        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, false)
     }
 
     fn enter_indirect_call(
         &mut self,
         callee_target: MachineReg,
         callee_frame_base: MachineReg,
+        caller_result_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
         let callee = MachineFuncId(self.read_reg(callee_target)? as u32);
-        let callee_runtime = self.runtime_for(callee)?;
         let callee_fp = self
             .address_space
             .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("indirect local call requires callee call scratch".into())
-        })?;
-        let continuation_slot =
-            call_scratch.base_slot + (self.compiled.abi().call_link.continuation_offset / 8) as u16;
-        let stored = unsafe { *callee_fp.add(continuation_slot as usize) } as u32;
-        if stored != continuation.0 {
-            return Err(WasmError::internal(
-                "machine indirect local call did not seed the continuation token before transfer"
-                    .into(),
-            ));
-        }
-        self.enter_callee(callee, callee_fp, false)
+        let result_base_ptr = self
+            .address_space
+            .host_stack_ptr(self.read_reg(caller_result_base)?)?;
+        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, false)
     }
 
     fn enter_callee(
         &mut self,
         callee: MachineFuncId,
         callee_fp: *mut u64,
+        caller_result_base: *mut u64,
+        continuation: MachineBlockId,
         check_stack_capacity: bool,
     ) -> Result<(), WasmError> {
         let callee_function = self
@@ -925,10 +943,18 @@ impl<'a> Emulator<'a> {
                 callee_runtime.total_frame_slots,
             )?;
         }
+        // Save the caller state on the emulator's logical call stack. The
+        // continuation block, caller frame pointer, and caller_result_base
+        // travel via this stack rather than via memory slots in the callee's
+        // frame, mirroring how native backends keep them in a backend-private
+        // host-stack call record.
         self.call_stack.push(SavedCaller {
             func_id: self.func_id,
             regs: core::mem::take(&mut self.regs),
             addr_kinds: core::mem::take(&mut self.addr_kinds),
+            continuation,
+            caller_fp: self.fp,
+            caller_result_base,
         });
         self.func_id = callee;
         self.fp = callee_fp;
@@ -951,32 +977,11 @@ impl<'a> Emulator<'a> {
         let current_runtime = self.runtime_for(self.func_id)?.clone();
         let results = current_runtime.return_results;
         if let Some(saved) = self.call_stack.pop() {
-            let call_scratch = current_runtime.call_scratch.ok_or_else(|| {
-                WasmError::internal("machine local return requires call scratch".into())
-            })?;
-            let continuation = MachineBlockId(self.read_call_link_word(
-                self.fp,
-                call_scratch,
-                self.compiled.abi().call_link.continuation_offset,
-            )? as u32);
-            let caller_fp = self.address_space.host_stack_ptr(self.read_call_link_word(
-                self.fp,
-                call_scratch,
-                self.compiled.abi().call_link.caller_frame_offset,
-            )?)?;
-            let caller_result_base_bytes = self.read_call_link_word(
-                self.fp,
-                call_scratch,
-                self.compiled.abi().call_link.caller_result_base_offset,
-            )? as usize;
-            self.copy_results(
-                results,
-                self.fp,
-                caller_fp
-                    .cast::<u8>()
-                    .wrapping_add(caller_result_base_bytes)
-                    .cast::<u64>(),
-            )?;
+            // The unified Return mechanism: copy results into the caller's
+            // result-receive region (an absolute pointer the caller pushed
+            // onto the logical call stack), restore caller state, and resume
+            // at the continuation block.
+            self.copy_results(results, self.fp, saved.caller_result_base)?;
             #[cfg(feature = "function-trace")]
             {
                 let arity = results.map(|region| region.slots).unwrap_or(0) as u64;
@@ -988,14 +993,16 @@ impl<'a> Emulator<'a> {
                 }
             }
             self.func_id = saved.func_id;
-            self.fp = caller_fp;
+            self.fp = saved.caller_fp;
             self.regs = saved.regs;
             self.addr_kinds = saved.addr_kinds;
-            self.block_id = continuation;
+            self.block_id = saved.continuation;
             self.init_reserved_regs()?;
             return Ok(false);
         }
 
+        // Root return: copy results into the root frame, where the host
+        // entry path reads them from (`collect_native_results_from_stack`).
         self.copy_results(results, self.fp, self.root_frame)?;
         Ok(true)
     }
@@ -1364,25 +1371,6 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
-    fn read_call_link_word(
-        &self,
-        callee_fp: *mut u64,
-        call_scratch: MachineFrameRegion,
-        offset: i32,
-    ) -> Result<u64, WasmError> {
-        let addr = frame_region_addr(callee_fp, call_scratch, offset)?;
-        Ok(unsafe {
-            match self.compiled.backend().gp_unit_bytes {
-                4 => u64::from(core::ptr::read_unaligned(addr.cast::<u32>())),
-                8 => core::ptr::read_unaligned(addr.cast::<u64>()),
-                _ => {
-                    return Err(WasmError::internal(
-                        "unsupported GP unit size in emulator call-link read".into(),
-                    ))
-                }
-            }
-        })
-    }
 }
 
 fn init_entry_regs(
@@ -1466,19 +1454,6 @@ pub(crate) fn ensure_stack_capacity(
         return Err(WasmError::exhaustion("stack overflow".into()));
     }
     Ok(())
-}
-
-fn frame_region_addr(
-    fp: *mut u64,
-    region: MachineFrameRegion,
-    offset: i32,
-) -> Result<*mut u8, WasmError> {
-    let base = (region.base_slot as usize)
-        .checked_mul(core::mem::size_of::<u64>())
-        .ok_or_else(|| WasmError::internal("frame region offset overflow".into()))?;
-    Ok((fp as *mut u8)
-        .wrapping_add(base)
-        .wrapping_offset(offset as isize))
 }
 
 fn trap_from_kind(kind: MachineTrapKind) -> WasmError {

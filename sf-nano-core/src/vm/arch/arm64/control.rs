@@ -12,7 +12,7 @@ use super::fusion::map_int_cond;
 use super::inst::{materialize_u64_into, prepare_gp};
 use super::{abi, enc};
 use crate::vm::arch::common::helpers::{is_fallthrough_edge, trap_code};
-use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
+use crate::vm::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
 
 impl<'a> super::backend::Arm64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────────
@@ -53,23 +53,28 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineTerminator::CallDirect {
                 callee,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
-            } => {
-                self.lower_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation)
-            }
+            } => self.lower_call_direct(
+                *callee,
+                *callee_frame_base,
+                *caller_result_base,
+                *continuation,
+                fallthrough,
+            ),
             MachineTerminator::CallIndirect {
                 callee_target,
                 callee_entry,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
             } => self.lower_call_indirect(
                 *callee_target,
                 *callee_entry,
                 *callee_frame_base,
-                *call_link_base,
+                *caller_result_base,
                 *continuation,
+                fallthrough,
             ),
         }
     }
@@ -302,68 +307,66 @@ impl<'a> super::backend::Arm64Backend<'a> {
         &mut self,
         callee: MachineFuncId,
         callee_frame_base: MachineReg,
-        call_link_base: MachineReg,
+        caller_result_base: MachineReg,
         continuation: MachineBlockId,
+        fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let call_link_base = self.map_gp_reg(call_link_base)?;
-        let continuation_offset = self.core.compiled.abi().call_link.continuation_offset;
+        let caller_result_base = self.map_gp_reg(caller_result_base)?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(continuation)?;
+        let continuation_is_fallthrough = fallthrough == Some(continuation);
 
+        // Push the backend-private call record onto the host stack:
+        //   stp caller_result_base, fp_reg, [sp, #-16]!
+        // — order: low slot = caller_result_base, high slot = caller fp.
+        // The body's unified Return / body_local_error_label pop in the
+        // matching order: ldp scratch_rb, scratch_fp, [sp], #16.
+        self.core.text.emit_u32(enc::stp_64_pre_index(
+            caller_result_base,
+            fp_reg,
+            abi::stack_reg(),
+            -16,
+        ));
+
+        // Switch fp_reg to the callee's frame base.
+        self.core
+            .text
+            .emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+
+        // Load the callee's internal entry address from a patchable literal
+        // and BLR to it. The literal itself is deferred to the per-function
+        // literal pool (flushed by `lower_function_literal_pool`); the LDR
+        // here is emitted with a placeholder offset and patched at flush
+        // time. Deferring the literal lets us elide the trailing
+        // `b continuation` when the continuation block is the next emitted
+        // block — without that deferral, falling through would land in
+        // the inline literal bytes.
         let s0_idx = self.gp_scratch.alloc();
-        let s1_idx = self.gp_scratch.alloc();
         let s0 = self.gp_scratch.reg(s0_idx);
-        let s1 = self.gp_scratch.reg(s1_idx);
+        let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
+        self.core.text.emit_u32(enc::blr(s0));
+        self.pending_call_literals
+            .push(super::backend::PendingCallLiteral {
+                ldr_offset: callee_load,
+                scratch_reg: s0,
+                callee,
+            });
 
-        // Load the native continuation address from a patchable literal and write
-        // it into the callee's call-link record. MachineIR already chose the
-        // record location; the backend only fills in the native return address.
-        let continuation_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-        if continuation_offset < 4096 {
-            self.core
-                .text
-                .emit_u32(enc::str_64(s0, call_link_base, continuation_offset as u32));
-        } else {
-            self.materialize_u64(s1, continuation_offset as u64);
-            self.core
-                .text
-                .emit_u32(enc::add_reg_64(s1, call_link_base, s1));
-            self.core.text.emit_u32(enc::str_reg_64_base(s0, s1));
+        // --- callee returns here. C_RET0 holds 0 (success) or trap kind
+        // (error). Status check propagates to body_local_error_label.
+        self.lower_cbnz(abi::C_RET0, body_local_error_label);
+
+        // Continuation: branch only if the next emitted block is not the
+        // continuation block. The block layout pass already prefers placing
+        // the continuation immediately after the call (see
+        // `CompilerCore::extend_block_trace`), so adjacency is the common
+        // case and the explicit `b` is dead code we can elide.
+        if !continuation_is_fallthrough {
+            self.lower_b(continuation_label);
         }
 
-        // Direct local calls still use a patchable literal for the callee entry:
-        // the final native address is not known until the whole module has been
-        // laid out by the common pipeline.
-        let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-        self.core
-            .text
-            .emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), callee_fp));
-        self.core.text.emit_u32(enc::br(s0));
-
-        // Reserve the literal words now, then record how they should be patched
-        // once block labels and final function entry addresses are known.
-        let continuation_literal = self.core.text.emit_u64(0);
-        let callee_literal = self.core.text.emit_u64(0);
-
-        let continuation_delta =
-            ((continuation_literal as isize - continuation_load as isize) / 4) as i32;
-        self.core
-            .text
-            .patch_u32(continuation_load, enc::ldr_lit_64(s0, continuation_delta));
-        let callee_delta = ((callee_literal as isize - callee_load as isize) / 4) as i32;
-        self.core
-            .text
-            .patch_u32(callee_load, enc::ldr_lit_64(s0, callee_delta));
-
-        self.core.local_ptr_patches.push(PendingLocalPtrPatch {
-            literal_offset: continuation_literal,
-            target_label: continuation_label,
-        });
-        self.core.direct_call_patches.push(DirectCallPatch {
-            literal_offset: callee_literal,
-            callee,
-        });
-        self.gp_scratch.free_index(s1_idx);
         self.gp_scratch.free_index(s0_idx);
         Ok(())
     }
@@ -434,64 +437,88 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Return sequence ──────────────────────────────────────────────────────────
 
+    /// Unified Return lowering. Pops the body prelude link save and the
+    /// caller's call record from the host stack, copies the function's
+    /// `return_results` region into `*caller_result_base`, restores
+    /// `MACHINE_FP_REG` to the caller's frame pointer, sets `C_RET0 = 0`
+    /// (the success status), and executes the platform `ret`.
+    ///
+    /// Uses only the 2-wide arm64 GP scratch pool by reading the call
+    /// record fields with `ldr` (instead of popping with `ldp`) so that
+    /// `caller_result_base` and the per-iteration data temp can coexist.
+    /// The call record is freed with a single `add sp, #16` after the
+    /// copy loop.
+    ///
+    /// The matching error path is `body_local_error_label` (see
+    /// `lower_body_local_error_tail` in `arm64/backend.rs`).
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
         let runtime = self.runtime_for(self.core.function.id)?.clone();
-        let call_scratch = runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("arm64 local return requires call scratch".into())
-        })?;
-        let call_link = self.core.compiled.abi().call_link;
-        let continuation_slot = call_scratch.base_slot + (call_link.continuation_offset / 8) as u16;
-        let caller_frame_slot = call_scratch.base_slot + (call_link.caller_frame_offset / 8) as u16;
-        let caller_result_base_slot =
-            call_scratch.base_slot + (call_link.caller_result_base_offset / 8) as u16;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let x29 = abi::host_fp_reg();
+        let x30 = abi::host_lr_reg();
 
-        let s0_idx = self.gp_scratch.alloc();
-        let s1_idx = self.gp_scratch.alloc();
-        let s0 = self.gp_scratch.reg(s0_idx);
-        let s1 = self.gp_scratch.reg(s1_idx);
-
-        self.core.text.emit_u32(enc::ldr_64(
-            s0,
-            map_fixed_reg(MACHINE_FP_REG),
-            continuation_slot as u32,
-        ));
-        self.core.text.emit_u32(enc::ldr_64(
-            s1,
-            map_fixed_reg(MACHINE_FP_REG),
-            caller_frame_slot as u32,
-        ));
-        self.core.text.emit_u32(enc::ldr_64(
-            abi::C_ARG0,
-            map_fixed_reg(MACHINE_FP_REG),
-            caller_result_base_slot as u32,
-        ));
+        // 1. Pop the body prelude link save (matches the prelude's
+        //    `stp x29, x30, [sp, #-16]!`). After this, sp points at the
+        //    caller's call record:
+        //      [sp + 0] = caller_result_base
+        //      [sp + 8] = caller_fp
         self.core
             .text
-            .emit_u32(enc::add_reg_64(abi::C_ARG0, s1, abi::C_ARG0));
+            .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
 
+        // 2. Allocate two scratches.
+        let scratch_a_idx = self.gp_scratch.alloc();
+        let scratch_b_idx = self.gp_scratch.alloc();
+        let scratch_a = self.gp_scratch.reg(scratch_a_idx);
+        let scratch_b = self.gp_scratch.reg(scratch_b_idx);
+
+        // 3. Load caller_result_base into scratch_a. We hold it across the
+        //    copy loop and release scratch_b for use as the per-iteration
+        //    data temp.
+        self.core
+            .text
+            .emit_u32(enc::ldr_64(scratch_a, abi::stack_reg(), 0));
+
+        // 4. Copy each return slot from the callee frame to *scratch_a.
         if let Some(results) = runtime.return_results {
-            // Results live in the callee frame until return. Copy them back into
-            // the caller's result window before restoring the caller frame.
             for index in 0..results.slots as u32 {
                 self.core.text.emit_u32(enc::ldr_64(
-                    abi::C_ARG1,
-                    map_fixed_reg(MACHINE_FP_REG),
+                    scratch_b,
+                    fp_reg,
                     results.base_slot as u32 + index,
                 ));
                 self.core
                     .text
-                    .emit_u32(enc::str_64(abi::C_ARG1, abi::C_ARG0, index));
+                    .emit_u32(enc::str_64(scratch_b, scratch_a, index));
             }
         }
 
-        // Restore caller FP and branch to the continuation pointer saved in the
-        // call-link record.
+        // 5. Load caller_fp into scratch_b.
         self.core
             .text
-            .emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), s1));
-        self.core.text.emit_u32(enc::br(s0));
-        self.gp_scratch.free_index(s1_idx);
-        self.gp_scratch.free_index(s0_idx);
+            .emit_u32(enc::ldr_64(scratch_b, abi::stack_reg(), 1));
+
+        // 6. Pop the call record from the host stack.
+        self.core.text.emit_u32(enc::add_imm_64(
+            abi::stack_reg(),
+            abi::stack_reg(),
+            16,
+        ));
+
+        // 7. Restore MACHINE_FP_REG to the caller's frame pointer.
+        self.core
+            .text
+            .emit_u32(enc::mov_reg_64(fp_reg, scratch_b));
+
+        // 8. Success status: C_RET0 = 0.
+        self.core.text.emit_u32(enc::mov_zero_64(abi::C_RET0));
+
+        // 9. Native return (uses LR, which the body prelude's ldp restored
+        //    above).
+        self.core.text.emit_u32(enc::ret());
+
+        self.gp_scratch.free_index(scratch_b_idx);
+        self.gp_scratch.free_index(scratch_a_idx);
         Ok(())
     }
 
@@ -502,62 +529,42 @@ impl<'a> super::backend::Arm64Backend<'a> {
         _callee_target: MachineReg,
         callee_entry: MachineReg,
         callee_frame_base: MachineReg,
-        call_link_base: MachineReg,
+        caller_result_base: MachineReg,
         continuation: MachineBlockId,
+        fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let call_link_base = self.map_gp_reg(call_link_base)?;
-        let continuation_offset = self.core.compiled.abi().call_link.continuation_offset;
-        let continuation_label = self.core.block_label(continuation)?;
+        let caller_result_base = self.map_gp_reg(caller_result_base)?;
         let callee_entry = self.map_gp_reg(callee_entry)?;
-        let s0_idx = self.gp_scratch.alloc();
-        let s0 = self.gp_scratch.reg(s0_idx);
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let body_local_error_label = self.core.body_local_error_label;
+        let continuation_label = self.core.block_label(continuation)?;
+        let continuation_is_fallthrough = fallthrough == Some(continuation);
 
-        // For indirect local calls the callee entry is already a runtime register,
-        // but the continuation is still a backend-resolved block label. Materialize
-        // that continuation address through a local literal so we can store it in
-        // the prepared call-link record.
-        let continuation_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-        let skip_cont_literal = self.core.text.emit_u32(enc::b(0)); // skip over literal
-        let continuation_literal = self.core.text.emit_u64(0);
-        let after_cont_literal = self.core.text.len();
-        let skip_cont_delta =
-            ((after_cont_literal as isize - skip_cont_literal as isize) / 4) as i32;
+        // Push the backend-private call record (same shape as CallDirect).
+        self.core.text.emit_u32(enc::stp_64_pre_index(
+            caller_result_base,
+            fp_reg,
+            abi::stack_reg(),
+            -16,
+        ));
+
+        // Switch fp_reg to the callee's frame base.
         self.core
             .text
-            .patch_u32(skip_cont_literal, enc::b(skip_cont_delta));
-        let continuation_delta =
-            ((continuation_literal as isize - continuation_load as isize) / 4) as i32;
-        self.core
-            .text
-            .patch_u32(continuation_load, enc::ldr_lit_64(s0, continuation_delta));
-        self.core.local_ptr_patches.push(PendingLocalPtrPatch {
-            literal_offset: continuation_literal,
-            target_label: continuation_label,
-        });
+            .emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
 
-        if continuation_offset == 0 {
-            self.core
-                .text
-                .emit_u32(enc::str_reg_64_base(s0, call_link_base));
-        } else {
-            let s1_idx = self.gp_scratch.alloc();
-            let s1 = self.gp_scratch.reg(s1_idx);
-            self.materialize_u64(s1, continuation_offset as u64);
-            self.core
-                .text
-                .emit_u32(enc::add_reg_64(s1, call_link_base, s1));
-            self.core.text.emit_u32(enc::str_reg_64_base(s0, s1));
-            self.gp_scratch.free_index(s1_idx);
+        // BLR to the runtime-resolved callee entry. Populates LR for the
+        // callee's eventual `ret`. Indirect calls have no inline literal,
+        // so the trailing branch can be elided as soon as the continuation
+        // block is the next emitted block.
+        self.core.text.emit_u32(enc::blr(callee_entry));
+
+        // --- callee returns here. Status check + continuation branch.
+        self.lower_cbnz(abi::C_RET0, body_local_error_label);
+        if !continuation_is_fallthrough {
+            self.lower_b(continuation_label);
         }
-
-        // MachineIR already resolved the dynamic local target to a native entry
-        // address. At this point the backend only commits the transfer.
-        self.core
-            .text
-            .emit_u32(enc::mov_reg_64(map_fixed_reg(MACHINE_FP_REG), callee_fp));
-        self.core.text.emit_u32(enc::br(callee_entry));
-        self.gp_scratch.free_index(s0_idx);
         Ok(())
     }
 
@@ -591,10 +598,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
 
-        // Nonzero helper status means the runtime stored a WasmError in the
-        // NativeContext, so branch to the shared error-return path.
-        let return_error_label = self.core.return_error_label;
-        self.lower_cbnz(abi::C_RET0, return_error_label);
+        // Nonzero helper status means the runtime stored a WasmError in
+        // the NativeContext. Branch to the body-local error tail, which
+        // pops the call record and propagates upward via the unified
+        // Return mechanism (the caller's post-BL `cbnz w0` does the rest).
+        // C_RET0 is already set by raise_trap to NativeCallStatus::Error
+        // (= 1), so the propagation status flows through automatically.
+        let body_local_error_label = self.core.body_local_error_label;
+        self.lower_cbnz(abi::C_RET0, body_local_error_label);
         Ok(())
     }
 
@@ -616,8 +627,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
         );
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
-        // Branch to the shared error-return epilogue
-        let return_error_label = self.core.return_error_label;
-        self.lower_b(return_error_label);
+        // raise_trap returned with C_RET0 = NativeCallStatus::Error (= 1).
+        // Branch to body_local_error_label, which preserves C_RET0 and
+        // propagates upward to the caller through the unified Return tail.
+        let body_local_error_label = self.core.body_local_error_label;
+        self.lower_b(body_local_error_label);
     }
 }

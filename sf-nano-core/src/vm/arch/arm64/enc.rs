@@ -759,9 +759,35 @@ pub(crate) fn ldp_64(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u3
     load_store_pair(0xa940_0000, rt, rt2, rn, imm7)
 }
 
+/// `stp Xt, Xt2, [Xn, #imm]!` — 64-bit pre-index store-pair (atomic 16-byte
+/// push when Xn is `sp` and `imm` is the negative slot offset).
+///
+/// `imm` is the byte offset, scaled internally by 8 to fit the 7-bit signed
+/// immediate. For pushing onto the host stack, pass `-16`.
+pub(crate) fn stp_64_pre_index(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm: i32) -> u32 {
+    load_store_pair(0xa980_0000, rt, rt2, rn, imm / 8)
+}
+
+/// `ldp Xt, Xt2, [Xn], #imm` — 64-bit post-index load-pair (atomic 16-byte
+/// pop when Xn is `sp` and `imm` is the positive slot offset).
+///
+/// `imm` is the byte offset, scaled internally by 8 to fit the 7-bit signed
+/// immediate. For popping from the host stack, pass `16`.
+pub(crate) fn ldp_64_post_index(rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm: i32) -> u32 {
+    load_store_pair(0xa8c0_0000, rt, rt2, rn, imm / 8)
+}
+
 pub(crate) fn b(imm26: i32) -> u32 {
     let imm26_bits = (imm26 as u32) & 0x03FF_FFFF;
     (0b000101 << 26) | imm26_bits
+}
+
+/// `bl #imm` — branch with link, populates LR with the address of the
+/// instruction after the BL. `imm26` is signed and counted in 4-byte
+/// instruction units (so the actual reach is ±128MB).
+pub(crate) fn bl(imm26: i32) -> u32 {
+    let imm26_bits = (imm26 as u32) & 0x03FF_FFFF;
+    (0b100101 << 26) | imm26_bits
 }
 
 pub(crate) fn ldr_lit_64(rt: Arm64Reg, imm19: i32) -> u32 {

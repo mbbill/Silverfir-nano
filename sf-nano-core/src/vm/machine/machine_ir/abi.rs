@@ -7,19 +7,6 @@
 
 use super::types::MachineFuncId;
 
-/// Shared local-call call-link layout.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct MachineCallLinkLayout {
-    /// Byte offset of the saved continuation pointer within call scratch.
-    pub continuation_offset: i32,
-    /// Byte offset of the saved caller frame pointer within call scratch.
-    pub caller_frame_offset: i32,
-    /// Byte offset of the saved caller result-base slot within call scratch.
-    pub caller_result_base_offset: i32,
-    /// Number of call-scratch slots reserved by the call-link prefix.
-    pub slot_count: u16,
-}
-
 /// One frame-relative region in the machine module ABI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct MachineFrameRegion {
@@ -33,7 +20,11 @@ pub(crate) struct MachineFunctionAbi {
     pub id: MachineFuncId,
     pub frame_prefix_slots: u16,
     pub total_frame_slots: u16,
-    pub call_scratch: Option<MachineFrameRegion>,
+    /// Helper-scratch frame region: scratch slots reserved for runtime
+    /// helpers that take a frame-relative scratch base. Distinct from the
+    /// (now-deleted) call-link record, which the new local-call ABI no
+    /// longer needs — caller/callee state travels via a backend-private
+    /// host-stack call record instead. See `docs/ABI_PLAN.md` §6.
     pub helper_scratch: Option<MachineFrameRegion>,
     pub return_results: Option<MachineFrameRegion>,
     /// Non-param local slot indices that may be read before being written.
@@ -46,6 +37,5 @@ pub(crate) struct MachineFunctionAbi {
 /// Module-wide ABI metadata carried alongside MachineIR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineModuleAbi {
-    pub call_link: MachineCallLinkLayout,
     pub functions: alloc::vec::Vec<MachineFunctionAbi>,
 }

@@ -168,25 +168,9 @@ fn write_dump_impl(
     }
     let _ = writeln!(index);
 
-    // Call-link layout
-    let _ = writeln!(index, "[call_link]");
-    let _ = writeln!(index, "slot_count={}", runtime.call_link.slot_count);
-    let _ = writeln!(
-        index,
-        "continuation_offset={}",
-        runtime.call_link.continuation_offset
-    );
-    let _ = writeln!(
-        index,
-        "caller_frame_offset={}",
-        runtime.call_link.caller_frame_offset
-    );
-    let _ = writeln!(
-        index,
-        "caller_result_base_offset={}",
-        runtime.call_link.caller_result_base_offset
-    );
-    let _ = writeln!(index);
+    // (No call_link layout under the new local-call ABI — see
+    // docs/ABI_PLAN.md §6. The dead software call-link record has been
+    // replaced by a backend-private host-stack call record.)
 
     // Per-function sections
     let lir_by_func: alloc::collections::BTreeMap<u32, &SsaProgram> = lir_inputs
@@ -202,11 +186,11 @@ fn write_dump_impl(
         if let Some(rt) = runtime.functions.get(func_idx as usize) {
             let _ = writeln!(index, "frame_prefix_slots={}", rt.frame_prefix_slots);
             let _ = writeln!(index, "total_frame_slots={}", rt.total_frame_slots);
-            if let Some(cs) = rt.call_scratch {
+            if let Some(hs) = rt.helper_scratch {
                 let _ = writeln!(
                     index,
-                    "call_scratch=base:{} slots:{}",
-                    cs.base_slot, cs.slots
+                    "helper_scratch=base:{} slots:{}",
+                    hs.base_slot, hs.slots
                 );
             }
             if let Some(rr) = rt.return_results {
@@ -1020,27 +1004,27 @@ fn render_machine_term(term: &MachineTerminator) -> String {
         MachineTerminator::CallDirect {
             callee,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             continuation,
         } => {
             format!(
-                "call_direct f{} frame_base=r{} call_link_base=r{} cont=b{}",
-                callee.0, callee_frame_base.0, call_link_base.0, continuation.0
+                "call_direct f{} frame_base=r{} caller_result_base=r{} cont=b{}",
+                callee.0, callee_frame_base.0, caller_result_base.0, continuation.0
             )
         }
         MachineTerminator::CallIndirect {
             callee_target,
             callee_entry,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             continuation,
         } => {
             format!(
-                "call_indirect target=r{} entry=r{} frame_base=r{} link_base=r{} cont=b{}",
+                "call_indirect target=r{} entry=r{} frame_base=r{} caller_result_base=r{} cont=b{}",
                 callee_target.0,
                 callee_entry.0,
                 callee_frame_base.0,
-                call_link_base.0,
+                caller_result_base.0,
                 continuation.0
             )
         }

@@ -28,7 +28,6 @@ pub(crate) struct NativeLocalCallInfo64 {
     pub(crate) entry: u64,
     pub(crate) total_frame_bytes: u64,
     pub(crate) frame_prefix_slots: u64,
-    pub(crate) call_scratch_base_slot: u64,
 }
 
 /// Per-function metadata table entry used by 32-bit native backends for local
@@ -39,7 +38,6 @@ pub(crate) struct NativeLocalCallInfo32 {
     pub(crate) entry: u32,
     pub(crate) total_frame_bytes: u32,
     pub(crate) frame_prefix_slots: u32,
-    pub(crate) call_scratch_base_slot: u32,
 }
 
 /// Late-published metadata table used by local `call_indirect` lowering.
@@ -132,15 +130,10 @@ fn build_local_call_info_records(backend: BackendConfig, abi: &MachineModuleAbi)
                     entry: function.id.0,
                     total_frame_bytes: u32::from(function.total_frame_slots) * 8,
                     frame_prefix_slots: u32::from(function.frame_prefix_slots),
-                    call_scratch_base_slot: function
-                        .call_scratch
-                        .map(|region| u32::from(region.base_slot))
-                        .unwrap_or(u32::MAX),
                 };
                 bytes.extend_from_slice(&info.entry.to_le_bytes());
                 bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
                 bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
-                bytes.extend_from_slice(&info.call_scratch_base_slot.to_le_bytes());
             }
             bytes.into_boxed_slice()
         }
@@ -153,15 +146,10 @@ fn build_local_call_info_records(backend: BackendConfig, abi: &MachineModuleAbi)
                     entry: u64::from(function.id.0),
                     total_frame_bytes: u64::from(function.total_frame_slots) * 8,
                     frame_prefix_slots: u64::from(function.frame_prefix_slots),
-                    call_scratch_base_slot: function
-                        .call_scratch
-                        .map(|region| u64::from(region.base_slot))
-                        .unwrap_or(u64::MAX),
                 };
                 bytes.extend_from_slice(&info.entry.to_le_bytes());
                 bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
                 bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
-                bytes.extend_from_slice(&info.call_scratch_base_slot.to_le_bytes());
             }
             bytes.into_boxed_slice()
         }

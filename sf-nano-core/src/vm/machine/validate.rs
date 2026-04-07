@@ -560,26 +560,26 @@ impl MachineProgram {
             }
             MachineTerminator::CallDirect {
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
                 ..
             } => {
                 self.validate_reg(*callee_frame_base, config)?;
-                self.validate_reg(*call_link_base, config)?;
+                self.validate_reg(*caller_result_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::CallIndirect {
                 callee_target,
                 callee_entry,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
                 ..
             } => {
                 self.validate_reg(*callee_target, config)?;
                 self.validate_reg(*callee_entry, config)?;
                 self.validate_reg(*callee_frame_base, config)?;
-                self.validate_reg(*call_link_base, config)?;
+                self.validate_reg(*caller_result_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
             MachineTerminator::Return => Ok(()),

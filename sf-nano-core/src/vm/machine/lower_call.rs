@@ -30,27 +30,18 @@ impl<'a> BlockLowerContext<'a> {
         )?;
 
         let callee_id = MachineFuncId(callee);
-        let (call_scratch, callee_frame_prefix_slots, callee_total_frame_slots, callee_results) = {
+        let (callee_frame_prefix_slots, callee_total_frame_slots, callee_results) = {
             let callee_runtime = self.runtime_for_func(callee_id)?;
-            let call_scratch = callee_runtime.call_scratch.ok_or_else(|| {
-                WasmError::internal("direct local call requires callee call scratch".into())
-            })?;
             let results_count = callee_runtime
                 .return_results
                 .map(|region| region.slots)
                 .unwrap_or(0);
             (
-                call_scratch,
                 callee_runtime.frame_prefix_slots,
                 callee_runtime.total_frame_slots,
                 results_count,
             )
         };
-        if call_scratch.slots < self.call_link_layout().slot_count {
-            return Err(WasmError::internal(
-                "callee call scratch is smaller than the machine call-link layout".into(),
-            ));
-        }
         if args.count > callee_frame_prefix_slots {
             return Err(WasmError::internal(
                 "direct local call passes more arguments than fit in the callee local prefix"
@@ -66,6 +57,19 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_dirty_cached_locals()?;
 
+        // Two scratch registers:
+        // - `callee_frame_base` is the absolute address of the callee's frame
+        //   base. It is alive at the terminator: the backend reads it to set
+        //   `MACHINE_FP_REG` before the native call.
+        // - `stack_limit` is used by the per-call stack-overflow precheck and
+        //   then reused after the precheck as `caller_result_base` (the
+        //   absolute address of the caller's result-receive region). The
+        //   backend reads `caller_result_base` at the terminator to push it
+        //   into the backend-private call record so the callee's `Return`
+        //   can copy results into it.
+        //
+        // (1D will hoist the stack precheck out of the call site, at which
+        // point a single temp will suffice.)
         let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
         let callee_frame_base = call_regs[0];
         let stack_limit = call_regs[1];
@@ -88,41 +92,31 @@ impl<'a> BlockLowerContext<'a> {
             callee_total_frame_slots,
         )?;
 
-        // Reuse the second borrowed temp after the stack precheck. From this
-        // point on it no longer needs to hold the adjusted stack limit; it
-        // becomes the absolute address of the callee call-link record that the
-        // backend will finish by storing the native continuation pointer.
-        let call_link_base = stack_limit;
+        // After the precheck, reuse the second borrowed temp as
+        // `caller_result_base = caller_fp + results.start_offset`. The
+        // backend will hand this off to the callee through the
+        // backend-private call record; the callee's `Return` copies the
+        // function's `return_results` region into `*caller_result_base`.
+        let caller_result_base = stack_limit;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width: self.gp_word_int_width(),
                 op: MachineIntBinaryOp::Add,
-                dst: call_link_base,
-                lhs: MachineValue::Reg(callee_frame_base),
-                rhs: MachineValue::Imm64(
-                    slot_offset_bytes(FrameSlot(call_scratch.base_slot))? as u64
-                ),
+                dst: caller_result_base,
+                lhs: MachineValue::Reg(self.frame_base_reg()),
+                rhs: MachineValue::Imm64(slot_offset_bytes(results.start)? as u64),
             },
         });
 
-        // Note: zero-init of the callee's non-param locals is now performed by
+        // Note: zero-init of the callee's non-param locals is performed by
         // the callee itself at function entry, only for slots flagged by the
         // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
         // that are guaranteed to be written before any read need no init.
 
-        // MachineIR writes the logical call-link fields now. The backend only
-        // needs to turn `continuation` into a native code address at the
-        // terminator boundary.
-        self.store_call_link_absolute(
-            call_link_base,
-            continuation,
-            slot_offset_bytes(results.start)? as u64,
-        )?;
-
         Ok(MachineTerminator::CallDirect {
             callee: callee_id,
             callee_frame_base,
-            call_link_base,
+            caller_result_base,
             continuation,
         })
     }
@@ -354,48 +348,6 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn store_call_link_absolute(
-        &mut self,
-        call_link_base: MachineReg,
-        continuation: MachineBlockId,
-        caller_result_base: u64,
-    ) -> Result<(), WasmError> {
-        let call_link = self.call_link_layout();
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Store {
-                ty: MachineStorageType::GpWord,
-                addr: MachineAddr {
-                    base: call_link_base,
-                    offset: call_link.continuation_offset,
-                },
-                width: self.gp_word_mem_width(),
-                src: MachineValue::Imm64(continuation.0 as u64),
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Store {
-                ty: MachineStorageType::GpWord,
-                addr: MachineAddr {
-                    base: call_link_base,
-                    offset: call_link.caller_frame_offset,
-                },
-                width: self.gp_word_mem_width(),
-                src: MachineValue::Reg(self.frame_base_reg()),
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Store {
-                ty: MachineStorageType::GpWord,
-                addr: MachineAddr {
-                    base: call_link_base,
-                    offset: call_link.caller_result_base_offset,
-                },
-                width: self.gp_word_mem_width(),
-                src: MachineValue::Imm64(caller_result_base),
-            },
-        });
-        Ok(())
-    }
 }
 
 #[inline]

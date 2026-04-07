@@ -10,12 +10,12 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
-            MachineInst, MachineReg, MachineTerminator, MachineTrapKind, MACHINE_CTX_REG,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
+            MachineFunction, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
+            code::{CompiledNativeModule, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
         },
@@ -62,6 +62,8 @@ pub(super) enum BranchFixupKind {
     BCond(enc::Cond),
     Cbz(Arm64Reg),
     Cbnz(Arm64Reg),
+    /// `bl <label>` — branch with link, populates LR.
+    Bl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,10 +80,29 @@ pub(crate) struct CompiledArm64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
-    pub root_return: NativeCodePtr,
 }
 
 // ── Arm64Backend ─────────────────────────────────────────────────────────────
+
+/// Per-call deferred literal: the patchable callee-address word for one
+/// `lower_call_direct` site, queued so the literal lives in the
+/// end-of-body literal pool instead of inline after the BLR. Lets the
+/// caller elide its trailing `b continuation` when the next emitted block
+/// is the continuation block.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PendingCallLiteral {
+    /// Offset of the `ldr_lit_64` instruction inside `core.text`. Patched
+    /// during literal-pool flush so its pc-relative offset points at the
+    /// emitted literal.
+    pub ldr_offset: usize,
+    /// Scratch register the LDR loads into. Re-encoded as part of the
+    /// patched LDR instruction.
+    pub scratch_reg: Arm64Reg,
+    /// Local callee id; recorded into `direct_call_patches` once the
+    /// literal slot has a real offset, so module-link patching can write
+    /// the resolved address into the literal word.
+    pub callee: MachineFuncId,
+}
 
 #[derive(Debug)]
 pub(crate) struct Arm64Backend<'a> {
@@ -89,6 +110,10 @@ pub(crate) struct Arm64Backend<'a> {
     pub(super) fixups: Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
     pub(super) fp_scratch: ScratchPool<Arm64FpReg, 3>,
+    /// Deferred per-call patchable literals. Flushed by
+    /// `lower_function_literal_pool` (which the pipeline calls between
+    /// edge stubs and the body-local error tail).
+    pub(super) pending_call_literals: Vec<PendingCallLiteral>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -109,6 +134,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             fixups: Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
+            pending_call_literals: Vec::new(),
         }
     }
 
@@ -188,8 +214,139 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.text.emit_u32(enc::ret());
     }
 
-    fn lower_return_ok_status(&mut self) {
-        self.materialize_u64(abi::C_RET0, 0);
+    /// Public-entry caller stub. Pushes a root call record onto the host
+    /// stack (caller_result_base = stack_base, caller_fp = stack_base) and
+    /// `bl`s the internal entry. After the body's unified Return rets, the
+    /// stack pointer is back to the post-prologue value (the body's Return
+    /// pops the call record we pushed here), and `C_RET0` already holds 0
+    /// or a trap kind. Falls through to `lower_epilogue`.
+    fn lower_root_caller_stub(&mut self) {
+        // x20 = MACHINE_FP_REG = the root frame base after the prologue.
+        // For the root call, both caller_fp and caller_result_base point at
+        // the root frame so the unified Return copies results into the
+        // bytes that `eval.rs::collect_native_results_from_stack` reads.
+        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
+        // stp fp_reg, fp_reg, [sp, #-16]!
+        self.core
+            .text
+            .emit_u32(enc::stp_64_pre_index(fp_reg, fp_reg, abi::stack_reg(), -16));
+        // bl internal_entry_label  (resolved by patch_fixups)
+        let internal_entry_label = self.core.internal_entry_label;
+        self.lower_bl(internal_entry_label);
+    }
+
+    /// Body entry prelude. Always-on in 1A: push x29/x30 onto the host
+    /// stack so the body can freely make nested `bl`s without losing the
+    /// LR set by the caller's `bl` into this function. The body's unified
+    /// Return and `body_local_error_label` both pop this pair before the
+    /// native `ret`.
+    ///
+    /// (1A.8 will gate this on `body_emits_native_call` so leaves don't
+    /// pay the unused stp/ldp pair.)
+    fn lower_body_prelude(&mut self) {
+        let x29 = abi::host_fp_reg();
+        let x30 = abi::host_lr_reg();
+        // stp x29, x30, [sp, #-16]!
+        self.core
+            .text
+            .emit_u32(enc::stp_64_pre_index(x29, x30, abi::stack_reg(), -16));
+    }
+
+    /// Body-local error tail (`body_local_error_label`). Reached from trap
+    /// stubs and post-BL status checks. Pops the body prelude link save
+    /// and the caller's call record, restores `fp_reg`, and `ret`s without
+    /// touching `C_RET0` (which already holds the trap kind set by the
+    /// trap stub or inherited from a trapped descendant's BL).
+    /// Flush deferred per-call literals into a pool at end-of-body. Each
+    /// literal is an 8-byte zero word (patched at module-link time via the
+    /// `direct_call_patches` entry we push here) and the corresponding
+    /// `ldr_lit_64` instruction back in the body block is patched to point
+    /// at it. This is what makes the trailing-`b`-elision in
+    /// `lower_call_direct` correct: by the time the call site falls
+    /// through to the next emitted block, no inline literal sits in the
+    /// fall-through path because every literal lives in this pool.
+    ///
+    /// `ldr_lit_64`'s pc-relative immediate is a 19-bit signed
+    /// instruction-word offset (±1 MiB byte reach). The pool is placed at
+    /// the end of the body region so the LDR-to-literal distance is
+    /// `(pool_offset - call_site_offset)` — bounded by body+edges size.
+    /// We validate the delta here and fail compilation if it ever exceeds
+    /// range, rather than letting `enc::ldr_lit_64`'s `& 0x0007_FFFF`
+    /// silently truncate the immediate and produce a wrong call target.
+    fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
+        let pending = core::mem::take(&mut self.pending_call_literals);
+        for literal in pending {
+            let literal_offset = self.core.text.emit_u64(0);
+            let delta_bytes = literal_offset as isize - literal.ldr_offset as isize;
+            // ldr_lit_64 encodes a signed 19-bit instruction-word offset.
+            // Word range: [-2^18, 2^18 - 1]. Byte range: ±1 MiB.
+            // The literal pool always sits *after* the LDR (delta is
+            // positive in practice), but the bound is checked symmetric.
+            const LDR_LIT_BYTE_MAX: isize = (1 << 20) - 4;
+            if delta_bytes & 0b11 != 0 {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 deferred call literal at {:#x} is not 4-byte aligned (ldr_lit_64 at {:#x}, delta={:#x})",
+                    literal_offset,
+                    literal.ldr_offset,
+                    delta_bytes,
+                )));
+            }
+            if !(-LDR_LIT_BYTE_MAX..=LDR_LIT_BYTE_MAX).contains(&delta_bytes) {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 deferred call literal pool out of `ldr_lit_64` reach: \
+                     ldr at {:#x}, literal at {:#x}, delta={} bytes (limit ±{} bytes); \
+                     function body is too large for the per-function literal-pool layout. \
+                     Mitigation: split the literal pool into per-region pools or fall back to a \
+                     wide `movz/movk` materialization for the affected call site.",
+                    literal.ldr_offset,
+                    literal_offset,
+                    delta_bytes,
+                    LDR_LIT_BYTE_MAX,
+                )));
+            }
+            let delta_words = (delta_bytes / 4) as i32;
+            self.core.text.patch_u32(
+                literal.ldr_offset,
+                enc::ldr_lit_64(literal.scratch_reg, delta_words),
+            );
+            self.core
+                .direct_call_patches
+                .push(crate::vm::arch::common::types::DirectCallPatch {
+                    literal_offset,
+                    callee: literal.callee,
+                });
+        }
+        Ok(())
+    }
+
+    fn lower_body_local_error_tail(&mut self) {
+        let x29 = abi::host_fp_reg();
+        let x30 = abi::host_lr_reg();
+        // ldp x29, x30, [sp], #16    ; pop body prelude link save
+        self.core
+            .text
+            .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        // Pop the call record. The error path does not copy results, so
+        // we only need to pull caller_fp out (slot 1) and discard
+        // caller_result_base (slot 0).
+        let scratch_idx = self.gp_scratch.alloc();
+        let scratch_fp = self.gp_scratch.reg(scratch_idx);
+        self.core
+            .text
+            .emit_u32(enc::ldr_64(scratch_fp, abi::stack_reg(), 1));
+        self.core.text.emit_u32(enc::add_imm_64(
+            abi::stack_reg(),
+            abi::stack_reg(),
+            16,
+        ));
+        // Restore caller fp_reg.
+        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
+        self.core
+            .text
+            .emit_u32(enc::mov_reg_64(fp_reg, scratch_fp));
+        // C_RET0 untouched — preserves the error code.
+        self.core.text.emit_u32(enc::ret());
+        self.gp_scratch.free_index(scratch_idx);
     }
 
     fn lower_block(
@@ -246,6 +403,19 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn patch_fixups(&mut self) -> Result<(), WasmError> {
+        // arm64 PC-relative branch reach in instruction words:
+        //   b / bl              imm26 signed → ±2^25 words = ±128 MiB bytes
+        //   b.cond / cbz / cbnz imm19 signed → ±2^18 words = ±1 MiB bytes
+        // The encoders mask the immediate silently (`& 0x...`), so we
+        // must validate the delta here or out-of-range targets become
+        // wrong addresses at runtime. None of the current fixups should
+        // ever exceed these bounds (functions are far smaller than
+        // 1 MiB), but failing fast is the only safe option until a
+        // veneer/island pass is added.
+        const IMM19_WORD_MIN: isize = -(1 << 18);
+        const IMM19_WORD_MAX: isize = (1 << 18) - 1;
+        const IMM26_WORD_MIN: isize = -(1 << 25);
+        const IMM26_WORD_MAX: isize = (1 << 25) - 1;
         for fixup in &self.fixups {
             let target = self
                 .core
@@ -255,12 +425,56 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 .ok_or_else(|| {
                     WasmError::internal("arm64 branch target label is unresolved".into())
                 })?;
-            let delta_words = ((target as isize) - (fixup.inst_offset as isize)) / 4;
+            let delta_bytes = (target as isize) - (fixup.inst_offset as isize);
+            if delta_bytes & 0b11 != 0 {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 branch fixup target {:#x} is not 4-byte aligned (inst at {:#x})",
+                    target,
+                    fixup.inst_offset,
+                )));
+            }
+            let delta_words = delta_bytes / 4;
+            let (kind_name, in_range) = match fixup.kind {
+                BranchFixupKind::B => (
+                    "b",
+                    (IMM26_WORD_MIN..=IMM26_WORD_MAX).contains(&delta_words),
+                ),
+                BranchFixupKind::Bl => (
+                    "bl",
+                    (IMM26_WORD_MIN..=IMM26_WORD_MAX).contains(&delta_words),
+                ),
+                BranchFixupKind::BCond(_) => (
+                    "b.cond",
+                    (IMM19_WORD_MIN..=IMM19_WORD_MAX).contains(&delta_words),
+                ),
+                BranchFixupKind::Cbz(_) => (
+                    "cbz",
+                    (IMM19_WORD_MIN..=IMM19_WORD_MAX).contains(&delta_words),
+                ),
+                BranchFixupKind::Cbnz(_) => (
+                    "cbnz",
+                    (IMM19_WORD_MIN..=IMM19_WORD_MAX).contains(&delta_words),
+                ),
+            };
+            if !in_range {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm64 {} fixup at {:#x} → target {:#x} (delta {} bytes) is out of \
+                     pc-relative reach. The current backend has no branch-veneer / island \
+                     pass; the producing function is too large for direct encoding. \
+                     Mitigation: split the function or insert a trampoline near the call site.",
+                    kind_name,
+                    fixup.inst_offset,
+                    target,
+                    delta_bytes,
+                )));
+            }
+            let delta_i32 = delta_words as i32;
             let patched = match fixup.kind {
-                BranchFixupKind::B => enc::b(delta_words as i32),
-                BranchFixupKind::BCond(cond) => enc::b_cond(cond, delta_words as i32),
-                BranchFixupKind::Cbz(reg) => enc::cbz_64(reg, delta_words as i32),
-                BranchFixupKind::Cbnz(reg) => enc::cbnz_64(reg, delta_words as i32),
+                BranchFixupKind::B => enc::b(delta_i32),
+                BranchFixupKind::BCond(cond) => enc::b_cond(cond, delta_i32),
+                BranchFixupKind::Cbz(reg) => enc::cbz_64(reg, delta_i32),
+                BranchFixupKind::Cbnz(reg) => enc::cbnz_64(reg, delta_i32),
+                BranchFixupKind::Bl => enc::bl(delta_i32),
             };
             self.core.text.patch_u32(fixup.inst_offset, patched);
         }
@@ -340,12 +554,10 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
     ) -> Self::CompiledEntry {
         let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
-        let root_return = unsafe { buf.ptr(emitted.text_offset + emitted.root_return_offset) };
         CompiledArm64Entry {
             entry,
             text_len: emitted.text_len,
             debug_regions: emitted.debug_regions.clone(),
-            root_return,
         }
     }
 }

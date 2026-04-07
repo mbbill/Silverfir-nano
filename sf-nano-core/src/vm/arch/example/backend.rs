@@ -21,7 +21,7 @@ use crate::{
             MACHINE_FP_REG,
         },
         runtime::{
-            code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
+            code::{CompiledNativeModule, NativeRootEntry},
             code_buf::CodeBuffer,
         },
     },
@@ -68,7 +68,6 @@ pub(crate) struct CompiledExampleEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
-    pub root_return: NativeCodePtr,
 }
 
 // ── ExampleBackend ───────────────────────────────────────────────────────────
@@ -147,8 +146,20 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         self.core.text.emit_u32(enc::ret());
     }
 
-    fn lower_return_ok_status(&mut self) {
-        self.materialize_u64(abi::C_RET0, 0);
+    fn lower_root_caller_stub(&mut self) {
+        // Example backend is documentation-only; the call ABI rewrite (1A)
+        // never executes this path. A real backend would push a root call
+        // record onto the host stack and `call/bl internal_entry_label`.
+    }
+
+    fn lower_body_prelude(&mut self) {
+        // A real backend would push x29/x30 (or equivalent) when the body
+        // makes any host calls — see `body_emits_native_call`.
+    }
+
+    fn lower_body_local_error_tail(&mut self) {
+        // A real backend would: pop body prelude link save, pop call
+        // record, restore fp_reg, native return without touching C_RET0.
     }
 
     fn lower_block(
@@ -276,12 +287,10 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
     ) -> Self::CompiledEntry {
         let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
-        let root_return = unsafe { buf.ptr(emitted.text_offset + emitted.root_return_offset) };
         CompiledExampleEntry {
             entry,
             text_len: emitted.text_len,
             debug_regions: emitted.debug_regions.clone(),
-            root_return,
         }
     }
 }
