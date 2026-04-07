@@ -15,10 +15,13 @@ use super::common::{BrTableEntry, SemanticTarget};
 use super::semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram};
 
 /// Maximum number of semantic ops in a callee for it to be inlined.
-const MAX_INLINE_OPS: usize = 600;
+/// Keep this low to match LLVM-level inlining behavior — only trivial
+/// wrappers and tiny arithmetic helpers, not large leaf computations
+/// like CRC routines.
+const MAX_INLINE_OPS: usize = 12;
 
 /// Multiplier applied to `MAX_INLINE_OPS` when the call site is inside a loop.
-const LOOP_INLINE_MULTIPLIER: usize = 10; // disabled for now.
+const LOOP_INLINE_MULTIPLIER: usize = 10;
 
 /// Maximum number of parameters for an inline candidate.
 const MAX_INLINE_PARAMS: usize = 16;
