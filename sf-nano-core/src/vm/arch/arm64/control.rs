@@ -137,18 +137,65 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 lhs,
                 rhs,
             } => {
-                self.lower_cmp_values(width, lhs, rhs)?;
-                if else_fallthrough {
-                    if let Some(label) = then_label {
-                        self.lower_b_cond(map_int_cond(kind, sign), label);
+                // Compare-with-zero patterns (e.g. wasm `i32.eqz; br_if`) become
+                // single-instruction `cbz`/`cbnz`. Both lhs == 0 and rhs == 0
+                // shapes appear depending on whether the wasm operand was
+                // hoisted left or right. The 64-bit cbz form is correct for
+                // i32 operands too because AArch64 32-bit ops zero the upper
+                // 32 bits of the X register.
+                let zero_reg = match (kind, lhs, rhs) {
+                    (
+                        MachineCompareKind::Eq | MachineCompareKind::Ne,
+                        MachineValue::Reg(r),
+                        MachineValue::Imm64(0),
+                    )
+                    | (
+                        MachineCompareKind::Eq | MachineCompareKind::Ne,
+                        MachineValue::Imm64(0),
+                        MachineValue::Reg(r),
+                    ) => Some(r),
+                    _ => None,
+                };
+                if let Some(reg) = zero_reg {
+                    let reg = self.map_gp_reg(reg)?;
+                    let is_eq = matches!(kind, MachineCompareKind::Eq);
+                    let emit = |this: &mut Self, take_label: usize, take_eq: bool| {
+                        if take_eq {
+                            this.lower_cbz(reg, take_label);
+                        } else {
+                            this.lower_cbnz(reg, take_label);
+                        }
+                    };
+                    if else_fallthrough {
+                        if let Some(label) = then_label {
+                            emit(self, label, is_eq);
+                        }
+                    } else if then_fallthrough {
+                        if let Some(label) = else_label {
+                            emit(self, label, !is_eq);
+                        }
+                    } else if let (Some(then_label), Some(else_label)) =
+                        (then_label, else_label)
+                    {
+                        emit(self, then_label, is_eq);
+                        self.lower_b(else_label);
                     }
-                } else if then_fallthrough {
-                    if let Some(label) = else_label {
-                        self.lower_b_cond(map_int_cond(kind, sign).invert(), label);
+                } else {
+                    self.lower_cmp_values(width, lhs, rhs)?;
+                    if else_fallthrough {
+                        if let Some(label) = then_label {
+                            self.lower_b_cond(map_int_cond(kind, sign), label);
+                        }
+                    } else if then_fallthrough {
+                        if let Some(label) = else_label {
+                            self.lower_b_cond(map_int_cond(kind, sign).invert(), label);
+                        }
+                    } else if let (Some(then_label), Some(else_label)) =
+                        (then_label, else_label)
+                    {
+                        self.lower_b_cond(map_int_cond(kind, sign), then_label);
+                        self.lower_b(else_label);
                     }
-                } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
-                    self.lower_b_cond(map_int_cond(kind, sign), then_label);
-                    self.lower_b(else_label);
                 }
             }
             MachineBranchCond::TestBits {

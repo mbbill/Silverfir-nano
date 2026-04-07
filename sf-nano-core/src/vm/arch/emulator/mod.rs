@@ -1517,8 +1517,6 @@ fn eval_int_unary(
     src: u64,
 ) -> Result<u64, WasmError> {
     Ok(match (width, op) {
-        (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => u64::from((src as u32 == 0) as u32),
-        (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => u64::from((src == 0) as u32),
         (MachineIntWidth::I32, MachineIntUnaryOp::Clz) => u64::from((src as u32).leading_zeros()),
         (MachineIntWidth::I64, MachineIntUnaryOp::Clz) => u64::from(src.leading_zeros()),
         (MachineIntWidth::I32, MachineIntUnaryOp::Ctz) => u64::from((src as u32).trailing_zeros()),
@@ -1740,11 +1738,6 @@ fn eval_i64_pair_unary(
         MachineIntUnaryOp::Extend8S => (src as u8 as i8 as i64) as u64,
         MachineIntUnaryOp::Extend16S => (src as u16 as i16 as i64) as u64,
         MachineIntUnaryOp::Extend32S => (src as u32 as i32 as i64) as u64,
-        _ => {
-            return Err(WasmError::internal(
-                "machine Int64PairUnary requires a supported i64 unary op".into(),
-            ))
-        }
     };
     Ok((u64::from(value as u32), u64::from((value >> 32) as u32)))
 }

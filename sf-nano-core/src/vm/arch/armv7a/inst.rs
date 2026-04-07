@@ -1308,23 +1308,6 @@ impl<'a> Arm32Backend<'a> {
         };
 
         match op {
-            MachineIntUnaryOp::Eqz => {
-                // dst = (src == 0) ? 1 : 0
-                self.core.text.emit_u32(enc::cmp_imm(src_hw, 0, 0));
-                // Seed the false arm after the compare so `dst == src` stays safe.
-                self.emit_load_u32(dst_hw, 0);
-                // MOV{EQ} dst, #1
-                let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-                self.core.text.emit_u32(enc::dp_imm_cond(
-                    Cond::Eq,
-                    0b1101,
-                    false,
-                    dst_hw,
-                    Arm32Reg::R0,
-                    imm8,
-                    rot,
-                ));
-            }
             MachineIntUnaryOp::Clz => {
                 self.core.text.emit_u32(enc::clz(dst_hw, src_hw));
             }

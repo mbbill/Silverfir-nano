@@ -166,9 +166,14 @@ pub(crate) enum MachineSign {
 }
 
 /// Integer unary ALU op.
+///
+/// Note: wasm `i32.eqz`/`i64.eqz` are lowered as `IntCompare { kind: Eq, rhs:
+/// Imm64(0) }` rather than as a separate `Eqz` opcode. They are bit-for-bit
+/// identical, and routing them through `IntCompare` lets the existing
+/// `fuse_compare_branch` peephole collapse the common `i32.eqz; br_if` pattern
+/// into a single `cbz`/`cbnz`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineIntUnaryOp {
-    Eqz,
     Clz,
     Ctz,
     Popcnt,

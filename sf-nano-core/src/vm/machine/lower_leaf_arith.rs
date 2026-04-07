@@ -152,6 +152,41 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    /// Lower wasm `i32.eqz` / `i64.eqz` as `IntCompare { Eq, rhs: Imm64(0) }`.
+    ///
+    /// Eqz is bit-for-bit identical to comparing against zero, but emitting it
+    /// as `IntCompare` lets `fuse_compare_branch` collapse the common
+    /// `i32.eqz; br_if` pattern into a single `cbz`/`cbnz`. The MIR layer no
+    /// longer carries a separate `Eqz` opcode.
+    pub(super) fn lower_int_eqz(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        width: MachineIntWidth,
+    ) -> Result<(), WasmError> {
+        let src_op = single_arg(args)?;
+        let lhs = self.lower_operand(src_op)?;
+        let dead: Vec<SsaValue> = args
+            .iter()
+            .filter_map(|a| match a {
+                SsaOperand::Value(v) => Some(*v),
+                SsaOperand::Const(_) => None,
+            })
+            .collect();
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::IntCompare {
+                width,
+                kind: MachineCompareKind::Eq,
+                sign: MachineSign::Unsigned,
+                dst,
+                lhs,
+                rhs: MachineValue::Imm64(0),
+            },
+        });
+        Ok(())
+    }
+
     pub(super) fn lower_float_binary(
         &mut self,
         args: &[SsaOperand],
@@ -408,11 +443,9 @@ pub(super) fn machine_int_unary(
     use PrimitiveOpKind as P;
 
     Some(match primitive {
-        P::I32Eqz => (W::I32, Op::Eqz),
         P::I32Clz => (W::I32, Op::Clz),
         P::I32Ctz => (W::I32, Op::Ctz),
         P::I32Popcnt => (W::I32, Op::Popcnt),
-        P::I64Eqz => (W::I64, Op::Eqz),
         P::I64Clz => (W::I64, Op::Clz),
         P::I64Ctz => (W::I64, Op::Ctz),
         P::I64Popcnt => (W::I64, Op::Popcnt),

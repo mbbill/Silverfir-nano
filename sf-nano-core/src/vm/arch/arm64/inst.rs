@@ -1369,14 +1369,6 @@ impl<'a> super::backend::Arm64Backend<'a> {
             src,
         )?;
         match (width, op) {
-            (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => {
-                self.core.text.emit_u32(enc::cmp_zero_32(*src));
-                self.core.text.emit_u32(enc::cset_32(dst, enc::Cond::Eq));
-            }
-            (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => {
-                self.core.text.emit_u32(enc::cmp_zero_64(*src));
-                self.core.text.emit_u32(enc::cset_64(dst, enc::Cond::Eq));
-            }
             (MachineIntWidth::I32, MachineIntUnaryOp::Clz) => {
                 self.core.text.emit_u32(enc::clz_32(dst, *src));
             }
@@ -3086,24 +3078,192 @@ pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: Arm64Reg, value:
         text.emit_u32(enc::mov_zero_64(dst));
         return;
     }
+
+    // Values that fit in u32 can be materialized with the 32-bit move forms,
+    // which zero the upper 32 bits of the X register. This is the case LLVM
+    // takes for `mov w8, #-24575` (a single MOVN encoding 0xffffa001).
+    if value <= u32::MAX as u64 {
+        let lo = (value & 0xffff) as u16;
+        let hi = ((value >> 16) & 0xffff) as u16;
+        let movz_count = (lo != 0) as u32 + (hi != 0) as u32;
+        let inv = !(value as u32);
+        let inv_lo = (inv & 0xffff) as u16;
+        let inv_hi = ((inv >> 16) & 0xffff) as u16;
+        let movn_count = (inv_lo != 0) as u32 + (inv_hi != 0) as u32;
+
+        if movn_count < movz_count {
+            // MOVN seeds with a single inverted chunk and 1-fills the rest.
+            // If the other chunk of the inverted value is non-zero, MOVK clears
+            // it back to the right pattern. When both inverted chunks are zero
+            // (i.e. value == 0xffffffff), MOVN with imm 0 produces all-ones.
+            if inv_lo != 0 {
+                text.emit_u32(enc::movn_32(dst, inv_lo, 0));
+                if inv_hi != 0 {
+                    text.emit_u32(enc::movk_32(dst, hi, 16));
+                }
+            } else if inv_hi != 0 {
+                text.emit_u32(enc::movn_32(dst, inv_hi, 16));
+            } else {
+                // Both inverted chunks are zero → value is all-ones (0xffffffff).
+                text.emit_u32(enc::movn_32(dst, 0, 0));
+            }
+        } else {
+            // MOVZ seeds with a single chunk and 0-fills the rest, then MOVK
+            // installs the other non-zero chunk.
+            if lo != 0 {
+                text.emit_u32(enc::movz_32(dst, lo, 0));
+                if hi != 0 {
+                    text.emit_u32(enc::movk_32(dst, hi, 16));
+                }
+            } else {
+                // lo == 0 (we know value != 0, so hi != 0)
+                text.emit_u32(enc::movz_32(dst, hi, 16));
+            }
+        }
+        return;
+    }
+
+    // 64-bit value: use 64-bit move forms. Pick MOVZ chain or MOVN chain
+    // based on which produces fewer instructions.
     let chunks = [
         (value & 0xffff) as u16,
         ((value >> 16) & 0xffff) as u16,
         ((value >> 32) & 0xffff) as u16,
         ((value >> 48) & 0xffff) as u16,
     ];
-    let mut first = true;
-    for (i, &chunk) in chunks.iter().enumerate() {
-        if chunk != 0 || first && i == 3 {
+    let inv = !value;
+    let inv_chunks = [
+        (inv & 0xffff) as u16,
+        ((inv >> 16) & 0xffff) as u16,
+        ((inv >> 32) & 0xffff) as u16,
+        ((inv >> 48) & 0xffff) as u16,
+    ];
+    let movz_count: u32 = chunks.iter().map(|&c| (c != 0) as u32).sum();
+    let movn_count: u32 = inv_chunks.iter().map(|&c| (c != 0) as u32).sum();
+
+    if movn_count < movz_count {
+        // MOVN seeds one inverted chunk and 1-fills the rest, then MOVK
+        // installs each remaining chunk that doesn't already match.
+        let mut first = true;
+        for (i, (&chunk, &inv_chunk)) in chunks.iter().zip(inv_chunks.iter()).enumerate() {
+            let shift = (i as u32) * 16;
             if first {
-                text.emit_u32(enc::movz_64(dst, chunk, (i as u32) * 16));
-                first = false;
-            } else {
-                text.emit_u32(enc::movk_64(dst, chunk, (i as u32) * 16));
+                if inv_chunk != 0 {
+                    text.emit_u32(enc::movn_64(dst, inv_chunk, shift));
+                    first = false;
+                }
+            } else if chunk != 0xffff {
+                text.emit_u32(enc::movk_64(dst, chunk, shift));
+            }
+        }
+        if first {
+            // All inverted chunks are zero → value is all-ones (-1).
+            text.emit_u32(enc::movn_64(dst, 0, 0));
+        }
+    } else {
+        // MOVZ chain.
+        let mut first = true;
+        for (i, &chunk) in chunks.iter().enumerate() {
+            if chunk != 0 {
+                let shift = (i as u32) * 16;
+                if first {
+                    text.emit_u32(enc::movz_64(dst, chunk, shift));
+                    first = false;
+                } else {
+                    text.emit_u32(enc::movk_64(dst, chunk, shift));
+                }
             }
         }
     }
-    if first {
-        text.emit_u32(enc::movz_64(dst, 0, 0));
+}
+
+#[cfg(test)]
+mod materialize_tests {
+    use super::*;
+    use crate::vm::arch::arm64::reg::Arm64Reg;
+    use crate::vm::arch::common::text_emitter::TextEmitter;
+    use alloc::vec::Vec;
+
+    fn materialize(value: u64) -> Vec<u32> {
+        let mut text = TextEmitter::new();
+        // Use x8 (a generic temp register) as the destination.
+        materialize_u64_into(&mut text, Arm64Reg::from_raw(8), value);
+        // Pull the encoded instructions back out as 32-bit words.
+        let bytes = text.finish();
+        bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    fn count_insns(value: u64) -> usize {
+        materialize(value).len()
+    }
+
+    #[test]
+    fn zero_uses_single_mov() {
+        assert_eq!(count_insns(0), 1);
+    }
+
+    #[test]
+    fn small_u32_uses_single_movz() {
+        assert_eq!(count_insns(0x5), 1);
+        assert_eq!(count_insns(0xa001), 1);
+        assert_eq!(count_insns(0xffff), 1);
+    }
+
+    #[test]
+    fn high_only_u32_uses_single_movz_shifted() {
+        assert_eq!(count_insns(0x1234_0000), 1);
+        assert_eq!(count_insns(0xffff_0000), 1);
+    }
+
+    #[test]
+    fn high_ones_u32_uses_single_movn() {
+        // 0xffffa001 — the coremark CRC constant. LLVM emits a single MOVN here.
+        assert_eq!(count_insns(0xffff_a001), 1);
+        // 0x80000000 (i32::MIN) — high bit only; MOVZ takes 1 insn anyway.
+        assert_eq!(count_insns(0x8000_0000), 1);
+    }
+
+    #[test]
+    fn all_ones_u32_uses_single_movn() {
+        // 0xffffffff (= -1 as i32) — the coremark `(-1i32) as u32 as u64` path.
+        assert_eq!(count_insns(0xffff_ffff), 1);
+    }
+
+    #[test]
+    fn full_two_chunk_u32_uses_two_insns() {
+        // No 0x0000 or 0xffff chunks → MOVZ chain wins, two insns.
+        assert_eq!(count_insns(0x1234_5678), 2);
+    }
+
+    #[test]
+    fn small_u64_with_three_chunks_uses_three_insns() {
+        // The runtime helper trap address pattern: low 48 bits non-zero,
+        // high 16 bits zero. Three insns either way.
+        assert_eq!(count_insns(0x0000_0001_0276_d1ec), 3);
+    }
+
+    #[test]
+    fn negative_one_u64_uses_single_movn() {
+        // 0xffffffff_ffffffff — all chunks 0xffff. MOVN with imm 0 produces -1
+        // in a single instruction.
+        assert_eq!(count_insns(u64::MAX), 1);
+    }
+
+    #[test]
+    fn high_ones_u64_uses_single_movn() {
+        // 0xffffffff_ffff0000 — three chunks 0xffff and one 0x0000. MOVN with
+        // the inverted 0x0000 chunk (= 0xffff_lsl_0) produces this in 1 insn.
+        // Wait — that gives 0xffffffff_ffff0000? Let's check: ~(0xffff lsl 0)
+        // = 0xffffffff_ffff0000. Yes.
+        assert_eq!(count_insns(0xffff_ffff_ffff_0000), 1);
+    }
+
+    #[test]
+    fn full_four_chunk_u64_uses_four_insns() {
+        // 0x1234_5678_9abc_def0 — no chunk is 0 or 0xffff. Four insns.
+        assert_eq!(count_insns(0x1234_5678_9abc_def0), 4);
     }
 }

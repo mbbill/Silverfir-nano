@@ -494,6 +494,10 @@ pub(crate) fn movk_64(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
     move_wide(1, 0b11, rd, imm16, shift)
 }
 
+pub(crate) fn movn_64(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
+    move_wide(1, 0b00, rd, imm16, shift)
+}
+
 pub(crate) fn clz_32(rd: Arm64Reg, rn: Arm64Reg) -> u32 {
     (0b0_10_11010_110 << 21) | (0b00000 << 16) | (0b00010_0 << 10) | (rn.index() << 5) | rd.index()
 }
@@ -963,6 +967,14 @@ pub(crate) fn str_reg_64_base(rt: Arm64Reg, rn: Arm64Reg) -> u32 {
 
 pub(crate) fn movz_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
     move_wide(0, 0b10, rd, imm16, shift)
+}
+
+pub(crate) fn movk_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
+    move_wide(0, 0b11, rd, imm16, shift)
+}
+
+pub(crate) fn movn_32(rd: Arm64Reg, imm16: u16, shift: u32) -> u32 {
+    move_wide(0, 0b00, rd, imm16, shift)
 }
 
 fn low_mask(bits: u32) -> u64 {

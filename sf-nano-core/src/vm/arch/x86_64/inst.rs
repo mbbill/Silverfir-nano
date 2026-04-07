@@ -459,17 +459,6 @@ impl<'a> X86_64Backend<'a> {
         let dst = self.map_gp_reg(dst)?;
         let src = self.materialize_value(self.gp_scratch.reg(0), src)?;
         match (width, op) {
-            (MachineIntWidth::I32, MachineIntUnaryOp::Eqz) => {
-                enc::test_rr_32(&mut self.core.text, src, src);
-                enc::setcc(&mut self.core.text, Cc::E, dst);
-                // Zero-extend the byte result to full register
-                enc::movzx_r32_r8(&mut self.core.text, dst, dst);
-            }
-            (MachineIntWidth::I64, MachineIntUnaryOp::Eqz) => {
-                enc::test_rr_64(&mut self.core.text, src, src);
-                enc::setcc(&mut self.core.text, Cc::E, dst);
-                enc::movzx_r32_r8(&mut self.core.text, dst, dst);
-            }
             (MachineIntWidth::I32, MachineIntUnaryOp::Clz) => {
                 enc::lzcnt_rr_32(&mut self.core.text, dst, src);
             }

@@ -53,7 +53,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(7)),
                         },
@@ -142,7 +142,7 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -226,7 +226,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -309,7 +309,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -1163,7 +1163,7 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
                 MachineInst {
                     kind: MachineInstKind::IntUnary {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                         dst: MachineReg(9),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
@@ -1264,7 +1264,7 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -1336,7 +1336,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
                 MachineInst {
                     kind: MachineInstKind::IntUnary {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                         dst: MachineReg(6),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
@@ -1392,7 +1392,7 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
                             width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Eqz,
+                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
                         },

@@ -8,7 +8,7 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineLoadExtension, MachineReg, MachineStorageType,
+            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineReg, MachineStorageType,
             MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::ssa_ir::{
@@ -630,6 +630,11 @@ impl<'a> BlockLowerContext<'a> {
             P::RefFunc { func_idx } => self.lower_const(results, *func_idx as u64),
             P::RefIsNull => self.lower_ref_is_null(args, results),
             P::Select => self.lower_select(args, results),
+            // i32.eqz / i64.eqz lower as IntCompare against zero so that the
+            // existing fuse_compare_branch peephole can collapse the common
+            // `i32.eqz; br_if` pattern into a single conditional branch.
+            P::I32Eqz => self.lower_int_eqz(args, results, MachineIntWidth::I32),
+            P::I64Eqz => self.lower_int_eqz(args, results, MachineIntWidth::I64),
             primitive => {
                 if let Some((width, op)) = super::lower_leaf_arith::machine_int_binary(primitive) {
                     return self.lower_int_binary(args, results, width, op);
