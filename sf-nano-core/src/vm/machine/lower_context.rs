@@ -6,9 +6,9 @@ use crate::{
     value_type::ValueType,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineFuncId,
-            MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntWidth,
-            MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType, MachineValue,
+            MachineAddr, MachineFuncId, MachineFunctionAbi, MachineInst, MachineInstKind,
+            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType,
+            MachineValue,
         },
         middle::{
             frame::FrameSlot,

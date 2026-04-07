@@ -232,10 +232,7 @@ pub(crate) fn add_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
 /// Encoding: sf=1, op=0, S=0, 01011 001 Rm 010 000 Rn Rd
 pub(crate) fn add_reg_64_uxtw(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     // ADD (extended register), 64-bit, option=010 (UXTW), shift=0
-    0x8B20_4000
-        | (rm.index() << 16)
-        | (rn.index() << 5)
-        | rd.index()
+    0x8B20_4000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
 }
 
 pub(crate) fn sub_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {

@@ -3,10 +3,10 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockParam, MachineCompareKind, MachineConvertOp,
-    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId, MachineFunctionAbi,
-    MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp,
-    MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId,
+    MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
+    MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+    MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
 };
 
 use super::abi::{fp_machine_reg, map_reg};
@@ -1374,10 +1374,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
                 MachineInstKind::IndexedStore {
-                    offset,
-                    width,
-                    src,
-                    ..
+                    offset, width, src, ..
                 } => {
                     let imm12 = encode_load_imm12(offset, width).unwrap();
                     let mut handled_fp = false;
@@ -1674,9 +1671,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let scratch = *self.gp_scratch.scoped_alloc();
         if uxtw {
             // Zero-extend then add (still 2-op total but offset doesn't fit imm12).
-            self.core
-                .text
-                .emit_u32(enc::mov_reg_32(scratch, index_arm));
+            self.core.text.emit_u32(enc::mov_reg_32(scratch, index_arm));
             self.lower_add_imm_3op(scratch, scratch, offset as i64);
         } else {
             self.lower_add_imm_3op(scratch, index_arm, offset as i64);

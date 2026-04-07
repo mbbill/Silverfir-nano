@@ -179,9 +179,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         if let Some(label) = else_label {
                             emit(self, label, !is_eq);
                         }
-                    } else if let (Some(then_label), Some(else_label)) =
-                        (then_label, else_label)
-                    {
+                    } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
                         emit(self, then_label, is_eq);
                         self.lower_b(else_label);
                     }
@@ -195,9 +193,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         if let Some(label) = else_label {
                             self.lower_b_cond(map_int_cond(kind, sign).invert(), label);
                         }
-                    } else if let (Some(then_label), Some(else_label)) =
-                        (then_label, else_label)
-                    {
+                    } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
                         self.lower_b_cond(map_int_cond(kind, sign), then_label);
                         self.lower_b(else_label);
                     }
@@ -331,9 +327,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         ));
 
         // Switch fp_reg to the callee's frame base.
-        self.core
-            .text
-            .emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
 
         // Load the callee's internal entry address from a patchable literal
         // and BLR to it. The literal itself is deferred to the per-function
@@ -499,16 +493,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
             .emit_u32(enc::ldr_64(scratch_b, abi::stack_reg(), 1));
 
         // 6. Pop the call record from the host stack.
-        self.core.text.emit_u32(enc::add_imm_64(
-            abi::stack_reg(),
-            abi::stack_reg(),
-            16,
-        ));
-
-        // 7. Restore MACHINE_FP_REG to the caller's frame pointer.
         self.core
             .text
-            .emit_u32(enc::mov_reg_64(fp_reg, scratch_b));
+            .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), 16));
+
+        // 7. Restore MACHINE_FP_REG to the caller's frame pointer.
+        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, scratch_b));
 
         // 8. Success status: C_RET0 = 0.
         self.core.text.emit_u32(enc::mov_zero_64(abi::C_RET0));
@@ -550,9 +540,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         ));
 
         // Switch fp_reg to the callee's frame base.
-        self.core
-            .text
-            .emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
 
         // BLR to the runtime-resolved callee entry. Populates LR for the
         // callee's eventual `ret`. Indirect calls have no inline literal,

@@ -347,7 +347,6 @@ impl<'a> BlockLowerContext<'a> {
         }
         Ok(())
     }
-
 }
 
 #[inline]

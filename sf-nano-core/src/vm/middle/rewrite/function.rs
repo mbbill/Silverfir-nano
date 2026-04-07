@@ -1677,4 +1677,3 @@ fn canonicalize_return_results(
         });
     }
 }
-

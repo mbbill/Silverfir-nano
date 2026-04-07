@@ -11,11 +11,11 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCompareKind, MachineEdge, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
-            MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineCompareKind, MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
+            MachineFunction, MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntBinaryOp,
+            MachineLoadExtension, MachineMemWidth, MachineModule, MachineModuleAbi, MachineProgram,
+            MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
@@ -133,9 +133,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
     Ok(LoweredMachineModule { module, abi })
 }
 
-fn lower_function_runtime(
-    input: LowerFunctionInput<'_>,
-) -> Result<MachineFunctionAbi, WasmError> {
+fn lower_function_runtime(input: LowerFunctionInput<'_>) -> Result<MachineFunctionAbi, WasmError> {
     // Under the new local-call ABI, the dead "call_link" half of
     // `call_scratch` is gone — `FrameLayoutPlan::call_scratch` now only
     // carries helper-scratch slots (the live half). Expose the whole region

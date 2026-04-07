@@ -11,10 +11,7 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         result_buffer::ResultBuffer,
-        runtime::{
-            code::NativeCode,
-            context::NativeContext,
-        },
+        runtime::{code::NativeCode, context::NativeContext},
         store::Store,
         value::Value,
     },

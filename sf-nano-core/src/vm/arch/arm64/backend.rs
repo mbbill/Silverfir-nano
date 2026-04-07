@@ -179,9 +179,11 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         // Tail FP register, if the count is odd.
         while fp_idx < fp_regs.len() {
             let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
-            self.core
-                .text
-                .emit_u32(enc::str_d(fp_regs[fp_idx], abi::stack_reg(), stack_u64_slot(byte_off)));
+            self.core.text.emit_u32(enc::str_d(
+                fp_regs[fp_idx],
+                abi::stack_reg(),
+                stack_u64_slot(byte_off),
+            ));
             fp_idx += 1;
         }
 
@@ -218,9 +220,11 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         }
         while fp_idx < fp_regs.len() {
             let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
-            self.core
-                .text
-                .emit_u32(enc::ldr_d(fp_regs[fp_idx], abi::stack_reg(), stack_u64_slot(byte_off)));
+            self.core.text.emit_u32(enc::ldr_d(
+                fp_regs[fp_idx],
+                abi::stack_reg(),
+                stack_u64_slot(byte_off),
+            ));
             fp_idx += 1;
         }
         // Restore callee-saved GP registers and deallocate frame.
@@ -360,16 +364,12 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::ldr_64(scratch_fp, abi::stack_reg(), 1));
-        self.core.text.emit_u32(enc::add_imm_64(
-            abi::stack_reg(),
-            abi::stack_reg(),
-            16,
-        ));
-        // Restore caller fp_reg.
-        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
         self.core
             .text
-            .emit_u32(enc::mov_reg_64(fp_reg, scratch_fp));
+            .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), 16));
+        // Restore caller fp_reg.
+        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
+        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, scratch_fp));
         // C_RET0 untouched — preserves the error code.
         self.core.text.emit_u32(enc::ret());
         self.gp_scratch.free_index(scratch_idx);
@@ -637,4 +637,3 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         }
     }
 }
-

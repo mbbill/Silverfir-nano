@@ -1370,7 +1370,6 @@ impl<'a> Emulator<'a> {
         }
         Ok(())
     }
-
 }
 
 fn init_entry_regs(
