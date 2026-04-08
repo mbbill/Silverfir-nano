@@ -1,0 +1,6 @@
+[build]
+# Pin the default build target so `cargo check` inside this crate always
+# exercises the `target_os = "none"` code path in sf-nano-core, not the
+# host. Callers can still override with `--target <t>` if they want to
+# verify a different bare-metal triple (e.g. `thumbv7em-none-eabihf`).
+target = "aarch64-unknown-none"

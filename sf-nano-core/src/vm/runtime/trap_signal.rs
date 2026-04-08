@@ -1,19 +1,38 @@
-//! Signal-based trap handler for guard-page memory.
+//! Generic trap-table and install latch for the guard-page signal handler.
 //!
-//! Installs a SIGSEGV/SIGBUS handler that catches faults in JIT code regions
-//! and converts them to wasm traps by redirecting execution to the function's
-//! error-return path.
+//! This module is the OS-agnostic half of the guard-page trap mechanism.
+//! It owns:
 //!
-//! The handler is async-signal-safe: it does not allocate. It sets a `trap_kind`
-//! flag in `NativeContext` (reachable via X19) and rewrites the signal frame's
-//! PC to the function's `return_error_label`. The Rust caller (`eval()`) reads
-//! `trap_kind` after JIT returns and creates the `WasmError`.
+//! - the registry of JIT code ranges → error-return addresses,
+//! - the signal-storm debug counter,
+//! - the `TRAP_KIND_OFFSET` that tells the platform handler where to
+//!   record the trap kind on the active [`NativeContext`],
+//! - the one-shot install latch for the OS-specific signal handler.
+//!
+//! The per-(arch × os) ucontext parsing, register surgery, and sigaction
+//! wiring live under [`crate::vm::runtime::os::signal`]. Each platform
+//! module there exports a single `install_platform_handler()` and reads
+//! back into this module through the two `pub(in crate::vm::runtime)`
+//! accessors below:
+//!
+//! - [`signal_count_inc_and_check`] — bumps the storm counter, returns
+//!   `true` if the caller should abort.
+//! - [`try_resolve_trap`] — looks up a faulting PC in the trap table and
+//!   returns `(error_ret, trap_kind_offset)` when the PC lies in JIT code.
+//!
+//! The handler is async-signal-safe: it does not allocate. It sets a
+//! `trap_kind` flag in `NativeContext` (reachable via the architecture's
+//! context register) and rewrites the signal frame's PC to the function's
+//! `return_error_label`. The Rust caller (`eval()`) reads `trap_kind` after
+//! JIT returns and creates the `WasmError`.
 //!
 //! This module is gated on `#[cfg(sf_has_guard_pages)]`.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use alloc::vec::Vec;
+
+use super::os::signal::install_platform_handler;
 
 /// Debug counter: aborts after too many consecutive signals (infinite loop detection).
 static SIGNAL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -33,6 +52,9 @@ struct JitCodeRange {
 static mut TRAP_TABLE: Vec<JitCodeRange> = Vec::new();
 static TRAP_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
 static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// Offset of the `trap_kind` field within `NativeContext`, set once at init.
+static TRAP_KIND_OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 fn lock_trap_table() {
     while TRAP_TABLE_LOCK
@@ -65,6 +87,7 @@ pub(crate) fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
 }
 
 /// Look up the error-return address for a faulting PC.
+///
 /// Must be called with the trap table lock held (or from the signal handler
 /// where concurrent modification is not expected on the same thread).
 unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
@@ -79,6 +102,40 @@ unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Bump the signal-storm counter and report whether the caller should abort.
+///
+/// Called by every `os::signal::*` platform handler at entry. Returns
+/// `true` once the counter exceeds 100 consecutive signals — a crude
+/// infinite-loop detector that prevents a bad trap-table from producing
+/// an unbounded re-entry loop.
+#[inline]
+pub(in crate::vm::runtime) fn signal_count_inc_and_check() -> bool {
+    SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed) > 100
+}
+
+/// Resolve a faulting PC to its trap-handling parameters.
+///
+/// Returns `(error_ret, trap_kind_offset)` when `pc` lies inside a
+/// registered JIT code range. The caller (a platform-specific signal
+/// handler) uses `error_ret` as the new PC and `trap_kind_offset` to
+/// locate the `trap_kind` field inside `NativeContext`.
+///
+/// Returns `None` when the fault did not happen in JIT code; the caller
+/// should abort because we cannot chain to another handler safely.
+///
+/// # Safety
+///
+/// Must be called from a signal context where concurrent mutation of
+/// `TRAP_TABLE` on the same thread is not possible. The trap table is
+/// append-only during compilation and stable during execution, so this
+/// holds as long as signals only fire during `eval()`.
+#[inline]
+pub(in crate::vm::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<(usize, usize)> {
+    let error_ret = unsafe { lookup_return_error(pc) }?;
+    let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
+    Some((error_ret, trap_kind_offset))
 }
 
 /// Install the signal handler (idempotent).
@@ -120,435 +177,6 @@ pub(crate) fn clear_registered_jit_ranges() {
     }
     unlock_trap_table();
 }
-
-// ─── macOS ARM64 ────────────────────────────────────────────────────────────
-
-#[cfg(all(sf_os_macos, sf_arch_arm64))]
-mod platform {
-    //! macOS ARM64 signal handler using Darwin's ucontext_t layout.
-
-    use super::*;
-
-    // Signal constants
-    const SIGSEGV: i32 = 11;
-    const SIGBUS: i32 = 10;
-    const SA_SIGINFO: i32 = 0x0040;
-
-    // libc types (minimal, layout-compatible)
-    #[repr(C)]
-    struct sigaction {
-        // On Darwin ARM64, __sigaction_u is a union; with SA_SIGINFO the
-        // sa_sigaction field is used. We declare the whole union as one
-        // function-pointer field since both variants have the same size.
-        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
-        sa_mask: u32,
-        sa_flags: i32,
-    }
-
-    unsafe extern "C" {
-        fn sigaction(sig: i32, act: *const sigaction, oldact: *mut sigaction) -> i32;
-    }
-
-    // Darwin ARM64 mcontext layout (from <mach/arm/_structs.h>).
-    // We only need the exception-state and thread-state portions.
-    #[repr(C)]
-    struct Arm64ThreadState {
-        x: [u64; 29], // X0-X28
-        fp: u64,      // X29
-        lr: u64,      // X30
-        sp: u64,
-        pc: u64,
-        cpsr: u32,
-        _pad: u32,
-    }
-
-    /// Offsets into Darwin's `ucontext_t` to reach the thread state.
-    /// On ARM64 macOS the layout is:
-    ///   ucontext_t.uc_mcontext → pointer to __darwin_mcontext64
-    ///   __darwin_mcontext64.__es (exception state, 16 bytes: far:u64 + esr:u32 + exception:u32)
-    ///   __darwin_mcontext64.__ss (thread state = Arm64ThreadState)
-    const UCONTEXT_MCONTEXT_OFFSET: usize = 48; // uc_mcontext field offset
-    const MCONTEXT_SS_OFFSET: usize = 16; // skip __es (exception state)
-
-    unsafe fn thread_state(ucontext: *mut u8) -> *mut Arm64ThreadState {
-        let mctx_ptr = *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *const *mut u8);
-        mctx_ptr.add(MCONTEXT_SS_OFFSET) as *mut Arm64ThreadState
-    }
-
-    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let count = SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count > 100 {
-            std::process::abort();
-        }
-
-        let ts = unsafe { thread_state(ucontext) };
-        let pc = unsafe { (*ts).pc as usize };
-
-        let error_ret = unsafe { lookup_return_error(pc) };
-        let Some(error_ret) = error_ret else {
-            // Not in JIT code — abort (we can't chain easily without libc).
-            std::process::abort();
-        };
-
-        // Read X19 (NativeContext pointer) from the faulting thread state.
-        let ctx_ptr = unsafe { (*ts).x[19] } as *mut u8;
-
-        // Set ctx.trap_kind = 1 (MemoryOutOfBounds).
-        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-        if trap_kind_offset > 0 {
-            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
-            unsafe { *trap_kind_ptr = 1 };
-        }
-
-        // Set X0 = 1 (error status for eval())
-        unsafe { (*ts).x[0] = 1 };
-
-        // Redirect PC to the function's return_error_label
-        unsafe { (*ts).pc = error_ret as u64 };
-    }
-
-    pub(super) unsafe fn install_platform_handler() {
-        let act = sigaction {
-            sa_sigaction: signal_handler,
-            sa_mask: 0,
-            sa_flags: SA_SIGINFO,
-        };
-        sigaction(SIGSEGV, &act, core::ptr::null_mut());
-        sigaction(SIGBUS, &act, core::ptr::null_mut());
-    }
-}
-
-// ─── Linux ARM64 ────────────────────────────────────────────────────────────
-
-#[cfg(all(sf_os_linux, sf_arch_arm64))]
-mod platform {
-    use super::*;
-
-    const SIGSEGV: i32 = 11;
-    const SIGBUS: i32 = 7;
-    const SA_SIGINFO: i32 = 4;
-
-    #[repr(C)]
-    struct kernel_sigaction {
-        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
-        sa_flags: u64,
-        sa_restorer: usize,
-        sa_mask: u64,
-    }
-
-    unsafe extern "C" {
-        fn sigaction(sig: i32, act: *const kernel_sigaction, oldact: *mut kernel_sigaction) -> i32;
-    }
-
-    // Linux aarch64 ucontext layout:
-    //   ucontext.uc_mcontext.regs[0..31] = X0-X30
-    //   ucontext.uc_mcontext.sp
-    //   ucontext.uc_mcontext.pc
-    const UCONTEXT_MCONTEXT_REGS_OFFSET: usize = 184; // offsetof(ucontext_t, uc_mcontext.regs)
-
-    #[repr(C)]
-    struct McontextRegs {
-        regs: [u64; 31],
-        sp: u64,
-        pc: u64,
-        pstate: u64,
-    }
-
-    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let mregs =
-            unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs) };
-        let pc = mregs.pc as usize;
-
-        let error_ret = unsafe { lookup_return_error(pc) };
-        let Some(error_ret) = error_ret else {
-            std::process::abort();
-        };
-
-        let ctx_ptr = mregs.regs[19] as *mut u8;
-        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-        if trap_kind_offset > 0 {
-            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
-            unsafe { *trap_kind_ptr = 1 };
-        }
-
-        mregs.regs[0] = 1;
-        mregs.pc = error_ret as u64;
-    }
-
-    pub(super) unsafe fn install_platform_handler() {
-        let act = kernel_sigaction {
-            sa_sigaction: signal_handler,
-            sa_flags: SA_SIGINFO as u64,
-            sa_restorer: 0,
-            sa_mask: 0,
-        };
-        sigaction(SIGSEGV, &act, core::ptr::null_mut());
-        sigaction(SIGBUS, &act, core::ptr::null_mut());
-    }
-}
-
-// ─── macOS x86_64 ───────────────────────────────────────────────────────────
-
-#[cfg(all(sf_os_macos, sf_arch_x64))]
-mod platform {
-    //! macOS x86_64 signal handler using Darwin's ucontext_t layout.
-
-    use super::*;
-
-    const SIGSEGV: i32 = 11;
-    const SIGBUS: i32 = 10;
-    const SA_SIGINFO: i32 = 0x0040;
-
-    #[repr(C)]
-    struct sigaction {
-        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
-        sa_mask: u32,
-        sa_flags: i32,
-    }
-
-    unsafe extern "C" {
-        fn sigaction(sig: i32, act: *const sigaction, oldact: *mut sigaction) -> i32;
-    }
-
-    // Darwin x86_64 mcontext layout (from <i386/_structs.h>):
-    //   __darwin_mcontext64.__es (exception state, 16 bytes)
-    //   __darwin_mcontext64.__ss (thread state = x86_thread_state64_t)
-    // x86_thread_state64_t layout:
-    //   rax, rbx, rcx, rdx, rdi, rsi, rbp, rsp, r8-r15, rip, rflags, cs, fs, gs
-    const UCONTEXT_MCONTEXT_OFFSET: usize = 48;
-    const MCONTEXT_SS_OFFSET: usize = 16; // skip __es (exception state)
-
-    #[repr(C)]
-    struct X86ThreadState64 {
-        rax: u64,
-        rbx: u64,
-        rcx: u64,
-        rdx: u64,
-        rdi: u64,
-        rsi: u64,
-        rbp: u64,
-        rsp: u64,
-        r8: u64,
-        r9: u64,
-        r10: u64,
-        r11: u64,
-        r12: u64,
-        r13: u64,
-        r14: u64,
-        r15: u64,
-        rip: u64,
-        rflags: u64,
-        cs: u64,
-        fs: u64,
-        gs: u64,
-    }
-
-    unsafe fn thread_state(ucontext: *mut u8) -> *mut X86ThreadState64 {
-        let mctx_ptr = *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *const *mut u8);
-        mctx_ptr.add(MCONTEXT_SS_OFFSET) as *mut X86ThreadState64
-    }
-
-    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let ts = unsafe { thread_state(ucontext) };
-        let pc = unsafe { (*ts).rip as usize };
-
-        let error_ret = unsafe { lookup_return_error(pc) };
-        let Some(error_ret) = error_ret else {
-            std::process::abort();
-        };
-
-        // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
-        let ctx_ptr = unsafe { (*ts).rbx } as *mut u8;
-
-        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-        if trap_kind_offset > 0 {
-            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
-            unsafe { *trap_kind_ptr = 1 };
-        }
-
-        // Set RAX = 1 (error status for eval())
-        unsafe { (*ts).rax = 1 };
-
-        // Redirect RIP to the function's return_error_label
-        unsafe { (*ts).rip = error_ret as u64 };
-    }
-
-    pub(super) unsafe fn install_platform_handler() {
-        let act = sigaction {
-            sa_sigaction: signal_handler,
-            sa_mask: 0,
-            sa_flags: SA_SIGINFO,
-        };
-        sigaction(SIGSEGV, &act, core::ptr::null_mut());
-        sigaction(SIGBUS, &act, core::ptr::null_mut());
-    }
-}
-
-// ─── Linux ARM32 ────────────────────────────────────────────────────────────
-
-#[cfg(all(sf_os_linux, sf_arch_armv7a))]
-mod platform {
-    use super::*;
-
-    const SIGSEGV: i32 = 11;
-    const SIGBUS: i32 = 7;
-    const SA_SIGINFO: i32 = 4;
-
-    #[repr(C)]
-    struct kernel_sigaction {
-        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
-        sa_flags: u32,
-        sa_restorer: usize,
-        sa_mask: u64,
-    }
-
-    unsafe extern "C" {
-        fn sigaction(sig: i32, act: *const kernel_sigaction, oldact: *mut kernel_sigaction) -> i32;
-    }
-
-    // Linux arm32 ucontext layout:
-    //   ucontext.uc_mcontext is a struct sigcontext at a fixed offset.
-    //   sigcontext fields: trap_no, error_code, oldmask, arm_r0..arm_r10,
-    //   arm_fp, arm_ip, arm_sp, arm_lr, arm_pc, arm_cpsr, fault_address
-    const UCONTEXT_MCONTEXT_OFFSET: usize = 32; // offsetof(ucontext_t, uc_mcontext) on arm32
-
-    #[repr(C)]
-    struct ArmSigcontext {
-        trap_no: u32,
-        error_code: u32,
-        oldmask: u32,
-        arm_r0: u32,
-        arm_r1: u32,
-        arm_r2: u32,
-        arm_r3: u32,
-        arm_r4: u32,
-        arm_r5: u32,
-        arm_r6: u32,
-        arm_r7: u32,
-        arm_r8: u32,
-        arm_r9: u32,
-        arm_r10: u32,
-        arm_fp: u32, // r11
-        arm_ip: u32, // r12
-        arm_sp: u32, // r13
-        arm_lr: u32, // r14
-        arm_pc: u32, // r15
-        arm_cpsr: u32,
-        fault_address: u32,
-    }
-
-    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let sc = unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_OFFSET) as *mut ArmSigcontext) };
-        let pc = sc.arm_pc as usize;
-
-        let error_ret = unsafe { lookup_return_error(pc) };
-        let Some(error_ret) = error_ret else {
-            std::process::abort();
-        };
-
-        // R9 = MACHINE_CTX_REG (NativeContext pointer) on armv7a.
-        let ctx_ptr = sc.arm_r9 as *mut u8;
-        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-        if trap_kind_offset > 0 {
-            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
-            unsafe { *trap_kind_ptr = 1 };
-        }
-
-        sc.arm_r0 = 1; // error status
-        sc.arm_pc = error_ret as u32;
-    }
-
-    pub(super) unsafe fn install_platform_handler() {
-        let act = kernel_sigaction {
-            sa_sigaction: signal_handler,
-            sa_flags: SA_SIGINFO as u32,
-            sa_restorer: 0,
-            sa_mask: 0,
-        };
-        sigaction(SIGSEGV, &act, core::ptr::null_mut());
-        sigaction(SIGBUS, &act, core::ptr::null_mut());
-    }
-}
-
-// ─── Linux x86_64 ───────────────────────────────────────────────────────────
-
-#[cfg(all(sf_os_linux, sf_arch_x64))]
-mod platform {
-    use super::*;
-
-    const SIGSEGV: i32 = 11;
-    const SIGBUS: i32 = 7;
-    const SA_SIGINFO: i32 = 4;
-
-    #[repr(C)]
-    struct kernel_sigaction {
-        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
-        sa_flags: u64,
-        sa_restorer: usize,
-        sa_mask: u64,
-    }
-
-    unsafe extern "C" {
-        fn sigaction(sig: i32, act: *const kernel_sigaction, oldact: *mut kernel_sigaction) -> i32;
-    }
-
-    // Linux x86_64 ucontext layout (glibc / musl sys/ucontext.h):
-    //   uc_flags           u64   @ 0
-    //   uc_link            ptr   @ 8
-    //   uc_stack           24    @ 16
-    //   uc_mcontext.gregs  23*u64@ 40   (gregs first inside mcontext_t)
-    //   ...
-    //
-    // On this platform `uc_sigmask` sits *after* `uc_mcontext`, not before,
-    // so the mcontext offset is a flat 40 bytes from the start of ucontext_t.
-    //
-    // gregs index constants from Linux sys/ucontext.h:
-    //   REG_R8=0, R9=1, R10=2, R11=3, R12=4, R13=5, R14=6, R15=7,
-    //   REG_RDI=8, RSI=9, RBP=10, RBX=11, RDX=12, RAX=13, RCX=14, RSP=15, RIP=16
-    const UCONTEXT_GREGS_OFFSET: usize = 40;
-    const REG_RAX: usize = 13;
-    const REG_RBX: usize = 11;
-    const REG_RIP: usize = 16;
-
-    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
-        let gregs = unsafe { ucontext.add(UCONTEXT_GREGS_OFFSET) as *mut u64 };
-        let pc = unsafe { *gregs.add(REG_RIP) } as usize;
-
-        let error_ret = unsafe { lookup_return_error(pc) };
-        let Some(error_ret) = error_ret else {
-            std::process::abort();
-        };
-
-        // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
-        let ctx_ptr = unsafe { *gregs.add(REG_RBX) } as *mut u8;
-        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-        if trap_kind_offset > 0 {
-            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
-            unsafe { *trap_kind_ptr = 1 };
-        }
-
-        unsafe {
-            *gregs.add(REG_RAX) = 1;
-            *gregs.add(REG_RIP) = error_ret as u64;
-        }
-    }
-
-    pub(super) unsafe fn install_platform_handler() {
-        let act = kernel_sigaction {
-            sa_sigaction: signal_handler,
-            sa_flags: SA_SIGINFO as u64,
-            sa_restorer: 0,
-            sa_mask: 0,
-        };
-        sigaction(SIGSEGV, &act, core::ptr::null_mut());
-        sigaction(SIGBUS, &act, core::ptr::null_mut());
-    }
-}
-
-use platform::install_platform_handler;
-
-/// Offset of the `trap_kind` field within `NativeContext`, set once at init.
-static TRAP_KIND_OFFSET: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// Set the byte offset of `NativeContext::trap_kind` so the signal handler
 /// can write it without knowing the struct layout at compile time.

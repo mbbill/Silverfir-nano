@@ -16,6 +16,7 @@ use crate::{
     },
 };
 
+use super::callconv;
 use super::reg::X86Reg;
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 
@@ -33,9 +34,12 @@ struct RegPlan {
     /// Ordered FP dynamic bank. Earlier entries are preferred for allocation.
     fp_dynamic: &'static [u32],
     fp_scratch: &'static [u32],
-    callee_saved_gp: &'static [X86Reg],
     stack_alignment_bytes: u32,
 }
+
+// Callee-saved set comes from `callconv`, not `REG_PLAN`, because the ABI
+// decides which GP regs must survive a C call. See `callconv::sysv` /
+// `callconv::win64`.
 
 const REG_PLAN: RegPlan = RegPlan {
     ctx: X86Reg::RBX,
@@ -65,29 +69,6 @@ const REG_PLAN: RegPlan = RegPlan {
     fp_dynamic: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     fp_scratch: &[0, 1, 2], // XMM0, XMM1, XMM2
 
-    // Callee-saved GP registers (fixed roles plus the callee-saved tail of the
-    // dynamic bank). No callee-saved FP regs on System V AMD64.
-    #[cfg(not(sf_os_windows))]
-    callee_saved_gp: &[
-        X86Reg::RBX,
-        X86Reg::RBP,
-        X86Reg::R12,
-        X86Reg::R13,
-        X86Reg::R14,
-        X86Reg::R15,
-    ],
-    #[cfg(sf_os_windows)]
-    callee_saved_gp: &[
-        X86Reg::RBX,
-        X86Reg::RBP,
-        X86Reg::R12,
-        X86Reg::R13,
-        X86Reg::R14,
-        X86Reg::R15,
-        X86Reg::RDI,
-        X86Reg::RSI,
-    ],
-
     stack_alignment_bytes: 16,
 };
 
@@ -99,7 +80,7 @@ const _: () = assert!(
 
 #[inline]
 pub(super) const fn callee_saved_gp_count() -> usize {
-    REG_PLAN.callee_saved_gp.len()
+    callconv::CALLEE_SAVED_GP.len()
 }
 
 #[inline]
@@ -109,7 +90,7 @@ pub(super) const fn stack_alignment_bytes() -> u32 {
 
 #[inline]
 pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
-    REG_PLAN.callee_saved_gp
+    callconv::CALLEE_SAVED_GP
 }
 
 // ── C ABI boundary registers ─────────────────────────────────────────────────
@@ -118,22 +99,13 @@ pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
 // caller-clobbered dynamic or scratch regs, but must not alias the fixed
 // MachineIR roles. Boundary lowering is what makes that safe: SSA values are
 // dead at the boundary and local state has already been published.
+//
+// The actual values live in `callconv::sysv` / `callconv::win64`; re-exported
+// here so existing `use super::abi::{C_ARG0, ...}` imports keep working.
 
-#[cfg(not(sf_os_windows))]
-pub(super) const C_ARG0: X86Reg = X86Reg::RDI;
-#[cfg(not(sf_os_windows))]
-pub(super) const C_ARG1: X86Reg = X86Reg::RSI;
-#[cfg(not(sf_os_windows))]
-pub(super) const C_ARG2: X86Reg = X86Reg::RDX;
-#[cfg(sf_os_windows)]
-pub(super) const C_ARG0: X86Reg = X86Reg::RCX;
-#[cfg(sf_os_windows)]
-pub(super) const C_ARG1: X86Reg = X86Reg::RDX;
-#[cfg(sf_os_windows)]
-pub(super) const C_ARG2: X86Reg = X86Reg::R8;
-#[cfg(sf_os_windows)]
-pub(super) const C_ARG3: X86Reg = X86Reg::R9;
-pub(super) const C_RET0: X86Reg = X86Reg::RAX;
+pub(super) use super::callconv::{C_ARG0, C_ARG1, C_ARG2, C_RET0};
+#[allow(unused_imports)]
+pub(super) use super::callconv::C_ARG3;
 
 // ── Derived config ───────────────────────────────────────────────────────────
 

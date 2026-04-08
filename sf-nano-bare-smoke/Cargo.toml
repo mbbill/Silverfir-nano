@@ -1,0 +1,21 @@
+[package]
+name = "sf-nano-bare-smoke"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bill Ming <mbbill@gmail.com>"]
+description = "Bare-metal smoke test for sf-nano-core's runtime/os/none.rs path"
+license = "MIT/Apache-2.0"
+publish = false
+
+# This crate exists solely to validate that sf-nano-core compiles cleanly on
+# a `target_os = "none"` target with the embedder-provided OS shim contract.
+# It is NOT a workspace member — standalone so it can pin its own target via
+# `.cargo/config.toml` without affecting the main workspace builds.
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+
+[dependencies]
+sf-nano-core = { path = "../sf-nano-core", default-features = false, features = ["jit"] }

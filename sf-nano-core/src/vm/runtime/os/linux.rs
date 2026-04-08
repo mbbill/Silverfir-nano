@@ -11,9 +11,9 @@
 
 use core::ptr;
 
-use super::posix::{
-    mmap, mprotect, munmap, MAP_FAILED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
-};
+use super::posix::{mmap, mprotect, munmap, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+#[cfg(sf_has_guard_pages)]
+use super::posix::PROT_NONE;
 
 const PROT_EXEC: i32 = 0x04;
 const MAP_ANONYMOUS: i32 = 0x20;

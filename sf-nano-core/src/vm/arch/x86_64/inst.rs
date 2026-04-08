@@ -13,18 +13,13 @@ use crate::{
     },
 };
 
-#[cfg(sf_os_windows)]
-use super::abi::C_ARG3;
-use super::abi::{C_ARG0, C_ARG1, C_ARG2};
-#[cfg(sf_os_windows)]
-use super::helpers::x86_64_trapping_trunc_win;
-
 use super::{
-    abi::{fp_machine_reg, map_fixed_reg},
+    abi::{fp_machine_reg, map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
     backend::X86_64Backend,
+    callconv,
     enc::{self, Cc},
     fusion::{map_float_cond, map_int_cond},
-    helpers::{x86_64_saturating_trunc, x86_64_trapping_trunc},
+    helpers::x86_64_saturating_trunc,
     reg::X86Reg,
 };
 use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_width};
@@ -2144,7 +2139,7 @@ impl<'a> X86_64Backend<'a> {
     /// Save caller-clobbered GP dynamic registers to the system stack before a
     /// C helper call. Pushes 8 registers (7 live-capable dynamic regs + padding)
     /// for 16-byte alignment.
-    fn save_caller_clobbered_gp_dynamic(&mut self) {
+    pub(super) fn save_caller_clobbered_gp_dynamic(&mut self) {
         // Push 7 caller-clobbered GP dynamic regs + 1 padding lane for
         // 16-byte alignment (8 * 8 = 64 bytes)
         enc::push(&mut self.core.text, X86Reg::RCX);
@@ -2159,7 +2154,7 @@ impl<'a> X86_64Backend<'a> {
 
     /// Restore caller-clobbered GP dynamic registers from the system stack
     /// after a C helper call.
-    fn restore_caller_clobbered_gp_dynamic(&mut self) {
+    pub(super) fn restore_caller_clobbered_gp_dynamic(&mut self) {
         enc::pop(&mut self.core.text, X86Reg::R10); // padding
         enc::pop(&mut self.core.text, X86Reg::R10);
         enc::pop(&mut self.core.text, X86Reg::R9);
@@ -2176,49 +2171,21 @@ impl<'a> X86_64Backend<'a> {
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
-        // The C helper call clobbers the caller-clobbered GP dynamic subset.
-        self.save_caller_clobbered_gp_dynamic();
-        #[cfg(not(sf_os_windows))]
-        {
-            enc::mov_rr_64(
-                &mut self.core.text,
-                C_ARG0,
-                map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
-            );
-            enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
-            self.materialize_u64(C_ARG2, convert_op_code(op));
-            self.materialize_u64(
-                self.gp_scratch.reg(1),
-                x86_64_trapping_trunc as usize as u64,
-            );
-            enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX);
-            self.restore_caller_clobbered_gp_dynamic();
-            enc::test_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
-            self.emit_jcc(Cc::NE, self.core.return_error_label);
-        }
-        #[cfg(sf_os_windows)]
-        {
-            enc::mov_rr_64(
-                &mut self.core.text,
-                C_ARG0,
-                map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
-            );
-            enc::mov_rr_64(&mut self.core.text, C_ARG1, src);
-            self.materialize_u64(C_ARG2, convert_op_code(op));
-            enc::mov_rr_64(&mut self.core.text, C_ARG3, X86Reg::RSP);
-            self.materialize_u64(
-                self.gp_scratch.reg(1),
-                x86_64_trapping_trunc_win as usize as u64,
-            );
-            enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-            enc::load_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RSP, 0);
-            self.restore_caller_clobbered_gp_dynamic();
-            enc::test_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
-            self.emit_jcc(Cc::NE, self.core.return_error_label);
-        }
-        if dst != self.gp_scratch.reg(1) {
-            enc::mov_rr_64(&mut self.core.text, dst, self.gp_scratch.reg(1));
+        // The C trunc helper call is ABI-specific: SysV returns a two-field
+        // `repr(C)` struct in RAX/RDX, while Win64 receives an out-pointer
+        // as a fourth argument. `callconv::emit_trapping_trunc_call` owns
+        // the whole save → arg-setup → call → restore → test → branch
+        // sequence and leaves the 64-bit result in `gp_scratch.reg(1)`.
+        let result_scratch = self.gp_scratch.reg(1);
+        callconv::emit_trapping_trunc_call(
+            self,
+            src,
+            convert_op_code(op),
+            result_scratch,
+            self.core.return_error_label,
+        );
+        if dst != result_scratch {
+            enc::mov_rr_64(&mut self.core.text, dst, result_scratch);
         }
         Ok(())
     }

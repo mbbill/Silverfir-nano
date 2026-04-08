@@ -55,6 +55,13 @@
 #[cfg(sf_has_posix)]
 mod posix;
 
+// Per-(arch × os) signal handler modules live here. Only compiled when
+// `sf_has_guard_pages` is set, because they are the only consumers of
+// `trap_signal`. Exactly one platform submodule is active for a given
+// build; see `signal/mod.rs`.
+#[cfg(sf_has_guard_pages)]
+pub(in crate::vm::runtime) mod signal;
+
 #[cfg(sf_os_linux)]
 mod linux;
 #[cfg(sf_os_linux)]

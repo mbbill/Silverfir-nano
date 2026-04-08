@@ -27,6 +27,7 @@ use super::{
         self, fp_machine_reg, map_fixed_reg, map_reg, max_fp_machine_regs, max_total_machine_regs,
         C_ARG0, C_ARG1, C_RET0, FP_MACHINE_REG_COUNT,
     },
+    callconv,
     enc::{self, Cc},
     helpers::x86_64_raise_trap,
     reg::X86Reg,
@@ -45,27 +46,11 @@ use crate::vm::arch::common::{
 
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 
-/// After pushing the callee-saved GP set (6 regs = 48 bytes) + return address
-/// (8 bytes) = 56 bytes. To maintain 16-byte alignment we need 8 more bytes
-/// of padding (56 + 8 = 64 = 16*4).
-#[cfg(not(sf_os_windows))]
-const STACK_PADDING: u32 = {
-    let n = abi::callee_saved_gp_count() as u32;
-    if (8 + n * 8) % 16 == 0 {
-        0
-    } else {
-        8
-    }
-};
-#[cfg(sf_os_windows)]
-const STACK_PADDING: u32 = {
-    let gp = abi::callee_saved_gp_count() as u32 * 8;
-    let xmm = 10 * 16u32;
-    let shadow = 32u32;
-    let extra = xmm + shadow;
-    let pre = 8 + gp + extra;
-    extra + if pre % 16 == 0 { 0 } else { 8 }
-};
+/// Extra bytes subtracted from RSP after the GP saves. Owned by the active
+/// calling convention because the exact shape depends on whether Win64 XMM
+/// spill and shadow space are required. See `callconv::sysv::STACK_PADDING`
+/// / `callconv::win64::STACK_PADDING`.
+const STACK_PADDING: u32 = callconv::STACK_PADDING;
 
 // ── Branch fixup types ───────────────────────────────────────────────────────
 
@@ -145,10 +130,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                 enc::sub_rsp_imm32(&mut self.core.text, STACK_PADDING);
             }
         }
-        #[cfg(sf_os_windows)]
-        for i in 0..10u32 {
-            enc::movaps_store_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32);
-        }
+        // ABI-specific spills (e.g. XMM6..XMM15 on Win64).
+        callconv::emit_prologue_extra(self);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_CTX_REG), C_ARG0);
         enc::mov_rr_64(&mut self.core.text, map_fixed_reg(MACHINE_FP_REG), C_ARG1);
         // Load mem0 base/size from ctx
@@ -167,10 +150,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn lower_epilogue(&mut self) {
-        #[cfg(sf_os_windows)]
-        for i in 0..10u32 {
-            enc::movaps_load_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32);
-        }
+        // ABI-specific restores (mirror of `callconv::emit_prologue_extra`).
+        callconv::emit_epilogue_extra(self);
         if STACK_PADDING > 0 {
             if STACK_PADDING <= 127 {
                 enc::add_rsp_imm8(&mut self.core.text, STACK_PADDING as u8);

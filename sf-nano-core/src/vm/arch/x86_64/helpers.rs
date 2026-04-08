@@ -92,6 +92,11 @@ pub(crate) unsafe extern "C" fn x86_64_trapping_trunc(
 /// Saturating truncation helper called from generated code.
 /// Returns result in RAX (no error possible for sat).
 
+/// Win64 variant of `x86_64_trapping_trunc`.
+///
+/// Win64 does not return a two-field `repr(C)` struct in registers, so the
+/// caller passes an out-pointer as a fourth argument and receives the
+/// status as a `u32` return value. Used by `callconv::win64`.
 #[cfg(sf_os_windows)]
 pub(crate) unsafe extern "C" fn x86_64_trapping_trunc_win(
     ctx: *mut NativeContext,

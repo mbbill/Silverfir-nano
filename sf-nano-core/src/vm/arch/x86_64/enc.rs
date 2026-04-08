@@ -1761,6 +1761,9 @@ pub fn add_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
 }
 
 /// MOVAPS [RSP+disp], XMMn
+///
+/// Used by `callconv::win64::emit_prologue_extra` to spill XMM6..XMM15.
+/// Not used under SysV.
 #[cfg(sf_os_windows)]
 pub fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
@@ -1779,6 +1782,9 @@ pub fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
 }
 
 /// MOVAPS XMMn, [RSP+disp]
+///
+/// Used by `callconv::win64::emit_epilogue_extra` to restore XMM6..XMM15.
+/// Not used under SysV.
 #[cfg(sf_os_windows)]
 pub fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
