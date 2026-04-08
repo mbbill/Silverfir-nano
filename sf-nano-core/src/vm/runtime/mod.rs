@@ -45,8 +45,6 @@ pub(crate) mod layout;
 #[cfg(sf_jit)]
 pub(crate) mod preserved;
 #[cfg(sf_jit)]
-pub(crate) mod profiler;
-#[cfg(sf_jit)]
 pub(crate) mod trap;
 #[cfg(sf_jit)]
 #[cfg(sf_has_guard_pages)]

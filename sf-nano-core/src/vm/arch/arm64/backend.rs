@@ -27,11 +27,13 @@ use super::{
     abi, enc,
     reg::{Arm64FpReg, Arm64Reg},
 };
+#[cfg(sf_ir_dump)]
+use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
     backend::ArchBackend,
     core::CompilerCore,
     scratch_pool::ScratchPool,
-    types::{DebugRegion, ParallelSource},
+    types::ParallelSource,
 };
 
 // ── Frame layout constants ───────────────────────────────────────────────────
@@ -79,7 +81,7 @@ pub(super) struct BranchFixup {
 pub(crate) struct CompiledArm64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
+    #[cfg(sf_ir_dump)]
     pub debug_regions: Vec<DebugRegion>,
 }
 
@@ -634,6 +636,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         CompiledArm64Entry {
             entry,
             text_len: emitted.text_len,
+            #[cfg(sf_ir_dump)]
             debug_regions: emitted.debug_regions.clone(),
         }
     }

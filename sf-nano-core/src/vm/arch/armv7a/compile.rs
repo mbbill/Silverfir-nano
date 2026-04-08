@@ -150,6 +150,7 @@ pub(crate) fn compile_module(
         }
         let text_bytes = artifact.text.finish();
         let text_len = text_bytes.len();
+        #[cfg(sf_has_debug_regions)]
         let debug_regions = artifact.debug_regions;
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
@@ -162,6 +163,7 @@ pub(crate) fn compile_module(
             #[cfg(sf_has_guard_pages)]
             return_error,
             text_len,
+            #[cfg(sf_has_debug_regions)]
             debug_regions,
         }));
     }
@@ -171,23 +173,31 @@ pub(crate) fn compile_module(
     compiled
         .publish_local_call_infos(unsafe { executable.as_ptr().add(function_info_table_offset) });
 
-    // Record profiler symbols
-    let module_name = &module.name;
-    for (func_idx, entry) in entries.iter().enumerate() {
-        if let Some(entry) = entry {
-            let func_base = entry.entry as *const u8;
-            for region in &entry.debug_regions {
-                if region.len > 0 {
-                    let region_start = unsafe { func_base.add(region.offset) };
-                    let code_bytes =
-                        unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                    let symbol =
-                        alloc::format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
-                    crate::vm::runtime::profiler::record_function(
-                        region_start,
-                        code_bytes,
-                        &symbol,
-                    );
+    // Export JIT symbol/code info so external profilers (samply, perf) can
+    // resolve the emitted regions.
+    #[cfg(sf_jitdump)]
+    {
+        let module_name = &module.name;
+        for (func_idx, entry) in entries.iter().enumerate() {
+            if let Some(entry) = entry {
+                let func_base = entry.entry as *const u8;
+                for region in &entry.debug_regions {
+                    if region.len > 0 {
+                        let region_start = unsafe { func_base.add(region.offset) };
+                        let code_bytes =
+                            unsafe { core::slice::from_raw_parts(region_start, region.len) };
+                        let symbol = alloc::format!(
+                            "jit::{}::func{}::{}",
+                            module_name,
+                            func_idx,
+                            region.label
+                        );
+                        crate::vm::debug::jitdump::record_function(
+                            region_start,
+                            code_bytes,
+                            &symbol,
+                        );
+                    }
                 }
             }
         }

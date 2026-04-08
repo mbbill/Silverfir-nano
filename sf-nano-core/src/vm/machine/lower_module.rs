@@ -98,8 +98,6 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
     }
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
-    #[cfg(not(sf_has_guard_pages))]
-    let guard_pages = false;
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
             *function,
@@ -108,6 +106,7 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
             &function_abis,
             &is_local_func,
             &mut const_pool,
+            #[cfg(sf_has_guard_pages)]
             guard_pages,
         )?);
     }
@@ -174,7 +173,7 @@ fn lower_function(
     runtime: &[MachineFunctionAbi],
     is_local_func: &[bool],
     const_pool: &mut ConstPoolBuilder,
-    guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
     let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();

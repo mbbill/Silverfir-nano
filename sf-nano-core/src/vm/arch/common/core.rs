@@ -16,8 +16,10 @@ use crate::vm::runtime::code::CompiledNativeModule;
 
 use super::helpers::{trap_kind_index, MACHINE_TRAP_KIND_COUNT};
 use super::text_emitter::TextEmitter;
+#[cfg(sf_has_debug_regions)]
+use super::types::DebugRegion;
 use super::types::{
-    DebugRegion, DirectCallPatch, EdgeStub, FunctionArtifact, LocalPtrPatch, PendingLocalPtrPatch,
+    DirectCallPatch, EdgeStub, FunctionArtifact, LocalPtrPatch, PendingLocalPtrPatch,
 };
 
 /// Shared compilation state for all arch backends.
@@ -481,7 +483,7 @@ impl<'a> CompilerCore<'a> {
         self,
         internal_entry_offset: usize,
         #[cfg(sf_has_guard_pages)] body_local_error_offset: usize,
-        debug_regions: Vec<DebugRegion>,
+        #[cfg(sf_has_debug_regions)] debug_regions: Vec<DebugRegion>,
     ) -> Result<FunctionArtifact, WasmError> {
         let mut local_ptr_patches = self.resolved_ptr_patches;
         local_ptr_patches.reserve(self.local_ptr_patches.len());
@@ -505,6 +507,7 @@ impl<'a> CompilerCore<'a> {
             #[cfg(sf_has_guard_pages)]
             body_local_error_offset,
             internal_entry_offset,
+            #[cfg(sf_has_debug_regions)]
             debug_regions,
         })
     }

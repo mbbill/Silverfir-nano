@@ -5,42 +5,9 @@
 //! - semantic Wasm function boundaries only
 //! - stable/canonicalized values to avoid false diffs between correct runs
 
-use alloc::{string::String, vec::Vec};
-
-use crate::vm::value::Value;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TraceEventKind {
-    Entry,
-    Exit,
-    Trap,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FunctionTraceId {
-    pub ordinal: u64,
-    pub func_idx: u32,
-    pub call_depth: u32,
-    pub kind: TraceEventKind,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FunctionTraceEvent {
-    pub id: FunctionTraceId,
-    pub result_values: Vec<Value>,
-    pub globals_hash: u64,
-    pub memory_hash: Option<u64>,
-    pub error_class: Option<String>,
-}
-
-pub(crate) trait FunctionTraceSink {
-    fn record(&mut self, event: FunctionTraceEvent);
-}
-
 mod imp {
     use alloc::format;
-    use alloc::string::{String, ToString};
-    use core::ffi::c_char;
+    use alloc::string::String;
     use core::fmt::Write as _;
     use core::hash::Hasher;
     use core::sync::atomic::{AtomicU64, Ordering};
@@ -62,7 +29,7 @@ mod imp {
     const CANONICAL_F64_NAN: u64 = 0x7ff8_0000_0000_0000;
 
     #[unsafe(no_mangle)]
-    pub static FUNCTION_TRACE_ACTIVE: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FUNCTION_TRACE_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum EventKind {
@@ -177,7 +144,7 @@ mod imp {
         STATE.get_or_init(|| Mutex::new(TraceState::default()))
     }
 
-    pub fn init_from_env() {
+    pub(crate) fn init_from_env() {
         if let Ok(mut guard) = state().lock() {
             guard.sync_from_env();
         } else {
@@ -186,7 +153,7 @@ mod imp {
     }
 
     #[inline]
-    pub fn enabled() -> bool {
+    pub(crate) fn enabled() -> bool {
         FUNCTION_TRACE_ACTIVE.load(Ordering::Acquire) != 0
     }
 
@@ -325,7 +292,7 @@ mod imp {
             })
     }
 
-    pub fn native_root_entry(ctx: &mut NativeContext, spec: &FunctionSpec, backend: &'static str) {
+    pub(crate) fn native_root_entry(ctx: &mut NativeContext, spec: &FunctionSpec, backend: &'static str) {
         if !enabled() {
             return;
         }
@@ -348,7 +315,7 @@ mod imp {
         );
     }
 
-    pub fn native_root_exit(ctx: &mut NativeContext, spec: &FunctionSpec, results: &[u64]) {
+    pub(crate) fn native_root_exit(ctx: &mut NativeContext, spec: &FunctionSpec, results: &[u64]) {
         if !enabled() {
             return;
         }
@@ -362,7 +329,7 @@ mod imp {
         ctx.trace_stack.clear();
     }
 
-    pub fn native_trap_current(ctx: &mut NativeContext, error: &WasmError) {
+    pub(crate) fn native_trap_current(ctx: &mut NativeContext, error: &WasmError) {
         if !enabled() {
             return;
         }
@@ -384,7 +351,7 @@ mod imp {
         ctx.trace_stack.clear();
     }
 
-    pub fn native_function_trace_enter_func_idx(ctx: &mut NativeContext, func_idx: u32) {
+    pub(crate) fn native_function_trace_enter_func_idx(ctx: &mut NativeContext, func_idx: u32) {
         if !enabled() {
             return;
         }
@@ -404,7 +371,7 @@ mod imp {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn native_function_trace_enter_func_idx_entry(
+    pub(crate) unsafe extern "C" fn native_function_trace_enter_func_idx_entry(
         ctx: *mut NativeContext,
         func_idx: u64,
     ) {
@@ -415,7 +382,7 @@ mod imp {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn native_function_trace_exit(
+    pub(crate) unsafe extern "C" fn native_function_trace_exit(
         ctx: *mut NativeContext,
         fp: *mut u64,
         arity: u64,
@@ -442,17 +409,6 @@ mod imp {
         );
     }
 
-    pub fn trap_message_from_cstr(ptr: *const c_char) -> String {
-        if ptr.is_null() {
-            return "trap".into();
-        }
-        unsafe {
-            core::ffi::CStr::from_ptr(ptr)
-                .to_str()
-                .unwrap_or("trap")
-                .to_string()
-        }
-    }
 }
 
-pub use imp::*;
+pub(crate) use imp::*;

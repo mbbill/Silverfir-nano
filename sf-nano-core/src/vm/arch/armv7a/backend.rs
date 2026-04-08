@@ -5,6 +5,8 @@
 
 use alloc::vec::Vec;
 
+#[cfg(sf_has_debug_regions)]
+use crate::vm::arch::common::types::DebugRegion;
 use crate::{
     error::WasmError,
     vm::{
@@ -12,7 +14,7 @@ use crate::{
             backend::ArchBackend,
             core::CompilerCore,
             scratch_pool::ScratchPool,
-            types::{DebugRegion, ParallelSource},
+            types::ParallelSource,
         },
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
@@ -63,11 +65,11 @@ struct BranchFixup {
 pub(crate) struct CompiledArm32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
-    pub debug_regions: Vec<DebugRegion>,
     pub root_return: NativeCodePtr,
     #[cfg(sf_has_guard_pages)]
     pub return_error: NativeCodePtr,
+    #[cfg(sf_has_debug_regions)]
+    pub debug_regions: Vec<DebugRegion>,
 }
 
 // ── Arm32Backend ─────────────────────────────────────────────────────────────
@@ -338,6 +340,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         CompiledArm32Entry {
             entry,
             text_len: emitted.text_len,
+            #[cfg(sf_has_debug_regions)]
             debug_regions: emitted.debug_regions.clone(),
             root_return,
             #[cfg(sf_has_guard_pages)]

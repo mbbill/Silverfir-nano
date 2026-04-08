@@ -1541,6 +1541,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[cfg(sf_has_guard_pages)]
     #[inline]
     fn needs_explicit_multiword_gp_bounds_check(&self, access_bytes: u32) -> bool {
         self.gp_reg_width() == 4 && access_bytes > u32::from(self.gp_reg_width())

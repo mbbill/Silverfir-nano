@@ -19,4 +19,5 @@ validator = []
 call-trace = []
 guard-pages = []
 ir-dump = []
+jitdump = []
 

@@ -6,3 +6,5 @@
 pub(crate) mod function_trace;
 #[cfg(sf_ir_dump)]
 pub(crate) mod ir_dump;
+#[cfg(sf_jitdump)]
+pub(crate) mod jitdump;

@@ -13,7 +13,7 @@ use crate::{
             backend::ArchBackend,
             core::CompilerCore,
             scratch_pool::ScratchPool,
-            types::{DebugRegion, ParallelSource},
+            types::ParallelSource,
         },
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
@@ -67,8 +67,6 @@ pub(super) struct BranchFixup {
 pub(crate) struct CompiledExampleEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
-    pub debug_regions: Vec<DebugRegion>,
 }
 
 // ── ExampleBackend ───────────────────────────────────────────────────────────
@@ -291,7 +289,6 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
         CompiledExampleEntry {
             entry,
             text_len: emitted.text_len,
-            debug_regions: emitted.debug_regions.clone(),
         }
     }
 }

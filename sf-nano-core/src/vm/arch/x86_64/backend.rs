@@ -31,12 +31,14 @@ use super::{
     helpers::x86_64_raise_trap,
     reg::X86Reg,
 };
+#[cfg(sf_has_debug_regions)]
+use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
     backend::ArchBackend,
     core::CompilerCore,
     helpers::trap_code,
     scratch_pool::ScratchPool,
-    types::{DebugRegion, ParallelSource},
+    types::ParallelSource,
 };
 
 // ── Frame layout ────────────────────────────────────────────────────────────
@@ -84,11 +86,11 @@ pub(super) struct BranchFixup {
 pub(crate) struct CompiledX86_64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
-    pub debug_regions: Vec<DebugRegion>,
     pub root_return: NativeCodePtr,
     #[cfg(sf_has_guard_pages)]
     pub return_error: NativeCodePtr,
+    #[cfg(sf_ir_dump)]
+    pub debug_regions: Vec<DebugRegion>,
 }
 
 // ── X86_64Backend ────────────────────────────────────────────────────────────
@@ -312,6 +314,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             #[cfg(sf_has_guard_pages)]
             return_error,
             text_len: emitted.text_len,
+            #[cfg(sf_ir_dump)]
             debug_regions: emitted.debug_regions.clone(),
         }
     }

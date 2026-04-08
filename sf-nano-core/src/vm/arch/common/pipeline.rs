@@ -1,4 +1,6 @@
-use alloc::{format, string::String, vec::Vec};
+#[cfg(sf_has_debug_regions)]
+use alloc::{format, string::String};
+use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
@@ -13,8 +15,10 @@ use crate::{
 
 use super::backend::ArchBackend;
 use super::helpers::page_align_function;
+#[cfg(sf_has_debug_regions)]
+use super::types::DebugRegion;
 use super::types::{
-    DebugRegion, FunctionArtifact, NativeFunctionInfo, ParallelSource, NATIVE_FUNCTION_INFO_SIZE,
+    FunctionArtifact, NativeFunctionInfo, ParallelSource, NATIVE_FUNCTION_INFO_SIZE,
 };
 
 // ── compile_function ─────────────────────────────────────────────────────────
@@ -32,6 +36,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     )?;
 
     let mut b = A::new(compiled, function);
+    #[cfg(sf_has_debug_regions)]
     let mut debug_regions = Vec::new();
 
     // Public entry (C ABI lands here):
@@ -43,10 +48,12 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // After the bl, control eventually returns through the body's unified
     // return mechanism with C_RET0 = 0 (success) or non-zero (trap kind).
     // The epilogue preserves C_RET0 and rets to the C caller.
+    #[cfg(sf_has_debug_regions)]
     let public_entry_start = b.core().text.len();
     b.lower_prologue();
     b.lower_root_caller_stub();
     b.lower_epilogue();
+    #[cfg(sf_has_debug_regions)]
     debug_regions.push(DebugRegion {
         offset: public_entry_start,
         len: b.core().text.len() - public_entry_start,
@@ -65,8 +72,10 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     let internal_entry_label = b.core().internal_entry_label;
     b.core_mut().bind_label(internal_entry_label);
     let internal_entry_offset = b.core().text.len();
+    #[cfg(sf_has_debug_regions)]
     let body_prelude_start = internal_entry_offset;
     b.lower_body_prelude();
+    #[cfg(sf_has_debug_regions)]
     if b.core().text.len() > body_prelude_start {
         debug_regions.push(DebugRegion {
             offset: body_prelude_start,
@@ -87,18 +96,23 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
             .ok_or_else(|| WasmError::internal("block layout references missing block".into()))?;
         let label = b.core().block_label(block.id)?;
         b.core_mut().bind_label(label);
+        #[cfg(sf_has_debug_regions)]
         let block_start = b.core().text.len();
         let fallthrough = block_layout.get(index + 1).copied();
         b.lower_block(block, fallthrough)?;
-        let block_end = b.core().text.len();
-        debug_regions.push(DebugRegion {
-            offset: block_start,
-            len: block_end - block_start,
-            label: format!("b{}", block.id.0),
-        });
+        #[cfg(sf_has_debug_regions)]
+        {
+            let block_end = b.core().text.len();
+            debug_regions.push(DebugRegion {
+                offset: block_start,
+                len: block_end - block_start,
+                label: format!("b{}", block.id.0),
+            });
+        }
     }
 
     // Edge stubs (take, not clone)
+    #[cfg(sf_has_debug_regions)]
     let edge_start = b.core().text.len();
     let edges = core::mem::take(&mut b.core_mut().edge_stubs);
     for edge in edges {
@@ -111,28 +125,35 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         b.lower_unconditional_branch(target_label);
         b.core_mut().current_edge_target = None;
     }
-    let edge_end = b.core().text.len();
-    if edge_end > edge_start {
-        debug_regions.push(DebugRegion {
-            offset: edge_start,
-            len: edge_end - edge_start,
-            label: String::from("edges"),
-        });
+    #[cfg(sf_has_debug_regions)]
+    {
+        let edge_end = b.core().text.len();
+        if edge_end > edge_start {
+            debug_regions.push(DebugRegion {
+                offset: edge_start,
+                len: edge_end - edge_start,
+                label: String::from("edges"),
+            });
+        }
     }
 
     // Per-function literal pool. Backends that accumulate deferred literals
     // (e.g. arm64's per-call patchable callee addresses) flush them here so
     // they sit at end-of-body but inside the pc-relative load range of any
     // call site. Default impl is a no-op.
+    #[cfg(sf_has_debug_regions)]
     let pool_start = b.core().text.len();
     b.lower_function_literal_pool()?;
-    let pool_end = b.core().text.len();
-    if pool_end > pool_start {
-        debug_regions.push(DebugRegion {
-            offset: pool_start,
-            len: pool_end - pool_start,
-            label: String::from("literal_pool"),
-        });
+    #[cfg(sf_has_debug_regions)]
+    {
+        let pool_end = b.core().text.len();
+        if pool_end > pool_start {
+            debug_regions.push(DebugRegion {
+                offset: pool_start,
+                len: pool_end - pool_start,
+                label: String::from("literal_pool"),
+            });
+        }
     }
 
     // Tail: body_local_error_label, stack_overflow_label, deferred traps.
@@ -142,6 +163,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // inline at every Return terminator (sets `C_RET0 = 0`, native return),
     // and the body's error-path tail is `body_local_error_label`, which
     // every trap stub and post-BL status check branches to.
+    #[cfg(sf_has_debug_regions)]
     let tail_start = b.core().text.len();
 
     let body_local_error_label = b.core().body_local_error_label;
@@ -158,13 +180,16 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         b.lower_trap(kind);
     }
 
-    let tail_end = b.core().text.len();
-    if tail_end > tail_start {
-        debug_regions.push(DebugRegion {
-            offset: tail_start,
-            len: tail_end - tail_start,
-            label: String::from("tail"),
-        });
+    #[cfg(sf_has_debug_regions)]
+    {
+        let tail_end = b.core().text.len();
+        if tail_end > tail_start {
+            debug_regions.push(DebugRegion {
+                offset: tail_start,
+                len: tail_end - tail_start,
+                label: String::from("tail"),
+            });
+        }
     }
 
     // Patch fixups
@@ -182,6 +207,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         internal_entry_offset,
         #[cfg(sf_has_guard_pages)]
         body_local_error_offset,
+        #[cfg(sf_has_debug_regions)]
         debug_regions,
     )
 }
@@ -292,6 +318,7 @@ pub(crate) struct EmittedFunction {
     /// trap propagation tail.
     #[cfg(sf_has_guard_pages)]
     pub body_local_error_offset: usize,
+    #[cfg(sf_has_debug_regions)]
     pub debug_regions: Vec<DebugRegion>,
 }
 
@@ -390,6 +417,7 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
             text_len,
             #[cfg(sf_has_guard_pages)]
             body_local_error_offset: artifact.body_local_error_offset,
+            #[cfg(sf_has_debug_regions)]
             debug_regions: artifact.debug_regions,
         });
     }
@@ -405,16 +433,22 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
         entries.push(Some(A::make_entry(&executable, ef)));
     }
 
-    // Record profiler symbols.
-    let module_name = &module.name;
-    for (func_idx, ef) in emitted.iter().enumerate() {
-        let func_base = unsafe { base_ptr.add(base_offsets[func_idx]) };
-        for region in &ef.debug_regions {
-            if region.len > 0 {
-                let region_start = unsafe { func_base.add(region.offset) };
-                let code_bytes = unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                let symbol = format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
-                crate::vm::runtime::profiler::record_function(region_start, code_bytes, &symbol);
+    // Export JIT symbol/code info so external profilers (samply, perf) can
+    // resolve the emitted regions.
+    #[cfg(sf_jitdump)]
+    {
+        let module_name = &module.name;
+        for (func_idx, ef) in emitted.iter().enumerate() {
+            let func_base = unsafe { base_ptr.add(base_offsets[func_idx]) };
+            for region in &ef.debug_regions {
+                if region.len > 0 {
+                    let region_start = unsafe { func_base.add(region.offset) };
+                    let code_bytes =
+                        unsafe { core::slice::from_raw_parts(region_start, region.len) };
+                    let symbol =
+                        format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
+                    crate::vm::debug::jitdump::record_function(region_start, code_bytes, &symbol);
+                }
             }
         }
     }

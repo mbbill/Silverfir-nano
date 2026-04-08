@@ -280,6 +280,7 @@ impl<'a> Emulator<'a> {
         }
     }
 
+    #[cfg_attr(not(any(sf_has_std, test)), allow(unused_variables))]
     fn log_execution_error(
         &self,
         block_id: MachineBlockId,

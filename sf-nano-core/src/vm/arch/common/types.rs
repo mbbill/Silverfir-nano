@@ -1,3 +1,4 @@
+#[cfg(sf_has_debug_regions)]
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -13,9 +14,9 @@ use super::text_emitter::TextEmitter;
 /// One debug region within a compiled function.
 ///
 /// Populated during code emission and consumed by the optional `ir_dump`
-/// debug dumper (`sf_ir_dump`) and the profiler (`sf_has_std`) when enabled.
-/// Always present so the data can flow through the arch layer regardless of
-/// which consumer is compiled in.
+/// (`sf_ir_dump`) and `jitdump` (`sf_jitdump`) debug tools. Only compiled
+/// when at least one consumer is enabled (`sf_has_debug_regions`).
+#[cfg(sf_has_debug_regions)]
 #[derive(Clone, Debug)]
 pub(crate) struct DebugRegion {
     /// Byte offset within the function text.
@@ -71,6 +72,7 @@ pub(crate) struct FunctionArtifact {
     #[cfg(sf_has_guard_pages)]
     pub body_local_error_offset: usize,
     pub internal_entry_offset: usize,
+    #[cfg(sf_has_debug_regions)]
     pub debug_regions: Vec<DebugRegion>,
 }
 
