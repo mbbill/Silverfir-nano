@@ -226,21 +226,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         lowered.module,
         lowered.abi,
     )?);
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(sf_arch_arm64)]
     let arm64_entries = match active_backend {
         arch::NativeBackend::Arm64 => Some(arch::common::pipeline::compile_module::<
             arch::arm64::backend::Arm64Backend,
         >(module, &compiled)?),
         _ => None,
     };
-    #[cfg(target_arch = "arm")]
+    #[cfg(sf_arch_armv7a)]
     let armv7a_entries = match active_backend {
         arch::NativeBackend::Armv7a => {
             Some(arch::armv7a::compile::compile_module(module, &compiled)?)
         }
         _ => None,
     };
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(sf_arch_x64)]
     let x86_64_entries = match active_backend {
         arch::NativeBackend::X86_64 => Some(arch::common::pipeline::compile_module::<
             arch::x86_64::backend::X86_64Backend,
@@ -262,21 +262,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
             .sum();
         let mut bytes = 0usize;
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(sf_arch_arm64)]
         if let Some(ref entries) = arm64_entries {
             bytes = entries
                 .iter()
                 .filter_map(|e| e.as_ref().map(|e| e.text_len))
                 .sum();
         }
-        #[cfg(target_arch = "arm")]
+        #[cfg(sf_arch_armv7a)]
         if let Some(ref entries) = armv7a_entries {
             bytes = entries
                 .iter()
                 .filter_map(|e| e.as_ref().map(|e| e.text_len))
                 .sum();
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(sf_arch_x64)]
         if let Some(ref entries) = x86_64_entries {
             bytes = entries
                 .iter()
@@ -289,7 +289,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     // Write dump if SF_NATIVE_DUMP_DIR is set
     #[cfg(sf_ir_dump)]
     if ir_dump::dump_enabled() {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(sf_arch_arm64)]
         let code_slices: Vec<(u32, &[u8])> = arm64_entries
             .as_ref()
             .map(|entries| {
@@ -306,7 +306,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(target_arch = "arm")]
+        #[cfg(sf_arch_armv7a)]
         let code_slices: Vec<(u32, &[u8])> = armv7a_entries
             .as_ref()
             .map(|entries| {
@@ -323,7 +323,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(sf_arch_x64)]
         let code_slices: Vec<(u32, &[u8])> = x86_64_entries
             .as_ref()
             .map(|entries| {
@@ -340,9 +340,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "x86_64")))]
+        #[cfg(not(any(sf_arch_arm64, sf_arch_armv7a, sf_arch_x64)))]
         let code_slices: Vec<(u32, &[u8])> = Vec::new();
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(sf_arch_arm64)]
         let dump_regions: Vec<ir_dump::DumpFunctionRegions> = arm64_entries
             .as_ref()
             .map(|entries| {
@@ -358,7 +358,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(target_arch = "arm")]
+        #[cfg(sf_arch_armv7a)]
         let dump_regions: Vec<ir_dump::DumpFunctionRegions> = armv7a_entries
             .as_ref()
             .map(|entries| {
@@ -374,7 +374,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(sf_arch_x64)]
         let dump_regions: Vec<ir_dump::DumpFunctionRegions> = x86_64_entries
             .as_ref()
             .map(|entries| {
@@ -390,7 +390,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     .collect()
             })
             .unwrap_or_default();
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "x86_64")))]
+        #[cfg(not(any(sf_arch_arm64, sf_arch_armv7a, sf_arch_x64)))]
         let dump_regions: Vec<ir_dump::DumpFunctionRegions> = Vec::new();
         let _ = ir_dump::write_module_dump(
             &module.name,
@@ -408,21 +408,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             continue;
         };
         let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(sf_arch_arm64)]
         {
             let native_entry = arm64_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
             code = code.with_entry(native_entry.map(|e| e.entry));
         }
-        #[cfg(target_arch = "arm")]
+        #[cfg(sf_arch_armv7a)]
         {
             let native_entry = armv7a_entries
                 .as_ref()
                 .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
             code = code.with_entry(native_entry.map(|e| e.entry));
         }
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(sf_arch_x64)]
         {
             let native_entry = x86_64_entries
                 .as_ref()

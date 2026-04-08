@@ -13,10 +13,10 @@ use crate::{
     },
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 use super::abi::C_ARG3;
 use super::abi::{C_ARG0, C_ARG1, C_ARG2};
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 use super::helpers::x86_64_trapping_trunc_win;
 
 use super::{
@@ -2178,7 +2178,7 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         // The C helper call clobbers the caller-clobbered GP dynamic subset.
         self.save_caller_clobbered_gp_dynamic();
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(sf_os_windows))]
         {
             enc::mov_rr_64(
                 &mut self.core.text,
@@ -2197,7 +2197,7 @@ impl<'a> X86_64Backend<'a> {
             enc::test_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
             self.emit_jcc(Cc::NE, self.core.return_error_label);
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(sf_os_windows)]
         {
             enc::mov_rr_64(
                 &mut self.core.text,

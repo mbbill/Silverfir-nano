@@ -5,13 +5,13 @@
 
 use core::ptr;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 unsafe extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 unsafe extern "C" {
     fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
 }
@@ -21,18 +21,18 @@ unsafe extern "C" {
 /// On AArch64, `__clear_cache` is provided by compiler-builtins. On ARM32
 /// musl with rust-lld the symbol is absent, so we call the kernel's
 /// `cacheflush` syscall directly.
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(all(sf_os_linux, sf_arch_arm64))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(all(sf_os_linux, sf_arch_arm64))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };
 }
 
-#[cfg(all(target_os = "linux", target_arch = "arm"))]
+#[cfg(all(sf_os_linux, sf_arch_armv7a))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     // ARM Linux cacheflush syscall (__ARM_NR_cacheflush = 0x0f0002)
@@ -54,30 +54,24 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(any(target_arch = "aarch64", target_arch = "arm"))
-))]
+#[cfg(all(sf_os_linux, not(any(sf_arch_arm64, sf_arch_armv7a))))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(any(target_arch = "aarch64", target_arch = "arm"))
-))]
+#[cfg(all(sf_os_linux, not(any(sf_arch_arm64, sf_arch_armv7a))))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 unsafe extern "C" {
     fn pthread_jit_write_protect_np(enabled: i32);
     fn sys_icache_invalidate(addr: *const u8, len: usize);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 unsafe extern "system" {
     fn VirtualAlloc(addr: *mut u8, size: usize, alloc_type: u32, protect: u32) -> *mut u8;
     fn VirtualFree(addr: *mut u8, size: usize, free_type: u32) -> i32;
@@ -85,32 +79,32 @@ unsafe extern "system" {
     fn FlushInstructionCache(process: *mut u8, base: *const u8, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut u8;
 }
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const MEM_COMMIT: u32 = 0x1000;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const MEM_RESERVE: u32 = 0x2000;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const MEM_RELEASE: u32 = 0x8000;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const PAGE_READWRITE: u32 = 0x04;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const PAGE_EXECUTE_READ: u32 = 0x20;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 const PROT_READ: i32 = 0x01;
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 const PROT_WRITE: i32 = 0x02;
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 const PROT_EXEC: i32 = 0x04;
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 const MAP_PRIVATE: i32 = 0x02;
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 const MAP_ANON: i32 = 0x1000;
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 const MAP_JIT: i32 = 0x0800;
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 const MAP_ANONYMOUS: i32 = 0x20;
-#[cfg(not(target_os = "windows"))]
+#[cfg(sf_has_posix)]
 const MAP_FAILED: *mut u8 = !0usize as *mut u8;
 
 pub struct CodeBuffer {
@@ -140,7 +134,7 @@ impl CodeBuffer {
         Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(sf_os_macos)]
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
         let base = unsafe {
             mmap(
@@ -162,7 +156,7 @@ impl CodeBuffer {
         })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(sf_os_linux)]
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
         let base = unsafe {
             mmap(
@@ -184,7 +178,7 @@ impl CodeBuffer {
         })
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(sf_os_windows)]
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
         let base = unsafe {
             VirtualAlloc(
@@ -204,13 +198,13 @@ impl CodeBuffer {
         })
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(sf_os_macos)]
     #[inline]
     pub fn begin_write(&mut self) {
         unsafe { pthread_jit_write_protect_np(0) };
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(sf_os_linux)]
     #[inline]
     pub fn begin_write(&mut self) {
         unsafe {
@@ -219,7 +213,7 @@ impl CodeBuffer {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(sf_os_windows)]
     #[inline]
     pub fn begin_write(&mut self) {
         unsafe {
@@ -229,7 +223,7 @@ impl CodeBuffer {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(sf_os_macos)]
     #[inline]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
         unsafe {
@@ -238,7 +232,7 @@ impl CodeBuffer {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(sf_os_linux)]
     #[inline]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
         unsafe {
@@ -250,7 +244,7 @@ impl CodeBuffer {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(sf_os_windows)]
     #[inline]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
         unsafe {
@@ -352,7 +346,7 @@ impl Drop for CodeBuffer {
         if self.base.is_null() {
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(sf_has_posix)]
         {
             if self.base != MAP_FAILED {
                 unsafe {
@@ -360,7 +354,7 @@ impl Drop for CodeBuffer {
                 }
             }
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(sf_os_windows)]
         {
             unsafe {
                 VirtualFree(self.base, 0, MEM_RELEASE);

@@ -171,7 +171,7 @@ fn write_record_header<W: Write>(
     Ok(())
 }
 
-#[cfg(target_family = "unix")]
+#[cfg(sf_has_posix)]
 fn open_tracking_file(path: &Path) -> io::Result<File> {
     use std::os::fd::FromRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -189,12 +189,12 @@ fn open_tracking_file(path: &Path) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-#[cfg(not(target_family = "unix"))]
+#[cfg(not(sf_has_posix))]
 fn open_tracking_file(path: &Path) -> io::Result<File> {
     File::create(path)
 }
 
-#[cfg(target_family = "unix")]
+#[cfg(sf_has_posix)]
 unsafe extern "C" {
     fn fopen(
         path: *const core::ffi::c_char,
@@ -204,7 +204,7 @@ unsafe extern "C" {
 }
 
 fn monotonic_timestamp_nanos() -> u64 {
-    #[cfg(target_os = "macos")]
+    #[cfg(sf_os_macos)]
     unsafe {
         let mut timebase = mach_timebase_info { numer: 0, denom: 0 };
         mach_timebase_info(&mut timebase);
@@ -212,7 +212,7 @@ fn monotonic_timestamp_nanos() -> u64 {
         ticks.saturating_mul(timebase.numer as u64) / timebase.denom.max(1) as u64
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(sf_os_linux)]
     unsafe {
         let mut ts = timespec {
             tv_sec: 0,
@@ -223,7 +223,7 @@ fn monotonic_timestamp_nanos() -> u64 {
             .saturating_mul(1_000_000_000)
             .saturating_add(ts.tv_nsec as u64)
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(sf_os_windows)]
     unsafe {
         let mut freq: i64 = 0;
         let mut count: i64 = 0;
@@ -240,62 +240,62 @@ fn monotonic_timestamp_nanos() -> u64 {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 fn elf_machine_arch() -> u32 {
     EM_AARCH64
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 fn elf_machine_arch() -> u32 {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(sf_arch_arm64)]
     {
         EM_AARCH64
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(sf_arch_arm64))]
     {
         EM_NONE
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(sf_has_posix))]
 fn elf_machine_arch() -> u32 {
     EM_NONE
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(all(sf_os_macos, sf_arch_arm64)))]
 const EM_NONE: u32 = 0;
 const EM_AARCH64: u32 = 183;
 
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 const CLOCK_MONOTONIC: i32 = 1;
 
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 #[repr(C)]
 struct timespec {
     tv_sec: i64,
     tv_nsec: i64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 unsafe extern "C" {
     fn clock_gettime(clk_id: i32, tp: *mut timespec) -> i32;
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 unsafe extern "system" {
     fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
     fn QueryPerformanceCounter(count: *mut i64) -> i32;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 #[repr(C)]
 struct mach_timebase_info {
     numer: u32,
     denom: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 unsafe extern "C" {
     fn mach_absolute_time() -> u64;
     fn mach_timebase_info(info: *mut mach_timebase_info) -> i32;

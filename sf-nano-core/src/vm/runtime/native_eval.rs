@@ -64,7 +64,7 @@ pub(super) fn eval(
                 WasmError::internal("native runtime is missing compiled machine code".into())
             })?;
             match active_backend {
-                #[cfg(target_arch = "aarch64")]
+                #[cfg(sf_arch_arm64)]
                 arch::NativeBackend::Arm64 => arch::common::eval::eval(
                     spec,
                     code,
@@ -72,7 +72,7 @@ pub(super) fn eval(
                     args,
                     arch::NativeBackend::Arm64.as_str(),
                 ),
-                #[cfg(target_arch = "arm")]
+                #[cfg(sf_arch_armv7a)]
                 arch::NativeBackend::Armv7a => arch::armv7a::eval(
                     spec,
                     code,
@@ -80,7 +80,7 @@ pub(super) fn eval(
                     args,
                     arch::NativeBackend::Armv7a.as_str(),
                 ),
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(sf_arch_x64)]
                 arch::NativeBackend::X86_64 => arch::common::eval::eval(
                     spec,
                     code,

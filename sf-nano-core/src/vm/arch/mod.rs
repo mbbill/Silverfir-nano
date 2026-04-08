@@ -5,11 +5,11 @@ use crate::vm::backend::BackendConfig;
 pub(crate) mod common;
 pub(crate) mod emulator;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(sf_arch_arm64)]
 pub(crate) mod arm64;
-#[cfg(target_arch = "arm")]
+#[cfg(sf_arch_armv7a)]
 pub(crate) mod armv7a;
-#[cfg(target_arch = "x86_64")]
+#[cfg(sf_arch_x64)]
 pub mod x86_64;
 
 #[cfg(debug_assertions)]
@@ -58,11 +58,11 @@ impl ReferenceBackendMode {
 /// Active native backend implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeBackend {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(sf_arch_arm64)]
     Arm64,
-    #[cfg(target_arch = "arm")]
+    #[cfg(sf_arch_armv7a)]
     Armv7a,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(sf_arch_x64)]
     X86_64,
     Reference,
 }
@@ -73,11 +73,11 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         // Each backend returns an explicit budget preset. Physical register
         // mapping and ABI constraints stay in the backend-specific ABI/layout
         // code; this function selects policy, not hardware facts.
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => arm64::abi::compile_backend_config(),
-        #[cfg(target_arch = "arm")]
+        #[cfg(sf_arch_armv7a)]
         NativeBackend::Armv7a => armv7a::abi::compile_backend_config(),
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
         NativeBackend::Reference => {
             emulator::config::compile_backend_config(effective_reference_backend_mode())
@@ -89,11 +89,11 @@ impl NativeBackend {
     #[inline]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(sf_arch_arm64)]
             Self::Arm64 => "arm64",
-            #[cfg(target_arch = "arm")]
+            #[cfg(sf_arch_armv7a)]
             Self::Armv7a => "armv7a",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(sf_arch_x64)]
             Self::X86_64 => "x86_64",
             Self::Reference => "emulator",
         }
@@ -125,17 +125,17 @@ fn effective_reference_backend_mode() -> ReferenceBackendMode {
 
 #[inline]
 fn host_native_backend() -> Option<NativeBackend> {
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(sf_arch_arm64)]
     {
         return Some(NativeBackend::Arm64);
     }
 
-    #[cfg(target_arch = "arm")]
+    #[cfg(sf_arch_armv7a)]
     {
         return Some(NativeBackend::Armv7a);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(sf_arch_x64)]
     {
         return Some(NativeBackend::X86_64);
     }

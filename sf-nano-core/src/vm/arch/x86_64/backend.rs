@@ -48,7 +48,7 @@ const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 /// After pushing the callee-saved GP set (6 regs = 48 bytes) + return address
 /// (8 bytes) = 56 bytes. To maintain 16-byte alignment we need 8 more bytes
 /// of padding (56 + 8 = 64 = 16*4).
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(sf_os_windows))]
 const STACK_PADDING: u32 = {
     let n = abi::callee_saved_gp_count() as u32;
     if (8 + n * 8) % 16 == 0 {
@@ -57,7 +57,7 @@ const STACK_PADDING: u32 = {
         8
     }
 };
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 const STACK_PADDING: u32 = {
     let gp = abi::callee_saved_gp_count() as u32 * 8;
     let xmm = 10 * 16u32;
@@ -145,7 +145,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                 enc::sub_rsp_imm32(&mut self.core.text, STACK_PADDING);
             }
         }
-        #[cfg(target_os = "windows")]
+        #[cfg(sf_os_windows)]
         for i in 0..10u32 {
             enc::movaps_store_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32);
         }
@@ -167,7 +167,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn lower_epilogue(&mut self) {
-        #[cfg(target_os = "windows")]
+        #[cfg(sf_os_windows)]
         for i in 0..10u32 {
             enc::movaps_load_rsp(&mut self.core.text, 6 + i, (32 + i * 16) as i32);
         }

@@ -1761,7 +1761,7 @@ pub fn add_rsp_imm32(e: &mut TextEmitter, imm32: u32) {
 }
 
 /// MOVAPS [RSP+disp], XMMn
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {
@@ -1779,7 +1779,7 @@ pub fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
 }
 
 /// MOVAPS XMMn, [RSP+disp]
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
     let reg = (xmm & 7) as u8;
     if xmm >= 8 {

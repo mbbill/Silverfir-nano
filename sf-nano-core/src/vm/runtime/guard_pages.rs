@@ -22,9 +22,9 @@ const PROT_NONE: i32 = 0x00;
 const PROT_READ: i32 = 0x01;
 const PROT_WRITE: i32 = 0x02;
 const MAP_PRIVATE: i32 = 0x02;
-#[cfg(target_os = "macos")]
+#[cfg(sf_os_macos)]
 const MAP_ANON: i32 = 0x1000;
-#[cfg(target_os = "linux")]
+#[cfg(sf_os_linux)]
 const MAP_ANON: i32 = 0x20;
 const MAP_FAILED: *mut u8 = !0usize as *mut u8;
 

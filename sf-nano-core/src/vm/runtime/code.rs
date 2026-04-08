@@ -20,7 +20,7 @@ pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut 
 /// backends reference this — see `docs/ABI_PLAN.md` §12 backend gap
 /// audit. arm64 collapsed both tails into the body so it has no use
 /// for this alias.
-#[cfg(any(target_arch = "x86_64", target_arch = "arm"))]
+#[cfg(any(sf_arch_x64, sf_arch_armv7a))]
 pub(crate) type NativeCodePtr = *const u8;
 
 #[derive(Clone, Debug)]

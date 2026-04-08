@@ -1,12 +1,34 @@
 // sf-nano-core build script
 //
-// Central authority for feature → cfg mapping. Source code uses `sf_*` cfgs;
-// Cargo features are only the user-facing knobs. Build.rs validates feature
-// combinations against target capabilities and emits cfg flags accordingly.
+// Central authority for feature → cfg mapping AND target (arch × os) gating.
+// Source code uses `sf_*` cfgs exclusively and must not reference raw
+// `cfg(target_os = ...)` / `cfg(target_arch = ...)`; build.rs is the only
+// place where those translate into the `sf_*` vocabulary.
 //
 // Naming scheme:
-//   sf_has_*  — target capability (auto-derived)
+//   sf_arch_* — selected target architecture (exactly one set when supported)
+//   sf_os_*   — selected target OS           (exactly one set when supported)
+//   sf_has_*  — derived target capability
 //   sf_*      — user-enabled subsystem
+//
+// Arch cfgs (from CARGO_CFG_TARGET_ARCH):
+//   aarch64 → sf_arch_arm64
+//   arm     → sf_arch_armv7a
+//   x86_64  → sf_arch_x64
+//
+// OS cfgs (from CARGO_CFG_TARGET_OS):
+//   linux   → sf_os_linux   (+ sf_has_posix)
+//   macos   → sf_os_macos   (+ sf_has_posix)
+//   windows → sf_os_windows
+//   none    → sf_os_none    (bare-metal; embedder provides OS shims)
+//
+// Supported (arch × os) matrix:
+//   arm64  × { linux, macos, none }
+//   x86_64 × { linux, macos, windows, none }
+//   arm    × { linux, none }
+//
+// Unsupported combos are not validated here — the source simply falls through
+// to the emulator backend, matching today's behavior.
 //
 // Feature → cfg mapping:
 //   (derived)      → sf_has_std          (set whenever any feature that needs libstd is on:
@@ -30,6 +52,14 @@
 use std::env;
 
 const DECLARED_CFGS: &[&str] = &[
+    "sf_arch_arm64",
+    "sf_arch_armv7a",
+    "sf_arch_x64",
+    "sf_os_linux",
+    "sf_os_macos",
+    "sf_os_windows",
+    "sf_os_none",
+    "sf_has_posix",
     "sf_has_std",
     "sf_has_guard_pages",
     "sf_has_debug_regions",
@@ -46,6 +76,8 @@ fn main() {
         println!("cargo::rustc-check-cfg=cfg({name})");
     }
 
+    emit_arch_cfgs();
+    emit_os_cfgs();
     emit_has_std_cfg();
     emit_subsystem_cfgs();
     // ir_dump and jitdump decisions share inputs with the derived
@@ -62,6 +94,40 @@ fn main() {
         println!("cargo:rustc-cfg=sf_has_debug_regions");
     }
     emit_guard_pages_cfg();
+}
+
+fn emit_arch_cfgs() {
+    // Source code uses `sf_arch_*` cfgs instead of raw `target_arch = ...`.
+    // Exactly one `sf_arch_*` is set on the three supported architectures;
+    // unsupported targets set none and fall through to the emulator.
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    match arch.as_str() {
+        "aarch64" => println!("cargo:rustc-cfg=sf_arch_arm64"),
+        "arm" => println!("cargo:rustc-cfg=sf_arch_armv7a"),
+        "x86_64" => println!("cargo:rustc-cfg=sf_arch_x64"),
+        _ => {}
+    }
+}
+
+fn emit_os_cfgs() {
+    // Source code uses `sf_os_*` cfgs instead of raw `target_os = ...`, and
+    // `sf_has_posix` as the shorthand for "linux or macos" (shared mmap /
+    // sigaction code paths). Windows and bare-metal (`none`) each get their
+    // own module; anything else sets no `sf_os_*` at all.
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    match os.as_str() {
+        "linux" => {
+            println!("cargo:rustc-cfg=sf_os_linux");
+            println!("cargo:rustc-cfg=sf_has_posix");
+        }
+        "macos" => {
+            println!("cargo:rustc-cfg=sf_os_macos");
+            println!("cargo:rustc-cfg=sf_has_posix");
+        }
+        "windows" => println!("cargo:rustc-cfg=sf_os_windows"),
+        "none" => println!("cargo:rustc-cfg=sf_os_none"),
+        _ => {}
+    }
 }
 
 fn emit_has_std_cfg() {

@@ -92,7 +92,7 @@ pub(crate) unsafe extern "C" fn x86_64_trapping_trunc(
 /// Saturating truncation helper called from generated code.
 /// Returns result in RAX (no error possible for sat).
 
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub(crate) unsafe extern "C" fn x86_64_trapping_trunc_win(
     ctx: *mut NativeContext,
     src_bits: u64,

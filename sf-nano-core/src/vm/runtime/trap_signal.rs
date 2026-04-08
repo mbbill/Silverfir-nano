@@ -123,7 +123,7 @@ pub(crate) fn clear_registered_jit_ranges() {
 
 // ─── macOS ARM64 ────────────────────────────────────────────────────────────
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(sf_os_macos, sf_arch_arm64))]
 mod platform {
     //! macOS ARM64 signal handler using Darwin's ucontext_t layout.
 
@@ -220,7 +220,7 @@ mod platform {
 
 // ─── Linux ARM64 ────────────────────────────────────────────────────────────
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(all(sf_os_linux, sf_arch_arm64))]
 mod platform {
     use super::*;
 
@@ -289,7 +289,7 @@ mod platform {
 
 // ─── macOS x86_64 ───────────────────────────────────────────────────────────
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[cfg(all(sf_os_macos, sf_arch_x64))]
 mod platform {
     //! macOS x86_64 signal handler using Darwin's ucontext_t layout.
 
@@ -386,7 +386,7 @@ mod platform {
 
 // ─── Linux ARM32 ────────────────────────────────────────────────────────────
 
-#[cfg(all(target_os = "linux", target_arch = "arm"))]
+#[cfg(all(sf_os_linux, sf_arch_armv7a))]
 mod platform {
     use super::*;
 

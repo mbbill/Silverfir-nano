@@ -67,7 +67,7 @@ const REG_PLAN: RegPlan = RegPlan {
 
     // Callee-saved GP registers (fixed roles plus the callee-saved tail of the
     // dynamic bank). No callee-saved FP regs on System V AMD64.
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(sf_os_windows))]
     callee_saved_gp: &[
         X86Reg::RBX,
         X86Reg::RBP,
@@ -76,7 +76,7 @@ const REG_PLAN: RegPlan = RegPlan {
         X86Reg::R14,
         X86Reg::R15,
     ],
-    #[cfg(target_os = "windows")]
+    #[cfg(sf_os_windows)]
     callee_saved_gp: &[
         X86Reg::RBX,
         X86Reg::RBP,
@@ -119,19 +119,19 @@ pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
 // MachineIR roles. Boundary lowering is what makes that safe: SSA values are
 // dead at the boundary and local state has already been published.
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(sf_os_windows))]
 pub(super) const C_ARG0: X86Reg = X86Reg::RDI;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(sf_os_windows))]
 pub(super) const C_ARG1: X86Reg = X86Reg::RSI;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(sf_os_windows))]
 pub(super) const C_ARG2: X86Reg = X86Reg::RDX;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub(super) const C_ARG0: X86Reg = X86Reg::RCX;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub(super) const C_ARG1: X86Reg = X86Reg::RDX;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub(super) const C_ARG2: X86Reg = X86Reg::R8;
-#[cfg(target_os = "windows")]
+#[cfg(sf_os_windows)]
 pub(super) const C_ARG3: X86Reg = X86Reg::R9;
 pub(super) const C_RET0: X86Reg = X86Reg::RAX;
 
