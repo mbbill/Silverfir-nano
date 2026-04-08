@@ -123,6 +123,119 @@ Therefore cached locals and SSA values may both use:
 as long as lowering publishes frame-backed state before a boundary that may
 clobber it.
 
+## Backend Lowering Discipline
+
+The rules above define which register classes exist. This section defines how
+backend lowering is allowed to use them.
+
+These are backend-authoring invariants, not style suggestions.
+
+### Ordinary instruction lowering may only touch owned registers
+
+When lowering a normal MachineIR instruction or terminator, the backend may
+only touch:
+
+- the physical registers named by the MIR operands being lowered
+- the 4 fixed MachineIR registers, when the instruction's semantics require
+  them
+- scratch registers that were explicitly acquired from the scratch pool
+- foreign ABI argument / return registers, but only while lowering the
+  boundary itself
+
+What a backend must **not** do during ordinary lowering:
+
+- pick a convenient dynamic GP register as an extra temp
+- pick a convenient dynamic FP register as an extra temp
+- use `C_ARG*` / `C_RET*` as general-purpose temporaries away from the
+  boundary
+- touch scratch-only registers without first reserving them from the pool
+
+If a lowering sequence needs one more temporary than its explicit operands
+provide, it must reserve one from the scratch pool. "This register looks dead
+here" is not a valid reason to bypass ownership tracking.
+
+### Scratch registers require explicit ownership
+
+Scratch-only registers exist specifically so backends have a place to put
+temporary values while lowering.
+
+The scratch pool is the ownership protocol for those registers:
+
+- reserve before use
+- keep the reservation for the whole period the temp is live
+- release when the temp is dead
+
+The purpose of the pool is not just convenience. It prevents unrelated lowering
+helpers from accidentally clobbering each other when they are composed, nested,
+or refactored.
+
+Backend code should therefore treat naked scratch-register use as a correctness
+bug, not as an optimization shortcut.
+
+### Dynamic registers are not backend temporaries
+
+The dynamic GP / FP banks belong to MachineIR lowering and register allocation.
+They are not a backend-private scratch area.
+
+Important consequences:
+
+- the backend must not assume a dynamic register is free just because the
+  current helper does not mention it
+- the backend must not infer "this dynamic reg probably holds only a transient"
+  from register number or allocation order
+- the backend must not treat caller-saved dynamic regs as implicit scratch regs
+- the backend must not treat callee-saved dynamic regs as implicitly preserved
+  local-cache regs
+
+Only lowering state knows whether a dynamic register currently holds:
+
+- a transient SSA value
+- a cached local
+- a frame-backed reloadable value
+
+Backend code does not get to guess.
+
+### Call and helper boundaries do not justify hidden register preservation
+
+At helper boundaries and local-call boundaries, shared lowering already defines
+how dynamic state becomes safe:
+
+- transients are dead before the boundary
+- cached locals are published back to their canonical frame slots before the
+  boundary
+- fixed registers remain live across the boundary by ABI design
+
+Therefore the backend must **not** paper over a bug by conservatively saving
+and restoring the dynamic GP bank, the dynamic FP bank, or some guessed subset
+of them around a helper or local call.
+
+If such a save/restore seems necessary, the bug is almost certainly one of:
+
+- ordinary lowering touched a register it did not own
+- a scratch register was used without pool ownership
+- boundary lowering failed to follow the shared publish / reload protocol
+- the target's `abi.rs` mapped a fixed role to the wrong physical register
+
+The fix is to repair ownership or boundary semantics at the root cause, not to
+promote dynamic registers into hidden ABI-preserved state.
+
+### Why these rules are strict
+
+These constraints exist for three reasons:
+
+- **Correctness**: only shared lowering knows which dynamic regs are live and
+  what they mean. A backend cannot safely infer that from the physical
+  register.
+- **Composability**: lowering helpers need to remain safe when combined,
+  reordered, or refactored. Hidden clobbers make that impossible.
+- **Performance**: blanket save/restore of dynamic banks hides the real bug and
+  adds hot-path overhead to every boundary.
+
+The arm64 backend is the reference implementation for this discipline: it
+mostly confines itself to explicit operands plus scratch-pool temps, and it
+asserts that scratch reservations are fully released between instructions.
+Other backends are expected to follow the same model.
+
 ## Boundary Semantics
 
 ### Foreign helper / runtime boundaries
