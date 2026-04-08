@@ -36,12 +36,6 @@ pub use vm::runtime::{
     RuntimeEngine,
 };
 pub use vm::value::{RefHandle, Value};
-#[cfg(all(feature = "interp", feature = "fusion", feature = "profile"))]
-pub mod fusion_discovery {
-    pub use crate::vm::interp::fast::fusion::discovery::{self, DiscoveryConfig};
-    pub use crate::vm::interp::fast::fusion::pattern_trie::PatternTrie;
-    pub use crate::vm::interp::fast::fusion::profiler;
-}
 
 /// Reset process-global native runtime state that does not track module
 /// lifetimes on its own. Harnesses that repeatedly construct and drop native

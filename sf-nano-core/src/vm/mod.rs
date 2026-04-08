@@ -16,8 +16,6 @@ pub(crate) mod debug;
 pub(crate) mod entities;
 pub(crate) mod expr_eval;
 pub(crate) mod instance;
-#[cfg(feature = "interp")]
-pub(crate) mod interp;
 #[cfg(feature = "micro-jit")]
 pub(crate) mod machine;
 pub(crate) mod middle;

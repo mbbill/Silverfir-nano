@@ -15,8 +15,6 @@ use crate::vm::entities::{
     DataInst, ElementInst, ExternalFn, FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
-#[cfg(feature = "interp")]
-use crate::vm::interp::precompile;
 use crate::vm::runtime;
 use crate::vm::store::Store;
 use crate::vm::value::{RefHandle, Value};
@@ -437,16 +435,6 @@ impl Instance {
                     dst.copy_from_slice(init);
                 }
                 Data::Passive { .. } => {}
-            }
-        }
-
-        #[cfg(feature = "interp")]
-        {
-            let runtime_engine = runtime::active_runtime_engine().map_err(|err| {
-                WasmError::invalid(format!("runtime backend unavailable: {}", err))
-            })?;
-            if !runtime_engine.is_micro_jit() {
-                precompile::precompile_module_two_pass(&store)?;
             }
         }
 

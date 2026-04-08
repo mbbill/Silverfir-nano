@@ -1,6 +1,3 @@
-#[cfg(all(feature = "profile", feature = "interp"))]
-mod discover_fusion;
-
 #[cfg(feature = "micro-jit")]
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
@@ -21,25 +18,11 @@ fn main() {
         eprintln!();
         eprintln!("USAGE:");
         eprintln!(
-            "  sf-nano-cli [--backend <auto|native|fusion|base>] [--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
+            "  sf-nano-cli [--backend <auto|native>] [--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
         );
-        #[cfg(all(feature = "profile", feature = "interp"))]
-        {
-            eprintln!("  sf-nano-cli discover-fusion [OPTIONS] <wasm-file>");
-            eprintln!("  sf-nano-cli discover-fusion --help");
-        }
         eprintln!();
         eprintln!("Run a WebAssembly module with WASI support.");
-        #[cfg(all(feature = "profile", feature = "interp"))]
-        eprintln!("Use 'discover-fusion' subcommand to profile and discover fusion patterns.");
         process::exit(1);
-    }
-
-    // Check for subcommands
-    #[cfg(all(feature = "profile", feature = "interp"))]
-    if args[1] == "discover-fusion" {
-        discover_fusion::run_from_args(&args[2..]);
-        return;
     }
 
     // Parse global runtime options.
@@ -184,7 +167,6 @@ fn main() {
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
     match engine {
-        sf_nano_core::RuntimeEngine::Interpreter => eprintln!("[runtime] interpreter"),
         sf_nano_core::RuntimeEngine::MicroJit(backend) => {
             eprintln!("[runtime] micro-jit backend={backend}");
         }

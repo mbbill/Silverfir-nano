@@ -14,8 +14,6 @@ use crate::constants;
 use crate::error::WasmError;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::ValueType;
-#[cfg(feature = "interp")]
-use crate::vm::interp::fast_code::{FastCode, FastCodeCache};
 #[cfg(feature = "micro-jit")]
 use crate::vm::runtime::code::{NativeCode, NativeCodeCache};
 use core::cell::UnsafeCell;
@@ -91,10 +89,6 @@ pub struct FunctionSpec {
     locals: Vec<ValueType>,
     code: Bytecode,
     code_offset: usize,
-    #[cfg(feature = "interp")]
-    fast_code: UnsafeCell<Option<FastCode>>,
-    #[cfg(feature = "interp")]
-    fast_cache: UnsafeCell<FastCodeCache>,
     #[cfg(feature = "micro-jit")]
     native_code: UnsafeCell<Option<NativeCode>>,
     #[cfg(feature = "micro-jit")]
@@ -113,10 +107,6 @@ impl FunctionSpec {
             locals: Vec::new(),
             code: Bytecode::default(),
             code_offset: 0,
-            #[cfg(feature = "interp")]
-            fast_code: UnsafeCell::new(None),
-            #[cfg(feature = "interp")]
-            fast_cache: UnsafeCell::new(FastCodeCache::default()),
             #[cfg(feature = "micro-jit")]
             native_code: UnsafeCell::new(None),
             #[cfg(feature = "micro-jit")]
@@ -160,38 +150,6 @@ impl FunctionSpec {
 
     pub fn type_index(&self) -> u32 {
         self.type_index
-    }
-
-    /// Check if fast code has been compiled for this function.
-    #[cfg(feature = "interp")]
-    #[inline(always)]
-    pub fn has_fast_code(&self) -> bool {
-        unsafe { (*self.fast_cache.get()).is_compiled() }
-    }
-
-    /// Get the fast code cache (hot-path metadata).
-    #[cfg(feature = "interp")]
-    #[inline(always)]
-    pub fn fast_cache(&self) -> FastCodeCache {
-        unsafe { *self.fast_cache.get() }
-    }
-
-    /// Get a reference to the FastCode (for iteration/patching).
-    #[cfg(feature = "interp")]
-    pub fn get_fast_code(&self) -> Option<&FastCode> {
-        unsafe { (*self.fast_code.get()).as_ref() }
-    }
-
-    /// Set the compiled fast code and cache.
-    ///
-    /// # Safety
-    /// Must only be called during compilation (single-threaded).
-    #[cfg(feature = "interp")]
-    pub fn set_fast_code(&self, code: FastCode, cache: FastCodeCache) {
-        unsafe {
-            *self.fast_code.get() = Some(code);
-            *self.fast_cache.get() = cache;
-        }
     }
 
     #[cfg(feature = "micro-jit")]

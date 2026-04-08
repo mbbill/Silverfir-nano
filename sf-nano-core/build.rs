@@ -1,32 +1,12 @@
 // sf-nano-core build script
-// Generates Fast interpreter code, then compiles C trampolines
+// Emits platform-derived cfgs and verifies LLVM toolchain compatibility.
 
-#[path = "build/compile.rs"]
-mod compile;
-
-#[path = "build/fast_interp/mod.rs"]
-mod fast_interp;
-
+use std::env;
 use std::process::Command;
-use std::{env, path::PathBuf};
 
 fn main() {
     check_llvm_version_compatibility();
     emit_guard_pages_cfg();
-
-    if env::var_os("CARGO_FEATURE_INTERP").is_some() {
-        let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
-        let out_path = PathBuf::from(&out_dir);
-
-        // Generate fast interpreter code from handlers.toml.
-        fast_interp::generate(&out_path);
-
-        // Verify preserve_none ABI for the interpreter trampoline.
-        compile::verify_preserve_none_abi();
-
-        // Compile fast interpreter C trampoline.
-        compile::compile_fast_trampoline(&out_dir);
-    }
 }
 
 fn emit_guard_pages_cfg() {

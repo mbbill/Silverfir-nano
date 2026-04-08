@@ -7,8 +7,6 @@ use crate::vm::value::Value;
 
 #[cfg(feature = "micro-jit")]
 pub use crate::vm::arch::ReferenceBackendMode;
-#[cfg(feature = "interp")]
-use crate::vm::interp;
 #[cfg(not(feature = "micro-jit"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReferenceBackendMode {
@@ -61,7 +59,6 @@ mod native_eval;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEngine {
-    Interpreter,
     MicroJit(&'static str),
 }
 
@@ -74,7 +71,6 @@ impl RuntimeEngine {
     #[inline]
     pub const fn native_backend(self) -> Option<&'static str> {
         match self {
-            Self::Interpreter => None,
             Self::MicroJit(backend) => Some(backend),
         }
     }
@@ -95,7 +91,6 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
                 Err("native backend not compiled in")
             }
         }
-        _ => Ok(RuntimeEngine::Interpreter),
     }
 }
 
@@ -146,18 +141,10 @@ pub(crate) fn eval(
         }
     }
 
-    #[cfg(feature = "interp")]
-    {
-        return interp::runtime::eval(func_inst, store, args);
-    }
-
-    #[cfg(not(feature = "interp"))]
-    {
-        let _ = (func_inst, store, args);
-        Err(WasmError::invalid(
-            "interpreter backend not compiled in".into(),
-        ))
-    }
+    let _ = (engine, func_inst, store, args);
+    Err(WasmError::invalid(
+        "no execution backend compiled in".into(),
+    ))
 }
 
 #[cfg(feature = "micro-jit")]

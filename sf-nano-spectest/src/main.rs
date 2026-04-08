@@ -157,7 +157,6 @@ fn main() {
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
     match engine {
-        sf_nano_core::RuntimeEngine::Interpreter => eprintln!("[runtime] interpreter"),
         sf_nano_core::RuntimeEngine::MicroJit(backend) => {
             eprintln!("[runtime] micro-jit backend={backend}");
         }

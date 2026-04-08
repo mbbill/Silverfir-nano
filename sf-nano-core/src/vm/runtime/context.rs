@@ -325,7 +325,7 @@ impl NativeContext {
 pub(crate) mod ctx_offset {
     use super::NativeContext;
 
-    #[cfg(any(test, feature = "interp"))]
+    #[cfg(test)]
     pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
     pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;

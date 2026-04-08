@@ -59,8 +59,6 @@ mod imp {
     use crate::module::entities::FunctionSpec;
     use crate::value_type::ValueType;
     use crate::vm::entities::{FunctionInst, ModuleInst};
-    #[cfg(feature = "interp")]
-    use crate::vm::interp::{context as interp_ctx, instruction::Instruction};
     use crate::vm::runtime::context::NativeContext;
     use crate::vm::store::Store;
 
@@ -321,22 +319,6 @@ mod imp {
         }
     }
 
-    #[cfg(feature = "interp")]
-    fn find_func_idx_by_fast_entry(module: &ModuleInst, entry: *mut Instruction) -> Option<u32> {
-        module
-            .functions
-            .iter()
-            .enumerate()
-            .find_map(|(idx, func)| match func {
-                FunctionInst::Local { spec, .. }
-                    if spec.has_fast_code() && spec.fast_cache().entry() == entry =>
-                {
-                    Some(idx as u32)
-                }
-                _ => None,
-            })
-    }
-
     fn find_func_idx_by_spec(module: &ModuleInst, spec: &FunctionSpec) -> Option<u32> {
         module
             .functions
@@ -348,114 +330,6 @@ mod imp {
                 } if core::ptr::eq(candidate, spec) => Some(idx as u32),
                 _ => None,
             })
-    }
-
-    #[cfg(feature = "interp")]
-    pub fn fast_root_entry(ctx: &mut interp_ctx::Context, spec: &FunctionSpec) {
-        if !enabled() {
-            return;
-        }
-        let Some(module) = ctx.current_module() else {
-            return;
-        };
-        let Some(func_idx) = find_func_idx_by_spec(module, spec) else {
-            return;
-        };
-        ctx.trace_stack.clear();
-        ctx.trace_stack.push(func_idx);
-        let store = ctx.store_mut();
-        record_event(
-            Some("interpreter"),
-            EventKind::Entry,
-            func_idx,
-            0,
-            &[],
-            store,
-            None,
-        );
-    }
-
-    #[cfg(feature = "interp")]
-    pub fn fast_root_exit(store: &Store, spec: &FunctionSpec, results: &[u64]) {
-        if !enabled() {
-            return;
-        }
-        let Some(func_idx) = find_func_idx_by_spec(store.module(), spec) else {
-            return;
-        };
-        record_event(
-            Some("interpreter"),
-            EventKind::Exit,
-            func_idx,
-            0,
-            results,
-            store,
-            None,
-        );
-    }
-
-    #[cfg(feature = "interp")]
-    pub fn fast_trap_current(ctx: &mut interp_ctx::Context, error: &WasmError) {
-        if !enabled() {
-            return;
-        }
-        let Some(&func_idx) = ctx.trace_stack.last() else {
-            return;
-        };
-        let depth = ctx.trace_stack.len() as u32;
-        let store = ctx.store_mut();
-        record_event(
-            None,
-            EventKind::Trap,
-            func_idx,
-            depth,
-            &[],
-            store,
-            Some(error),
-        );
-        ctx.trace_stack.clear();
-    }
-
-    #[cfg(feature = "interp")]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn fast_function_trace_enter_entry(
-        ctx: *mut interp_ctx::Context,
-        entry: *mut Instruction,
-    ) {
-        if !enabled() || ctx.is_null() {
-            return;
-        }
-        let ctx = unsafe { &mut *ctx };
-        let Some(module) = ctx.current_module() else {
-            return;
-        };
-        let Some(func_idx) = find_func_idx_by_fast_entry(module, entry) else {
-            return;
-        };
-        ctx.trace_stack.push(func_idx);
-        let depth = ctx.trace_stack.len() as u32;
-        let store = ctx.store_mut();
-        record_event(None, EventKind::Entry, func_idx, depth, &[], store, None);
-    }
-
-    #[cfg(feature = "interp")]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn fast_function_trace_exit(
-        ctx: *mut interp_ctx::Context,
-        fp: *mut u64,
-        arity: u16,
-    ) {
-        if !enabled() || ctx.is_null() {
-            return;
-        }
-        let ctx = unsafe { &mut *ctx };
-        let Some(func_idx) = ctx.trace_stack.pop() else {
-            return;
-        };
-        let depth = ctx.trace_stack.len() as u32;
-        let results = unsafe { core::slice::from_raw_parts(fp, arity as usize) };
-        let store = ctx.store_mut();
-        record_event(None, EventKind::Exit, func_idx, depth, results, store, None);
     }
 
     pub fn native_root_entry(ctx: &mut NativeContext, spec: &FunctionSpec, backend: &'static str) {
