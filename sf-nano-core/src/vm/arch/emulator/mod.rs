@@ -876,16 +876,36 @@ impl<'a> Emulator<'a> {
             .ok_or_else(|| WasmError::internal("machine edge target is out of range".into()))?
             .params
             .clone();
-        let mut values = Vec::with_capacity(edge.args.len());
-        for value in &edge.args {
-            values.push((self.read_value(*value)?, self.value_addr_kind(*value)));
+        // Read every non-reserved arg up front so sequential writes below
+        // cannot clobber a source register before it is consumed. Reserved
+        // cache edges are identity-only: the target register already holds
+        // the cached-local value, so no move happens across the edge — we
+        // only verify the identity invariant the native backends rely on.
+        let mut pending: Vec<(MachineReg, u64, RegAddrKind)> =
+            Vec::with_capacity(edge.args.len());
+        for (param, arg) in target_params.iter().zip(edge.args.iter()) {
+            match *arg {
+                MachineValue::ReservedReg(reg) => {
+                    if reg != param.reg {
+                        return Err(WasmError::internal(alloc::format!(
+                            "emulator received non-identity reserved cache edge move into {} from {}",
+                            param.reg.0, reg.0
+                        )));
+                    }
+                }
+                other => {
+                    let value = self.read_value(other)?;
+                    let kind = self.value_addr_kind(other);
+                    pending.push((param.reg, value, kind));
+                }
+            }
         }
-        for (param, (value, kind)) in target_params.into_iter().zip(values.into_iter()) {
-            let kind = match fixed_reg_addr_kind(param.reg) {
+        for (reg, value, kind) in pending.into_iter() {
+            let kind = match fixed_reg_addr_kind(reg) {
                 RegAddrKind::Unknown => kind,
                 fixed => fixed,
             };
-            self.write_reg_with_kind(param.reg, value, kind)?;
+            self.write_reg_with_kind(reg, value, kind)?;
         }
         self.block_id = edge.target;
         Ok(())
