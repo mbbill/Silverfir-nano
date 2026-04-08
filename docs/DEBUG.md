@@ -2,7 +2,7 @@
 
 This page is the practical entry point for debugging `sf-nano` today:
 
-- how to run each backend
+- how to run the JIT backend
 - how to run spec tests
 - what `native` and `reference` mean
 - how to get static native dumps and runtime profiles
@@ -16,12 +16,6 @@ Build a normal release CLI:
 cargo build --release --bin sf-nano-cli
 ```
 
-Run the interpreter path:
-
-```bash
-./target/release/sf-nano-cli --backend base benchmarks/wasi/coremark/coremark.wasm
-```
-
 Run the native path:
 
 ```bash
@@ -31,7 +25,7 @@ Run the native path:
 Run the debug-only native reference path:
 
 ```bash
-cargo run --bin sf-nano-cli -- --backend native --emu benchmarks/wasi/coremark/coremark.wasm
+cargo run --bin sf-nano-cli -- --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
 ```
 
 Run native spectest:
@@ -43,7 +37,7 @@ cargo run --bin sf-nano-spectest -- --backend native
 Run the core library regression loop used most often during bring-up:
 
 ```bash
-cargo test -p sf-nano-core --features micro-jit --lib
+cargo test -p sf-nano-core --lib
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
@@ -51,26 +45,21 @@ cargo run --bin sf-nano-spectest -- --backend native
 
 The CLI accepts:
 
-- `--backend base`
-- `--backend fusion`
-- `--backend native`
+- `--backend native` (alias: `--backend jit`)
 - `--backend auto`
-- `--emu` for the debug-only native emulator backend
+- `--emu64` / `--emu32` for the debug-only native emulator backend
 
-Important current behavior:
+| Mode | What it does |
+|---|---|
+| `native` | Native JIT backend. On AArch64 release builds this is the real ARM64 backend. |
+| `auto` | Resolve best available backend. Today that always means `native` because the JIT (`jit` feature) is the only compiled-in execution backend. |
 
-| Mode | What it does today | Notes |
-|---|---|---|
-| `base` | Interpreter path | This is the stable “just run through interpreter lowering/finalization” mode. |
-| `fusion` | Currently behaves like `base` | The flag still exists, but interpreter backend normalization currently maps fusion back to base until fusion is re-enabled on the refactored pipeline. |
-| `native` | Native backend | On AArch64 release builds this is the real ARM64 backend. |
-| `auto` | Resolve best available backend | Today that means `native` if `micro-jit` is compiled in, otherwise `base`. |
-
-Two details matter:
+Details that matter:
 
 1. The CLI default is `native`, not `auto`.
-2. In normal workspace builds, `sf-nano-core` enables `micro-jit` by default, so `native` is usually available without extra feature flags.
-3. `--emu` is only accepted in debug builds. Release builds reject it.
+2. `jit` is a default feature of `sf-nano-core`, so `native` is usually available without extra feature flags.
+3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds reject them.
+4. The previous `base` (interpreter) and `fusion` backends have been removed; the interpreter will be rewritten later.
 
 ## Native vs Reference
 
@@ -91,7 +80,7 @@ Today that means:
 
 Goal:
 
-- validate `NativeIR` semantics
+- validate `MachineIR` semantics
 - provide a non-ISA fallback implementation
 - serve as a correctness oracle while real backends come up
 
@@ -104,9 +93,11 @@ What it is not:
 How to enable it:
 
 ```bash
-cargo run --bin sf-nano-cli -- --backend native --emu path/to/module.wasm
-cargo run --bin sf-nano-spectest -- --backend native --emu
+cargo run --bin sf-nano-cli -- --backend native --emu64 path/to/module.wasm
+cargo run --bin sf-nano-spectest -- --backend native --emu64
 ```
+
+Use `--emu32` instead to exercise the 32-bit GP target profile.
 
 If you need to reason about reference behavior, treat it as a debug-only native-validation backend.
 
@@ -115,36 +106,12 @@ If you need to reason about reference behavior, treat it as a debug-only native-
 Both CLI and spectest print one runtime line before execution:
 
 ```text
-[runtime] interpreter
-[runtime] micro-jit backend=arm64
-[runtime] micro-jit backend=reference
+[runtime] jit backend=arm64
+[runtime] jit backend=x86_64
+[runtime] jit backend=emulator
 ```
 
-This is the intended high-level signal:
-
-- interpreter vs micro-jit
-- if micro-jit, which backend is active
-
-## Interpreter Path
-
-Use the interpreter explicitly with:
-
-```bash
-./target/release/sf-nano-cli --backend base path/to/module.wasm
-```
-
-This path is always useful when you want:
-
-- a non-native baseline
-- to compare behavior against `native`
-- to narrow a regression to “shared lowering/finalization” vs “ARM64 lowering/runtime”
-
-Current fusion status:
-
-- `--backend fusion` is accepted only if the `fusion` feature is compiled in
-- even then, the interpreter build path currently normalizes fusion back to base
-
-So if you see a difference between `base` and `native`, do not assume there is a live fusion backend in the middle today.
+This line tells you which concrete backend the JIT resolved to for this run.
 
 ## Spectest
 
@@ -157,9 +124,8 @@ cargo run --bin sf-nano-spectest -- --backend native
 Useful variants:
 
 ```bash
-cargo run --bin sf-nano-spectest -- --backend base
 cargo run --bin sf-nano-spectest -- --backend native if
-cargo run --bin sf-nano-spectest -- --backend native --emu if
+cargo run --bin sf-nano-spectest -- --backend native --emu64 if
 cargo run --bin sf-nano-spectest -- --backend native path/to/test.wast
 ```
 
@@ -277,22 +243,19 @@ Example symbols now look like:
 - `jit::main::func6::b80__helper_t_i32load_move_helper_t_i32load_branch`
 - `jit::main::func6::b80_call21_cont_f9`
 
-## JIT Map and Jitdump
+## Jitdump for samply
 
-### Address map
+Jitdump emission lets external profilers (samply, perf) resolve JIT-compiled
+code regions to symbols. It's a dev-tool feature controlled by the `jitdump`
+Cargo feature; the module is compiled out of release builds by default.
 
-Set `SF_JIT_MAP` to write a simple address-to-symbol map while native code is recorded:
+Build with the feature:
 
 ```bash
-SF_JIT_MAP=/tmp/coremark.map \
-./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
+cargo build --release -p sf-nano-cli --features jitdump
 ```
 
-This is useful for quick grepping and rough address correlation.
-
-### Jitdump for samply
-
-Set `SF_JITDUMP=1` when recording with `samply-for-ai`:
+Then set `SF_JITDUMP=1` when recording with `samply-for-ai`:
 
 ```bash
 SF_JITDUMP=1 \
@@ -313,30 +276,34 @@ samply-for-ai query --profile /tmp/coremark-native-profile.json.gz asm "jit::mai
 
 Use `native_index.txt` together with these symbols. `samply` gives runtime hotness; `native_index.txt` explains what the generated code means.
 
-## Function Trace
+## Function (Call) Trace
 
-For backend-vs-backend trace comparison, use the dedicated function trace workflow in [FUNCTION_TRACE_DEBUGGING.md](./FUNCTION_TRACE_DEBUGGING.md).
+For backend-vs-backend trace comparison, use the dedicated function trace
+workflow in [FUNCTION_TRACE_DEBUGGING.md](./FUNCTION_TRACE_DEBUGGING.md).
+
+The feature is called `call-trace` on `sf-nano-core` and routed via
+`sf-nano-cli`'s own `call-trace` feature.
 
 Build:
 
 ```bash
-cargo build --release -p sf-nano-cli --features function-trace
+cargo build --release -p sf-nano-cli --features call-trace
 ```
 
 Record:
 
 ```bash
-SF_FUNCTION_TRACE=/tmp/base.trace \
-./target/release/sf-nano-cli --backend base benchmarks/wasi/coremark/coremark.wasm
-
-SF_FUNCTION_TRACE=/tmp/native.trace \
+SF_FUNCTION_TRACE=/tmp/arm64.trace \
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
+
+SF_FUNCTION_TRACE=/tmp/emu64.trace \
+./target/release/sf-nano-cli --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
 ```
 
 Compare:
 
 ```bash
-diff -u /tmp/base.trace /tmp/native.trace
+diff -u /tmp/arm64.trace /tmp/emu64.trace
 ```
 
 Extra knob:
@@ -352,15 +319,15 @@ IR/assembly proof requirements, and landing criteria, see
 ### Validate native correctness first
 
 ```bash
-cargo test -p sf-nano-core --features micro-jit --lib
+cargo test -p sf-nano-core --lib
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
-### Compare base vs native on one workload
+### Compare native vs reference emulator on one workload
 
 ```bash
-./target/release/sf-nano-cli --backend base benchmarks/wasi/coremark/coremark.wasm
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
+cargo run --bin sf-nano-cli -- --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
 ```
 
 ### Profile a native regression
@@ -385,11 +352,10 @@ Then use:
 |---|---|
 | `TESTSUITE_DIR` | Override the WABT/spec testsuite location for `sf-nano-spectest` |
 | `RUST_BACKTRACE=1` | Show backtraces on unexpected panics |
-| `SF_NATIVE_DUMP_DIR` | Write `native_index.txt` and `native_code.bin` |
-| `SF_JIT_MAP` | Write the native address map |
-| `SF_JITDUMP=1` | Emit jitdump records for profiling tools |
+| `SF_NATIVE_DUMP_DIR` | Write `native_index.txt` and `native_code.bin` (requires `ir-dump` feature, auto-on in dev builds) |
+| `SF_JITDUMP=1` | Emit jitdump records for profiling tools (requires `jitdump` feature) |
 | `SF_JITDUMP_DIR` | Override jitdump output directory |
-| `SF_FUNCTION_TRACE` | Record sparse function-boundary traces |
+| `SF_FUNCTION_TRACE` | Record sparse function-boundary traces (requires `call-trace` feature) |
 | `SF_FUNCTION_TRACE_MEMORY=1` | Add memory hashing to function traces |
 
 ## Cross-Architecture Testing (ARMv7)
@@ -447,9 +413,9 @@ colima ssh -- qemu-arm-static \
 
 ### Notes
 
-- Use `--no-default-features` to disable `guard-pages` (requires 64-bit virtual
-  address space) and `micro-jit` default (re-add `--features micro-jit` if you
-  want the JIT compiled in without guard pages).
+- Use `--no-default-features --features jit` to disable `guard-pages`
+  (which requires a 64-bit virtual address space) while keeping the JIT
+  compiled in.
 - The binary is statically linked (musl), so no shared libraries are needed
   inside QEMU.
 - Colima mounts the macOS home directory, so host paths work directly.
@@ -458,8 +424,7 @@ colima ssh -- qemu-arm-static \
 
 ## Practical Rules
 
-- Use `base` first when you need a semantic baseline.
-- Use `native` when debugging ARM64 codegen, native runtime, or performance.
-- Treat `reference` as an internal NativeIR validation backend, not a normal user mode.
-- Use `native_index.txt` for static meaning and `samply-for-ai` for runtime hotness.
-- If `fusion` comes up in old notes or scripts, remember that current interpreter normalization still maps it back to base.
+- Use `native` for normal runs; it's the only real execution backend today.
+- Use `--emu64` / `--emu32` when you suspect ARM64 codegen vs generic MachineIR semantics divergence — the reference emulator runs the same MIR through a non-ISA interpreter.
+- Use `native_index.txt` (via `SF_NATIVE_DUMP_DIR` + `ir-dump` feature) for static meaning and `samply-for-ai` with jitdump for runtime hotness.
+- If `base`, `fusion`, `micro-jit`, `function-trace`, or `SF_JIT_MAP` come up in old notes, scripts, or external docs: those are obsolete. The current names are `native`, `jit`, `call-trace`, and jitdump respectively.

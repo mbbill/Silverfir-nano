@@ -789,7 +789,7 @@ Must land complete and correct. The recommended subtask order:
     `sf-nano-core/src/vm/arch/abi.md` that links here for the call-ABI
     details and states the host-stack-depth caveat.
 11. **Tests, spectest, coremark.** Run
-    `cargo test -p sf-nano-core --features micro-jit --lib`,
+    `cargo test -p sf-nano-core --features jit --lib`,
     `cargo run --bin sf-nano-spectest -- --backend native`, regenerate
     the coremark dump, run `scripts/compare_llvm.py`. Update
     `lower_tests.rs` fixtures touched by the call-frame-zero work in
@@ -811,7 +811,7 @@ under their respective `--target` cross-compile checks. Documenting the
 gap here so a follow-up session (ideally one with access to actual
 target hardware for runtime verification) can finish them.
 
-Snapshot of `cargo check -p sf-nano-core --target ... --features micro-jit`
+Snapshot of `cargo check -p sf-nano-core --target ... --features jit`
 errors as of the 1A.9 / 1A.10 / 1C-revert checkpoint:
 
 **x86_64 — 26 errors total**

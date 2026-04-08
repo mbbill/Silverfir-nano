@@ -23,7 +23,7 @@ impl ReferenceBackendMode {
     }
 }
 
-// --- Native runtime infrastructure (micro-jit only) ---
+// --- Native runtime infrastructure (jit only) ---
 
 #[cfg(sf_jit)]
 pub(crate) mod code;
@@ -57,19 +57,19 @@ mod native_eval;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEngine {
-    MicroJit(&'static str),
+    Jit(&'static str),
 }
 
 impl RuntimeEngine {
     #[inline]
-    pub const fn is_micro_jit(self) -> bool {
-        matches!(self, Self::MicroJit(_))
+    pub const fn is_jit(self) -> bool {
+        matches!(self, Self::Jit(_))
     }
 
     #[inline]
     pub const fn native_backend(self) -> Option<&'static str> {
         match self {
-            Self::MicroJit(backend) => Some(backend),
+            Self::Jit(backend) => Some(backend),
         }
     }
 }
@@ -79,7 +79,7 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
         BackendKind::Native => {
             #[cfg(sf_jit)]
             {
-                Ok(RuntimeEngine::MicroJit(
+                Ok(RuntimeEngine::Jit(
                     crate::vm::arch::active_native_backend_name()?,
                 ))
             }
@@ -101,7 +101,7 @@ pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
     #[cfg(not(sf_jit))]
     {
         if enabled {
-            Err("reference backend requires micro-jit")
+            Err("reference backend requires jit")
         } else {
             Ok(())
         }
@@ -117,7 +117,7 @@ pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'st
     #[cfg(not(sf_jit))]
     {
         if mode.is_enabled() {
-            Err("reference backend requires micro-jit")
+            Err("reference backend requires jit")
         } else {
             Ok(())
         }
@@ -134,7 +134,7 @@ pub(crate) fn eval(
 
     #[cfg(sf_jit)]
     {
-        if engine.is_micro_jit() {
+        if engine.is_jit() {
             return native_eval::eval(func_inst, store, args);
         }
     }

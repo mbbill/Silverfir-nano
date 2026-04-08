@@ -54,7 +54,7 @@ fn main() {
     if let Some(backend) = &args.backend {
         let mode = BackendMode::parse_str(backend).unwrap_or_else(|| {
             eprintln!(
-                "invalid backend '{}'; expected one of: auto, native, fusion, base (compat: jit)",
+                "invalid backend '{}'; expected one of: auto, native (alias: jit)",
                 backend
             );
             std::process::exit(1);
@@ -157,8 +157,8 @@ fn main() {
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
     match engine {
-        sf_nano_core::RuntimeEngine::MicroJit(backend) => {
-            eprintln!("[runtime] micro-jit backend={backend}");
+        sf_nano_core::RuntimeEngine::Jit(backend) => {
+            eprintln!("[runtime] jit backend={backend}");
         }
     }
 }

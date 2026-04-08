@@ -44,12 +44,12 @@ fn main() {
             } else if args[i] == "--backend" {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("Error: --backend requires one of: auto, native, fusion, base");
+                    eprintln!("Error: --backend requires one of: auto, native (alias: jit)");
                     process::exit(1);
                 }
                 backend_mode = BackendMode::parse_str(&args[i]).unwrap_or_else(|| {
                     eprintln!(
-                        "Error: invalid backend '{}'; expected one of: auto, native, fusion, base (compat: jit)",
+                        "Error: invalid backend '{}'; expected one of: auto, native (alias: jit)",
                         args[i]
                     );
                     process::exit(1);
@@ -167,8 +167,8 @@ fn main() {
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
     match engine {
-        sf_nano_core::RuntimeEngine::MicroJit(backend) => {
-            eprintln!("[runtime] micro-jit backend={backend}");
+        sf_nano_core::RuntimeEngine::Jit(backend) => {
+            eprintln!("[runtime] jit backend={backend}");
         }
     }
 }

@@ -124,7 +124,7 @@ cleanup_remote_qemu_state_dir
 cleanup_remote_qemu_pattern
 
 echo "[armv7-run-tests] Cross-compiling CLI ($PROFILE) for ARMv7..."
-cargo build --target "$TARGET" -p sf-nano-cli --no-default-features --features micro-jit \
+cargo build --target "$TARGET" -p sf-nano-cli --no-default-features --features jit \
     ${CARGO_PROFILE_FLAG[@]+"${CARGO_PROFILE_FLAG[@]}"}
 
 if [[ ! -f "$CLI_BIN" ]]; then

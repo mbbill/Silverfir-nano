@@ -62,7 +62,7 @@ fi
 # --- Build ---
 
 echo "[armv7-spectest] Cross-compiling spectest for ARMv7..."
-cargo build --target "$TARGET" -p sf-nano-spectest --no-default-features --features micro-jit
+cargo build --target "$TARGET" -p sf-nano-spectest --no-default-features --features jit
 
 if [[ ! -f "$SPECTEST_BIN" ]]; then
     echo "ERROR: Build succeeded but binary not found at $SPECTEST_BIN" >&2

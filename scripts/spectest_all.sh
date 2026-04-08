@@ -28,7 +28,7 @@ fi
 # --- Build (one release build covers arm64/emu64/emu32) ---
 
 echo "=== Building spectest (release) ==="
-cargo build --release -p sf-nano-spectest --no-default-features --features micro-jit
+cargo build --release -p sf-nano-spectest --no-default-features --features jit
 SPECTEST="$REPO_ROOT/target/release/sf-nano-spectest"
 echo
 

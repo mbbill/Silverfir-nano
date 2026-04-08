@@ -175,7 +175,7 @@ Run in this exact order:
 
 ```bash
 # 1. Unit tests
-cargo test -p sf-nano-core --features micro-jit --lib
+cargo test -p sf-nano-core --features jit --lib
 
 # 2. Spectests
 cargo run --bin sf-nano-spectest -- --backend native
