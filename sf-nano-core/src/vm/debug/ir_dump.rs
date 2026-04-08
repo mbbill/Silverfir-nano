@@ -11,6 +11,7 @@ use core::fmt::Write as _;
 use crate::{
     error::WasmError,
     vm::{
+        arch::common::types::DebugRegion,
         machine::machine_ir::{
             MachineAddr, MachineBranchCond, MachineFloatWidth, MachineFunction, MachineInstKind,
             MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
@@ -29,17 +30,6 @@ use std::{
     io::Write,
     path::PathBuf,
 };
-
-/// One debug region within a compiled function (for profiler symbols).
-#[derive(Clone, Debug)]
-pub(crate) struct DebugRegion {
-    /// Byte offset within the function text.
-    pub offset: usize,
-    /// Byte length of this region.
-    pub len: usize,
-    /// Human-readable label (e.g. "b0", "edge_3", "prologue", "return_ok").
-    pub label: String,
-}
 
 /// Per-function SSA-IR data for the dump.
 pub(crate) struct DumpFunctionLir<'a> {

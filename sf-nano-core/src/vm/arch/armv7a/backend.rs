@@ -63,6 +63,7 @@ struct BranchFixup {
 pub(crate) struct CompiledArm32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
+    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
     pub debug_regions: Vec<DebugRegion>,
     pub root_return: NativeCodePtr,
     #[cfg(sf_has_guard_pages)]

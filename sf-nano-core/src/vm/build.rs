@@ -58,7 +58,6 @@ use crate::{
     error::WasmError,
     vm::{
         arch,
-        debug::ir_dump,
         machine::{
             machine_ir::MachineFuncId,
             {lower_module, optimize_module, LowerFunctionInput, LowerModuleInput},
@@ -69,6 +68,8 @@ use crate::{
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
     },
 };
+#[cfg(sf_ir_dump)]
+use crate::vm::debug::ir_dump;
 
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
@@ -210,6 +211,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     // Collect SSA-IR for dump before moving lowered data
+    #[cfg(sf_ir_dump)]
     let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions
         .iter()
         .map(|(id, prepared)| ir_dump::DumpFunctionLir {
@@ -285,6 +287,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     // Write dump if SF_NATIVE_DUMP_DIR is set
+    #[cfg(sf_ir_dump)]
     if ir_dump::dump_enabled() {
         #[cfg(target_arch = "aarch64")]
         let code_slices: Vec<(u32, &[u8])> = arm64_entries

@@ -14,9 +14,9 @@ paste = "1.0"
 [features]
 default = ["jit", "guard-pages"]
 jit = []
-wasi = ["std"]
+wasi = []
 validator = []
-call-trace = ["std"]
-guard-pages = ["std"]
-std = []
+call-trace = []
+guard-pages = []
+ir-dump = []
 

@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::vm::machine::machine_ir::{
@@ -6,6 +7,24 @@ use crate::vm::machine::machine_ir::{
 use crate::vm::runtime::dispatch_view::NativeLocalCallInfo64;
 
 use super::text_emitter::TextEmitter;
+
+// ── Debug region ─────────────────────────────────────────────────────────────
+
+/// One debug region within a compiled function.
+///
+/// Populated during code emission and consumed by the optional `ir_dump`
+/// debug dumper (`sf_ir_dump`) and the profiler (`sf_has_std`) when enabled.
+/// Always present so the data can flow through the arch layer regardless of
+/// which consumer is compiled in.
+#[derive(Clone, Debug)]
+pub(crate) struct DebugRegion {
+    /// Byte offset within the function text.
+    pub offset: usize,
+    /// Byte length of this region.
+    pub len: usize,
+    /// Human-readable label (e.g. "b0", "edge_3", "prologue", "return_ok").
+    pub label: String,
+}
 
 // ── Edge stubs ───────────────────────────────────────────────────────────────
 
@@ -62,9 +81,6 @@ pub(crate) struct FunctionArtifact {
 pub(crate) type NativeFunctionInfo = NativeLocalCallInfo64;
 
 pub(crate) const NATIVE_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<NativeFunctionInfo>();
-
-/// Re-export the canonical DebugRegion from ir_dump.
-pub(crate) use crate::vm::debug::ir_dump::DebugRegion;
 
 // ── Parallel move source ─────────────────────────────────────────────────────
 

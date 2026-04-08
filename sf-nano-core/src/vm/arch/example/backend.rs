@@ -67,6 +67,7 @@ pub(super) struct BranchFixup {
 pub(crate) struct CompiledExampleEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
+    #[cfg_attr(not(sf_ir_dump), allow(dead_code))]
     pub debug_regions: Vec<DebugRegion>,
 }
 
