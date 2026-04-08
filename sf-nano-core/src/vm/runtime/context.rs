@@ -72,7 +72,7 @@ pub(crate) struct NativeContext {
     function_views: Vec<NativeFunctionView>,
     type_canon: Vec<u32>,
     #[cfg(sf_call_trace)]
-    pub(crate) trace_stack: std::vec::Vec<u32>,
+    pub(crate) trace_stack: Vec<u32>,
 }
 
 impl NativeContext {
@@ -103,7 +103,7 @@ impl NativeContext {
             function_views: Vec::new(),
             type_canon: Vec::new(),
             #[cfg(sf_call_trace)]
-            trace_stack: std::vec::Vec::new(),
+            trace_stack: Vec::new(),
         };
         ctx.refresh_cached_views();
         ctx
