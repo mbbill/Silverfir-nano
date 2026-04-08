@@ -11,8 +11,8 @@ name = "sf-nano-cli"
 path = "src/main.rs"
 
 [features]
-default = ["micro-jit"]
-micro-jit = ["sf-nano-core/micro-jit"]
-function-trace = ["sf-nano-core/function-trace"]
+default = ["jit"]
+jit = ["sf-nano-core/jit"]
+call-trace = ["sf-nano-core/call-trace"]
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }

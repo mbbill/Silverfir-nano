@@ -55,7 +55,7 @@ pub(super) fn do_memory_grow(
         None => error_value,
         Some(new_pages) if new_pages > mem.limits.get_max() => error_value,
         Some(new_pages) => {
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             {
                 if let Some(guard) = mem.guard_mut() {
                     match guard.grow(delta_pages) {
@@ -66,7 +66,7 @@ pub(super) fn do_memory_grow(
                     grow_heap(mem, new_pages, old_pages, error_value)
                 }
             }
-            #[cfg(not(has_guard_pages))]
+            #[cfg(not(sf_has_guard_pages))]
             {
                 grow_heap(mem, new_pages, old_pages, error_value)
             }

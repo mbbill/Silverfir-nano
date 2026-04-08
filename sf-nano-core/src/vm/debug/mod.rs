@@ -3,5 +3,5 @@
 //! This layer should stay optional and off the release path by default.
 
 pub(crate) mod function_trace;
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 pub(crate) mod ir_dump;

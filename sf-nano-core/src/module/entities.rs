@@ -14,7 +14,7 @@ use crate::constants;
 use crate::error::WasmError;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::ValueType;
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 use crate::vm::runtime::code::{NativeCode, NativeCodeCache};
 use core::cell::UnsafeCell;
 
@@ -89,9 +89,9 @@ pub struct FunctionSpec {
     locals: Vec<ValueType>,
     code: Bytecode,
     code_offset: usize,
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     native_code: UnsafeCell<Option<NativeCode>>,
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     native_cache: UnsafeCell<NativeCodeCache>,
 }
 
@@ -107,9 +107,9 @@ impl FunctionSpec {
             locals: Vec::new(),
             code: Bytecode::default(),
             code_offset: 0,
-            #[cfg(feature = "micro-jit")]
+            #[cfg(sf_jit)]
             native_code: UnsafeCell::new(None),
-            #[cfg(feature = "micro-jit")]
+            #[cfg(sf_jit)]
             native_cache: UnsafeCell::new(NativeCodeCache::default()),
         }
     }
@@ -152,18 +152,18 @@ impl FunctionSpec {
         self.type_index
     }
 
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     #[inline(always)]
     pub fn has_native_code(&self) -> bool {
         unsafe { (*self.native_cache.get()).is_compiled() }
     }
 
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     pub(crate) fn get_native_code(&self) -> Option<&NativeCode> {
         unsafe { (*self.native_code.get()).as_ref() }
     }
 
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     pub(crate) fn set_native_code(&self, code: NativeCode, cache: NativeCodeCache) {
         unsafe {
             *self.native_code.get() = Some(code);

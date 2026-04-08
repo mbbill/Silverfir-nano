@@ -60,7 +60,7 @@ pub(crate) struct LowerFunctionInput<'a> {
 pub(crate) struct LowerModuleInput<'a> {
     pub backend: BackendConfig,
     pub functions: &'a [LowerFunctionInput<'a>],
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub use_guard_pages: bool,
 }
 
@@ -96,9 +96,9 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
         is_local_func[function.id.0 as usize] = true;
         function_abis[function.id.0 as usize] = lower_function_runtime(*function)?;
     }
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
-    #[cfg(not(has_guard_pages))]
+    #[cfg(not(sf_has_guard_pages))]
     let guard_pages = false;
     for function in input.functions {
         functions[function.id.0 as usize] = Some(lower_function(
@@ -206,7 +206,7 @@ fn lower_function(
             block_entry_cache_dirty
                 .get(target.as_usize())
                 .map(|dirty| dirty.as_slice()),
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());

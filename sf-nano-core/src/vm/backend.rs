@@ -191,11 +191,11 @@ pub fn backend_mode() -> BackendMode {
 pub(crate) fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static str> {
     match mode {
         BackendMode::Native | BackendMode::Auto => {
-            #[cfg(feature = "micro-jit")]
+            #[cfg(sf_jit)]
             {
                 Ok(BackendKind::Native)
             }
-            #[cfg(not(feature = "micro-jit"))]
+            #[cfg(not(sf_jit))]
             {
                 Err("native backend not compiled in")
             }

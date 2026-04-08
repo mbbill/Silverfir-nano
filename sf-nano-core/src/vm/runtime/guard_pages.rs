@@ -6,7 +6,7 @@
 //! into the guard region. A signal handler converts the fault to a wasm trap
 //! without explicit per-access bounds checks in JIT code.
 //!
-//! This module is gated on `#[cfg(has_guard_pages)]`.
+//! This module is gated on `#[cfg(sf_has_guard_pages)]`.
 
 use core::ptr;
 

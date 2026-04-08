@@ -1,4 +1,4 @@
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 use std::{
     env,
     ffi::CString,
@@ -8,11 +8,11 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 static JITDUMP_FILE: OnceLock<Option<Mutex<JitDumpWriter>>> = OnceLock::new();
 
 pub(crate) fn record_function(code_start: *const u8, code_bytes: &[u8], symbol_name: &str) {
-    #[cfg(any(feature = "wasi", feature = "std", test))]
+    #[cfg(any(sf_has_std, test))]
     {
         let Some(writer) = writer() else {
             return;
@@ -22,16 +22,16 @@ pub(crate) fn record_function(code_start: *const u8, code_bytes: &[u8], symbol_n
         }
     }
 
-    #[cfg(not(any(feature = "wasi", feature = "std", test)))]
+    #[cfg(not(any(sf_has_std, test)))]
     let _ = (code_start, code_bytes, symbol_name);
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn writer() -> Option<&'static Mutex<JitDumpWriter>> {
     JITDUMP_FILE.get_or_init(create_writer).as_ref()
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn create_writer() -> Option<Mutex<JitDumpWriter>> {
     if !jitdump_enabled() {
         return None;
@@ -48,12 +48,12 @@ fn create_writer() -> Option<Mutex<JitDumpWriter>> {
     Some(Mutex::new(writer))
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn jitdump_enabled() -> bool {
     env::var_os("SF_JITDUMP").is_some() || env::var_os("SAMPLY_BOOTSTRAP_SERVER_NAME").is_some()
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn jitdump_path(pid: u32) -> PathBuf {
     let dir = env::var_os("SF_JITDUMP_DIR")
         .map(PathBuf::from)
@@ -61,7 +61,7 @@ fn jitdump_path(pid: u32) -> PathBuf {
     dir.join(alloc::format!("jit-{pid}.dump"))
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 struct JitDumpWriter {
     file: File,
     pid: u32,
@@ -69,7 +69,7 @@ struct JitDumpWriter {
     next_code_index: u64,
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 impl JitDumpWriter {
     fn new(mut file: File, pid: u32) -> io::Result<Self> {
         write_file_header(
@@ -109,7 +109,7 @@ impl JitDumpWriter {
     }
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 impl Drop for JitDumpWriter {
     fn drop(&mut self) {
         let _ = write_record_header(
@@ -122,16 +122,16 @@ impl Drop for JitDumpWriter {
     }
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 const FILE_HEADER_SIZE: u32 = 40;
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 const RECORD_HEADER_SIZE: usize = 16;
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 const JIT_CODE_LOAD: u32 = 0;
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 const JIT_CODE_CLOSE: u32 = 3;
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn write_file_header<W: Write>(
     out: &mut W,
     pid: u32,
@@ -153,7 +153,7 @@ fn write_file_header<W: Write>(
     Ok(())
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn write_code_load_record<W: Write>(
     out: &mut W,
     timestamp: u64,
@@ -180,7 +180,7 @@ fn write_code_load_record<W: Write>(
     Ok(())
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn write_record_header<W: Write>(
     out: &mut W,
     record_type: u32,
@@ -193,7 +193,7 @@ fn write_record_header<W: Write>(
     Ok(())
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_family = "unix")]
 fn open_tracking_file(path: &Path) -> io::Result<File> {
     use std::os::fd::FromRawFd;
@@ -212,13 +212,13 @@ fn open_tracking_file(path: &Path) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(not(target_family = "unix"))]
 fn open_tracking_file(path: &Path) -> io::Result<File> {
     File::create(path)
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_family = "unix")]
 unsafe extern "C" {
     fn fopen(
@@ -228,7 +228,7 @@ unsafe extern "C" {
     fn fileno(stream: *mut core::ffi::c_void) -> i32;
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 fn monotonic_timestamp_nanos() -> u64 {
     #[cfg(target_os = "macos")]
     unsafe {
@@ -266,13 +266,13 @@ fn monotonic_timestamp_nanos() -> u64 {
     }
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "macos")]
 fn elf_machine_arch() -> u32 {
     EM_AARCH64
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "linux")]
 fn elf_machine_arch() -> u32 {
     #[cfg(target_arch = "aarch64")]
@@ -286,23 +286,23 @@ fn elf_machine_arch() -> u32 {
     }
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn elf_machine_arch() -> u32 {
     EM_NONE
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 const EM_NONE: u32 = 0;
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 const EM_AARCH64: u32 = 183;
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "linux")]
 const CLOCK_MONOTONIC: i32 = 1;
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "linux")]
 #[repr(C)]
 struct timespec {
@@ -310,20 +310,20 @@ struct timespec {
     tv_nsec: i64,
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
     fn clock_gettime(clk_id: i32, tp: *mut timespec) -> i32;
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
     fn QueryPerformanceCounter(count: *mut i64) -> i32;
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "macos")]
 #[repr(C)]
 struct mach_timebase_info {
@@ -331,7 +331,7 @@ struct mach_timebase_info {
     denom: u32,
 }
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn mach_absolute_time() -> u64;

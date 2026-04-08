@@ -1,6 +1,6 @@
 //! WASI preview1 support for sf-nano-core.
 //!
-//! Gated behind `#[cfg(feature = "wasi")]`. Uses a thread-local `WasiCtx`
+//! Gated behind `#[cfg(sf_wasi_host)]`. Uses a thread-local `WasiCtx`
 //! so that plain `fn`-pointer `ExternalFn` callbacks can access WASI state
 //! without closures.
 

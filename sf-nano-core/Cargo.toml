@@ -12,14 +12,11 @@ categories = ["wasm", "no-std"]
 paste = "1.0"
 
 [features]
-default = ["micro-jit", "guard-pages"]
-validate = []
-wasi = []
-spectest = []
-micro-jit = []
-function-trace = ["std"]
+default = ["jit", "guard-pages"]
+jit = []
+wasi = ["std"]
+validator = []
+call-trace = ["std"]
 guard-pages = ["std"]
 std = []
 
-[build-dependencies]
-cc = "1.0"

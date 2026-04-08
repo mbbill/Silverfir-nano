@@ -4,7 +4,7 @@ use crate::error::WasmError;
 use crate::vm::raw_value::{as_f32, as_f64, from_i32, from_i64};
 use crate::vm::runtime::context::NativeContext;
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
 
 // ── raise_trap ───────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ pub(crate) unsafe extern "C" fn x86_64_raise_trap(ctx: *mut NativeContext, kind:
         7 => WasmError::exhaustion("stack overflow".into()),
         _ => WasmError::trap("native helper failed".into()),
     };
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     function_trace::native_trap_current(ctx, &error);
     ctx.error = Some(error);
     1
@@ -41,7 +41,7 @@ pub(crate) unsafe extern "C" fn x86_64_raise_unsupported(
         "x86_64 backend has not finalized machine function {} yet",
         func_id
     ));
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     function_trace::native_trap_current(ctx, &error);
     ctx.error = Some(error);
     1

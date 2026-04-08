@@ -9,7 +9,7 @@
 //! PC to the function's `return_error_label`. The Rust caller (`eval()`) reads
 //! `trap_kind` after JIT returns and creates the `WasmError`.
 //!
-//! This module is gated on `#[cfg(has_guard_pages)]`.
+//! This module is gated on `#[cfg(sf_has_guard_pages)]`.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

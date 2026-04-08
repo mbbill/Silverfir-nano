@@ -170,7 +170,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // Patch fixups
     b.patch_fixups()?;
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     let body_local_error_offset = b
         .core()
         .labels
@@ -180,7 +180,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 
     b.into_core().finish_artifact(
         internal_entry_offset,
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         body_local_error_offset,
         debug_regions,
     )
@@ -290,7 +290,7 @@ pub(crate) struct EmittedFunction {
     /// Offset of `body_local_error_label` within the function's text. Used
     /// by the guard-page signal handler to redirect a faulting PC to the
     /// trap propagation tail.
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub body_local_error_offset: usize,
     pub debug_regions: Vec<DebugRegion>,
 }
@@ -388,7 +388,7 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
         emitted.push(EmittedFunction {
             text_offset,
             text_len,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             body_local_error_offset: artifact.body_local_error_offset,
             debug_regions: artifact.debug_regions,
         });
@@ -424,7 +424,7 @@ pub(crate) fn compile_module<'a, A: ArchBackend<'a>>(
     // `body_local_error_label`, which is the trap propagation tail under
     // the new ABI (replaces the old `return_error_label` that ran the
     // C-ABI epilogue).
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     {
         let ranges: Vec<_> = emitted
             .iter()

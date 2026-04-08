@@ -1203,7 +1203,7 @@ mod tests {
             &super::super::gp32::Gp32Lowering,
             true,
             None,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             false,
         )
         .expect("lower context")

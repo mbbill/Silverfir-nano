@@ -99,7 +99,7 @@ impl Instance {
     }
 
     pub fn from_module(module: Module, imports: &[Import]) -> Result<Self, WasmError> {
-        #[cfg(feature = "validate")]
+        #[cfg(sf_module_validator)]
         {
             use crate::module::validator::Validator;
             let mut validator = Validator::new(&module);
@@ -244,11 +244,11 @@ impl Instance {
         for mem in &mod_memories {
             match mem.def() {
                 MemoryDef::Local(_spec) => {
-                    #[cfg(has_guard_pages)]
+                    #[cfg(sf_has_guard_pages)]
                     {
                         memories.push(MemInst::new_guarded(mem.limits().clone())?);
                     }
-                    #[cfg(not(has_guard_pages))]
+                    #[cfg(not(sf_has_guard_pages))]
                     {
                         memories.push(MemInst::new(mem.limits().clone()));
                     }
@@ -286,11 +286,11 @@ impl Instance {
                                 }
                             }
                             let import_limits = Limits::new(*initial_pages, *max_pages)?;
-                            #[cfg(has_guard_pages)]
+                            #[cfg(sf_has_guard_pages)]
                             {
                                 memories.push(MemInst::new_guarded(import_limits)?);
                             }
-                            #[cfg(not(has_guard_pages))]
+                            #[cfg(not(sf_has_guard_pages))]
                             {
                                 memories.push(MemInst::new(import_limits));
                             }

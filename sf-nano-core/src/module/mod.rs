@@ -8,7 +8,7 @@ pub mod entities;
 pub(crate) mod parser;
 pub mod type_context;
 pub mod type_defs;
-#[cfg(feature = "validate")]
+#[cfg(sf_module_validator)]
 pub mod validator;
 
 use crate::error::WasmError;

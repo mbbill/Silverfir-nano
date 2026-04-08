@@ -49,7 +49,7 @@ pub(crate) struct FunctionArtifact {
     /// Offset within `text` of the function's `body_local_error_label`.
     /// Used by the guard-page signal handler to redirect a faulting PC to
     /// the trap propagation tail.
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub body_local_error_offset: usize,
     pub internal_entry_offset: usize,
     pub debug_regions: Vec<DebugRegion>,

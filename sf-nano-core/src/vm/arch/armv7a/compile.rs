@@ -154,12 +154,12 @@ pub(crate) fn compile_module(
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
         let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };
         entries.push(Some(CompiledArm32Entry {
             entry,
             root_return,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             return_error,
             text_len,
             debug_regions,
@@ -194,7 +194,7 @@ pub(crate) fn compile_module(
     }
 
     // Register guard-pages JIT ranges
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     {
         let ranges: Vec<_> = entries
             .iter()

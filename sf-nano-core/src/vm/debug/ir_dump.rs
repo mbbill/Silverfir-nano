@@ -22,7 +22,7 @@ use crate::{
     },
 };
 
-#[cfg(any(feature = "std", feature = "wasi", test))]
+#[cfg(any(sf_has_std, test))]
 use std::{
     env,
     fs::{self, File},
@@ -54,12 +54,12 @@ pub(crate) struct DumpFunctionRegions {
 }
 
 pub(crate) fn dump_enabled() -> bool {
-    #[cfg(any(feature = "std", feature = "wasi", test))]
+    #[cfg(any(sf_has_std, test))]
     {
         env::var_os("SF_NATIVE_DUMP_DIR").is_some()
     }
 
-    #[cfg(not(any(feature = "std", feature = "wasi", test)))]
+    #[cfg(not(any(sf_has_std, test)))]
     {
         false
     }
@@ -78,7 +78,7 @@ pub(crate) fn write_module_dump(
     code_slices: &[(u32, &[u8])],
     debug_regions_by_func: &[DumpFunctionRegions],
 ) -> Result<(), WasmError> {
-    #[cfg(any(feature = "std", feature = "wasi", test))]
+    #[cfg(any(sf_has_std, test))]
     {
         if !dump_enabled() {
             return Ok(());
@@ -95,7 +95,7 @@ pub(crate) fn write_module_dump(
         .map_err(|err| WasmError::internal(format!("failed to write native dump: {err}")))
     }
 
-    #[cfg(not(any(feature = "std", feature = "wasi", test)))]
+    #[cfg(not(any(sf_has_std, test)))]
     {
         let _ = (
             module_name,
@@ -110,7 +110,7 @@ pub(crate) fn write_module_dump(
     }
 }
 
-#[cfg(any(feature = "std", feature = "wasi", test))]
+#[cfg(any(sf_has_std, test))]
 fn write_dump_impl(
     module_name: &str,
     function_count: usize,

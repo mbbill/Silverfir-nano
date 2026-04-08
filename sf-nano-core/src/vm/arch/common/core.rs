@@ -480,7 +480,7 @@ impl<'a> CompilerCore<'a> {
     pub(crate) fn finish_artifact(
         self,
         internal_entry_offset: usize,
-        #[cfg(has_guard_pages)] body_local_error_offset: usize,
+        #[cfg(sf_has_guard_pages)] body_local_error_offset: usize,
         debug_regions: Vec<DebugRegion>,
     ) -> Result<FunctionArtifact, WasmError> {
         let mut local_ptr_patches = self.resolved_ptr_patches;
@@ -502,7 +502,7 @@ impl<'a> CompilerCore<'a> {
             text: self.text,
             local_ptr_patches,
             direct_call_patches: self.direct_call_patches,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             body_local_error_offset,
             internal_entry_offset,
             debug_regions,

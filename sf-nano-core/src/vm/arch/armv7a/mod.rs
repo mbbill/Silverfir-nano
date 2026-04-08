@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
 
 const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
@@ -48,7 +48,7 @@ pub(crate) fn eval(
     args: &[Value],
     backend: &'static str,
 ) -> Result<ResultBuffer, WasmError> {
-    #[cfg(not(feature = "function-trace"))]
+    #[cfg(not(sf_call_trace))]
     let _ = backend;
 
     let func_type = spec.func_type();
@@ -97,13 +97,13 @@ pub(crate) fn eval(
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
     ctx.seed_local_call_infos(compiled);
     seed_root_call_link(compiled, runtime, stack_base, root_return)?;
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();
         function_trace::native_root_entry(&mut ctx, spec, backend);
     }
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     {
         use crate::vm::machine::{runtime::context::ctx_offset, trap_signal};
         trap_signal::install_signal_handler();
@@ -114,10 +114,10 @@ pub(crate) fn eval(
 
     let status = unsafe { entry(&mut ctx, stack_base) };
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     if ctx.trap_kind != 0 {
         let error = WasmError::trap("out of bounds memory access".into());
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
     }
@@ -126,7 +126,7 @@ pub(crate) fn eval(
         let error = ctx.error.take().unwrap_or_else(|| {
             WasmError::internal("armv7a root entry failed without setting an error".into())
         });
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
     }
@@ -138,7 +138,7 @@ pub(crate) fn eval(
             out.push(*stack_base.add(index));
         }
     }
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
         function_trace::native_root_exit(&mut ctx, spec, results);
@@ -200,7 +200,7 @@ pub(crate) unsafe extern "C" fn armv7a_raise_trap(
         7 => WasmError::exhaustion(trap_message("stack overflow", site)),
         _ => WasmError::trap(trap_message("native helper failed", site)),
     };
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     function_trace::native_trap_current(ctx, &error);
     ctx.error = Some(error);
     1
@@ -220,11 +220,11 @@ fn trap_message(base: &str, site: u32) -> alloc::string::String {
 }
 
 fn trap_site_debug_enabled() -> bool {
-    #[cfg(any(feature = "wasi", feature = "std", test))]
+    #[cfg(any(sf_has_std, test))]
     {
         std::env::var_os("SF_ARMV7_TRAP_SITE").is_some()
     }
-    #[cfg(not(any(feature = "wasi", feature = "std", test)))]
+    #[cfg(not(any(sf_has_std, test)))]
     {
         false
     }

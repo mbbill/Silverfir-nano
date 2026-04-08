@@ -13,8 +13,8 @@ path = "src/main.rs"
 [workspace]
 
 [features]
-default = ["micro-jit"]
-micro-jit = ["sf-nano-core/micro-jit"]
+default = ["jit"]
+jit = ["sf-nano-core/jit"]
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", default-features = false }

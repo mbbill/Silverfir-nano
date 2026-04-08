@@ -1,4 +1,4 @@
-#[cfg(feature = "micro-jit")]
+#[cfg(feature = "jit")]
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
@@ -133,7 +133,7 @@ fn main() {
     };
 
     // Print native backend compile stats on exit
-    #[cfg(feature = "micro-jit")]
+    #[cfg(feature = "jit")]
     {
         let s = native_stats_snapshot();
         if s.groups > 0 {

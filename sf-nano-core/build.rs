@@ -1,18 +1,74 @@
 // sf-nano-core build script
-// Emits platform-derived cfgs and verifies LLVM toolchain compatibility.
+//
+// Central authority for feature → cfg mapping. Source code uses `sf_*` cfgs;
+// Cargo features are only the user-facing knobs. Build.rs validates feature
+// combinations against target capabilities and emits cfg flags accordingly.
+//
+// Naming scheme:
+//   sf_has_*  — target capability (auto-derived)
+//   sf_*      — user-enabled subsystem
+//
+// Feature → cfg mapping:
+//   (derived)      → sf_has_std        (CARGO_FEATURE_STD, pulled in by wasi/call-trace/guard-pages)
+//   (derived)      → sf_has_guard_pages (guard-pages + jit + 64-bit + macOS|Linux + x64|arm64)
+//   jit            → sf_jit
+//   wasi           → sf_wasi_host
+//   validator      → sf_module_validator
+//   call-trace     → sf_call_trace
+//
+// All cfgs are declared via `rustc-check-cfg` so typos become compile errors.
 
 use std::env;
-use std::process::Command;
+
+const DECLARED_CFGS: &[&str] = &[
+    "sf_has_std",
+    "sf_has_guard_pages",
+    "sf_jit",
+    "sf_wasi_host",
+    "sf_module_validator",
+    "sf_call_trace",
+];
 
 fn main() {
-    check_llvm_version_compatibility();
+    for name in DECLARED_CFGS {
+        println!("cargo::rustc-check-cfg=cfg({name})");
+    }
+
+    emit_has_std_cfg();
+    emit_subsystem_cfgs();
     emit_guard_pages_cfg();
 }
 
+fn emit_has_std_cfg() {
+    if env::var_os("CARGO_FEATURE_STD").is_some() {
+        println!("cargo:rustc-cfg=sf_has_std");
+    }
+}
+
+fn emit_subsystem_cfgs() {
+    if env::var_os("CARGO_FEATURE_JIT").is_some() {
+        println!("cargo:rustc-cfg=sf_jit");
+    }
+    if env::var_os("CARGO_FEATURE_WASI").is_some() {
+        println!("cargo:rustc-cfg=sf_wasi_host");
+    }
+    if env::var_os("CARGO_FEATURE_VALIDATOR").is_some() {
+        println!("cargo:rustc-cfg=sf_module_validator");
+    }
+    if env::var_os("CARGO_FEATURE_CALL_TRACE").is_some() {
+        if env::var_os("CARGO_FEATURE_STD").is_none() {
+            panic!(
+                "sf-nano-core: feature `call-trace` requires libstd, \
+                 but the `std` feature is not enabled"
+            );
+        }
+        println!("cargo:rustc-cfg=sf_call_trace");
+    }
+}
+
 fn emit_guard_pages_cfg() {
-    println!("cargo::rustc-check-cfg=cfg(has_guard_pages)");
     let dominated = env::var_os("CARGO_FEATURE_GUARD_PAGES").is_some()
-        && env::var_os("CARGO_FEATURE_MICRO_JIT").is_some();
+        && env::var_os("CARGO_FEATURE_JIT").is_some();
     if !dominated {
         return;
     }
@@ -23,52 +79,6 @@ fn emit_guard_pages_cfg() {
         && matches!(os.as_str(), "macos" | "linux")
         && matches!(arch.as_str(), "x86_64" | "aarch64")
     {
-        println!("cargo:rustc-cfg=has_guard_pages");
+        println!("cargo:rustc-cfg=sf_has_guard_pages");
     }
-}
-
-fn check_llvm_version_compatibility() {
-    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
-        return;
-    }
-
-    let rustc_llvm = get_rustc_llvm_version();
-    let clang_llvm = get_clang_llvm_version();
-
-    match (rustc_llvm, clang_llvm) {
-        (Some(rustc_ver), Some(clang_ver)) if rustc_ver != clang_ver => {
-            panic!(
-                "\n\nLLVM VERSION MISMATCH\n\n\
-                rustc uses LLVM {rustc_ver}, but clang uses LLVM {clang_ver}.\n\n\
-                Cross-language LTO requires matching LLVM major versions.\n"
-            );
-        }
-        _ => {}
-    }
-}
-
-fn get_rustc_llvm_version() -> Option<u32> {
-    let output = Command::new("rustc").args(["-vV"]).output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(version_str) = line.strip_prefix("LLVM version:") {
-            return version_str.trim().split('.').next()?.parse().ok();
-        }
-    }
-    None
-}
-
-fn get_clang_llvm_version() -> Option<u32> {
-    let output = Command::new("clang-cl")
-        .args(["--version"])
-        .output()
-        .or_else(|_| Command::new("clang").args(["--version"]).output())
-        .ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("clang version ") {
-            return rest.split('.').next()?.parse().ok();
-        }
-    }
-    None
 }

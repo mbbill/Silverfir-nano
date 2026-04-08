@@ -7,16 +7,16 @@
 //! - `arch/` compiles MIR into native code
 //! - `runtime/` provides execution infrastructure
 
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 pub(crate) mod arch;
 pub(crate) mod backend;
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 pub(crate) mod build;
 pub(crate) mod debug;
 pub(crate) mod entities;
 pub(crate) mod expr_eval;
 pub(crate) mod instance;
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 pub(crate) mod machine;
 pub(crate) mod middle;
 pub(crate) mod raw_value;

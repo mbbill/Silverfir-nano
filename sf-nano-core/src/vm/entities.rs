@@ -1,14 +1,14 @@
 //! WebAssembly 2.0 Runtime Instances (no_std, single-module).
 
 use alloc::{rc::Rc, string::String, vec::Vec};
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 use core::cell::RefCell;
 
 use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 use crate::vm::runtime::code_buf::CodeBuffer;
 use crate::vm::value::{RefHandle, Value};
 
@@ -106,7 +106,7 @@ impl TableInst {
 pub struct MemInst {
     pub data: Vec<u8>,
     pub limits: Limits,
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     guard: Option<crate::vm::runtime::guard_pages::GuardPageMemory>,
 }
 
@@ -115,7 +115,7 @@ impl Clone for MemInst {
         MemInst {
             data: self.data.clone(),
             limits: self.limits.clone(),
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             guard: None, // guard-page backing is not cloneable; clone falls back to Vec
         }
     }
@@ -127,13 +127,13 @@ impl MemInst {
         MemInst {
             data: alloc::vec![0u8; initial_bytes],
             limits,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             guard: None,
         }
     }
 
     /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub fn new_guarded(limits: Limits) -> Result<Self, crate::error::WasmError> {
         let guard = crate::vm::runtime::guard_pages::GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
@@ -151,11 +151,11 @@ impl MemInst {
     /// Whether this memory uses guard-page backing.
     #[inline]
     pub fn has_guard_pages(&self) -> bool {
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         {
             self.guard.is_some()
         }
-        #[cfg(not(has_guard_pages))]
+        #[cfg(not(sf_has_guard_pages))]
         {
             false
         }
@@ -164,7 +164,7 @@ impl MemInst {
     /// Pointer to the memory buffer (works for both Vec and guard-page backing).
     #[inline]
     pub fn memory_ptr(&self) -> *mut u8 {
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         if let Some(ref g) = self.guard {
             return g.base();
         }
@@ -174,7 +174,7 @@ impl MemInst {
     /// Current committed size in bytes.
     #[inline]
     pub fn memory_len(&self) -> usize {
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         if let Some(ref g) = self.guard {
             return g.len();
         }
@@ -182,7 +182,7 @@ impl MemInst {
     }
 
     /// Mutable access to the guard-page backing (for grow).
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     #[inline]
     pub fn guard_mut(&mut self) -> Option<&mut crate::vm::runtime::guard_pages::GuardPageMemory> {
         self.guard.as_mut()
@@ -297,7 +297,7 @@ pub struct ModuleInst {
     pub globals: Vec<GlobalInst>,
     pub elements: Vec<ElementInst>,
     pub data: Vec<DataInst>,
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     native_buf: RefCell<Option<CodeBuffer>>,
 }
 
@@ -312,7 +312,7 @@ impl ModuleInst {
             globals: Vec::new(),
             elements: Vec::new(),
             data: Vec::new(),
-            #[cfg(feature = "micro-jit")]
+            #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }
     }
@@ -322,7 +322,7 @@ impl ModuleInst {
         self.types.get(index)
     }
 
-    #[cfg(feature = "micro-jit")]
+    #[cfg(sf_jit)]
     pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
         let mut native_buf = self
             .native_buf
@@ -351,7 +351,7 @@ impl Default for ModuleInst {
             globals: Vec::new(),
             elements: Vec::new(),
             data: Vec::new(),
-            #[cfg(feature = "micro-jit")]
+            #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }
     }

@@ -188,18 +188,18 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         });
     }
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     let use_guard_pages = module
         .memories
         .first()
         .map(|m| m.has_guard_pages())
         .unwrap_or(false);
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     let use_guard_pages = use_guard_pages && backend.gp_unit_bytes == 8;
     let mut lowered = lower_module(LowerModuleInput {
         backend,
         functions: &lowered_inputs,
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         use_guard_pages,
     })?;
     optimize_module(&mut lowered.module);

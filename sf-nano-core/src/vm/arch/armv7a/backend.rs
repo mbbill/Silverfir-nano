@@ -65,7 +65,7 @@ pub(crate) struct CompiledArm32Entry {
     pub text_len: usize,
     pub debug_regions: Vec<DebugRegion>,
     pub root_return: NativeCodePtr,
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub return_error: NativeCodePtr,
 }
 
@@ -332,14 +332,14 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     ) -> Self::CompiledEntry {
         let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
         let root_return = unsafe { buf.ptr(emitted.text_offset + emitted.root_return_offset) };
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         let return_error = unsafe { buf.ptr(emitted.text_offset + emitted.return_error_offset) };
         CompiledArm32Entry {
             entry,
             text_len: emitted.text_len,
             debug_regions: emitted.debug_regions.clone(),
             root_return,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             return_error,
         }
     }

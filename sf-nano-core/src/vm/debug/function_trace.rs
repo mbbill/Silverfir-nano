@@ -5,13 +5,13 @@
 //! - semantic Wasm function boundaries only
 //! - stable/canonicalized values to avoid false diffs between correct runs
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use alloc::{string::String, vec::Vec};
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use crate::vm::value::Value;
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TraceEventKind {
     Entry,
@@ -19,7 +19,7 @@ pub(crate) enum TraceEventKind {
     Trap,
 }
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FunctionTraceId {
     pub ordinal: u64,
@@ -28,7 +28,7 @@ pub(crate) struct FunctionTraceId {
     pub kind: TraceEventKind,
 }
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FunctionTraceEvent {
     pub id: FunctionTraceId,
@@ -38,12 +38,12 @@ pub(crate) struct FunctionTraceEvent {
     pub error_class: Option<String>,
 }
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 pub(crate) trait FunctionTraceSink {
     fn record(&mut self, event: FunctionTraceEvent);
 }
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 mod imp {
     use alloc::format;
     use alloc::string::{String, ToString};
@@ -462,5 +462,5 @@ mod imp {
     }
 }
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 pub use imp::*;

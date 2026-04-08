@@ -114,7 +114,7 @@ pub(super) struct BlockLowerContext<'a> {
     /// - occupied by one linear value
     /// - bound to one cached local
     linear_value_state: Vec<LinearValueState>,
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     guard_pages: bool,
 }
 
@@ -143,7 +143,7 @@ impl<'a> BlockLowerContext<'a> {
         i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
         initial_cache_dirty: Option<&[bool]>,
-        #[cfg(has_guard_pages)] guard_pages: bool,
+        #[cfg(sf_has_guard_pages)] guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
         let entry_cache_params = all_entry_cache_params
@@ -175,7 +175,7 @@ impl<'a> BlockLowerContext<'a> {
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             guard_pages,
         };
 
@@ -349,7 +349,7 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub(super) fn use_guard_pages(&self) -> bool {
         self.guard_pages
     }

@@ -12,10 +12,10 @@ path = "src/main.rs"
 
 [features]
 default = []
-micro-jit = ["sf-nano-core/micro-jit"]
+jit = ["sf-nano-core/jit"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["validate"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["validator"] }
 log = { version = "0.4", features = ["release_max_level_debug"] }
 env_logger = "0.9"
 structopt = "0.3"

@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
 
 const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
@@ -75,13 +75,13 @@ pub(crate) fn eval(
     // the body's unified Return copies results into the bytes at
     // `stack_base` (the root frame), which is exactly what
     // `collect_native_results_from_stack` reads from below.
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();
         function_trace::native_root_entry(&mut ctx, spec, backend);
     }
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     {
         use crate::vm::runtime::{context::ctx_offset, trap_signal};
         trap_signal::install_signal_handler();
@@ -92,10 +92,10 @@ pub(crate) fn eval(
 
     let status = unsafe { entry(&mut ctx, stack_base) };
 
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     if ctx.trap_kind != 0 {
         let error = WasmError::trap("out of bounds memory access".into());
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
     }
@@ -104,7 +104,7 @@ pub(crate) fn eval(
         let error = ctx.error.take().unwrap_or_else(|| {
             WasmError::internal("native root entry failed without setting an error".into())
         });
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
     }
@@ -116,7 +116,7 @@ pub(crate) fn eval(
             compiled.backend().gp_unit_bytes,
         )
     };
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         let results_len = func_type.results().len();
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };

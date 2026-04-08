@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-#[cfg(any(feature = "wasi", feature = "std", test))]
+#[cfg(any(sf_has_std, test))]
 extern crate std;
 
 pub mod constants;
@@ -15,7 +15,7 @@ pub(crate) mod utils;
 pub mod value_type;
 pub mod vm;
 
-#[cfg(feature = "wasi")]
+#[cfg(sf_wasi_host)]
 pub mod wasi;
 
 // Public re-exports for ergonomic API
@@ -23,7 +23,7 @@ pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::Limitable;
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
-#[cfg(feature = "micro-jit")]
+#[cfg(sf_jit)]
 pub use vm::build::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
@@ -41,7 +41,7 @@ pub use vm::value::{RefHandle, Value};
 /// lifetimes on its own. Harnesses that repeatedly construct and drop native
 /// modules can call this between independent runs.
 pub fn reset_native_runtime_state() {
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     {
         crate::vm::runtime::trap_signal::reset_debug_state();
         crate::vm::runtime::trap_signal::clear_registered_jit_ranges();

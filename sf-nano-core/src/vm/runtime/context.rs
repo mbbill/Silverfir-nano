@@ -65,13 +65,13 @@ pub(crate) struct NativeContext {
     pub(crate) error: Option<WasmError>,
     /// Trap kind set by the guard-page signal handler (no allocation needed).
     /// 0 = no trap, 1 = memory out of bounds.
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub(crate) trap_kind: u32,
     memory_views: Vec<NativeMemoryView>,
     table_views: Vec<NativeTableView>,
     function_views: Vec<NativeFunctionView>,
     type_canon: Vec<u32>,
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     pub(crate) trace_stack: std::vec::Vec<u32>,
 }
 
@@ -96,13 +96,13 @@ impl NativeContext {
             store,
             current_module: core::ptr::null(),
             error: None,
-            #[cfg(has_guard_pages)]
+            #[cfg(sf_has_guard_pages)]
             trap_kind: 0,
             memory_views: Vec::new(),
             table_views: Vec::new(),
             function_views: Vec::new(),
             type_canon: Vec::new(),
-            #[cfg(feature = "function-trace")]
+            #[cfg(sf_call_trace)]
             trace_stack: std::vec::Vec::new(),
         };
         ctx.refresh_cached_views();
@@ -329,7 +329,7 @@ pub(crate) mod ctx_offset {
     pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
     pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
-    #[cfg(has_guard_pages)]
+    #[cfg(sf_has_guard_pages)]
     pub(crate) const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
 
     #[cfg(test)]

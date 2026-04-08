@@ -39,7 +39,7 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 
-#[cfg(feature = "function-trace")]
+#[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
 
 const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
@@ -177,7 +177,7 @@ pub(crate) fn eval(
 
     let mut ctx = NativeContext::new(store as *mut Store, stack_end);
     ctx.seed_local_call_infos(compiled);
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();
         function_trace::native_root_entry(&mut ctx, spec, backend);
@@ -186,7 +186,7 @@ pub(crate) fn eval(
     let result = eval_root_with_context(compiled, func_id, &mut ctx, stack_base);
 
     if let Err(ref error) = result {
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, error);
         return Err(error.clone());
     }
@@ -198,7 +198,7 @@ pub(crate) fn eval(
             compiled.backend().gp_unit_bytes,
         )
     };
-    #[cfg(feature = "function-trace")]
+    #[cfg(sf_call_trace)]
     {
         let results_len = func_type.results().len();
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
@@ -288,7 +288,7 @@ impl<'a> Emulator<'a> {
         terminator: Option<&MachineTerminator>,
         error: &WasmError,
     ) {
-        #[cfg(any(feature = "std", feature = "wasi", test))]
+        #[cfg(any(sf_has_std, test))]
         {
             if std::env::var_os("SF_EMU_TRAP_TRACE").is_none() {
                 return;
@@ -968,7 +968,7 @@ impl<'a> Emulator<'a> {
             self.ctx.mem0_size,
         );
         self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
-        #[cfg(feature = "function-trace")]
+        #[cfg(sf_call_trace)]
         function_trace::native_function_trace_enter_func_idx(self.ctx, callee.0);
         Ok(())
     }
@@ -982,7 +982,7 @@ impl<'a> Emulator<'a> {
             // onto the logical call stack), restore caller state, and resume
             // at the continuation block.
             self.copy_results(results, self.fp, saved.caller_result_base)?;
-            #[cfg(feature = "function-trace")]
+            #[cfg(sf_call_trace)]
             {
                 let arity = results.map(|region| region.slots).unwrap_or(0) as u64;
                 let result_fp = results
@@ -2313,11 +2313,11 @@ mod tests {
     }
 
     fn native_test_memory(limits: Limits) -> MemInst {
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         {
             MemInst::new_guarded(limits).expect("guarded memory")
         }
-        #[cfg(not(has_guard_pages))]
+        #[cfg(not(sf_has_guard_pages))]
         {
             MemInst::new(limits)
         }

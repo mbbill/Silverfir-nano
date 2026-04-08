@@ -912,7 +912,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<u32, WasmError> {
         self.emit_effective_addr(offset, addr, addr32)?;
         self.emit_word_add_immediate_wrap_trap_if(addr32, offset);
-        #[cfg(has_guard_pages)]
+        #[cfg(sf_has_guard_pages)]
         if self.use_guard_pages() && !self.needs_explicit_multiword_gp_bounds_check(access_bytes) {
             return Ok(0);
         }
