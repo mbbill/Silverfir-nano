@@ -75,12 +75,16 @@ pub(in crate::vm::arch::x86_64) fn emit_trapping_trunc_call(
 ) {
     backend.save_caller_clobbered_gp_dynamic();
 
+    // Order matters: read `src` BEFORE clobbering RDI with CTX.
+    // If `src == RDI` (the SSA-IR may have placed the source operand in
+    // RDI because RDI is a regular dynamic GP register), assigning RDI
+    // first would lose `src` before we can move it into C_ARG1=RSI.
+    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     enc::mov_rr_64(
         &mut backend.core.text,
         C_ARG0,
         map_fixed_reg(MACHINE_CTX_REG),
     );
-    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     backend.materialize_u64(C_ARG2, op_code);
     backend.materialize_u64(result_scratch, x86_64_trapping_trunc as usize as u64);
     enc::call_reg(&mut backend.core.text, result_scratch);

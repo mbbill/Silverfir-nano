@@ -393,6 +393,20 @@ pub(crate) fn fd_write(
 
     let mem = get_mem(caller)?;
 
+    let debug_fd_write = std::env::var_os("SF_DEBUG_FD_WRITE").is_some();
+    if debug_fd_write {
+        std::eprintln!(
+            "[fd_write] fd={} iovs_ptr={} iovs_len={} nwritten_ptr={}",
+            fd, iovs_ptr, iovs_len, nwritten_ptr
+        );
+        for i in 0..iovs_len.min(8) {
+            let base = iovs_ptr + i * 8;
+            let ptr = read_u32_le(mem, base)?;
+            let len = read_u32_le(mem, base + 4)?;
+            std::eprintln!("[fd_write]   iov[{i}] ptr={ptr} len={len}");
+        }
+    }
+
     // Gather iov entries
     let mut total_written: u32 = 0;
 

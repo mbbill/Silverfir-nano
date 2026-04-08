@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    abi::{fp_machine_reg, map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
+    abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
     backend::X86_64Backend,
     callconv,
     enc::{self, Cc},
@@ -22,9 +22,34 @@ use super::{
     helpers::x86_64_saturating_trunc,
     reg::X86Reg,
 };
-use crate::vm::arch::common::helpers::{convert_op_code, convert_result_float_width};
+use crate::vm::arch::common::helpers::convert_result_float_width;
 
 use crate::vm::machine::machine_ir::{MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG};
+
+/// Map a `MachineConvertOp` to the u32 op code consumed by the runtime
+/// trunc/saturating-trunc helpers. Returns `u32::MAX` for ops that do not
+/// go through the helper path.
+pub(super) fn convert_op_code(op: MachineConvertOp) -> u32 {
+    match op {
+        MachineConvertOp::I32TruncF32S => 0,
+        MachineConvertOp::I32TruncF32U => 1,
+        MachineConvertOp::I32TruncF64S => 2,
+        MachineConvertOp::I32TruncF64U => 3,
+        MachineConvertOp::I64TruncF32S => 4,
+        MachineConvertOp::I64TruncF32U => 5,
+        MachineConvertOp::I64TruncF64S => 6,
+        MachineConvertOp::I64TruncF64U => 7,
+        MachineConvertOp::I32TruncSatF32S => 8,
+        MachineConvertOp::I32TruncSatF32U => 9,
+        MachineConvertOp::I32TruncSatF64S => 10,
+        MachineConvertOp::I32TruncSatF64U => 11,
+        MachineConvertOp::I64TruncSatF32S => 12,
+        MachineConvertOp::I64TruncSatF32U => 13,
+        MachineConvertOp::I64TruncSatF64S => 14,
+        MachineConvertOp::I64TruncSatF64U => 15,
+        _ => u32::MAX,
+    }
+}
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
@@ -160,6 +185,32 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::TestBits { width, kind, dst, src, mask } => {
                 self.lower_test_bits(*width, *kind, *dst, *src, *mask)
             }
+            MachineInstKind::MemoryGrow { mem_idx, dst, delta } => {
+                self.lower_memory_grow(*mem_idx, *dst, *delta)
+            }
+            MachineInstKind::MemoryFill { mem_idx, dest, val, len } => {
+                self.lower_memory_fill(*mem_idx, *dest, *val, *len)
+            }
+            MachineInstKind::MemoryCopy { dst_mem, src_mem, dest, src, len } => {
+                self.lower_memory_copy(*dst_mem, *src_mem, *dest, *src, *len)
+            }
+            MachineInstKind::MemoryInit { mem_idx, data_idx, dest, src, len } => {
+                self.lower_memory_init(*mem_idx, *data_idx, *dest, *src, *len)
+            }
+            MachineInstKind::DataDrop { data_idx } => self.lower_data_drop(*data_idx),
+            MachineInstKind::TableGrow { table_idx, dst, init_val, delta } => {
+                self.lower_table_grow(*table_idx, *dst, *init_val, *delta)
+            }
+            MachineInstKind::TableFill { table_idx, start, val, len } => {
+                self.lower_table_fill(*table_idx, *start, *val, *len)
+            }
+            MachineInstKind::TableCopy { dst_tbl, src_tbl, dest, src, len } => {
+                self.lower_table_copy(*dst_tbl, *src_tbl, *dest, *src, *len)
+            }
+            MachineInstKind::TableInit { table_idx, elem_idx, dest, src, len } => {
+                self.lower_table_init(*table_idx, *elem_idx, *dest, *src, *len)
+            }
+            MachineInstKind::ElemDrop { elem_idx } => self.lower_elem_drop(*elem_idx),
         }
     }
     // ── Move / const ────────────────────────────────────────────────────────
@@ -223,6 +274,10 @@ impl<'a> X86_64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
+                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                    "x86_64 Move cannot consume reserved cache register {}",
+                    reg.0
+                ))),
             }
         } else {
             let dst_gp = self.map_gp_reg(dst)?;
@@ -250,6 +305,10 @@ impl<'a> X86_64Backend<'a> {
                     self.materialize_u64(dst_gp, value);
                     Ok(())
                 }
+                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                    "x86_64 Move cannot consume reserved cache register {}",
+                    reg.0
+                ))),
             }
         }
     }
@@ -432,7 +491,15 @@ impl<'a> X86_64Backend<'a> {
             return Ok(());
         }
 
-        let src_gp = self.materialize_value(self.gp_scratch.reg(0), src)?;
+        // Indexed stores compute the effective address into gp_scratch[0]
+        // before calling lower_store_to(). Do not reuse that register to
+        // materialize the source or the base address will be lost.
+        let materialize_scratch = if base == self.gp_scratch.reg(0) {
+            self.gp_scratch.reg(1)
+        } else {
+            self.gp_scratch.reg(0)
+        };
+        let src_gp = self.materialize_value(materialize_scratch, src)?;
         match width {
             MachineMemWidth::U8 => enc::store_8(&mut self.core.text, base, disp, src_gp),
             MachineMemWidth::U16 => enc::store_16(&mut self.core.text, base, disp, src_gp),
@@ -490,7 +557,7 @@ impl<'a> X86_64Backend<'a> {
             (MachineIntWidth::I32, MachineIntUnaryOp::Extend32S) => {
                 // i32.extend32_s is a nop (already 32-bit)
                 if dst != src {
-                    enc::mov_rr_64(&mut self.core.text, dst, src);
+                    enc::mov_rr_32(&mut self.core.text, dst, src);
                 }
             }
         }
@@ -863,14 +930,28 @@ impl<'a> X86_64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
-        // div/idiv implicitly uses RAX and RDX. RDX is an early caller-clobbered
-        // GP dynamic register in the preferred allocation order, so reserve it
-        // explicitly here.
-        // might hold a live value. Save it to self.gp_scratch.reg(1) (R11) and restore after.
-        // (RAX = self.gp_scratch.reg(0), not in dynamic pool, so no save needed.)
+        // div/idiv implicitly uses RAX and RDX. Both are dynamic regs in the
+        // pool that may hold live SSA values, so we save them around the op:
+        //   - RDX -> gp_scratch.reg(1) (R11)
+        //   - R10 (used as divisor scratch when rhs needs materialization or
+        //     happens to land in RAX/RDX) -> body prelude alignment shim
+        //     slot at [rsp+0]. The shim is reserved by `lower_body_prelude`
+        //     and is otherwise dead, so we can safely use it as a one-slot
+        //     spill area for the duration of this lowering. On the trap
+        //     path R10 is not restored (the error tail tears down the
+        //     frame and R10's value is no longer observed).
+        // (RAX = gp_scratch.reg(0), not in the dynamic pool, so no save.)
         let need_save_rdx = dst != X86Reg::RDX;
         if need_save_rdx {
             enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), X86Reg::RDX);
+        }
+        // Spill R10 to the alignment-shim slot. Always done (even when
+        // dst == R10, in which case the post-op `mov dst, RAX/RDX` will
+        // overwrite this register before the restore is reached, so we
+        // simply skip the restore in that case).
+        let need_save_r10 = dst != X86Reg::R10;
+        if need_save_r10 {
+            enc::store_64(&mut self.core.text, X86Reg::RSP, 0, X86Reg::R10);
         }
 
         // Put dividend into RAX
@@ -987,6 +1068,13 @@ impl<'a> X86_64Backend<'a> {
         if dst != result_reg {
             enc::mov_rr_64(&mut self.core.text, dst, result_reg);
         }
+        // Restore R10 from the alignment-shim spill slot. Skip when
+        // dst == R10 because the result move above already overwrote R10
+        // with the quotient/remainder, which is what the SSA-IR expects
+        // for that case.
+        if need_save_r10 {
+            enc::load_64(&mut self.core.text, X86Reg::R10, X86Reg::RSP, 0);
+        }
         // Restore RDX if it was saved
         if need_save_rdx {
             enc::mov_rr_64(&mut self.core.text, X86Reg::RDX, self.gp_scratch.reg(1));
@@ -1079,6 +1167,12 @@ impl<'a> X86_64Backend<'a> {
                     MachineIntWidth::I64 => enc::test_rr_64(&mut self.core.text, src_gp, mask_gp),
                     MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
                 }
+            }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "x86_64 TestBits cannot read reserved cache register {}",
+                    reg.0
+                )));
             }
         }
         Ok(())
@@ -1242,11 +1336,17 @@ impl<'a> X86_64Backend<'a> {
                     MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src, mask_gp),
                 }
             }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "x86_64 TestBits mask cannot be reserved cache register {}",
+                    reg.0
+                )));
+            }
         }
         // TST sets Z flag: Eq → ZF=1 (test was zero), Ne → ZF=0 (test was nonzero).
         let cc = match kind {
             MachineCompareKind::Eq => Cc::E,
-            MachineCompareKind::Ne => Cc::Ne,
+            MachineCompareKind::Ne => Cc::NE,
             _ => {
                 return Err(WasmError::internal(alloc::format!(
                     "TestBits: unsupported compare kind {:?}",
@@ -1280,7 +1380,9 @@ impl<'a> X86_64Backend<'a> {
                     let dst_fp = self.map_fp_reg(dst)? as u8;
                     let false_label = self.core.new_label();
                     let done = self.core.new_label();
-                    enc::test_rr_64(&mut self.core.text, cond_gp, cond_gp);
+                    // Wasm select conditions are i32 values; ignore any stale
+                    // upper half that may remain in a GpWord carrier.
+                    enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
                     self.emit_jcc(Cc::E, false_label);
                     let true_fp = self.prepare_float_operand(
                         width,
@@ -1320,6 +1422,10 @@ impl<'a> X86_64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
+                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                    "x86_64 Select condition cannot be reserved cache register {}",
+                    reg.0
+                ))),
             }
         } else {
             if let MachineValue::Imm64(value) = cond {
@@ -1335,7 +1441,9 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Reg(reg) => self.map_gp_reg(reg)?,
                 _ => unreachable!(),
             };
-            enc::test_rr_64(&mut self.core.text, cond_gp, cond_gp);
+            // Wasm select conditions are i32 values; ignore any stale
+            // upper half that may remain in a GpWord carrier.
+            enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
             if dst == true_reg && dst != false_reg {
                 enc::cmovcc_rr_64(&mut self.core.text, Cc::E, dst, false_reg);
             } else if dst == false_reg {
@@ -1572,7 +1680,7 @@ impl<'a> X86_64Backend<'a> {
             self.core.set_fp_reg_width(dst, width)?;
             dst_fp
         } else {
-            self.fp_scratch.reg(2) as u8
+            self.fp_scratch.reg(1) as u8
         };
         match op {
             MachineFloatUnaryOp::Sqrt => {
@@ -1654,7 +1762,7 @@ impl<'a> X86_64Backend<'a> {
                 let mask_xmm = if result_fp != self.fp_scratch.reg(0) as u8 {
                     self.fp_scratch.reg(0) as u8
                 } else {
-                    self.fp_scratch.reg(2) as u8
+                    self.fp_scratch.reg(1) as u8
                 };
                 if result_fp != src_fp as u8 {
                     match width {
@@ -1679,7 +1787,7 @@ impl<'a> X86_64Backend<'a> {
                 let mask_xmm = if result_fp != self.fp_scratch.reg(0) as u8 {
                     self.fp_scratch.reg(0) as u8
                 } else {
-                    self.fp_scratch.reg(2) as u8
+                    self.fp_scratch.reg(1) as u8
                 };
                 if result_fp != src_fp as u8 {
                     match width {
@@ -1727,7 +1835,10 @@ impl<'a> X86_64Backend<'a> {
             self.core.set_fp_reg_width(dst, width)?;
             dst_fp
         } else {
-            self.fp_scratch.reg(2) as u8
+            // Keep GP-targeted float ops in XMM0. XMM1 is already the rhs
+            // materialization scratch, so using it as the destination can
+            // overwrite the rhs before the binary op runs.
+            self.fp_scratch.reg(0) as u8
         };
         match op {
             MachineFloatBinaryOp::Add
@@ -1738,7 +1849,7 @@ impl<'a> X86_64Backend<'a> {
                 // If result == rhs and result != lhs, the move would clobber rhs.
                 // Save rhs to scratch first in that case.
                 let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
-                    let scratch = self.fp_scratch.reg(2) as u8;
+                    let scratch = self.fp_scratch.reg(1) as u8;
                     match width {
                         MachineFloatWidth::F32 => {
                             enc::movss_rr(&mut self.core.text, scratch, rhs_fp as u8)
@@ -1789,13 +1900,27 @@ impl<'a> X86_64Backend<'a> {
                     _ => unreachable!(),
                 };
             }
-            MachineFloatBinaryOp::Min => {
-                // Wasm fmin: if either operand is NaN, result is NaN.
-                // x86_64 minsd/minss: if either is NaN, returns the SECOND operand.
-                // Strategy: result = minsd(lhs, rhs); if unordered, result = addsd(lhs, rhs) (NaN propagation).
-                // Guard: if result == rhs and result != lhs, save rhs to scratch first.
+            MachineFloatBinaryOp::Min | MachineFloatBinaryOp::Max => {
+                // Wasm fmin/fmax: if either operand is NaN, result is NaN.
+                // x86_64 minsd/minss/maxsd/maxss: if either is NaN, returns
+                // the SECOND (source) operand — and destroys the first
+                // (destination) operand. We therefore (a) check for NaN
+                // BEFORE the minsd/maxsd so the compare still sees the
+                // original lhs register unclobbered, and (b) fall through
+                // to an `addsd` on the NaN path so any NaN propagates.
+                //
+                // Previous version did the ucomisd AFTER the minsd, which
+                // is wrong when `result_fp == lhs_fp`: the minsd clobbers
+                // lhs_fp with the min result, so the NaN check compares
+                // the WRONG operand and incorrectly takes the fast path.
+                let is_min = matches!(op, MachineFloatBinaryOp::Min);
+
+                // Guard: if result == rhs and result != lhs, save rhs to
+                // a scratch so the later `movss result_fp, lhs_fp` (or the
+                // inline minsd/addsd which both clobber dst) doesn't
+                // destroy the rhs value before we use it.
                 let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
-                    let scratch = self.fp_scratch.reg(2) as u8;
+                    let scratch = self.fp_scratch.reg(1) as u8;
                     match width {
                         MachineFloatWidth::F32 => {
                             enc::movss_rr(&mut self.core.text, scratch, rhs_fp as u8)
@@ -1808,6 +1933,10 @@ impl<'a> X86_64Backend<'a> {
                 } else {
                     rhs_fp as u8
                 };
+                // Move lhs into result_fp if needed. This must happen
+                // BEFORE the ucomisd so the NaN check still sees the
+                // original lhs_fp value (which we leave untouched in its
+                // own register).
                 if result_fp != lhs_fp as u8 {
                     match width {
                         MachineFloatWidth::F32 => {
@@ -1818,15 +1947,9 @@ impl<'a> X86_64Backend<'a> {
                         }
                     };
                 }
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::minss(&mut self.core.text, result_fp, actual_rhs)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::minsd(&mut self.core.text, result_fp, actual_rhs)
-                    }
-                };
-                // Compare for NaN: ucomisd lhs, rhs sets PF=1 if unordered (NaN)
+                // NaN check on the ORIGINAL operands. If `result_fp ==
+                // lhs_fp`, lhs_fp still holds the original lhs at this
+                // point (we have not yet run the clobbering min/max).
                 match width {
                     MachineFloatWidth::F32 => {
                         enc::ucomiss(&mut self.core.text, lhs_fp as u8, actual_rhs)
@@ -1835,84 +1958,29 @@ impl<'a> X86_64Backend<'a> {
                         enc::ucomisd(&mut self.core.text, lhs_fp as u8, actual_rhs)
                     }
                 };
+                let nan_path = self.core.new_label();
                 let done = self.core.new_label();
-                self.emit_jcc(Cc::NP, done); // no NaN => minsd result is correct
-                                             // NaN case: add propagates NaN
-                if result_fp != lhs_fp as u8 {
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                    };
-                }
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::addss(&mut self.core.text, result_fp, actual_rhs)
+                // PF=1 means unordered (NaN) — jump to NaN path.
+                self.emit_jcc(Cc::P, nan_path);
+                // Ordered fast path: minsd / maxsd directly.
+                match (width, is_min) {
+                    (MachineFloatWidth::F32, true) => {
+                        enc::minss(&mut self.core.text, result_fp, actual_rhs)
                     }
-                    MachineFloatWidth::F64 => {
-                        enc::addsd(&mut self.core.text, result_fp, actual_rhs)
+                    (MachineFloatWidth::F64, true) => {
+                        enc::minsd(&mut self.core.text, result_fp, actual_rhs)
                     }
-                };
-                self.core.bind_label(done);
-            }
-            MachineFloatBinaryOp::Max => {
-                // Same NaN handling as Min but with maxsd/maxss.
-                // Guard: if result == rhs and result != lhs, save rhs to scratch first.
-                let actual_rhs = if result_fp == rhs_fp as u8 && result_fp != lhs_fp as u8 {
-                    let scratch = self.fp_scratch.reg(2) as u8;
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, scratch, rhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, scratch, rhs_fp as u8)
-                        }
-                    };
-                    scratch
-                } else {
-                    rhs_fp as u8
-                };
-                if result_fp != lhs_fp as u8 {
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                    };
-                }
-                match width {
-                    MachineFloatWidth::F32 => {
+                    (MachineFloatWidth::F32, false) => {
                         enc::maxss(&mut self.core.text, result_fp, actual_rhs)
                     }
-                    MachineFloatWidth::F64 => {
+                    (MachineFloatWidth::F64, false) => {
                         enc::maxsd(&mut self.core.text, result_fp, actual_rhs)
                     }
                 };
-                match width {
-                    MachineFloatWidth::F32 => {
-                        enc::ucomiss(&mut self.core.text, lhs_fp as u8, actual_rhs)
-                    }
-                    MachineFloatWidth::F64 => {
-                        enc::ucomisd(&mut self.core.text, lhs_fp as u8, actual_rhs)
-                    }
-                };
-                let done = self.core.new_label();
-                self.emit_jcc(Cc::NP, done);
-                if result_fp != lhs_fp as u8 {
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movss_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                        MachineFloatWidth::F64 => {
-                            enc::movsd_rr(&mut self.core.text, result_fp, lhs_fp as u8)
-                        }
-                    };
-                }
+                self.emit_jmp(done);
+                // NaN path: result_fp already holds lhs, so addsd
+                // propagates any NaN from either operand.
+                self.core.bind_label(nan_path);
                 match width {
                     MachineFloatWidth::F32 => {
                         enc::addss(&mut self.core.text, result_fp, actual_rhs)
@@ -1932,7 +2000,7 @@ impl<'a> X86_64Backend<'a> {
                 {
                     self.fp_scratch.reg(0) as u8
                 } else {
-                    self.fp_scratch.reg(2) as u8
+                    self.fp_scratch.reg(1) as u8
                 };
                 let sign_mask = match width {
                     MachineFloatWidth::F32 => 0x8000_0000u64,
@@ -1988,11 +2056,11 @@ impl<'a> X86_64Backend<'a> {
         // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
         // already lives in a mapped FP register (not self.fp_scratch.reg(0)), reuse
         // self.fp_scratch.reg(0) for rhs to avoid clobbering live FP SSA values in
-        // self.fp_scratch.reg(1)/self.fp_scratch.reg(2).
+        // self.fp_scratch.reg(1)/self.fp_scratch.reg(1).
         let rhs_fp_scratch = if lhs_fp != self.fp_scratch.reg(0) as u32 {
             self.fp_scratch.reg(0)
         } else {
-            self.fp_scratch.reg(2)
+            self.fp_scratch.reg(1)
         };
         if matches!(rhs, MachineValue::Imm64(0)) {
             enc::xorpd(
@@ -2075,31 +2143,9 @@ impl<'a> X86_64Backend<'a> {
     // ── Helper calls ──────────────────────────────────────────────────────────
 
     pub(super) fn lower_call_external(&mut self, const_idx: usize) -> Result<(), WasmError> {
-        let metadata = self
-            .core
-            .compiled
-            .const_ptr(crate::vm::machine::machine_ir::MachineConstId(
-                const_idx as u32,
-            ))
-            .ok_or_else(|| {
-                WasmError::internal("x86_64 external-call metadata is out of range".into())
-            })?;
-        enc::mov_rr_64(
-            &mut self.core.text,
-            C_ARG0,
-            map_fixed_reg(crate::vm::machine::machine_ir::MACHINE_CTX_REG),
-        );
-        enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
-        self.materialize_u64(C_ARG2, metadata as u64);
-        self.materialize_u64(
-            self.gp_scratch.reg(1),
-            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
-        );
-        enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-        // Check return: RAX != 0 => error
-        enc::test_rr_32(&mut self.core.text, X86Reg::RAX, X86Reg::RAX);
-        self.emit_jcc(Cc::NE, self.core.return_error_label);
-        Ok(())
+        // Delegated to the control-flow module, which owns the matching
+        // body_local_error_label propagation path.
+        self.lower_call_external_term(const_idx)
     }
 
     // ── Float conversion helpers ────────────────────────────────────────────
@@ -2177,12 +2223,13 @@ impl<'a> X86_64Backend<'a> {
         // the whole save → arg-setup → call → restore → test → branch
         // sequence and leaves the 64-bit result in `gp_scratch.reg(1)`.
         let result_scratch = self.gp_scratch.reg(1);
+        let error_label = self.core.body_local_error_label;
         callconv::emit_trapping_trunc_call(
             self,
             src,
-            convert_op_code(op),
+            convert_op_code(op) as u64,
             result_scratch,
-            self.core.return_error_label,
+            error_label,
         );
         if dst != result_scratch {
             enc::mov_rr_64(&mut self.core.text, dst, result_scratch);
@@ -2199,7 +2246,7 @@ impl<'a> X86_64Backend<'a> {
         // The C helper call clobbers the caller-clobbered GP dynamic subset.
         self.save_caller_clobbered_gp_dynamic();
         enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
-        self.materialize_u64(C_ARG1, convert_op_code(op));
+        self.materialize_u64(C_ARG1, convert_op_code(op) as u64);
         self.materialize_u64(
             self.gp_scratch.reg(1),
             x86_64_saturating_trunc as usize as u64,
@@ -2229,20 +2276,25 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         let base_x86 = self.map_gp_reg(base)?;
         let index_x86 = self.map_gp_reg(index)?;
-        // Step 1: copy/extend index into self.gp_scratch.reg(0)
-        if index_extend == MachineIndexExtend::ZeroExtend32 {
-            enc::mov_rr_32(&mut self.core.text, self.gp_scratch.reg(0), index_x86);
+        let addr_scratch = if base_x86 == self.gp_scratch.reg(0) {
+            self.gp_scratch.reg(1)
         } else {
-            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(0), index_x86);
+            self.gp_scratch.reg(0)
+        };
+        // Step 1: copy/extend index into the address scratch.
+        if index_extend == MachineIndexExtend::ZeroExtend32 {
+            enc::mov_rr_32(&mut self.core.text, addr_scratch, index_x86);
+        } else {
+            enc::mov_rr_64(&mut self.core.text, addr_scratch, index_x86);
         }
         // Step 2: add offset
         if offset != 0 {
-            enc::add_ri_64(&mut self.core.text, self.gp_scratch.reg(0), offset);
+            enc::add_ri_64(&mut self.core.text, addr_scratch, offset);
         }
-        // Step 3: add base → self.gp_scratch.reg(0) = base + extended_index + offset
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), base_x86);
+        // Step 3: add base -> addr_scratch = base + extended_index + offset.
+        enc::add_rr_64(&mut self.core.text, addr_scratch, base_x86);
         // Step 4: load from [scratch + 0]
-        self.lower_load_from(dst, self.gp_scratch.reg(0), 0, width, extension)
+        self.lower_load_from(dst, addr_scratch, 0, width, extension)
     }
 
     /// Decomposed indexed store.
@@ -2257,15 +2309,311 @@ impl<'a> X86_64Backend<'a> {
     ) -> Result<(), WasmError> {
         let base_x86 = self.map_gp_reg(base)?;
         let index_x86 = self.map_gp_reg(index)?;
-        if index_extend == MachineIndexExtend::ZeroExtend32 {
-            enc::mov_rr_32(&mut self.core.text, self.gp_scratch.reg(0), index_x86);
+        let addr_scratch = if base_x86 == self.gp_scratch.reg(0) {
+            self.gp_scratch.reg(1)
         } else {
-            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(0), index_x86);
+            self.gp_scratch.reg(0)
+        };
+        if index_extend == MachineIndexExtend::ZeroExtend32 {
+            enc::mov_rr_32(&mut self.core.text, addr_scratch, index_x86);
+        } else {
+            enc::mov_rr_64(&mut self.core.text, addr_scratch, index_x86);
         }
         if offset != 0 {
-            enc::add_ri_64(&mut self.core.text, self.gp_scratch.reg(0), offset);
+            enc::add_ri_64(&mut self.core.text, addr_scratch, offset);
         }
-        enc::add_rr_64(&mut self.core.text, self.gp_scratch.reg(0), base_x86);
-        self.lower_store_to(self.gp_scratch.reg(0), 0, width, src)
+        enc::add_rr_64(&mut self.core.text, addr_scratch, base_x86);
+        self.lower_store_to(addr_scratch, 0, width, src)
+    }
+
+    // ── Memory/table instruction lowering ────────────────────────────────────
+    //
+    // Memory/table ops on x86_64 route through the shared
+    // `preserved_entry(ctx, op_code, io_ptr) -> u32` runtime helper. The
+    // generated sequence is:
+    //
+    //   1. Save caller-clobbered GP dynamic regs (see save_caller_clobbered
+    //      _gp_dynamic). Total 64 bytes → SP stays 16-aligned.
+    //   2. sub rsp, PRESERVED_IO_BYTES                (64 bytes for 8 slots)
+    //   3. Write IMM0/IMM1/ARG0..ARG2 slots on the stack.
+    //   4. mov rdi, ctx ; mov rsi, op_code ; lea rdx, [rsp]
+    //   5. mov r11, preserved_entry ; call r11
+    //   6. Stash status (RAX) into a scratch; optionally read RET0 into
+    //      another scratch.
+    //   7. add rsp, PRESERVED_IO_BYTES
+    //   8. Restore caller-clobbered GP dynamic regs.
+    //   9. test status, status ; jne body_local_error_label
+    //
+    // FP dynamic registers are not saved around these calls. The MachineIR
+    // pipeline is responsible for publishing cached state before helper calls.
+
+    fn emit_preserved_io_open(&mut self) {
+        self.save_caller_clobbered_gp_dynamic();
+        // 8 slots × 8 bytes = 64 bytes, keeps RSP 16-byte aligned.
+        enc::sub_rsp_imm8(&mut self.core.text, 64);
+    }
+
+    fn emit_io_store_imm(&mut self, slot: usize, value: u32) {
+        let scratch = self.gp_scratch.reg(0);
+        self.materialize_u64(scratch, value as u64);
+        enc::store_64(
+            &mut self.core.text,
+            X86Reg::RSP,
+            (slot as i32) * 8,
+            scratch,
+        );
+    }
+
+    fn emit_io_store_value(
+        &mut self,
+        slot: usize,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        let scratch = self.gp_scratch.reg(0);
+        let gp = self.materialize_value(scratch, value)?;
+        enc::store_64(&mut self.core.text, X86Reg::RSP, (slot as i32) * 8, gp);
+        Ok(())
+    }
+
+    fn emit_io_store_u32_value(
+        &mut self,
+        slot: usize,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        let scratch = self.gp_scratch.reg(0);
+        match value {
+            // Bulk-memory/table helper operands are Wasm i32 values.
+            MachineValue::Imm64(imm) => self.materialize_u64(scratch, imm as u32 as u64),
+            MachineValue::Reg(reg) => {
+                let src = self.map_gp_reg(reg)?;
+                // Force a low-word move so the helper always sees a clean
+                // zero-extended u32 even if the producer left stale high bits.
+                enc::mov_rr_32(&mut self.core.text, scratch, src);
+            }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "x86_64 cannot materialize reserved cache register {}",
+                    reg.0
+                )));
+            }
+        }
+        enc::store_64(&mut self.core.text, X86Reg::RSP, (slot as i32) * 8, scratch);
+        Ok(())
+    }
+
+    /// Call preserved_entry, handle status/result, tear down frame, check
+    /// status. If `result_dst` is `Some`, the RET0 slot is loaded into
+    /// that register *after* the caller-clobbered restore.
+    fn emit_preserved_call_and_close(
+        &mut self,
+        op_code: u32,
+        result_dst: Option<X86Reg>,
+    ) {
+        use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+
+        // C ABI setup: rdi=ctx, rsi=op_code, rdx=rsp (io_ptr).
+        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
+        self.materialize_u64(C_ARG1, op_code as u64);
+        enc::mov_rr_64(&mut self.core.text, C_ARG2, X86Reg::RSP);
+        // Load helper address into R11 (scratch) and call.
+        self.materialize_u64(self.gp_scratch.reg(1), preserved_entry as usize as u64);
+        enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
+
+        // Read the result slot (if any) *before* restoring caller-clobbered
+        // regs, because `result_dst` might alias one of the pushed regs.
+        // We stash it into gp_scratch.reg(1) (R11) and move it after
+        // restoration below.
+        let result_scratch = self.gp_scratch.reg(1);
+        if result_dst.is_some() {
+            enc::load_64(
+                &mut self.core.text,
+                result_scratch,
+                X86Reg::RSP,
+                preserved_io::RET0 as i32 * 8,
+            );
+        }
+
+        // Tear down the I/O area before popping caller-clobbered regs.
+        enc::add_rsp_imm8(&mut self.core.text, 64);
+
+        // Stash status (RAX) into gp_scratch.reg(0) so it survives the
+        // caller-clobbered restore (RAX is not among the saved set, so
+        // the restore does not touch it — but gp_scratch.reg(0) IS RAX,
+        // which also isn't in the saved set, so it's safe to hold there).
+        // Nothing extra is needed because the status naturally persists.
+
+        self.restore_caller_clobbered_gp_dynamic();
+
+        // If caller wanted the result, move it into the target dst now
+        // that the stack is restored.
+        if let Some(dst) = result_dst {
+            if dst != result_scratch {
+                enc::mov_rr_64(&mut self.core.text, dst, result_scratch);
+            }
+        }
+
+        // Status check: non-zero means the helper trapped — branch to the
+        // body-local error tail to propagate via the unified Return.
+        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
+        let body_local_error_label = self.core.body_local_error_label;
+        self.emit_jcc(Cc::NE, body_local_error_label);
+    }
+
+    fn lower_memory_grow(
+        &mut self,
+        mem_idx: u32,
+        dst: MachineReg,
+        delta: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        let dst_gp = self.map_gp_reg(dst)?;
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+        self.emit_io_store_u32_value(preserved_io::ARG0, delta)?;
+        self.emit_preserved_call_and_close(op::MEMORY_GROW, Some(dst_gp));
+        Ok(())
+    }
+
+    fn lower_memory_fill(
+        &mut self,
+        mem_idx: u32,
+        dest: MachineValue,
+        val: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, val)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::MEMORY_FILL, None);
+        Ok(())
+    }
+
+    fn lower_memory_copy(
+        &mut self,
+        dst_mem: u32,
+        src_mem: u32,
+        dest: MachineValue,
+        src: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
+        self.emit_io_store_imm(preserved_io::IMM1, src_mem);
+        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::MEMORY_COPY, None);
+        Ok(())
+    }
+
+    fn lower_memory_init(
+        &mut self,
+        mem_idx: u32,
+        data_idx: u32,
+        dest: MachineValue,
+        src: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
+        self.emit_io_store_imm(preserved_io::IMM1, data_idx);
+        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::MEMORY_INIT, None);
+        Ok(())
+    }
+
+    fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, data_idx);
+        self.emit_preserved_call_and_close(op::DATA_DROP, None);
+        Ok(())
+    }
+
+    fn lower_table_grow(
+        &mut self,
+        table_idx: u32,
+        dst: MachineReg,
+        init_val: MachineValue,
+        delta: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        let dst_gp = self.map_gp_reg(dst)?;
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+        self.emit_io_store_value(preserved_io::ARG0, init_val)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, delta)?;
+        self.emit_preserved_call_and_close(op::TABLE_GROW, Some(dst_gp));
+        Ok(())
+    }
+
+    fn lower_table_fill(
+        &mut self,
+        table_idx: u32,
+        start: MachineValue,
+        val: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+        self.emit_io_store_u32_value(preserved_io::ARG0, start)?;
+        self.emit_io_store_value(preserved_io::ARG1, val)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::TABLE_FILL, None);
+        Ok(())
+    }
+
+    fn lower_table_copy(
+        &mut self,
+        dst_tbl: u32,
+        src_tbl: u32,
+        dest: MachineValue,
+        src: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, dst_tbl);
+        self.emit_io_store_imm(preserved_io::IMM1, src_tbl);
+        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::TABLE_COPY, None);
+        Ok(())
+    }
+
+    fn lower_table_init(
+        &mut self,
+        table_idx: u32,
+        elem_idx: u32,
+        dest: MachineValue,
+        src: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, table_idx);
+        self.emit_io_store_imm(preserved_io::IMM1, elem_idx);
+        self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
+        self.emit_io_store_u32_value(preserved_io::ARG1, src)?;
+        self.emit_io_store_u32_value(preserved_io::ARG2, len)?;
+        self.emit_preserved_call_and_close(op::TABLE_INIT, None);
+        Ok(())
+    }
+
+    fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{abi::op, io as preserved_io};
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, elem_idx);
+        self.emit_preserved_call_and_close(op::ELEM_DROP, None);
+        Ok(())
     }
 }

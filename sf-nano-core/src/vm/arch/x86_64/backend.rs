@@ -10,9 +10,9 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
-            MachineInst, MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction, MachineInst,
+            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
@@ -25,26 +25,19 @@ use crate::{
 use super::{
     abi::{
         self, fp_machine_reg, map_fixed_reg, map_reg, max_fp_machine_regs, max_total_machine_regs,
-        C_ARG0, C_ARG1, C_RET0, FP_MACHINE_REG_COUNT,
+        C_ARG0, C_ARG1, FP_MACHINE_REG_COUNT,
     },
     callconv,
     enc::{self, Cc},
-    helpers::x86_64_raise_trap,
     reg::X86Reg,
 };
 #[cfg(sf_has_debug_regions)]
 use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
-    backend::ArchBackend,
-    core::CompilerCore,
-    helpers::trap_code,
-    scratch_pool::ScratchPool,
-    types::ParallelSource,
+    backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool, types::ParallelSource,
 };
 
 // ── Frame layout ────────────────────────────────────────────────────────────
-
-const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 
 /// Extra bytes subtracted from RSP after the GP saves. Owned by the active
 /// calling convention because the exact shape depends on whether Win64 XMM
@@ -71,9 +64,6 @@ pub(super) struct BranchFixup {
 pub(crate) struct CompiledX86_64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    pub root_return: *const u8,
-    #[cfg(sf_has_guard_pages)]
-    pub return_error: *const u8,
     #[cfg(sf_ir_dump)]
     pub debug_regions: Vec<DebugRegion>,
 }
@@ -85,7 +75,7 @@ pub(crate) struct X86_64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<X86Reg, 2>,
-    pub(super) fp_scratch: ScratchPool<u32, 3>,
+    pub(super) fp_scratch: ScratchPool<u32, 2>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -165,8 +155,59 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         enc::ret(&mut self.core.text);
     }
 
-    fn lower_return_ok_status(&mut self) {
-        enc::mov_ri_32(&mut self.core.text, C_RET0, 0);
+    /// Public-entry caller stub. Pushes a root call record onto the host
+    /// stack — two 8-byte slots, low = caller_result_base, high = caller_fp,
+    /// both = `fp_reg` (= MACHINE_FP_REG) for the root call — then `call`s
+    /// the internal entry. After the body's unified Return rets, control
+    /// falls through to `lower_epilogue`.
+    fn lower_root_caller_stub(&mut self) {
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        // push caller_fp (→ higher slot after the next push)
+        enc::push(&mut self.core.text, fp_reg);
+        // push caller_result_base (→ lower slot)
+        enc::push(&mut self.core.text, fp_reg);
+        // call internal_entry_label (patched by patch_fixups)
+        let internal_entry_label = self.core.internal_entry_label;
+        self.emit_call_rel32(internal_entry_label);
+    }
+
+    /// Body entry prelude. On x86_64, `call` already pushed the return
+    /// address onto the host stack when the caller stub entered, leaving SP
+    /// misaligned by 8 (relative to the 16-byte requirement). The body
+    /// prelude subtracts 8 more to restore 16-byte alignment so the body
+    /// can make nested C helper / preserved-helper calls without tripping
+    /// the ABI's stack alignment check.
+    ///
+    /// The body's unified Return and `body_local_error_label` both `add
+    /// rsp, 8` before popping the call record, mirroring this shim.
+    fn lower_body_prelude(&mut self) {
+        enc::sub_rsp_imm8(&mut self.core.text, 8);
+    }
+
+    /// Body-local error tail (`body_local_error_label`). Reached from trap
+    /// stubs and post-call status checks. Undoes the body prelude, loads
+    /// the caller's `fp_reg` back from the call record, and `ret 16`s —
+    /// releasing the 16-byte call record sitting above the return
+    /// address. `C_RET0` is untouched, preserving the error code set by
+    /// the trap stub or inherited from a trapped descendant's call.
+    ///
+    /// Stack layout at entry:
+    ///
+    /// ```text
+    ///   [rsp +  0] = alignment shim (body prelude)
+    ///   [rsp +  8] = return address
+    ///   [rsp + 16] = caller_result_base (unused in the error path)
+    ///   [rsp + 24] = caller_fp
+    /// ```
+    fn lower_body_local_error_tail(&mut self) {
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        // Undo body prelude alignment shim.
+        enc::add_rsp_imm8(&mut self.core.text, 8);
+        // Load caller_fp from [rsp+16] into fp_reg.
+        enc::load_64(&mut self.core.text, fp_reg, X86Reg::RSP, 16);
+        // ret 16 — pops return address, then releases the 16-byte call
+        // record. C_RET0 untouched — preserves the error code.
+        enc::ret_imm16(&mut self.core.text, 16);
     }
 
     fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
@@ -182,17 +223,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     }
 
     fn lower_trap(&mut self, kind: MachineTrapKind) {
-        let scratch = self.gp_scratch.reg(1); // R11
-                                              // MOV RDI, ctx (arg0)
-        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
-        // MOV RSI, trap_code (arg1)
-        self.materialize_u64(C_ARG1, trap_code(kind));
-        // MOV R11, x86_64_raise_trap
-        self.materialize_u64(scratch, x86_64_raise_trap as usize as u64);
-        // CALL R11
-        enc::call_reg(&mut self.core.text, scratch);
-        // JMP return_error_label
-        self.emit_jmp(self.core.return_error_label);
+        self.lower_trap_dispatch(kind);
     }
 
     fn lower_unconditional_branch(&mut self, label: usize) {
@@ -286,14 +317,8 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
     ) -> Self::CompiledEntry {
         let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
-        let root_return = unsafe { buf.ptr(emitted.text_offset + emitted.root_return_offset) };
-        #[cfg(sf_has_guard_pages)]
-        let return_error = unsafe { buf.ptr(emitted.text_offset + emitted.return_error_offset) };
         CompiledX86_64Entry {
             entry,
-            root_return,
-            #[cfg(sf_has_guard_pages)]
-            return_error,
             text_len: emitted.text_len,
             #[cfg(sf_ir_dump)]
             debug_regions: emitted.debug_regions.clone(),
@@ -318,6 +343,15 @@ impl<'a> X86_64Backend<'a> {
     /// Emit Jcc rel32 with a fixup to be patched later.
     pub(super) fn emit_jcc(&mut self, cc: Cc, label: usize) {
         let rel32_offset = enc::jcc_rel32(&mut self.core.text, cc);
+        self.fixups.push(BranchFixup {
+            rel32_offset,
+            label,
+        });
+    }
+
+    /// Emit CALL rel32 with a fixup to be patched later.
+    pub(super) fn emit_call_rel32(&mut self, label: usize) {
+        let rel32_offset = enc::call_rel32(&mut self.core.text);
         self.fixups.push(BranchFixup {
             rel32_offset,
             label,
@@ -376,6 +410,10 @@ impl<'a> X86_64Backend<'a> {
                 self.materialize_u64(scratch, value);
                 Ok(scratch)
             }
+            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                "x86_64 cannot materialize reserved cache register {}",
+                reg.0
+            ))),
         }
     }
 
@@ -476,7 +514,8 @@ impl<'a> X86_64Backend<'a> {
                     };
                     self.core.set_fp_reg_width(dst.reg, width)?;
                 } else {
-                    self.materialize_u64(self.map_gp_reg(dst.reg)?, value);
+                    let dst_gp = self.map_gp_reg(dst.reg)?;
+                    self.materialize_u64(dst_gp, value);
                 }
             }
             ParallelSource::GpTemp(id) => {
