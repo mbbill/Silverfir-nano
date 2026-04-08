@@ -112,7 +112,7 @@ pub(crate) struct Arm64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
-    pub(super) fp_scratch: ScratchPool<Arm64FpReg, 3>,
+    pub(super) fp_scratch: ScratchPool<Arm64FpReg, 2>,
     /// Deferred per-call patchable literals. Flushed by
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).

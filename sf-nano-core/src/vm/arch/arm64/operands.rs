@@ -58,12 +58,12 @@ impl Deref for OwnedPreparedGp {
 
 pub(super) enum PreparedFp<'a> {
     Mapped(Arm64FpReg),
-    Scratch(ScratchGuard<'a, Arm64FpReg, 3>),
+    Scratch(ScratchGuard<'a, Arm64FpReg, 2>),
 }
 
 pub(super) enum OwnedPreparedFp {
     Mapped(Arm64FpReg),
-    Scratch(DetachedScratch<Arm64FpReg, 3>),
+    Scratch(DetachedScratch<Arm64FpReg, 2>),
 }
 
 impl PreparedFp<'_> {
@@ -88,7 +88,14 @@ impl Deref for PreparedFp<'_> {
     }
 }
 
-impl OwnedPreparedFp {}
+impl OwnedPreparedFp {
+    /// True when this prepared value owns an FP scratch slot (i.e. the caller
+    /// may clobber its physical register without destroying live JIT state).
+    #[inline]
+    pub(super) fn is_scratch(&self) -> bool {
+        matches!(self, Self::Scratch(_))
+    }
+}
 
 impl Deref for OwnedPreparedFp {
     type Target = Arm64FpReg;

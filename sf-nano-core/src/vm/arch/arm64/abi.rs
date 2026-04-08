@@ -117,6 +117,7 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(5),
         fp(6),
         fp(7),
+        fp(2),
         fp(16),
         fp(17),
         fp(18),
@@ -148,6 +149,7 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(5),
         fp(6),
         fp(7),
+        fp(2),
         fp(16),
         fp(17),
         fp(18),
@@ -165,7 +167,7 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(30),
         fp(31),
     ],
-    fp_scratch: &[fp(0), fp(1), fp(2)],
+    fp_scratch: &[fp(0), fp(1)],
 
     callee_saved_gp_pairs: &[
         (gp(19), gp(20)),
@@ -277,12 +279,8 @@ pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm64Reg, 2> {
     ScratchPool::new([REG_PLAN.gp_scratch[0], REG_PLAN.gp_scratch[1]])
 }
 
-pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm64FpReg, 3> {
-    ScratchPool::new([
-        REG_PLAN.fp_scratch[0],
-        REG_PLAN.fp_scratch[1],
-        REG_PLAN.fp_scratch[2],
-    ])
+pub(super) fn new_fp_scratch_pool() -> ScratchPool<Arm64FpReg, 2> {
+    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1]])
 }
 
 // ── Capacity queries ─────────────────────────────────────────────────────────

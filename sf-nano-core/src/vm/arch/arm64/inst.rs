@@ -122,7 +122,7 @@ pub(super) fn prepare_fp<'p>(
     fp_widths: &[Option<MachineFloatWidth>],
     text: &mut TextEmitter,
     gp_pool: &ScratchPool<Arm64Reg, 2>,
-    fp_pool: &'p ScratchPool<Arm64FpReg, 3>,
+    fp_pool: &'p ScratchPool<Arm64FpReg, 2>,
     width: MachineFloatWidth,
     value: MachineValue,
 ) -> Result<PreparedFp<'p>, WasmError> {
@@ -2684,6 +2684,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
+        // Copysign has a distinct operand profile: it needs rhs as an integer
+        // (to test the sign bit), not as an FP value. Handle it in its own
+        // helper so we don't eagerly prepare an unused rhs_fp, which would
+        // push peak FP scratch usage past the 2-slot budget.
+        if matches!(op, MachineFloatBinaryOp::Copysign) {
+            return self.lower_float_copysign(width, dst, lhs, rhs);
+        }
+
         let lhs_fp = prepare_fp(
             self.core.compiled.backend(),
             &self.core.fp_reg_widths,
@@ -2704,12 +2712,23 @@ impl<'a> super::backend::Arm64Backend<'a> {
             rhs,
         )?
         .detach();
-        let result_fp = if self.core.is_fp_reg(dst) {
+        // Resolve the result register with a 2-slot FP scratch budget. When
+        // `dst` is mapped to FP we write there directly. Otherwise we reuse
+        // `lhs_fp`'s physical register (its scratch slot is already ours and
+        // lhs is consumed by this instruction). Only when `lhs_fp` is a live
+        // mapped register do we allocate a third FP slot — at which point
+        // `rhs_fp` is the only other scratch that could be holding a slot,
+        // so peak use stays within the 2-slot pool.
+        let (result_fp, _result_scratch) = if self.core.is_fp_reg(dst) {
             let dst_fp = self.map_fp_reg(dst)?;
             self.core.set_fp_reg_width(dst, width)?;
-            dst_fp
+            (dst_fp, None)
+        } else if lhs_fp.is_scratch() {
+            (*lhs_fp, None)
         } else {
-            *self.fp_scratch.scoped_alloc()
+            let guard = self.fp_scratch.scoped_alloc().detach();
+            let phys = *guard;
+            (phys, Some(guard))
         };
         match (width, op) {
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Add) => {
@@ -2752,102 +2771,176 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     .text
                     .emit_u32(enc::fdiv_d(result_fp, *lhs_fp, *rhs_fp));
             }
+            // Wasm fmin/fmax: NaN if either operand is NaN. ARM64
+            // FMIN/FMAX return the non-NaN operand, so we patch the NaN
+            // case with an FADD (which propagates NaN). The patch is
+            // ordered fcmp-first, with a branch-skip around a cold FADD,
+            // so the hot path still reads each operand at most once and
+            // `result_fp` may safely alias `lhs_fp` (or `rhs_fp`) without
+            // losing a still-live operand value.
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Min) => {
-                // Wasm fmin: NaN if either is NaN. ARM64 FMIN returns non-NaN operand.
-                self.core
-                    .text
-                    .emit_u32(enc::fmin_s(result_fp, *lhs_fp, *rhs_fp));
-                self.core.text.emit_u32(enc::fcmp_s(*lhs_fp, *rhs_fp));
-                let done = self.core.new_label();
-                self.lower_b_cond(enc::Cond::Vc, done); // no NaN => FMIN result is correct
-                                                        // NaN case: FADD produces NaN from NaN input
-                self.core
-                    .text
-                    .emit_u32(enc::fadd_s(result_fp, *lhs_fp, *rhs_fp));
-                self.core.bind_label(done);
+                self.emit_float_min_max_patch(
+                    width,
+                    true,
+                    result_fp,
+                    *lhs_fp,
+                    *rhs_fp,
+                );
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Min) => {
-                self.core
-                    .text
-                    .emit_u32(enc::fmin_d(result_fp, *lhs_fp, *rhs_fp));
-                self.core.text.emit_u32(enc::fcmp_d(*lhs_fp, *rhs_fp));
-                let done = self.core.new_label();
-                self.lower_b_cond(enc::Cond::Vc, done);
-                self.core
-                    .text
-                    .emit_u32(enc::fadd_d(result_fp, *lhs_fp, *rhs_fp));
-                self.core.bind_label(done);
+                self.emit_float_min_max_patch(
+                    width,
+                    true,
+                    result_fp,
+                    *lhs_fp,
+                    *rhs_fp,
+                );
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Max) => {
-                self.core
-                    .text
-                    .emit_u32(enc::fmax_s(result_fp, *lhs_fp, *rhs_fp));
-                self.core.text.emit_u32(enc::fcmp_s(*lhs_fp, *rhs_fp));
-                let done = self.core.new_label();
-                self.lower_b_cond(enc::Cond::Vc, done);
-                self.core
-                    .text
-                    .emit_u32(enc::fadd_s(result_fp, *lhs_fp, *rhs_fp));
-                self.core.bind_label(done);
+                self.emit_float_min_max_patch(
+                    width,
+                    false,
+                    result_fp,
+                    *lhs_fp,
+                    *rhs_fp,
+                );
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Max) => {
-                self.core
-                    .text
-                    .emit_u32(enc::fmax_d(result_fp, *lhs_fp, *rhs_fp));
-                self.core.text.emit_u32(enc::fcmp_d(*lhs_fp, *rhs_fp));
-                let done = self.core.new_label();
-                self.lower_b_cond(enc::Cond::Vc, done);
-                self.core
-                    .text
-                    .emit_u32(enc::fadd_d(result_fp, *lhs_fp, *rhs_fp));
-                self.core.bind_label(done);
+                self.emit_float_min_max_patch(
+                    width,
+                    false,
+                    result_fp,
+                    *lhs_fp,
+                    *rhs_fp,
+                );
             }
-            (MachineFloatWidth::F32, MachineFloatBinaryOp::Copysign) => {
-                // copysign: magnitude of lhs, sign of rhs
-                let neg_fp = *self.fp_scratch.scoped_alloc();
-                self.core.text.emit_u32(enc::fabs_s(result_fp, *lhs_fp)); // |lhs|
-                self.core.text.emit_u32(enc::fneg_s(neg_fp, result_fp)); // -|lhs|
-                let rhs_gp = prepare_gp(
-                    self.core.compiled.backend(),
-                    &self.core.fp_reg_widths,
-                    &mut self.core.text,
-                    &self.gp_scratch,
-                    rhs,
-                )?
-                .detach();
-                let shift_reg = *self.gp_scratch.scoped_alloc();
-                self.materialize_u64(shift_reg, 31);
-                self.core
-                    .text
-                    .emit_u32(enc::lsrv_64(shift_reg, *rhs_gp, shift_reg));
-                self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::fcsel_s(result_fp, neg_fp, result_fp, enc::Cond::Ne));
-            }
-            (MachineFloatWidth::F64, MachineFloatBinaryOp::Copysign) => {
-                let neg_fp = *self.fp_scratch.scoped_alloc();
-                self.core.text.emit_u32(enc::fabs_d(result_fp, *lhs_fp));
-                self.core.text.emit_u32(enc::fneg_d(neg_fp, result_fp));
-                let rhs_gp = prepare_gp(
-                    self.core.compiled.backend(),
-                    &self.core.fp_reg_widths,
-                    &mut self.core.text,
-                    &self.gp_scratch,
-                    rhs,
-                )?
-                .detach();
-                let shift_reg = *self.gp_scratch.scoped_alloc();
-                self.materialize_u64(shift_reg, 63);
-                self.core
-                    .text
-                    .emit_u32(enc::lsrv_64(shift_reg, *rhs_gp, shift_reg));
-                self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::fcsel_d(result_fp, neg_fp, result_fp, enc::Cond::Ne));
+            (_, MachineFloatBinaryOp::Copysign) => {
+                unreachable!("copysign handled by lower_float_copysign");
             }
         };
+        if !self.core.is_fp_reg(dst) {
+            let dst_gp = self.map_gp_reg(dst)?;
+            match width {
+                MachineFloatWidth::F32 => self
+                    .core
+                    .text
+                    .emit_u32(enc::fmov_gp_from_s(dst_gp, result_fp)),
+                MachineFloatWidth::F64 => self
+                    .core
+                    .text
+                    .emit_u32(enc::fmov_gp_from_d(dst_gp, result_fp)),
+            };
+        }
+        Ok(())
+    }
+
+    /// NaN-patched fmin/fmax sequence. The branch skips the cold NaN case so
+    /// the hot path runs `fcmp → b.vc → fmin/fmax → (fall-through)` — the
+    /// same instruction count as the non-patched form. Ordering fcmp before
+    /// the fmin/fmax/fadd is what makes it safe to alias `result_fp` with
+    /// `lhs_fp` or `rhs_fp` (each operand is read at most once, and always
+    /// before any instruction that could clobber it).
+    fn emit_float_min_max_patch(
+        &mut self,
+        width: MachineFloatWidth,
+        is_min: bool,
+        result_fp: Arm64FpReg,
+        lhs_fp: Arm64FpReg,
+        rhs_fp: Arm64FpReg,
+    ) {
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fcmp_s(lhs_fp, rhs_fp),
+            MachineFloatWidth::F64 => enc::fcmp_d(lhs_fp, rhs_fp),
+        });
+        let fast = self.core.new_label();
+        let done = self.core.new_label();
+        // Vc = no overflow (i.e. ordered / not-NaN) → fast path.
+        self.lower_b_cond(enc::Cond::Vc, fast);
+        // NaN path: FADD propagates NaN from either operand.
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fadd_s(result_fp, lhs_fp, rhs_fp),
+            MachineFloatWidth::F64 => enc::fadd_d(result_fp, lhs_fp, rhs_fp),
+        });
+        self.lower_b(done);
+        self.core.bind_label(fast);
+        // Ordered path: direct fmin/fmax.
+        self.core.text.emit_u32(match (width, is_min) {
+            (MachineFloatWidth::F32, true) => enc::fmin_s(result_fp, lhs_fp, rhs_fp),
+            (MachineFloatWidth::F64, true) => enc::fmin_d(result_fp, lhs_fp, rhs_fp),
+            (MachineFloatWidth::F32, false) => enc::fmax_s(result_fp, lhs_fp, rhs_fp),
+            (MachineFloatWidth::F64, false) => enc::fmax_d(result_fp, lhs_fp, rhs_fp),
+        });
+        self.core.bind_label(done);
+    }
+
+    /// Copysign: magnitude of `lhs`, sign of `rhs`. Unlike the other float
+    /// binaries, `rhs` is consumed as an integer (sign-bit test), so we do
+    /// not prepare it as FP. Peak FP scratch usage with a 2-slot pool:
+    ///
+    ///   lhs Scratch → result reuses lhs slot,  neg_fp = +1 slot  → 2 slots
+    ///   lhs Mapped  → result = +1 slot,        neg_fp = +1 slot  → 2 slots
+    fn lower_float_copysign(
+        &mut self,
+        width: MachineFloatWidth,
+        dst: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        let lhs_fp = prepare_fp(
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            &self.fp_scratch,
+            width,
+            lhs,
+        )?
+        .detach();
+        let (result_fp, _result_scratch) = if self.core.is_fp_reg(dst) {
+            let dst_fp = self.map_fp_reg(dst)?;
+            self.core.set_fp_reg_width(dst, width)?;
+            (dst_fp, None)
+        } else if lhs_fp.is_scratch() {
+            (*lhs_fp, None)
+        } else {
+            let guard = self.fp_scratch.scoped_alloc().detach();
+            let phys = *guard;
+            (phys, Some(guard))
+        };
+        // result = |lhs|
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fabs_s(result_fp, *lhs_fp),
+            MachineFloatWidth::F64 => enc::fabs_d(result_fp, *lhs_fp),
+        });
+        // neg = -|lhs|
+        let neg_fp = *self.fp_scratch.scoped_alloc();
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fneg_s(neg_fp, result_fp),
+            MachineFloatWidth::F64 => enc::fneg_d(neg_fp, result_fp),
+        });
+        // Test rhs sign bit via GP scratch.
+        let rhs_gp = prepare_gp(
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            rhs,
+        )?
+        .detach();
+        let shift_reg = *self.gp_scratch.scoped_alloc();
+        let sign_shift: u64 = match width {
+            MachineFloatWidth::F32 => 31,
+            MachineFloatWidth::F64 => 63,
+        };
+        self.materialize_u64(shift_reg, sign_shift);
+        self.core
+            .text
+            .emit_u32(enc::lsrv_64(shift_reg, *rhs_gp, shift_reg));
+        self.core.text.emit_u32(enc::cmp_imm_64(shift_reg, 0));
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::fcsel_s(result_fp, neg_fp, result_fp, enc::Cond::Ne),
+            MachineFloatWidth::F64 => enc::fcsel_d(result_fp, neg_fp, result_fp, enc::Cond::Ne),
+        });
         if !self.core.is_fp_reg(dst) {
             let dst_gp = self.map_gp_reg(dst)?;
             match width {
