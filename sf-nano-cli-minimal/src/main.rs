@@ -165,7 +165,7 @@ static WASM_HOSTCALL: &[u8] = &[
 ];
 
 fn host_print_i32(
-    _caller: &mut sf_nano_core::vm::entities::Caller,
+    _caller: &mut sf_nano_core::Caller,
     args: &[Value],
     _results: &mut [Value],
 ) -> Result<(), sf_nano_core::WasmError> {

@@ -4,7 +4,7 @@
 //! own a scratch pool slot. Use `*prepared` to read the physical register for
 //! encoding. The pool slot (if any) is freed on drop.
 
-use std::ops::Deref;
+use core::ops::Deref;
 
 use crate::vm::arch::common::scratch_pool::{DetachedScratch, ScratchGuard};
 
