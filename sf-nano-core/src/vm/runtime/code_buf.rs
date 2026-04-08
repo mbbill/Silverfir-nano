@@ -1,111 +1,16 @@
 //! Executable memory ownership for the native backend.
 //!
-//! This owns one mmap-backed writable/executable region. The current machine
+//! This owns one OS-backed writable/executable region. The current machine
 //! backend uses it as a module-wide arena for finalized native code.
+//!
+//! All OS coupling — page allocation, W^X toggling, instruction-cache
+//! invalidation — is delegated to [`crate::vm::runtime::os`]. This module
+//! holds only the per-buffer state (`base`, `capacity`, `offset`) and the
+//! offset-bumping emit helpers.
 
 use core::ptr;
 
-#[cfg(sf_has_posix)]
-unsafe extern "C" {
-    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
-    fn munmap(addr: *mut u8, len: usize) -> i32;
-}
-
-#[cfg(sf_os_linux)]
-unsafe extern "C" {
-    fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
-}
-
-/// Flush the instruction cache for the given range.
-///
-/// On AArch64, `__clear_cache` is provided by compiler-builtins. On ARM32
-/// musl with rust-lld the symbol is absent, so we call the kernel's
-/// `cacheflush` syscall directly.
-#[cfg(all(sf_os_linux, sf_arch_arm64))]
-unsafe extern "C" {
-    fn __clear_cache(start: *mut u8, end: *mut u8);
-}
-
-#[cfg(all(sf_os_linux, sf_arch_arm64))]
-#[inline]
-unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
-    unsafe { __clear_cache(start, end) };
-}
-
-#[cfg(all(sf_os_linux, sf_arch_armv7a))]
-#[inline]
-unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
-    // ARM Linux cacheflush syscall (__ARM_NR_cacheflush = 0x0f0002)
-    unsafe {
-        core::arch::asm!(
-            "mov r0, {start}",
-            "mov r1, {end}",
-            "mov r2, #0",
-            "mov r7, #0xf0000",
-            "add r7, r7, #0x2",
-            "svc #0",
-            start = in(reg) start,
-            end = in(reg) end,
-            out("r0") _,
-            out("r1") _,
-            out("r2") _,
-            out("r7") _,
-        );
-    }
-}
-
-#[cfg(all(sf_os_linux, not(any(sf_arch_arm64, sf_arch_armv7a))))]
-unsafe extern "C" {
-    fn __clear_cache(start: *mut u8, end: *mut u8);
-}
-
-#[cfg(all(sf_os_linux, not(any(sf_arch_arm64, sf_arch_armv7a))))]
-#[inline]
-unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
-    unsafe { __clear_cache(start, end) };
-}
-
-#[cfg(sf_os_macos)]
-unsafe extern "C" {
-    fn pthread_jit_write_protect_np(enabled: i32);
-    fn sys_icache_invalidate(addr: *const u8, len: usize);
-}
-
-#[cfg(sf_os_windows)]
-unsafe extern "system" {
-    fn VirtualAlloc(addr: *mut u8, size: usize, alloc_type: u32, protect: u32) -> *mut u8;
-    fn VirtualFree(addr: *mut u8, size: usize, free_type: u32) -> i32;
-    fn VirtualProtect(addr: *mut u8, size: usize, new_protect: u32, old_protect: *mut u32) -> i32;
-    fn FlushInstructionCache(process: *mut u8, base: *const u8, size: usize) -> i32;
-    fn GetCurrentProcess() -> *mut u8;
-}
-#[cfg(sf_os_windows)]
-const MEM_COMMIT: u32 = 0x1000;
-#[cfg(sf_os_windows)]
-const MEM_RESERVE: u32 = 0x2000;
-#[cfg(sf_os_windows)]
-const MEM_RELEASE: u32 = 0x8000;
-#[cfg(sf_os_windows)]
-const PAGE_READWRITE: u32 = 0x04;
-#[cfg(sf_os_windows)]
-const PAGE_EXECUTE_READ: u32 = 0x20;
-
-#[cfg(sf_has_posix)]
-const PROT_READ: i32 = 0x01;
-#[cfg(sf_has_posix)]
-const PROT_WRITE: i32 = 0x02;
-#[cfg(sf_has_posix)]
-const PROT_EXEC: i32 = 0x04;
-#[cfg(sf_has_posix)]
-const MAP_PRIVATE: i32 = 0x02;
-#[cfg(sf_os_macos)]
-const MAP_ANON: i32 = 0x1000;
-#[cfg(sf_os_macos)]
-const MAP_JIT: i32 = 0x0800;
-#[cfg(sf_os_linux)]
-const MAP_ANONYMOUS: i32 = 0x20;
-#[cfg(sf_has_posix)]
-const MAP_FAILED: *mut u8 = !0usize as *mut u8;
+use super::os;
 
 pub struct CodeBuffer {
     base: *mut u8,
@@ -134,21 +39,8 @@ impl CodeBuffer {
         Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
-    #[cfg(sf_os_macos)]
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
-        let base = unsafe {
-            mmap(
-                ptr::null_mut(),
-                capacity,
-                PROT_READ | PROT_WRITE | PROT_EXEC,
-                MAP_PRIVATE | MAP_ANON | MAP_JIT,
-                -1,
-                0,
-            )
-        };
-        if base == MAP_FAILED {
-            return Err("mmap failed for native code buffer");
-        }
+        let base = os::alloc_executable(capacity)?;
         Ok(Self {
             base,
             capacity,
@@ -156,106 +48,15 @@ impl CodeBuffer {
         })
     }
 
-    #[cfg(sf_os_linux)]
-    pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
-        let base = unsafe {
-            mmap(
-                ptr::null_mut(),
-                capacity,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        if base == MAP_FAILED {
-            return Err("mmap failed for native code buffer");
-        }
-        Ok(Self {
-            base,
-            capacity,
-            offset: 0,
-        })
-    }
-
-    #[cfg(sf_os_windows)]
-    pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
-        let base = unsafe {
-            VirtualAlloc(
-                ptr::null_mut(),
-                capacity,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            )
-        };
-        if base.is_null() {
-            return Err("VirtualAlloc failed for native code buffer");
-        }
-        Ok(Self {
-            base,
-            capacity,
-            offset: 0,
-        })
-    }
-
-    #[cfg(sf_os_macos)]
     #[inline]
     pub fn begin_write(&mut self) {
-        unsafe { pthread_jit_write_protect_np(0) };
+        unsafe { os::begin_write_executable(self.base, self.capacity) };
     }
 
-    #[cfg(sf_os_linux)]
-    #[inline]
-    pub fn begin_write(&mut self) {
-        unsafe {
-            let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_WRITE);
-            assert_eq!(rc, 0, "mprotect RW failed for native code buffer");
-        }
-    }
-
-    #[cfg(sf_os_windows)]
-    #[inline]
-    pub fn begin_write(&mut self) {
-        unsafe {
-            let mut old: u32 = 0;
-            let rc = VirtualProtect(self.base, self.capacity, PAGE_READWRITE, &mut old);
-            assert_ne!(rc, 0, "VirtualProtect RW failed");
-        }
-    }
-
-    #[cfg(sf_os_macos)]
     #[inline]
     pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
         unsafe {
-            pthread_jit_write_protect_np(1);
-            sys_icache_invalidate(self.base.add(written_start), written_len);
-        }
-    }
-
-    #[cfg(sf_os_linux)]
-    #[inline]
-    pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
-        unsafe {
-            let rc = mprotect(self.base, self.capacity, PROT_READ | PROT_EXEC);
-            assert_eq!(rc, 0, "mprotect RX failed for native code buffer");
-            let start = self.base.add(written_start);
-            let end = start.add(written_len);
-            clear_instruction_cache(start, end);
-        }
-    }
-
-    #[cfg(sf_os_windows)]
-    #[inline]
-    pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
-        unsafe {
-            let mut old: u32 = 0;
-            let rc = VirtualProtect(self.base, self.capacity, PAGE_EXECUTE_READ, &mut old);
-            assert_ne!(rc, 0, "VirtualProtect RX failed");
-            FlushInstructionCache(
-                GetCurrentProcess(),
-                self.base.add(written_start),
-                written_len,
-            );
+            os::finish_write_executable(self.base, self.capacity, written_start, written_len);
         }
     }
 
@@ -343,23 +144,7 @@ impl CodeBuffer {
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {
-        if self.base.is_null() {
-            return;
-        }
-        #[cfg(sf_has_posix)]
-        {
-            if self.base != MAP_FAILED {
-                unsafe {
-                    munmap(self.base, self.capacity);
-                }
-            }
-        }
-        #[cfg(sf_os_windows)]
-        {
-            unsafe {
-                VirtualFree(self.base, 0, MEM_RELEASE);
-            }
-        }
+        os::free_executable(self.base, self.capacity);
     }
 }
 

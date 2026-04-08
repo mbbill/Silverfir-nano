@@ -6,27 +6,13 @@
 //! into the guard region. A signal handler converts the fault to a wasm trap
 //! without explicit per-access bounds checks in JIT code.
 //!
-//! This module is gated on `#[cfg(sf_has_guard_pages)]`.
-
-use core::ptr;
+//! This module is gated on `#[cfg(sf_has_guard_pages)]`. All OS coupling
+//! — reservation, per-page commit, release — is delegated to
+//! [`crate::vm::runtime::os`].
 
 use crate::error::WasmError;
 
-unsafe extern "C" {
-    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
-    fn munmap(addr: *mut u8, len: usize) -> i32;
-    fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
-}
-
-const PROT_NONE: i32 = 0x00;
-const PROT_READ: i32 = 0x01;
-const PROT_WRITE: i32 = 0x02;
-const MAP_PRIVATE: i32 = 0x02;
-#[cfg(sf_os_macos)]
-const MAP_ANON: i32 = 0x1000;
-#[cfg(sf_os_linux)]
-const MAP_ANON: i32 = 0x20;
-const MAP_FAILED: *mut u8 = !0usize as *mut u8;
+use super::os;
 
 const WASM_PAGE_SIZE: usize = crate::constants::WASM_PAGE_SIZE;
 
@@ -36,16 +22,16 @@ const WASM_PAGE_SIZE: usize = crate::constants::WASM_PAGE_SIZE;
 /// fits within this range. No OOB access can escape the guard region.
 const GUARD_RESERVATION: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
 
-/// A wasm linear memory backed by mmap with guard pages.
+/// A wasm linear memory backed by an OS reservation with guard pages.
 ///
 /// The base pointer is stable for the lifetime of the allocation (no
-/// reallocation on grow). Only the committed size changes via `mprotect`.
+/// reallocation on grow). Only the committed size changes.
 pub struct GuardPageMemory {
     base: *mut u8,
     committed: usize,
 }
 
-// SAFETY: The mmap'd region is process-private and not aliased.
+// SAFETY: The reserved region is process-private and not aliased.
 unsafe impl Send for GuardPageMemory {}
 
 impl GuardPageMemory {
@@ -58,27 +44,13 @@ impl GuardPageMemory {
             ));
         }
 
-        let base = unsafe {
-            mmap(
-                ptr::null_mut(),
-                GUARD_RESERVATION,
-                PROT_NONE,
-                MAP_PRIVATE | MAP_ANON,
-                -1,
-                0,
-            )
-        };
-        if base == MAP_FAILED || base.is_null() {
-            return Err(WasmError::internal("guard-page memory: mmap failed".into()));
-        }
+        let base = os::reserve_guarded(GUARD_RESERVATION)
+            .map_err(|msg| WasmError::internal(msg.into()))?;
 
         if initial_bytes > 0 {
-            let rc = unsafe { mprotect(base, initial_bytes, PROT_READ | PROT_WRITE) };
-            if rc != 0 {
-                unsafe { munmap(base, GUARD_RESERVATION) };
-                return Err(WasmError::internal(
-                    "guard-page memory: mprotect failed for initial pages".into(),
-                ));
+            if let Err(msg) = os::commit_guarded(base, 0, initial_bytes) {
+                os::release_guarded(base, GUARD_RESERVATION);
+                return Err(WasmError::internal(msg.into()));
             }
         }
 
@@ -102,18 +74,8 @@ impl GuardPageMemory {
         }
 
         if new_bytes > self.committed {
-            let rc = unsafe {
-                mprotect(
-                    self.base.add(self.committed),
-                    new_bytes - self.committed,
-                    PROT_READ | PROT_WRITE,
-                )
-            };
-            if rc != 0 {
-                return Err(WasmError::internal(
-                    "guard-page memory: mprotect failed for grow".into(),
-                ));
-            }
+            os::commit_guarded(self.base, self.committed, new_bytes - self.committed)
+                .map_err(|msg| WasmError::internal(msg.into()))?;
         }
         self.committed = new_bytes;
         Ok(old_pages)
@@ -142,9 +104,7 @@ impl GuardPageMemory {
 
 impl Drop for GuardPageMemory {
     fn drop(&mut self) {
-        unsafe {
-            munmap(self.base, GUARD_RESERVATION);
-        }
+        os::release_guarded(self.base, GUARD_RESERVATION);
     }
 }
 

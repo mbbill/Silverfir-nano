@@ -470,6 +470,81 @@ mod platform {
     }
 }
 
+// ─── Linux x86_64 ───────────────────────────────────────────────────────────
+
+#[cfg(all(sf_os_linux, sf_arch_x64))]
+mod platform {
+    use super::*;
+
+    const SIGSEGV: i32 = 11;
+    const SIGBUS: i32 = 7;
+    const SA_SIGINFO: i32 = 4;
+
+    #[repr(C)]
+    struct kernel_sigaction {
+        sa_sigaction: unsafe extern "C" fn(i32, *mut u8, *mut u8),
+        sa_flags: u64,
+        sa_restorer: usize,
+        sa_mask: u64,
+    }
+
+    unsafe extern "C" {
+        fn sigaction(sig: i32, act: *const kernel_sigaction, oldact: *mut kernel_sigaction) -> i32;
+    }
+
+    // Linux x86_64 ucontext layout (glibc / musl sys/ucontext.h):
+    //   uc_flags           u64   @ 0
+    //   uc_link            ptr   @ 8
+    //   uc_stack           24    @ 16
+    //   uc_mcontext.gregs  23*u64@ 40   (gregs first inside mcontext_t)
+    //   ...
+    //
+    // On this platform `uc_sigmask` sits *after* `uc_mcontext`, not before,
+    // so the mcontext offset is a flat 40 bytes from the start of ucontext_t.
+    //
+    // gregs index constants from Linux sys/ucontext.h:
+    //   REG_R8=0, R9=1, R10=2, R11=3, R12=4, R13=5, R14=6, R15=7,
+    //   REG_RDI=8, RSI=9, RBP=10, RBX=11, RDX=12, RAX=13, RCX=14, RSP=15, RIP=16
+    const UCONTEXT_GREGS_OFFSET: usize = 40;
+    const REG_RAX: usize = 13;
+    const REG_RBX: usize = 11;
+    const REG_RIP: usize = 16;
+
+    unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
+        let gregs = unsafe { ucontext.add(UCONTEXT_GREGS_OFFSET) as *mut u64 };
+        let pc = unsafe { *gregs.add(REG_RIP) } as usize;
+
+        let error_ret = unsafe { lookup_return_error(pc) };
+        let Some(error_ret) = error_ret else {
+            std::process::abort();
+        };
+
+        // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
+        let ctx_ptr = unsafe { *gregs.add(REG_RBX) } as *mut u8;
+        let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
+        if trap_kind_offset > 0 {
+            let trap_kind_ptr = ctx_ptr.add(trap_kind_offset) as *mut u32;
+            unsafe { *trap_kind_ptr = 1 };
+        }
+
+        unsafe {
+            *gregs.add(REG_RAX) = 1;
+            *gregs.add(REG_RIP) = error_ret as u64;
+        }
+    }
+
+    pub(super) unsafe fn install_platform_handler() {
+        let act = kernel_sigaction {
+            sa_sigaction: signal_handler,
+            sa_flags: SA_SIGINFO as u64,
+            sa_restorer: 0,
+            sa_mask: 0,
+        };
+        sigaction(SIGSEGV, &act, core::ptr::null_mut());
+        sigaction(SIGBUS, &act, core::ptr::null_mut());
+    }
+}
+
 use platform::install_platform_handler;
 
 /// Offset of the `trap_kind` field within `NativeContext`, set once at init.
