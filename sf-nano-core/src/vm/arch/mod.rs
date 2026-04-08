@@ -1,6 +1,21 @@
+use alloc::{rc::Rc, vec::Vec};
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use crate::vm::backend::BackendConfig;
+use crate::{
+    error::WasmError,
+    module::entities::FunctionSpec,
+    vm::{
+        backend::BackendConfig,
+        entities::ModuleInst,
+        result_buffer::ResultBuffer,
+        runtime::code::{CompiledNativeModule, NativeRootEntry, NativeCode},
+        store::Store,
+        value::Value,
+    },
+};
+
+#[cfg(sf_has_debug_regions)]
+use crate::vm::arch::common::types::DebugRegion;
 
 pub(crate) mod common;
 pub(crate) mod emulator;
@@ -185,6 +200,111 @@ pub(crate) fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
     } else {
         ReferenceBackendMode::Disabled
     })
+}
+
+/// Normalized view of a backend's per-function compile result.
+///
+/// Each `ArchBackend::CompiledEntry` carries whatever arch-specific state
+/// its linker pass needs (root-return offset, error-tail offset, branch
+/// fixup lists, etc.). The module-build pipeline in `vm::build` only cares
+/// about three facts after compilation is done — the entry pointer, the
+/// function's text size, and (under `sf_ir_dump`) the debug region list —
+/// so `dispatch_compile_module` projects every backend's entry type into
+/// this uniform shape.
+pub(crate) struct CompiledArchEntry {
+    pub entry: NativeRootEntry,
+    pub text_len: usize,
+    #[cfg(sf_ir_dump)]
+    pub debug_regions: Vec<DebugRegion>,
+}
+
+/// Compile all functions for the active native backend and return the
+/// per-function projection the build pipeline consumes.
+///
+/// Single place in the crate where per-arch `compile_module` calls live.
+/// Callers stay free of `sf_arch_*` cfgs — unsupported builds get an empty
+/// vec (fallback to the emulator path).
+pub(crate) fn dispatch_compile_module(
+    active_backend: NativeBackend,
+    module: &ModuleInst,
+    compiled: &Rc<CompiledNativeModule>,
+) -> Result<Vec<Option<CompiledArchEntry>>, WasmError> {
+    match active_backend {
+        #[cfg(sf_arch_arm64)]
+        NativeBackend::Arm64 => {
+            let entries =
+                common::pipeline::compile_module::<arm64::backend::Arm64Backend>(module, compiled)?;
+            Ok(entries
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|e| CompiledArchEntry {
+                        entry: e.entry,
+                        text_len: e.text_len,
+                        #[cfg(sf_ir_dump)]
+                        debug_regions: e.debug_regions,
+                    })
+                })
+                .collect())
+        }
+        #[cfg(sf_arch_armv7a)]
+        NativeBackend::Armv7a => {
+            let entries = armv7a::compile::compile_module(module, compiled)?;
+            Ok(entries
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|e| CompiledArchEntry {
+                        entry: e.entry,
+                        text_len: e.text_len,
+                        #[cfg(sf_ir_dump)]
+                        debug_regions: e.debug_regions,
+                    })
+                })
+                .collect())
+        }
+        #[cfg(sf_arch_x64)]
+        NativeBackend::X86_64 => {
+            let entries = common::pipeline::compile_module::<x86_64::backend::X86_64Backend>(
+                module, compiled,
+            )?;
+            Ok(entries
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|e| CompiledArchEntry {
+                        entry: e.entry,
+                        text_len: e.text_len,
+                        #[cfg(sf_ir_dump)]
+                        debug_regions: e.debug_regions,
+                    })
+                })
+                .collect())
+        }
+        NativeBackend::Reference => Ok(Vec::new()),
+    }
+}
+
+/// Dispatch a JIT-compiled function through the arch-appropriate eval entry.
+///
+/// Single place in the crate that decides which backend's `eval` implementation
+/// runs. Callers (`runtime::native_eval`) pass the active backend enum and stay
+/// free of `sf_arch_*` cfgs.
+#[inline]
+pub(crate) fn dispatch_eval(
+    active_backend: NativeBackend,
+    spec: &FunctionSpec,
+    code: &NativeCode,
+    store: &mut Store,
+    args: &[Value],
+) -> Result<ResultBuffer, WasmError> {
+    let backend_name = backend_display_name(active_backend);
+    match active_backend {
+        #[cfg(sf_arch_arm64)]
+        NativeBackend::Arm64 => common::eval::eval(spec, code, store, args, backend_name),
+        #[cfg(sf_arch_armv7a)]
+        NativeBackend::Armv7a => armv7a::eval(spec, code, store, args, backend_name),
+        #[cfg(sf_arch_x64)]
+        NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
+        NativeBackend::Reference => emulator::eval(spec, code, store, args, backend_name),
+    }
 }
 
 #[cfg(test)]

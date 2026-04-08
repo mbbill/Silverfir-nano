@@ -23,7 +23,7 @@ use crate::{
             MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{CompiledNativeModule, NativeCodePtr, NativeRootEntry},
+            code::{CompiledNativeModule, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
             layout::local_call_info_abi_layout,
@@ -65,9 +65,9 @@ struct BranchFixup {
 pub(crate) struct CompiledArm32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    pub root_return: NativeCodePtr,
+    pub root_return: *const u8,
     #[cfg(sf_has_guard_pages)]
-    pub return_error: NativeCodePtr,
+    pub return_error: *const u8,
     #[cfg(sf_has_debug_regions)]
     pub debug_regions: Vec<DebugRegion>,
 }

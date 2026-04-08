@@ -226,27 +226,10 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         lowered.module,
         lowered.abi,
     )?);
-    #[cfg(sf_arch_arm64)]
-    let arm64_entries = match active_backend {
-        arch::NativeBackend::Arm64 => Some(arch::common::pipeline::compile_module::<
-            arch::arm64::backend::Arm64Backend,
-        >(module, &compiled)?),
-        _ => None,
-    };
-    #[cfg(sf_arch_armv7a)]
-    let armv7a_entries = match active_backend {
-        arch::NativeBackend::Armv7a => {
-            Some(arch::armv7a::compile::compile_module(module, &compiled)?)
-        }
-        _ => None,
-    };
-    #[cfg(sf_arch_x64)]
-    let x86_64_entries = match active_backend {
-        arch::NativeBackend::X86_64 => Some(arch::common::pipeline::compile_module::<
-            arch::x86_64::backend::X86_64Backend,
-        >(module, &compiled)?),
-        _ => None,
-    };
+    // Per-arch machine-code emission is owned by `arch::dispatch_compile_module`.
+    // We receive a uniform `Vec<Option<CompiledArchEntry>>` and from here on
+    // treat every architecture identically.
+    let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
 
     // Record compile stats.
     {
@@ -261,137 +244,37 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             .iter()
             .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
             .sum();
-        let mut bytes = 0usize;
-        #[cfg(sf_arch_arm64)]
-        if let Some(ref entries) = arm64_entries {
-            bytes = entries
-                .iter()
-                .filter_map(|e| e.as_ref().map(|e| e.text_len))
-                .sum();
-        }
-        #[cfg(sf_arch_armv7a)]
-        if let Some(ref entries) = armv7a_entries {
-            bytes = entries
-                .iter()
-                .filter_map(|e| e.as_ref().map(|e| e.text_len))
-                .sum();
-        }
-        #[cfg(sf_arch_x64)]
-        if let Some(ref entries) = x86_64_entries {
-            bytes = entries
-                .iter()
-                .filter_map(|e| e.as_ref().map(|e| e.text_len))
-                .sum();
-        }
+        let bytes: usize = entries
+            .iter()
+            .filter_map(|e| e.as_ref().map(|e| e.text_len))
+            .sum();
         set_native_stats(groups, ssa_ops, mir_ops, bytes);
     }
 
     // Write dump if SF_NATIVE_DUMP_DIR is set
     #[cfg(sf_ir_dump)]
     if ir_dump::dump_enabled() {
-        #[cfg(sf_arch_arm64)]
-        let code_slices: Vec<(u32, &[u8])> = arm64_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| {
-                            let ptr = e.entry as *const u8;
-                            let len = e.text_len;
-                            (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
-                        })
-                    })
-                    .collect()
+        let code_slices: Vec<(u32, &[u8])> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                entry.as_ref().map(|e| {
+                    let ptr = e.entry as *const u8;
+                    let len = e.text_len;
+                    (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
+                })
             })
-            .unwrap_or_default();
-        #[cfg(sf_arch_armv7a)]
-        let code_slices: Vec<(u32, &[u8])> = armv7a_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| {
-                            let ptr = e.entry as *const u8;
-                            let len = e.text_len;
-                            (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
-                        })
-                    })
-                    .collect()
+            .collect();
+        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
+                    func_idx: idx as u32,
+                    regions: e.debug_regions.clone(),
+                })
             })
-            .unwrap_or_default();
-        #[cfg(sf_arch_x64)]
-        let code_slices: Vec<(u32, &[u8])> = x86_64_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| {
-                            let ptr = e.entry as *const u8;
-                            let len = e.text_len;
-                            (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(not(any(sf_arch_arm64, sf_arch_armv7a, sf_arch_x64)))]
-        let code_slices: Vec<(u32, &[u8])> = Vec::new();
-        #[cfg(sf_arch_arm64)]
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = arm64_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
-                            func_idx: idx as u32,
-                            regions: e.debug_regions.clone(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(sf_arch_armv7a)]
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = armv7a_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
-                            func_idx: idx as u32,
-                            regions: e.debug_regions.clone(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(sf_arch_x64)]
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = x86_64_entries
-            .as_ref()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, entry)| {
-                        entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
-                            func_idx: idx as u32,
-                            regions: e.debug_regions.clone(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(not(any(sf_arch_arm64, sf_arch_armv7a, sf_arch_x64)))]
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = Vec::new();
+            .collect();
         let _ = ir_dump::write_module_dump(
             &module.name,
             module.functions.len(),
@@ -408,27 +291,8 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             continue;
         };
         let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
-        #[cfg(sf_arch_arm64)]
-        {
-            let native_entry = arm64_entries
-                .as_ref()
-                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(native_entry.map(|e| e.entry));
-        }
-        #[cfg(sf_arch_armv7a)]
-        {
-            let native_entry = armv7a_entries
-                .as_ref()
-                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(native_entry.map(|e| e.entry));
-        }
-        #[cfg(sf_arch_x64)]
-        {
-            let native_entry = x86_64_entries
-                .as_ref()
-                .and_then(|entries| entries.get(func_idx).and_then(|e| e.as_ref()));
-            code = code.with_entry(native_entry.map(|e| e.entry));
-        }
+        let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
+        code = code.with_entry(native_entry.map(|e| e.entry));
         spec.set_native_code(code, NativeCodeCache::compiled());
     }
 

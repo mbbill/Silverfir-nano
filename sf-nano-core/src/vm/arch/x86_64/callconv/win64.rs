@@ -12,10 +12,17 @@
 
 use crate::vm::machine::machine_ir::MACHINE_CTX_REG;
 
+use crate::error::WasmError;
+use crate::vm::arch::common::text_emitter::TextEmitter;
+use crate::vm::runtime::context::NativeContext;
+
 use super::super::abi::map_fixed_reg;
 use super::super::backend::X86_64Backend;
 use super::super::enc::{self, Cc};
-use super::super::helpers::x86_64_trapping_trunc_win;
+use super::super::helpers::{
+    trunc_f32_to_i32_s, trunc_f32_to_i32_u, trunc_f32_to_i64_s, trunc_f32_to_i64_u,
+    trunc_f64_to_i32_s, trunc_f64_to_i32_u, trunc_f64_to_i64_s, trunc_f64_to_i64_u,
+};
 use super::super::reg::X86Reg;
 
 // ── C ABI boundary registers ────────────────────────────────────────────────
@@ -72,7 +79,7 @@ const XMM_SPILL_OFFSET: i32 = 32;
 
 pub(in crate::vm::arch::x86_64) fn emit_prologue_extra(backend: &mut X86_64Backend) {
     for i in 0..10u32 {
-        enc::movaps_store_rsp(
+        movaps_store_rsp(
             &mut backend.core.text,
             6 + i,
             XMM_SPILL_OFFSET + (i * 16) as i32,
@@ -82,11 +89,94 @@ pub(in crate::vm::arch::x86_64) fn emit_prologue_extra(backend: &mut X86_64Backe
 
 pub(in crate::vm::arch::x86_64) fn emit_epilogue_extra(backend: &mut X86_64Backend) {
     for i in 0..10u32 {
-        enc::movaps_load_rsp(
+        movaps_load_rsp(
             &mut backend.core.text,
             6 + i,
             XMM_SPILL_OFFSET + (i * 16) as i32,
         );
+    }
+}
+
+// ── Win64-only instruction encoders ─────────────────────────────────────────
+//
+// MOVAPS is otherwise unused across the x86_64 backend — only the Win64
+// prologue/epilogue need to spill and restore the XMM6..XMM15 callee-saved
+// set. Keeping these here (rather than in `arch/x86_64/enc.rs`) means
+// `enc.rs` stays ABI-agnostic with zero `sf_os_windows` cfgs.
+
+/// MOVAPS [RSP+disp], XMMn
+fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+    let reg = (xmm & 7) as u8;
+    if xmm >= 8 {
+        e.emit_u8(0x44);
+    }
+    e.emit_bytes(&[0x0F, 0x29]);
+    if disp == 0 {
+        e.emit_bytes(&[reg << 3 | 0x04, 0x24]);
+    } else if (-128..=127).contains(&disp) {
+        e.emit_bytes(&[0x40 | reg << 3 | 0x04, 0x24, disp as u8]);
+    } else {
+        e.emit_bytes(&[0x80 | reg << 3 | 0x04, 0x24]);
+        e.emit_bytes(&(disp as i32).to_le_bytes());
+    }
+}
+
+/// MOVAPS XMMn, [RSP+disp]
+fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+    let reg = (xmm & 7) as u8;
+    if xmm >= 8 {
+        e.emit_u8(0x44);
+    }
+    e.emit_bytes(&[0x0F, 0x28]);
+    if disp == 0 {
+        e.emit_bytes(&[reg << 3 | 0x04, 0x24]);
+    } else if (-128..=127).contains(&disp) {
+        e.emit_bytes(&[0x40 | reg << 3 | 0x04, 0x24, disp as u8]);
+    } else {
+        e.emit_bytes(&[0x80 | reg << 3 | 0x04, 0x24]);
+        e.emit_bytes(&(disp as i32).to_le_bytes());
+    }
+}
+
+// ── Win64-only runtime helper ───────────────────────────────────────────────
+//
+// Win64 variant of the trapping truncation helper. Win64 does not return a
+// two-field `repr(C)` struct in registers, so the caller passes an out-
+// pointer as a fourth argument and receives the status as a `u32` return
+// value. The SysV variant lives in `arch/x86_64/helpers.rs` (as
+// `x86_64_trapping_trunc`) because it is always compiled — Win64's variant
+// lives here so that SysV builds don't carry it as dead code, and so that
+// the `#[cfg(sf_os_windows)]` gate is inherited from the parent callconv
+// module instead of being spelled out on the function itself.
+
+unsafe extern "C" fn x86_64_trapping_trunc_win(
+    ctx: *mut NativeContext,
+    src_bits: u64,
+    op_code: u64,
+    out_value: *mut u64,
+) -> u32 {
+    let result = match op_code {
+        0 => trunc_f32_to_i32_s(src_bits as u32),
+        1 => trunc_f32_to_i32_u(src_bits as u32),
+        2 => trunc_f64_to_i32_s(src_bits),
+        3 => trunc_f64_to_i32_u(src_bits),
+        4 => trunc_f32_to_i64_s(src_bits as u32),
+        5 => trunc_f32_to_i64_u(src_bits as u32),
+        6 => trunc_f64_to_i64_s(src_bits),
+        7 => trunc_f64_to_i64_u(src_bits),
+        _ => Err(WasmError::trap("invalid trunc op".into())),
+    };
+    match result {
+        Ok(value) => {
+            unsafe { *out_value = value };
+            0
+        }
+        Err(err) => {
+            if let Some(ctx) = unsafe { ctx.as_mut() } {
+                ctx.error = Some(err);
+            }
+            1
+        }
     }
 }
 

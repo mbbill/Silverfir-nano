@@ -1,11 +1,56 @@
+//! Emit the Linux-perf `jitdump` symbol/code format so that external
+//! profilers (samply, perf) can resolve JIT-compiled code regions to
+//! symbols.
+//!
+//! This module is the generic half. All host-specific pieces — file open,
+//! monotonic clock, ELF machine arch tag — live in the per-OS submodules
+//! below and are selected by the `sf_os_*` cfgs:
+//!
+//! - `linux`   (glibc/musl fopen + clock_gettime)
+//! - `macos`   (Darwin fopen + mach_absolute_time)
+//! - `windows` (std::fs + QueryPerformance*)
+//!
+//! `jitdump` is gated on `sf_jitdump`, which itself requires `sf_has_std`,
+//! so none of the `target_os = "none"` path applies here.
+
 use std::{
     env,
-    ffi::CString,
     fs::{self, File},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Mutex, OnceLock},
 };
+
+// ── Host-specific primitives ────────────────────────────────────────────────
+//
+// Exactly one submodule is active; it exports the three host-coupled free
+// functions the generic code uses. Adding another host is a matter of
+// dropping a new file beside these and extending the cfg selection here.
+
+#[cfg(sf_os_linux)]
+mod linux;
+#[cfg(sf_os_linux)]
+use linux::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+
+#[cfg(sf_os_macos)]
+mod macos;
+#[cfg(sf_os_macos)]
+use macos::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+
+#[cfg(sf_os_windows)]
+mod windows;
+#[cfg(sf_os_windows)]
+use windows::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
+
+// ── Shared ELF machine tag constants ────────────────────────────────────────
+//
+// Kept here rather than in each host module so that the three hosts agree
+// on the integer values without duplication.
+
+pub(super) const EM_NONE: u32 = 0;
+pub(super) const EM_AARCH64: u32 = 183;
+
+// ── Public entry point ──────────────────────────────────────────────────────
 
 static JITDUMP_FILE: OnceLock<Option<Mutex<JitDumpWriter>>> = OnceLock::new();
 
@@ -48,6 +93,8 @@ fn jitdump_path(pid: u32) -> PathBuf {
         .unwrap_or_else(env::temp_dir);
     dir.join(alloc::format!("jit-{pid}.dump"))
 }
+
+// ── Writer ──────────────────────────────────────────────────────────────────
 
 struct JitDumpWriter {
     file: File,
@@ -106,6 +153,8 @@ impl Drop for JitDumpWriter {
         let _ = self.file.flush();
     }
 }
+
+// ── Format ──────────────────────────────────────────────────────────────────
 
 const FILE_HEADER_SIZE: u32 = 40;
 const RECORD_HEADER_SIZE: usize = 16;
@@ -169,134 +218,4 @@ fn write_record_header<W: Write>(
     out.write_all(&total_size.to_le_bytes())?;
     out.write_all(&timestamp.to_le_bytes())?;
     Ok(())
-}
-
-#[cfg(sf_has_posix)]
-fn open_tracking_file(path: &Path) -> io::Result<File> {
-    use std::os::fd::FromRawFd;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "jitdump path contains NUL"))?;
-    let file_ptr = unsafe { fopen(c_path.as_ptr(), c"wb".as_ptr()) };
-    if file_ptr.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    let fd = unsafe { fileno(file_ptr) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-#[cfg(not(sf_has_posix))]
-fn open_tracking_file(path: &Path) -> io::Result<File> {
-    File::create(path)
-}
-
-#[cfg(sf_has_posix)]
-unsafe extern "C" {
-    fn fopen(
-        path: *const core::ffi::c_char,
-        mode: *const core::ffi::c_char,
-    ) -> *mut core::ffi::c_void;
-    fn fileno(stream: *mut core::ffi::c_void) -> i32;
-}
-
-fn monotonic_timestamp_nanos() -> u64 {
-    #[cfg(sf_os_macos)]
-    unsafe {
-        let mut timebase = mach_timebase_info { numer: 0, denom: 0 };
-        mach_timebase_info(&mut timebase);
-        let ticks = mach_absolute_time();
-        ticks.saturating_mul(timebase.numer as u64) / timebase.denom.max(1) as u64
-    }
-
-    #[cfg(sf_os_linux)]
-    unsafe {
-        let mut ts = timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        clock_gettime(CLOCK_MONOTONIC, &mut ts);
-        (ts.tv_sec as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(ts.tv_nsec as u64)
-    }
-    #[cfg(sf_os_windows)]
-    unsafe {
-        let mut freq: i64 = 0;
-        let mut count: i64 = 0;
-        QueryPerformanceFrequency(&mut freq);
-        QueryPerformanceCounter(&mut count);
-        if freq == 0 {
-            return 0;
-        }
-        let secs = count / freq;
-        let rem = count % freq;
-        (secs as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add((rem as u64).saturating_mul(1_000_000_000) / freq as u64)
-    }
-}
-
-#[cfg(sf_os_macos)]
-fn elf_machine_arch() -> u32 {
-    EM_AARCH64
-}
-
-#[cfg(sf_os_linux)]
-fn elf_machine_arch() -> u32 {
-    #[cfg(sf_arch_arm64)]
-    {
-        EM_AARCH64
-    }
-
-    #[cfg(not(sf_arch_arm64))]
-    {
-        EM_NONE
-    }
-}
-
-#[cfg(not(sf_has_posix))]
-fn elf_machine_arch() -> u32 {
-    EM_NONE
-}
-
-#[cfg(not(all(sf_os_macos, sf_arch_arm64)))]
-const EM_NONE: u32 = 0;
-const EM_AARCH64: u32 = 183;
-
-#[cfg(sf_os_linux)]
-const CLOCK_MONOTONIC: i32 = 1;
-
-#[cfg(sf_os_linux)]
-#[repr(C)]
-struct timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-#[cfg(sf_os_linux)]
-unsafe extern "C" {
-    fn clock_gettime(clk_id: i32, tp: *mut timespec) -> i32;
-}
-
-#[cfg(sf_os_windows)]
-unsafe extern "system" {
-    fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
-    fn QueryPerformanceCounter(count: *mut i64) -> i32;
-}
-
-#[cfg(sf_os_macos)]
-#[repr(C)]
-struct mach_timebase_info {
-    numer: u32,
-    denom: u32,
-}
-
-#[cfg(sf_os_macos)]
-unsafe extern "C" {
-    fn mach_absolute_time() -> u64;
-    fn mach_timebase_info(info: *mut mach_timebase_info) -> i32;
 }

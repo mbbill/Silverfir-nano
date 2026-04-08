@@ -48,8 +48,6 @@ pub(super) fn eval(
             let active_config = arch::active_backend_config().map_err(|err| {
                 WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
             })?;
-            let backend_name = arch::backend_display_name(active_backend);
-            let _ = backend_name;
             let needs_compile = spec
                 .get_native_code()
                 .map(|code| {
@@ -63,35 +61,7 @@ pub(super) fn eval(
             let code = spec.get_native_code().ok_or_else(|| {
                 WasmError::internal("native runtime is missing compiled machine code".into())
             })?;
-            match active_backend {
-                #[cfg(sf_arch_arm64)]
-                arch::NativeBackend::Arm64 => arch::common::eval::eval(
-                    spec,
-                    code,
-                    store,
-                    args,
-                    arch::NativeBackend::Arm64.as_str(),
-                ),
-                #[cfg(sf_arch_armv7a)]
-                arch::NativeBackend::Armv7a => arch::armv7a::eval(
-                    spec,
-                    code,
-                    store,
-                    args,
-                    arch::NativeBackend::Armv7a.as_str(),
-                ),
-                #[cfg(sf_arch_x64)]
-                arch::NativeBackend::X86_64 => arch::common::eval::eval(
-                    spec,
-                    code,
-                    store,
-                    args,
-                    arch::NativeBackend::X86_64.as_str(),
-                ),
-                arch::NativeBackend::Reference => {
-                    arch::emulator::eval(spec, code, store, args, backend_name)
-                }
-            }
+            arch::dispatch_eval(active_backend, spec, code, store, args)
         }
     }
 }

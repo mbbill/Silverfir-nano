@@ -91,44 +91,6 @@ pub(crate) unsafe extern "C" fn x86_64_trapping_trunc(
 
 /// Saturating truncation helper called from generated code.
 /// Returns result in RAX (no error possible for sat).
-
-/// Win64 variant of `x86_64_trapping_trunc`.
-///
-/// Win64 does not return a two-field `repr(C)` struct in registers, so the
-/// caller passes an out-pointer as a fourth argument and receives the
-/// status as a `u32` return value. Used by `callconv::win64`.
-#[cfg(sf_os_windows)]
-pub(crate) unsafe extern "C" fn x86_64_trapping_trunc_win(
-    ctx: *mut NativeContext,
-    src_bits: u64,
-    op_code: u64,
-    out_value: *mut u64,
-) -> u32 {
-    let result = match op_code {
-        0 => trunc_f32_to_i32_s(src_bits as u32),
-        1 => trunc_f32_to_i32_u(src_bits as u32),
-        2 => trunc_f64_to_i32_s(src_bits),
-        3 => trunc_f64_to_i32_u(src_bits),
-        4 => trunc_f32_to_i64_s(src_bits as u32),
-        5 => trunc_f32_to_i64_u(src_bits as u32),
-        6 => trunc_f64_to_i64_s(src_bits),
-        7 => trunc_f64_to_i64_u(src_bits),
-        _ => Err(WasmError::trap("invalid trunc op".into())),
-    };
-    match result {
-        Ok(value) => {
-            unsafe { *out_value = value };
-            0
-        }
-        Err(err) => {
-            if let Some(ctx) = unsafe { ctx.as_mut() } {
-                ctx.error = Some(err);
-            }
-            1
-        }
-    }
-}
-
 pub(crate) unsafe extern "C" fn x86_64_saturating_trunc(src_bits: u64, op_code: u64) -> u64 {
     match op_code {
         8 => trunc_sat_f32_to_i32_s(src_bits as u32),
@@ -145,7 +107,7 @@ pub(crate) unsafe extern "C" fn x86_64_saturating_trunc(src_bits: u64, op_code: 
 
 // Trapping truncation implementations (matching Wasm spec)
 
-fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
+pub(super) fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -156,7 +118,7 @@ fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
     Ok(from_i32(value as i32))
 }
 
-fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
+pub(super) fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -167,7 +129,7 @@ fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
     Ok(u64::from(value as u32))
 }
 
-fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
+pub(super) fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -178,7 +140,7 @@ fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
     Ok(from_i32(value as i32))
 }
 
-fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
+pub(super) fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -189,7 +151,7 @@ fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
     Ok(u64::from(value as u32))
 }
 
-fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
+pub(super) fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -200,7 +162,7 @@ fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
     Ok(from_i64(value as i64))
 }
 
-fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
+pub(super) fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -211,7 +173,7 @@ fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
     Ok(value as u64)
 }
 
-fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
+pub(super) fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));
@@ -222,7 +184,7 @@ fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
     Ok(from_i64(value as i64))
 }
 
-fn trunc_f64_to_i64_u(bits: u64) -> Result<u64, WasmError> {
+pub(super) fn trunc_f64_to_i64_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer".into()));

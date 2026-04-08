@@ -15,14 +15,6 @@ use crate::{
 /// Native entry point: identical signature across all architectures.
 pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
 
-/// Raw native code pointer used by backends that still expose split
-/// success / error tail entries. Only the deferred x86_64 and armv7a
-/// backends reference this — see `docs/ABI_PLAN.md` §12 backend gap
-/// audit. arm64 collapsed both tails into the body so it has no use
-/// for this alias.
-#[cfg(any(sf_arch_x64, sf_arch_armv7a))]
-pub(crate) type NativeCodePtr = *const u8;
-
 #[derive(Clone, Debug)]
 struct AlignedConstData {
     storage: Box<[u64]>,
