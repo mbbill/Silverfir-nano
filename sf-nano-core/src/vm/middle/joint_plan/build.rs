@@ -747,14 +747,18 @@ fn plan_prefix(
             spill_all_except_top(&mut prefix, state, frame, *arity);
         }
         SemanticOpKind::BrIf {
-            stack_drop, arity, ..
+            stack_drop: _,
+            arity,
+            ..
         } => {
             drop_all_caches(&mut prefix, state, cache_plan);
-            // `br_if` has a real fallthrough path. Keep the condition plus the
-            // full stack slice that remains live when the branch is not taken:
-            // branch payload (`arity`) plus the extra stack values accounted
-            // for by `stack_drop`.
-            let keep_live = stack_drop.saturating_add(*arity as u32).saturating_add(1) as u16;
+            // `br_if` only consumes the condition directly. The taken edge may
+            // need the branch payload live for target param binding, but any
+            // extra fallthrough-only prefix can remain spilled and be refilled
+            // by the next prefix if needed. Keeping the whole fallthrough slice
+            // live here overstates 32-bit pressure for stack-heavy patterns
+            // such as `fac-ssa`.
+            let keep_live = arity.saturating_add(1);
             fill_for_operands(&mut prefix, state, frame, keep_live);
             spill_all_except_top(&mut prefix, state, frame, keep_live);
         }
@@ -1605,6 +1609,7 @@ mod tests {
     use crate::vm::middle::joint_plan::facts::{
         BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
     };
+    use crate::vm::wasm::common::SemanticTarget;
 
     fn test_cfg() -> SemanticCfg {
         SemanticCfg {
@@ -2195,5 +2200,53 @@ mod tests {
         );
         assert_eq!(state.spill_depth, 2);
         assert_eq!(prefix.len(), 2);
+    }
+
+    #[test]
+    fn br_if_prefix_spills_fallthrough_only_stack_prefix() {
+        let mut state = PrepareState::new(0, alloc::vec![], alloc::vec![], 0);
+        state.height = 5;
+        state.spill_depth = 5;
+        state.type_stack = alloc::vec![
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I64,
+            ValueType::I32,
+        ];
+
+        plan_prefix(
+            &SemanticOp {
+                kind: SemanticOpKind::BrIf {
+                    stack_drop: 2,
+                    arity: 2,
+                    target: SemanticTarget::new(0),
+                },
+            },
+            0,
+            &mut state,
+            &CachePlan {
+                candidates: Vec::new(),
+                local_to_candidate: Vec::new(),
+            },
+            crate::vm::middle::frame::plan_frame_layout(0, 5, 3),
+            4,
+            7,
+            0,
+            &[OpInfo {
+                block_index: 0,
+                block_offset: 0,
+                is_block_start: true,
+                local_op: None,
+            }],
+            &[BlockLocalRegion::default()],
+            &[crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            state.spill_depth, 2,
+            "br_if should keep only the branch payload plus condition live; fallthrough-only values can remain spilled"
+        );
     }
 }

@@ -713,7 +713,9 @@ fn lower_local_get(
             }
         },
     });
-    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache).then_some(slot)];
+    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache)
+        .then_some(slot)
+        .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(alloc::vec![dst], alloc::vec![ty], aliases)?;
     apply_pressure_fallback_after_op(
         semantic_index,
@@ -809,7 +811,9 @@ fn lower_local_tee(
             }
         },
     });
-    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache).then_some(slot)];
+    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache)
+        .then_some(slot)
+        .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(alloc::vec![dst], alloc::vec![ty], aliases)?;
     apply_pressure_fallback_after_op(
         semantic_index,
@@ -871,6 +875,11 @@ fn lower_call_indirect(
 
 fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> FrameSlot {
     frame.operand_slot(stack_height.saturating_sub(consumed))
+}
+
+#[inline]
+fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
+    !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
 }
 
 fn branch_payload(
@@ -1675,5 +1684,23 @@ fn canonicalize_return_results(
                 src: value,
             },
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cached_local_get_can_source_alias;
+    use crate::value_type::ValueType;
+
+    #[test]
+    fn gp32_i64_cached_get_needs_real_linear_pair() {
+        assert!(!cached_local_get_can_source_alias(ValueType::I64, 4));
+    }
+
+    #[test]
+    fn gp64_and_non_i64_cached_gets_can_source_alias() {
+        assert!(cached_local_get_can_source_alias(ValueType::I64, 8));
+        assert!(cached_local_get_can_source_alias(ValueType::I32, 4));
+        assert!(cached_local_get_can_source_alias(ValueType::F64, 4));
     }
 }

@@ -718,6 +718,152 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
 }
 
 #[test]
+fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
+    let backend = gp32_backend_config(1, 4, 0, 2);
+    let frame = plan_frame_layout(1, 2, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I64],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }],
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::LocalGetSlot {
+                        slot,
+                        dst: SsaValue(0),
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::Spill {
+                        slot: frame.operand_slot(0),
+                        src: SsaValue(0),
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalReserveCache { slot },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I64],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![]],
+        block_cfg_origins: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 slot load should not force a cache binding");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(matches!(
+        ops[0].kind,
+        MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            width: MachineMemWidth::U32,
+            ..
+        }
+    ));
+    assert!(matches!(
+        ops[1].kind,
+        MachineInstKind::Load {
+            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            width: MachineMemWidth::U32,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
+    let backend = gp32_backend_config(1, 4, 0, 2);
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = SsaProgram {
+        entry: SsaTarget(0),
+        local_slot_types: alloc::vec![ValueType::I64],
+        local_slot_info: alloc::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }],
+        blocks: alloc::vec![SsaBlock {
+            id: SsaTarget(0),
+            params: alloc::vec![],
+            ops: alloc::vec![
+                SsaInst {
+                    kind: SsaInstKind::Value {
+                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
+                            value: 0x0123_4567_89ab_cdef,
+                        })
+                        .unwrap(),
+                        args: alloc::vec![],
+                        results: alloc::vec![SsaValue(0)],
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalSetSlot {
+                        slot,
+                        src: SsaValue(0),
+                    },
+                },
+                SsaInst {
+                    kind: SsaInstKind::LocalReserveCache { slot },
+                },
+            ],
+            terminator: SsaTerminator::Return { results: None },
+        }],
+        value_types: alloc::vec![ValueType::I64],
+        value_sink_local: alloc::vec![],
+        block_entry_cached_slots: alloc::vec![alloc::vec![]],
+        block_cfg_origins: alloc::vec![],
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: &[LowerFunctionInput {
+            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            frame,
+            ssa: &ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 slot store should not force a cache binding");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                width: MachineMemWidth::U32,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
 fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let backend = gp32_backend_config(0, 4, 0, 2);
     let frame = plan_frame_layout(0, 1, 2);

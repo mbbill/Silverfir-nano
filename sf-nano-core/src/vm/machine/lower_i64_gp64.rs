@@ -34,34 +34,16 @@ impl I64Lowering for Gp64Lowering {
         let ty = ctx.value_storage_type(dst);
         let dst_reg = ctx.alloc_slot_load_value(dst)?;
         let width = canonical_value_mem_width_for_value(ctx.program(), dst);
-        if let Some(cached_index) = ctx.cached_local_index(slot) {
-            let cached = ctx.ensure_bound_cached_local(cached_index)?;
-            if cached.ty != ty {
-                return Err(WasmError::internal(alloc::format!(
-                    "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
-                    slot, ty, dst, cached.ty,
-                )));
-            }
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty: cached.ty,
-                    dst: dst_reg,
-                    src: MachineValue::Reg(cached.reg),
-                },
-            });
-        } else {
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty,
-                    dst: dst_reg,
-                    addr: ctx.frame_addr(slot)?,
-                    width,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-        }
+        ctx.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                ty,
+                dst: dst_reg,
+                addr: ctx.frame_addr(slot)?,
+                width,
+                extension: MachineLoadExtension::None,
+            },
+        });
         Ok(())
     }
 
@@ -74,38 +56,16 @@ impl I64Lowering for Gp64Lowering {
         let ty = ctx.value_storage_type(src);
         let src_reg = ctx.use_value(src)?;
         let width = canonical_value_mem_width_for_value(ctx.program(), src);
-        if let Some(cached_index) = ctx.cached_local_index(slot) {
-            ctx.set_cache_live(cached_index, true);
-            ctx.set_cache_has_value(cached_index, true);
-            ctx.mark_cache_dirty(cached_index);
-            let cached = ctx.ensure_bound_cached_local(cached_index)?;
-            if cached.ty != ty {
-                return Err(WasmError::internal(alloc::format!(
-                    "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                    slot, ty, src, cached.ty,
-                )));
-            }
-            let cache_reg = cached.reg;
+        let addr = ctx.frame_addr(slot)?;
+        if !ctx.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {
             ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
-                    ty: cached.ty,
-                    dst: cache_reg,
+                kind: MachineInstKind::Store {
+                    ty,
+                    addr,
+                    width,
                     src: MachineValue::Reg(src_reg),
                 },
             });
-        } else {
-            let addr = ctx.frame_addr(slot)?;
-            if !ctx.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {
-                ctx.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Store {
-                        ty,
-                        addr,
-                        width,
-                        src: MachineValue::Reg(src_reg),
-                    },
-                });
-            }
         }
         ctx.release_dead_values()?;
         Ok(())

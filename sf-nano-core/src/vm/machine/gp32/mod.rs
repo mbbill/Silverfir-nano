@@ -15,7 +15,6 @@ use super::{
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
-    lower_regalloc::lir_value_storage_type,
 };
 
 use crate::vm::machine::machine_ir::{
@@ -32,57 +31,27 @@ impl I64Lowering for Gp32Lowering {
         slot: FrameSlot,
         dst: SsaValue,
     ) -> Result<(), WasmError> {
-        let ty = lir_value_storage_type(ctx.program(), dst);
         let (dst_lo, dst_hi) = ctx.alloc_i64_value_pair(dst)?;
-        if let Some(cached_index) = ctx.cached_local_index(slot) {
-            let cached = ctx.ensure_bound_cached_local(cached_index)?;
-            if cached.ty != ty {
-                return Err(WasmError::internal(alloc::format!(
-                    "typed SSA-IR load from cached local slot {:?} expects {:?} for value {:?}, but cached local is {:?}",
-                    slot, ty, dst, cached.ty,
-                )));
-            }
-            let cached_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal("cached i64 local is missing a high-half register".into())
-            })?;
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_lo,
-                    src: MachineValue::Reg(cached.reg),
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    src: MachineValue::Reg(cached_hi),
-                },
-            });
-        } else {
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_lo,
-                    addr: ctx.frame_addr_offset(slot, 0)?,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    addr: ctx.frame_addr_offset(slot, 4)?,
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-        }
+        ctx.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: dst_lo,
+                addr: ctx.frame_addr_offset(slot, 0)?,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        ctx.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: dst_hi,
+                addr: ctx.frame_addr_offset(slot, 4)?,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::None,
+            },
+        });
         Ok(())
     }
 
@@ -92,56 +61,23 @@ impl I64Lowering for Gp32Lowering {
         slot: FrameSlot,
         src: SsaValue,
     ) -> Result<(), WasmError> {
-        let ty = lir_value_storage_type(ctx.program(), src);
         let (src_lo, src_hi) = ctx.use_i64_value_pair(src)?;
-        if let Some(cached_index) = ctx.cached_local_index(slot) {
-            ctx.set_cache_live(cached_index, true);
-            ctx.set_cache_has_value(cached_index, true);
-            ctx.mark_cache_dirty(cached_index);
-            let cached = ctx.ensure_bound_cached_local(cached_index)?;
-            if cached.ty != ty {
-                return Err(WasmError::internal(alloc::format!(
-                    "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                    slot, ty, src, cached.ty,
-                )));
-            }
-            let cache_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal("cached i64 local is missing a high-half register".into())
-            })?;
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
-                    ty: MachineStorageType::GpWord,
-                    dst: cached.reg,
-                    src: MachineValue::Reg(src_lo),
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
-                    ty: MachineStorageType::GpWord,
-                    dst: cache_hi,
-                    src: MachineValue::Reg(src_hi),
-                },
-            });
-        } else {
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: ctx.frame_addr_offset(slot, 0)?,
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Reg(src_lo),
-                },
-            });
-            ctx.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: ctx.frame_addr_offset(slot, 4)?,
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Reg(src_hi),
-                },
-            });
-        }
+        ctx.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: ctx.frame_addr_offset(slot, 0)?,
+                width: MachineMemWidth::U32,
+                src: MachineValue::Reg(src_lo),
+            },
+        });
+        ctx.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: ctx.frame_addr_offset(slot, 4)?,
+                width: MachineMemWidth::U32,
+                src: MachineValue::Reg(src_hi),
+            },
+        });
         ctx.release_dead_values()?;
         Ok(())
     }
