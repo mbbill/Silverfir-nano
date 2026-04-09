@@ -986,8 +986,11 @@ fn emit_call_indirect_bounds_check_setup(
             ty: MachineStorageType::GpWord,
             dst: index,
             addr: lower.frame_addr(index_slot)?,
-            width: lower.canonical_gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
+            // Wasm table indices are i32 values even on 64-bit hosts.
+            // Reload them with explicit zero-extension so stale high halves
+            // in a published GpWord carrier cannot perturb indirect dispatch.
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
         },
     });
     lower.emit_machine_inst(MachineInst {
@@ -1035,8 +1038,8 @@ fn build_call_indirect_checked_block(
                 ty: MachineStorageType::GpWord,
                 dst: index,
                 addr: lower.frame_addr(index_slot)?,
-                width: lower.canonical_gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::ZeroExtend,
             },
         },
         MachineInst {
@@ -1099,7 +1102,7 @@ fn build_call_indirect_checked_block(
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
                 addr: lower.frame_addr(index_slot)?,
-                width: lower.canonical_gp_word_mem_width(),
+                width: MachineMemWidth::U32,
                 src: MachineValue::Reg(func_idx),
             },
         },
@@ -1420,8 +1423,8 @@ fn dynamic_function_view_load(
             ty: MachineStorageType::GpWord,
             dst: func_idx_dst,
             addr: lower.frame_addr(index_slot)?,
-            width: lower.canonical_gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
         },
     }];
     if scaled_index_reg != func_idx_dst {

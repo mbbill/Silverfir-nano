@@ -30,7 +30,12 @@ struct RegPlan {
     gp_unit_bytes: u8,
     /// Ordered GP dynamic bank. Earlier entries are preferred for allocation.
     gp_dynamic: &'static [X86Reg],
-    gp_scratch: &'static [X86Reg],
+    /// Backend-owned GP registers required by x86_64 instruction forms.
+    ///
+    /// These are not part of the dynamic bank: ordinary lowering may need the
+    /// exact register (`RCX` for variable shifts, `RAX:RDX` for div/rem), so
+    /// x86_64 tracks them with a backend-local GP scratch owner.
+    gp_backend_owned: &'static [X86Reg],
     /// Ordered FP dynamic bank. Earlier entries are preferred for allocation.
     fp_dynamic: &'static [u32],
     fp_scratch: &'static [u32],
@@ -52,29 +57,33 @@ const REG_PLAN: RegPlan = RegPlan {
     // Prefer caller-saved GP regs first for short-lived SSA traffic, then
     // callee-saved dynamic regs for longer-lived residency.
     gp_dynamic: &[
-        X86Reg::RCX,
-        X86Reg::RDX,
         X86Reg::RSI,
         X86Reg::RDI,
         X86Reg::R8,
         X86Reg::R9,
         X86Reg::R10,
+        X86Reg::R11,
         X86Reg::R14,
         X86Reg::R15,
     ],
-    gp_scratch: &[X86Reg::RAX, X86Reg::R11],
+    // x86_64 ordinary lowering sometimes requires these exact registers.
+    // They are backend-owned and tracked locally, not handed out by regalloc.
+    gp_backend_owned: &[X86Reg::RAX, X86Reg::RCX, X86Reg::RDX],
 
-    // Prefer the low caller-saved XMM lanes first, then the remaining dynamic
-    // bank entries. This is an allocation-order preference only.
-    fp_dynamic: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    fp_scratch: &[0, 1, 2], // XMM0, XMM1, XMM2
+    // XMM0..XMM1 are reserved for the scratch pool; the dynamic bank
+    // starts at XMM2 so the allocator never hands out a lane that the
+    // inline sequences (Neg / Min / Copysign / etc.) scribble into as a
+    // mask temp. Must stay disjoint from `fp_scratch` below.
+    fp_dynamic: &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    fp_scratch: &[0, 1], // XMM0, XMM1
 
     stack_alignment_bytes: 16,
 };
 
-// Compile-time check: the unified FP dynamic bank covers all 16 XMM regs.
+// Compile-time check: the FP dynamic bank and scratch pool together
+// must account for all 16 XMM registers, with no overlap.
 const _: () = assert!(
-    REG_PLAN.fp_dynamic.len() == 16,
+    REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 16,
     "FP register plan must account for all 16 XMM registers"
 );
 
@@ -121,16 +130,16 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
 
 // ── Scratch pool construction ────────────────────────────────────────────────
 
-pub(super) fn new_gp_scratch_pool() -> ScratchPool<X86Reg, 2> {
-    ScratchPool::new([REG_PLAN.gp_scratch[0], REG_PLAN.gp_scratch[1]])
+pub(super) fn gp_backend_owned_regs() -> [X86Reg; 3] {
+    [
+        REG_PLAN.gp_backend_owned[0],
+        REG_PLAN.gp_backend_owned[1],
+        REG_PLAN.gp_backend_owned[2],
+    ]
 }
 
-pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
-    ScratchPool::new([
-        REG_PLAN.fp_scratch[0],
-        REG_PLAN.fp_scratch[1],
-        REG_PLAN.fp_scratch[2],
-    ])
+pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 2> {
+    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1]])
 }
 
 // ── Capacity queries ─────────────────────────────────────────────────────────

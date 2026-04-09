@@ -70,22 +70,22 @@ pub(in crate::vm::arch::x86_64) fn emit_trapping_trunc_call(
     backend: &mut X86_64Backend,
     src: X86Reg,
     op_code: u64,
-    result_scratch: X86Reg,
+    call_scratch: X86Reg,
     error_label: usize,
 ) {
     backend.save_caller_clobbered_gp_dynamic();
 
+    // Read `src` before clobbering RDI with ctx. `src` is allowed to live in
+    // RDI because C ABI arg regs are also normal dynamic GP regs.
+    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     enc::mov_rr_64(
         &mut backend.core.text,
         C_ARG0,
         map_fixed_reg(MACHINE_CTX_REG),
     );
-    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     backend.materialize_u64(C_ARG2, op_code);
-    backend.materialize_u64(result_scratch, x86_64_trapping_trunc as usize as u64);
-    enc::call_reg(&mut backend.core.text, result_scratch);
-    // Value comes back in RDX (second field of TruncResult).
-    enc::mov_rr_64(&mut backend.core.text, result_scratch, X86Reg::RDX);
+    backend.materialize_u64(call_scratch, x86_64_trapping_trunc as usize as u64);
+    enc::call_reg(&mut backend.core.text, call_scratch);
 
     backend.restore_caller_clobbered_gp_dynamic();
 

@@ -3,14 +3,14 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineEdge, MachineFloatWidth,
-        MachineFuncId, MachineIntWidth, MachineReg, MachineTerminator, MachineTrapKind,
+        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge,
+        MachineFloatWidth, MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind,
         MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
 use super::{
-    abi::map_fixed_reg,
+    abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
     backend::X86_64Backend,
     enc::{self, Cc},
     fusion::{map_float_cond, map_int_cond},
@@ -19,7 +19,6 @@ use super::{
 
 use crate::vm::arch::common::helpers::{is_fallthrough_edge, trap_code};
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
-use crate::vm::runtime::{context::ctx_offset, layout::local_call_info_abi_layout};
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -59,23 +58,28 @@ impl<'a> X86_64Backend<'a> {
             MachineTerminator::CallDirect {
                 callee,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
-            } => {
-                self.lower_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation)
-            }
+            } => self.lower_call_direct(
+                *callee,
+                *callee_frame_base,
+                *caller_result_base,
+                *continuation,
+                fallthrough,
+            ),
             MachineTerminator::CallIndirect {
                 callee_target,
                 callee_entry,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
             } => self.lower_call_indirect(
                 *callee_target,
                 *callee_entry,
                 *callee_frame_base,
-                *call_link_base,
+                *caller_result_base,
                 *continuation,
+                fallthrough,
             ),
         }
     }
@@ -114,7 +118,9 @@ impl<'a> X86_64Backend<'a> {
                 }
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
-                    enc::test_rr_64(&mut self.core.text, reg, reg);
+                    // Wasm branch conditions are i32 values; ignore any stale
+                    // upper half that may remain in a GpWord carrier.
+                    enc::test_rr_32(&mut self.core.text, reg, reg);
                     if else_fallthrough {
                         if let Some(label) = then_label {
                             self.emit_jcc(Cc::NE, label);
@@ -127,6 +133,12 @@ impl<'a> X86_64Backend<'a> {
                         self.emit_jcc(Cc::NE, then_label);
                         self.emit_jmp(else_label);
                     }
+                }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "x86_64 branch condition cannot read reserved cache register {}",
+                        reg.0
+                    )));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -196,8 +208,16 @@ impl<'a> X86_64Backend<'a> {
                 MachineValue::Imm64(_) => self.emit_jmp(trap_label),
                 MachineValue::Reg(reg) => {
                     let reg = self.map_gp_reg(reg)?;
-                    enc::test_rr_64(&mut self.core.text, reg, reg);
+                    // Wasm branch conditions are i32 values; ignore any stale
+                    // upper half that may remain in a GpWord carrier.
+                    enc::test_rr_32(&mut self.core.text, reg, reg);
                     self.emit_jcc(Cc::NE, trap_label);
+                }
+                MachineValue::ReservedReg(reg) => {
+                    return Err(WasmError::internal(alloc::format!(
+                        "x86_64 trap-if cannot read reserved cache register {}",
+                        reg.0
+                    )));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -244,12 +264,15 @@ impl<'a> X86_64Backend<'a> {
         then_fallthrough: bool,
         else_fallthrough: bool,
     ) -> Result<(), WasmError> {
-        let lhs_fp =
-            self.prepare_float_operand(width, lhs, self.gp_scratch.reg(0), self.fp_scratch.reg(0))?;
-        let rhs_fp_scratch = if lhs_fp != self.fp_scratch.reg(0) as u32 {
-            self.fp_scratch.reg(0)
+        let gp0 = self.gp_scratch.scoped_alloc().detach();
+        let gp1 = self.gp_scratch.scoped_alloc().detach();
+        let fp0 = self.fp_scratch.scoped_alloc().detach();
+        let fp1 = self.fp_scratch.scoped_alloc().detach();
+        let lhs_fp = self.prepare_float_operand(width, lhs, *gp0, *fp0)?;
+        let rhs_fp_scratch = if lhs_fp != *fp0 as u32 {
+            *fp0
         } else {
-            self.fp_scratch.reg(2)
+            *fp1
         };
         if matches!(rhs, MachineValue::Imm64(0)) {
             enc::xorpd(
@@ -266,8 +289,7 @@ impl<'a> X86_64Backend<'a> {
                 }
             };
         } else {
-            let rhs_fp =
-                self.prepare_float_operand(width, rhs, self.gp_scratch.reg(1), rhs_fp_scratch)?;
+            let rhs_fp = self.prepare_float_operand(width, rhs, *gp1, rhs_fp_scratch)?;
             match width {
                 MachineFloatWidth::F32 => {
                     enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
@@ -295,132 +317,141 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Trap stub ────────────────────────────────────────────────────────────
 
+    /// Emit a trap stub: set up `raise_trap(ctx, trap_code)`, call it, then
+    /// branch to `body_local_error_label`. After `raise_trap` returns,
+    /// `C_RET0` (RAX) already holds `NativeCallStatus::Error`, so the
+    /// propagation status flows unchanged through the unified Return tail.
     pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
-        use super::abi::{C_ARG0, C_ARG1};
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, trap_code(kind));
-        // MOV R11, raise_trap address
-        self.materialize_u64(
-            self.gp_scratch.reg(1),
-            super::helpers::x86_64_raise_trap as u64,
-        );
-        // CALL R11
-        enc::call_reg(&mut self.core.text, self.gp_scratch.reg(1));
-        // JMP return_error_label
-        let return_error_label = self.core.return_error_label;
-        self.emit_jmp(return_error_label);
+        let call_scratch = self.gp_scratch.claim_rax().detach();
+        self.materialize_u64(*call_scratch, crate::vm::runtime::trap::raise_trap as usize as u64);
+        enc::call_reg(&mut self.core.text, *call_scratch);
+        // JMP body_local_error_label — preserves RAX (the trap kind).
+        let body_local_error_label = self.core.body_local_error_label;
+        self.emit_jmp(body_local_error_label);
     }
 
     // ── Return sequence ──────────────────────────────────────────────────────
 
+    /// Unified Return lowering. Undoes the body prelude alignment shim,
+    /// pops the caller's call record from the host stack, copies the
+    /// function's `return_results` region into `*caller_result_base`,
+    /// restores `MACHINE_FP_REG` to the caller's frame pointer, sets
+    /// `C_RET0 = 0` (the success status), and executes a native `ret`.
+    ///
+    /// Stack layout at entry to this sequence (after the body prelude's
+    /// `sub rsp, 8`):
+    ///
+    /// ```text
+    ///   [rsp +  0] = alignment shim (body prelude)
+    ///   [rsp +  8] = return address (pushed by `call internal_entry`)
+    ///   [rsp + 16] = caller_result_base  (low slot of call record)
+    ///   [rsp + 24] = caller_fp           (high slot of call record)
+    /// ```
+    ///
+    /// The matching error path is `body_local_error_label` (see
+    /// `lower_body_local_error_tail` in `x86_64/backend.rs`).
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = *self.core.runtime_for(self.core.function.id)?;
-        let call_scratch = runtime.call_scratch.ok_or_else(|| {
-            WasmError::internal("x86_64 local return requires call scratch".into())
-        })?;
-        let call_link = self.core.compiled.abi().call_link;
-        let continuation_offset =
-            (call_scratch.base_slot as i32) * 8 + call_link.continuation_offset as i32;
-        let caller_frame_offset =
-            (call_scratch.base_slot as i32) * 8 + call_link.caller_frame_offset as i32;
-        let caller_result_base_offset =
-            (call_scratch.base_slot as i32) * 8 + call_link.caller_result_base_offset as i32;
-
+        let runtime = self.core.runtime_for(self.core.function.id)?.clone();
         let fp = map_fixed_reg(MACHINE_FP_REG);
-        // Load continuation address into RDI (caller-saved, not self.gp_scratch.reg(0)=RAX)
-        enc::load_64(&mut self.core.text, X86Reg::RDI, fp, continuation_offset);
-        // Load caller frame pointer
-        enc::load_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(1),
-            fp,
-            caller_frame_offset,
-        );
-        // Load caller result base offset
-        enc::load_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(0),
-            fp,
-            caller_result_base_offset,
-        );
-        // result_ptr = caller_fp + result_base
-        enc::add_rr_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(0),
-            self.gp_scratch.reg(1),
-        );
+        let result_base = self.gp_scratch.scoped_alloc().detach();
+        let temp = self.gp_scratch.scoped_alloc().detach();
+        // 1. Undo the body prelude alignment shim. After this, [rsp+0] =
+        //    return address, [rsp+8] = caller_result_base, [rsp+16] = caller_fp.
+        enc::add_rsp_imm8(&mut self.core.text, 8);
 
-        // Copy results
+        // 2. Load caller_result_base into a scratch register held across
+        //    the copy loop.
+        enc::load_64(&mut self.core.text, *result_base, X86Reg::RSP, 8);
+
+        // 3. Copy each return slot from the callee frame to *result_base.
         if let Some(results) = runtime.return_results {
             for index in 0..results.slots as i32 {
                 enc::load_64(
                     &mut self.core.text,
-                    X86Reg::RCX,
+                    *temp,
                     fp,
                     (results.base_slot as i32 + index) * 8,
                 );
-                enc::store_64(
-                    &mut self.core.text,
-                    self.gp_scratch.reg(0),
-                    index * 8,
-                    X86Reg::RCX,
-                );
+                enc::store_64(&mut self.core.text, *result_base, index * 8, *temp);
             }
         }
 
-        // Restore caller FP
-        enc::mov_rr_64(&mut self.core.text, fp, self.gp_scratch.reg(1));
-        // Jump to continuation
-        enc::jmp_reg(&mut self.core.text, X86Reg::RDI);
+        // 4. Load caller_fp into fp_reg (MACHINE_FP_REG).
+        enc::load_64(&mut self.core.text, fp, X86Reg::RSP, 16);
+
+        // 5. Success status: C_RET0 = 0. (xor eax, eax)
+        enc::xor_rr_32(
+            &mut self.core.text,
+            super::abi::C_RET0,
+            super::abi::C_RET0,
+        );
+
+        // 6. Native return. `ret 16` pops the return address and then
+        //    releases the 16-byte call record sitting just above it.
+        enc::ret_imm16(&mut self.core.text, 16);
         Ok(())
     }
 
     // ── Call direct ──────────────────────────────────────────────────────────
 
+    /// Lower a local SF→SF direct call. Pushes the call record (caller's
+    /// `caller_result_base` + caller's fp_reg), switches fp_reg to the
+    /// callee's frame base, emits `mov scratch, imm64` + `call scratch` where
+    /// the imm64 is patched to the callee's internal entry at module-link
+    /// time, then a post-call status check that branches to
+    /// `body_local_error_label` on non-zero RAX.
     fn lower_call_direct(
         &mut self,
         callee: MachineFuncId,
         callee_frame_base: MachineReg,
-        call_link_base: MachineReg,
+        caller_result_base: MachineReg,
         continuation: MachineBlockId,
+        fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let call_link_base = self.map_gp_reg(call_link_base)?;
-        let call_link = self.core.compiled.abi().call_link;
-
-        // Load continuation address via movabs (patched after label resolution).
-        enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
-        let cont_imm_offset = self.core.text.len() - 8;
+        let caller_result_base = self.map_gp_reg(caller_result_base)?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(continuation)?;
-        self.core.local_ptr_patches.push(PendingLocalPtrPatch {
-            literal_offset: cont_imm_offset,
-            target_label: continuation_label,
-        });
+        let continuation_is_fallthrough = fallthrough == Some(continuation);
+        let call_scratch = self.gp_scratch.claim_rax().detach();
 
-        // Store continuation address into callee's call-link slot
-        enc::store_64(
-            &mut self.core.text,
-            call_link_base,
-            call_link.continuation_offset as i32,
-            self.gp_scratch.reg(0),
-        );
+        // Push the call record: caller_fp at higher slot, caller_result_base
+        // at lower slot. Matches the layout consumed by the body's unified
+        // Return and body_local_error_tail.
+        enc::push(&mut self.core.text, fp_reg);
+        enc::push(&mut self.core.text, caller_result_base);
 
-        // Load callee entry address via movabs (patched after compilation)
-        enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
+        // Switch fp_reg to the callee's frame base.
+        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
+
+        // Load the callee's internal entry address via patchable movabs.
+        enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
         let callee_imm_offset = self.core.text.len() - 8;
         self.core.direct_call_patches.push(DirectCallPatch {
             literal_offset: callee_imm_offset,
             callee,
         });
+        // CALL scratch — pushes the return address (= this call site's
+        // fall-through) onto the host stack.
+        enc::call_reg(&mut self.core.text, *call_scratch);
 
-        // Set FP to callee frame
-        enc::mov_rr_64(
+        // --- callee returns here. C_RET0 holds 0 (success) or trap kind
+        //     (error). Status check propagates to body_local_error_label.
+        enc::test_rr_64(
             &mut self.core.text,
-            map_fixed_reg(MACHINE_FP_REG),
-            callee_fp,
+            super::abi::C_RET0,
+            super::abi::C_RET0,
         );
-        // Jump to callee
-        enc::jmp_reg(&mut self.core.text, self.gp_scratch.reg(0));
+        self.emit_jcc(Cc::NE, body_local_error_label);
+
+        // Continuation: branch only if the next emitted block is not the
+        // continuation block.
+        if !continuation_is_fallthrough {
+            self.emit_jmp(continuation_label);
+        }
         Ok(())
     }
 
@@ -431,38 +462,75 @@ impl<'a> X86_64Backend<'a> {
         _callee_target: MachineReg,
         callee_entry: MachineReg,
         callee_frame_base: MachineReg,
-        call_link_base: MachineReg,
+        caller_result_base: MachineReg,
         continuation: MachineBlockId,
+        fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let callee_fp_orig = self.map_gp_reg(callee_frame_base)?;
-        let callee_fp = X86Reg::R8;
-        if callee_fp_orig != callee_fp {
-            enc::mov_rr_64(&mut self.core.text, callee_fp, callee_fp_orig);
-        }
-        enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
-        let cont_imm_offset = self.core.text.len() - 8;
-        let continuation_label = self.core.block_label(continuation)?;
-        self.core.local_ptr_patches.push(PendingLocalPtrPatch {
-            literal_offset: cont_imm_offset,
-            target_label: continuation_label,
-        });
-
-        let call_link_base = self.map_gp_reg(call_link_base)?;
-        let call_link = self.core.compiled.abi().call_link;
-        enc::store_64(
-            &mut self.core.text,
-            call_link_base,
-            call_link.continuation_offset as i32,
-            self.gp_scratch.reg(0),
-        );
-
+        let callee_fp = self.map_gp_reg(callee_frame_base)?;
+        let caller_result_base = self.map_gp_reg(caller_result_base)?;
         let callee_entry = self.map_gp_reg(callee_entry)?;
-        enc::mov_rr_64(
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let body_local_error_label = self.core.body_local_error_label;
+        let continuation_label = self.core.block_label(continuation)?;
+        let continuation_is_fallthrough = fallthrough == Some(continuation);
+
+        // Push the call record (same shape as CallDirect).
+        enc::push(&mut self.core.text, fp_reg);
+        enc::push(&mut self.core.text, caller_result_base);
+
+        // Switch fp_reg to the callee's frame base.
+        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
+
+        // CALL callee_entry — runtime-resolved target.
+        enc::call_reg(&mut self.core.text, callee_entry);
+
+        // Status check + continuation branch.
+        enc::test_rr_64(
             &mut self.core.text,
-            map_fixed_reg(MACHINE_FP_REG),
-            callee_fp,
+            super::abi::C_RET0,
+            super::abi::C_RET0,
         );
-        enc::jmp_reg(&mut self.core.text, callee_entry);
+        self.emit_jcc(Cc::NE, body_local_error_label);
+        if !continuation_is_fallthrough {
+            self.emit_jmp(continuation_label);
+        }
+        Ok(())
+    }
+
+    // ── Call external ────────────────────────────────────────────────────────
+
+    pub(super) fn lower_call_external_term(
+        &mut self,
+        const_idx: usize,
+    ) -> Result<(), WasmError> {
+        let metadata = self
+            .core
+            .compiled
+            .const_ptr(MachineConstId(const_idx as u32))
+            .ok_or_else(|| {
+                WasmError::internal("x86_64 external-call metadata is out of range".into())
+            })?;
+        // External calls are inline runtime calls. Pass the current context,
+        // the active Wasm frame pointer, and the const-pool metadata record.
+        enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
+        enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
+        self.materialize_u64(C_ARG2, metadata as u64);
+        let call_scratch = self.gp_scratch.claim_rcx().detach();
+        self.materialize_u64(
+            *call_scratch,
+            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
+        );
+        enc::call_reg(&mut self.core.text, *call_scratch);
+
+        // Nonzero helper status → propagate via body_local_error_label.
+        // C_RET0 is already set by raise_trap to NativeCallStatus::Error.
+        enc::test_rr_64(
+            &mut self.core.text,
+            super::abi::C_RET0,
+            super::abi::C_RET0,
+        );
+        let body_local_error_label = self.core.body_local_error_label;
+        self.emit_jcc(Cc::NE, body_local_error_label);
         Ok(())
     }
 
@@ -483,46 +551,48 @@ impl<'a> X86_64Backend<'a> {
             self.emit_jmp(label);
             return Ok(());
         }
+        let index_scratch = self.gp_scratch.scoped_alloc().detach();
+        let table_scratch = self.gp_scratch.scoped_alloc().detach();
 
-        let index_reg = self.materialize_value(self.gp_scratch.reg(1), index)?;
-        // Clamp index to (entries.len() - 1)
-        self.materialize_u64(X86Reg::RAX, (entries.len() - 1) as u64);
-        enc::cmp_rr_64(&mut self.core.text, index_reg, X86Reg::RAX);
-        enc::cmovcc_rr_64(
-            &mut self.core.text,
-            Cc::A,
-            self.gp_scratch.reg(1),
-            X86Reg::RAX,
-        );
-        if index_reg != self.gp_scratch.reg(1) {
-            enc::mov_rr_64(&mut self.core.text, self.gp_scratch.reg(1), index_reg);
-            enc::cmovcc_rr_64(
-                &mut self.core.text,
-                Cc::A,
-                self.gp_scratch.reg(1),
-                X86Reg::RAX,
-            );
+        // `br_table` indices are Wasm i32 values. Zero-extend into a scratch
+        // first so stale upper halves in a GpWord carrier cannot skew the
+        // unsigned clamp and dispatch.
+        match index {
+            MachineValue::Imm64(value) => {
+                self.materialize_u64(*index_scratch, value as u32 as u64);
+            }
+            MachineValue::Reg(reg) => {
+                let index_reg = self.map_gp_reg(reg)?;
+                enc::mov_rr_32(&mut self.core.text, *index_scratch, index_reg);
+            }
+            MachineValue::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "x86_64 jump table cannot read reserved cache register {}",
+                    reg.0
+                )));
+            }
         }
 
+        // Clamp index to (entries.len() - 1) using 32-bit unsigned compare.
+        self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
+        enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
+        enc::cmovcc_rr_32(
+            &mut self.core.text,
+            Cc::A,
+            *index_scratch,
+            *table_scratch,
+        );
+
         // Load table base address (absolute, patched later)
-        enc::movabs_ri_64(&mut self.core.text, self.gp_scratch.reg(0), 0);
+        enc::movabs_ri_64(&mut self.core.text, *table_scratch, 0);
         let table_base_imm_offset = self.core.text.len() - 8;
 
         // index * 8 for table entry
-        enc::shl_imm_64(&mut self.core.text, self.gp_scratch.reg(1), 3);
-        enc::add_rr_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(0),
-            self.gp_scratch.reg(1),
-        );
+        enc::shl_imm_64(&mut self.core.text, *index_scratch, 3);
+        enc::add_rr_64(&mut self.core.text, *table_scratch, *index_scratch);
         // Load target address from table
-        enc::load_64(
-            &mut self.core.text,
-            self.gp_scratch.reg(0),
-            self.gp_scratch.reg(0),
-            0,
-        );
-        enc::jmp_reg(&mut self.core.text, self.gp_scratch.reg(0));
+        enc::load_64(&mut self.core.text, *table_scratch, *table_scratch, 0);
+        enc::jmp_reg(&mut self.core.text, *table_scratch);
 
         // Emit jump table entries (each is a u64 absolute address, patched later)
         let table_offset = self.core.text.len();
