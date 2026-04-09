@@ -134,6 +134,18 @@ pub(crate) enum MachineMemWidth {
     U64,
 }
 
+impl MachineMemWidth {
+    #[inline]
+    pub(crate) const fn bytes(self) -> u32 {
+        match self {
+            Self::U8 => 1,
+            Self::U16 => 2,
+            Self::U32 => 4,
+            Self::U64 => 8,
+        }
+    }
+}
+
 /// Returns the `MachineMemWidth` matching the selected backend GP register
 /// width.
 ///

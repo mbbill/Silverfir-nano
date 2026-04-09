@@ -39,7 +39,6 @@ struct RegPlan {
     /// Ordered FP dynamic bank. Earlier entries are preferred for allocation.
     fp_dynamic: &'static [u32],
     fp_scratch: &'static [u32],
-    stack_alignment_bytes: u32,
 }
 
 // Callee-saved set comes from `callconv`, not `REG_PLAN`, because the ABI
@@ -76,8 +75,6 @@ const REG_PLAN: RegPlan = RegPlan {
     // mask temp. Must stay disjoint from `fp_scratch` below.
     fp_dynamic: &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     fp_scratch: &[0, 1], // XMM0, XMM1
-
-    stack_alignment_bytes: 16,
 };
 
 // Compile-time check: the FP dynamic bank and scratch pool together
@@ -86,16 +83,6 @@ const _: () = assert!(
     REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 16,
     "FP register plan must account for all 16 XMM registers"
 );
-
-#[inline]
-pub(super) const fn callee_saved_gp_count() -> usize {
-    callconv::CALLEE_SAVED_GP.len()
-}
-
-#[inline]
-pub(super) const fn stack_alignment_bytes() -> u32 {
-    REG_PLAN.stack_alignment_bytes
-}
 
 #[inline]
 pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {

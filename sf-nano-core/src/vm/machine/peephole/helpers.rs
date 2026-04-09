@@ -435,20 +435,11 @@ pub(super) fn addrs_overlap(
     }
 
     let lhs_start = i64::from(lhs_addr.offset);
-    let lhs_end = lhs_start + mem_width_bytes(lhs_width);
+    let lhs_end = lhs_start + i64::from(lhs_width.bytes());
     let rhs_start = i64::from(rhs_addr.offset);
-    let rhs_end = rhs_start + mem_width_bytes(rhs_width);
+    let rhs_end = rhs_start + i64::from(rhs_width.bytes());
 
     lhs_start < rhs_end && rhs_start < lhs_end
-}
-
-fn mem_width_bytes(width: MachineMemWidth) -> i64 {
-    match width {
-        MachineMemWidth::U8 => 1,
-        MachineMemWidth::U16 => 2,
-        MachineMemWidth::U32 => 4,
-        MachineMemWidth::U64 => 8,
-    }
 }
 
 // --- Tracker invalidation ---

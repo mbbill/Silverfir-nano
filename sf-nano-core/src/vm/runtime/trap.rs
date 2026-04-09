@@ -1,4 +1,6 @@
 use crate::error::WasmError;
+use crate::vm::arch::common::helpers::trap_error;
+use crate::vm::machine::machine_ir::MachineTrapKind;
 
 use super::{
     common::{set_ctx_error, NativeCallStatus},
@@ -16,15 +18,15 @@ pub(crate) unsafe extern "C" fn raise_trap(ctx: *mut NativeContext, kind: u64) -
         return NativeCallStatus::Error as u32;
     };
     let error = match kind {
-        0 => WasmError::trap("unreachable executed".into()),
-        1 => WasmError::trap("out of bounds memory access".into()),
-        2 => WasmError::trap("out of bounds table access".into()),
-        3 => WasmError::trap("invalid function reference".into()),
-        4 => WasmError::trap("indirect call type mismatch".into()),
-        5 => WasmError::trap("integer divide by zero".into()),
-        6 => WasmError::trap("integer overflow".into()),
-        7 => WasmError::trap("invalid conversion to integer".into()),
-        8 => WasmError::exhaustion("stack overflow".into()),
+        0 => trap_error(MachineTrapKind::Unreachable),
+        1 => trap_error(MachineTrapKind::MemoryOutOfBounds),
+        2 => trap_error(MachineTrapKind::TableOutOfBounds),
+        3 => trap_error(MachineTrapKind::InvalidFunctionReference),
+        4 => trap_error(MachineTrapKind::IndirectCallTypeMismatch),
+        5 => trap_error(MachineTrapKind::IntegerDivideByZero),
+        6 => trap_error(MachineTrapKind::IntegerOverflow),
+        7 => trap_error(MachineTrapKind::InvalidConversion),
+        8 => trap_error(MachineTrapKind::StackOverflow),
         _ => WasmError::trap("native call failed".into()),
     };
     set_ctx_error(ctx, error);

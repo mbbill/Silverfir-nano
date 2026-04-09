@@ -18,7 +18,7 @@ use super::{
 
 use super::backend::BranchFixup;
 use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond};
-use crate::vm::arch::common::helpers::{convert_result_float_width, mem_width_bytes};
+use crate::vm::arch::common::helpers::convert_result_float_width;
 use crate::vm::arch::common::scratch_pool::ScratchPool;
 use crate::vm::arch::common::text_emitter::TextEmitter;
 use crate::vm::arch::common::types::ParallelSource;
@@ -876,8 +876,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         MachineFloatWidth::F64
                     )
                 )
-                && (offset / mem_width_bytes(width)) < 4096
-                && (offset % mem_width_bytes(width)) == 0
+                && (offset / i64::from(width.bytes())) < 4096
+                && (offset % i64::from(width.bytes())) == 0
             {
                 self.core.text.emit_u32(match tracked_width {
                     MachineFloatWidth::F32 => enc::ldr_s(dst_fp, base, (offset / 4) as u32),
@@ -976,8 +976,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 let src_fp = self.map_fp_reg(src_reg)?;
                 let offset = addr.offset as i64;
                 if offset >= 0
-                    && (offset % mem_width_bytes(width)) == 0
-                    && (offset / mem_width_bytes(width)) < 4096
+                    && (offset % i64::from(width.bytes())) == 0
+                    && (offset / i64::from(width.bytes())) < 4096
                 {
                     self.core.text.emit_u32(match width {
                         MachineMemWidth::U32 => enc::str_s(src_fp, base, (offset / 4) as u32),

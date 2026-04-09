@@ -329,10 +329,6 @@ impl<'a> BlockLowerContext<'a> {
         canonical_value_mem_width_for_value(self.program, value)
     }
 
-    pub(super) fn canonical_gp_word_mem_width(&self) -> MachineMemWidth {
-        super::lower_regalloc::canonical_storage_mem_width(MachineStorageType::GpWord)
-    }
-
     pub(super) fn value_storage_type(&self, value: SsaValue) -> MachineStorageType {
         lir_value_storage_type(self.program, value)
     }

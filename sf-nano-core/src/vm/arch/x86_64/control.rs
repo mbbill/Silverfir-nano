@@ -4,8 +4,8 @@ use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
         MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge,
-        MachineFloatWidth, MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind,
-        MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
+        MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
@@ -13,7 +13,7 @@ use super::{
     abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2},
     backend::X86_64Backend,
     enc::{self, Cc},
-    fusion::{map_float_cond, map_int_cond},
+    fusion::map_int_cond,
     reg::X86Reg,
 };
 
@@ -249,68 +249,6 @@ impl<'a> X86_64Backend<'a> {
                 };
                 self.emit_jcc(cc, trap_label);
             }
-        }
-        Ok(())
-    }
-
-    fn lower_float_branch(
-        &mut self,
-        width: MachineFloatWidth,
-        kind: MachineCompareKind,
-        lhs: MachineValue,
-        rhs: MachineValue,
-        then_label: Option<usize>,
-        else_label: Option<usize>,
-        then_fallthrough: bool,
-        else_fallthrough: bool,
-    ) -> Result<(), WasmError> {
-        let gp0 = self.gp_scratch.scoped_alloc().detach();
-        let gp1 = self.gp_scratch.scoped_alloc().detach();
-        let fp0 = self.fp_scratch.scoped_alloc().detach();
-        let fp1 = self.fp_scratch.scoped_alloc().detach();
-        let lhs_fp = self.prepare_float_operand(width, lhs, *gp0, *fp0)?;
-        let rhs_fp_scratch = if lhs_fp != *fp0 as u32 {
-            *fp0
-        } else {
-            *fp1
-        };
-        if matches!(rhs, MachineValue::Imm64(0)) {
-            enc::xorpd(
-                &mut self.core.text,
-                rhs_fp_scratch as u8,
-                rhs_fp_scratch as u8,
-            );
-            match width {
-                MachineFloatWidth::F32 => {
-                    enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp_scratch as u8)
-                }
-            };
-        } else {
-            let rhs_fp = self.prepare_float_operand(width, rhs, *gp1, rhs_fp_scratch)?;
-            match width {
-                MachineFloatWidth::F32 => {
-                    enc::ucomiss(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::ucomisd(&mut self.core.text, lhs_fp as u8, rhs_fp as u8)
-                }
-            };
-        }
-        let cc = map_float_cond(kind);
-        if else_fallthrough {
-            if let Some(label) = then_label {
-                self.emit_jcc(cc, label);
-            }
-        } else if then_fallthrough {
-            if let Some(label) = else_label {
-                self.emit_jcc(cc.invert(), label);
-            }
-        } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
-            self.emit_jcc(cc, then_label);
-            self.emit_jmp(else_label);
         }
         Ok(())
     }

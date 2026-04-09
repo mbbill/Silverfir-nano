@@ -1,5 +1,6 @@
+use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineConvertOp, MachineFloatWidth, MachineMemWidth, MachineTrapKind,
+    MachineConvertOp, MachineFloatWidth, MachineTrapKind,
 };
 
 // ── Trap code mapping ────────────────────────────────────────────────────────
@@ -25,14 +26,24 @@ pub(crate) fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize
 }
 
-// ── Memory width ─────────────────────────────────────────────────────────────
-
-pub(crate) fn mem_width_bytes(width: MachineMemWidth) -> i64 {
-    match width {
-        MachineMemWidth::U8 => 1,
-        MachineMemWidth::U16 => 2,
-        MachineMemWidth::U32 => 4,
-        MachineMemWidth::U64 => 8,
+pub(crate) fn trap_error(kind: MachineTrapKind) -> WasmError {
+    match kind {
+        MachineTrapKind::Unreachable => WasmError::trap("unreachable executed".into()),
+        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access".into()),
+        MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access".into()),
+        MachineTrapKind::InvalidFunctionReference => {
+            WasmError::trap("invalid function reference".into())
+        }
+        MachineTrapKind::IndirectCallTypeMismatch => {
+            WasmError::trap("indirect call type mismatch".into())
+        }
+        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
+        MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
+        MachineTrapKind::InvalidConversion => {
+            WasmError::trap("invalid conversion to integer".into())
+        }
+        MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
+        MachineTrapKind::HelperFailure => WasmError::trap("native call failed".into()),
     }
 }
 

@@ -1317,9 +1317,9 @@ impl<'a> Emulator<'a> {
         }
         let ptr = addr_value as *const u8;
         if base_kind == RegAddrKind::Mem0 {
-            self.check_mem0_access(addr_value, mem_width_bytes(width))?;
+            self.check_mem0_access(addr_value, width.bytes() as usize)?;
         } else {
-            self.check_access(ptr as usize, mem_width_bytes(width))?;
+            self.check_access(ptr as usize, width.bytes() as usize)?;
         }
         let raw = unsafe {
             match width {
@@ -1377,9 +1377,9 @@ impl<'a> Emulator<'a> {
         }
         let ptr = addr_value as *mut u8;
         if base_kind == RegAddrKind::Mem0 {
-            self.check_mem0_access(addr_value, mem_width_bytes(width))?;
+            self.check_mem0_access(addr_value, width.bytes() as usize)?;
         } else {
-            self.check_access(ptr as usize, mem_width_bytes(width))?;
+            self.check_access(ptr as usize, width.bytes() as usize)?;
         }
         unsafe {
             match width {
@@ -1494,15 +1494,6 @@ fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
         }
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
         MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
-    }
-}
-
-fn mem_width_bytes(width: MachineMemWidth) -> usize {
-    match width {
-        MachineMemWidth::U8 => 1,
-        MachineMemWidth::U16 => 2,
-        MachineMemWidth::U32 => 4,
-        MachineMemWidth::U64 => 8,
     }
 }
 

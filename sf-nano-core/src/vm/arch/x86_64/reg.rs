@@ -4,7 +4,7 @@
 /// Intel/AMD manuals. Registers R8-R15 require REX prefix extension bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum X86Reg {
+pub(crate) enum X86Reg {
     RAX = 0,
     RCX = 1,
     RDX = 2,
@@ -26,19 +26,19 @@ pub enum X86Reg {
 impl X86Reg {
     /// The 3-bit register field for ModR/M and SIB encoding.
     #[inline]
-    pub const fn idx3(self) -> u8 {
+    pub(crate) const fn idx3(self) -> u8 {
         (self as u8) & 0x7
     }
 
     /// Whether this register requires the REX.B / REX.R / REX.X extension bit.
     #[inline]
-    pub const fn needs_rex_ext(self) -> bool {
+    pub(crate) const fn needs_rex_ext(self) -> bool {
         (self as u8) >= 8
     }
 
     /// Full 4-bit register number.
     #[inline]
-    pub const fn idx(self) -> u8 {
+    pub(crate) const fn idx(self) -> u8 {
         self as u8
     }
 }

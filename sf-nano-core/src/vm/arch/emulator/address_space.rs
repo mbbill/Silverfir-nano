@@ -621,7 +621,7 @@ impl Target32AddressSpace {
         }
         let field_offset = (offset % stride) as u32;
         let global = unsafe { &*ctx.globals_view.base.add(index) };
-        let width_bytes = mem_width_bytes(width) as u32;
+        let width_bytes = width.bytes();
         if field_offset < global_offset::RAW
             || field_offset
                 .saturating_add(width_bytes)
@@ -756,7 +756,7 @@ impl Target32AddressSpace {
         width: MachineMemWidth,
     ) -> Result<u64, WasmError> {
         let view = unsafe { *ctx.memory_views_base.add(mem_index) };
-        let size = mem_width_bytes(width);
+        let size = width.bytes() as usize;
         if offset as usize + size > view.len {
             return Err(WasmError::trap("out of bounds memory access".into()));
         }
@@ -780,7 +780,7 @@ impl Target32AddressSpace {
         value: u64,
     ) -> Result<(), WasmError> {
         let view = unsafe { *ctx.memory_views_base.add(mem_index) };
-        let size = mem_width_bytes(width);
+        let size = width.bytes() as usize;
         if offset as usize + size > view.len {
             return Err(WasmError::trap("out of bounds memory access".into()));
         }
@@ -814,7 +814,7 @@ impl Target32AddressSpace {
         }
         let field_offset = (offset % stride) as u32;
         let global = unsafe { &mut *ctx.globals_view.base.add(index) };
-        let width_bytes = mem_width_bytes(width) as u32;
+        let width_bytes = width.bytes();
         if field_offset < global_offset::RAW
             || field_offset
                 .saturating_add(width_bytes)
@@ -951,14 +951,4 @@ fn ensure_window_fits(label: &str, bytes: usize, window_bytes: u64) -> Result<()
 struct PointerLenEntry {
     index: usize,
     field_offset: u32,
-}
-
-#[inline]
-fn mem_width_bytes(width: MachineMemWidth) -> usize {
-    match width {
-        MachineMemWidth::U8 => 1,
-        MachineMemWidth::U16 => 2,
-        MachineMemWidth::U32 => 4,
-        MachineMemWidth::U64 => 8,
-    }
 }

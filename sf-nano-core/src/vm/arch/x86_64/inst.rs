@@ -1,11 +1,9 @@
 //! x86_64 backend: instruction lowering methods for X86_64Backend.
 
-use alloc::vec::Vec;
-
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineAddr, MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
+        MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
         MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
         MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
         MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
@@ -18,13 +16,13 @@ use super::{
     backend::X86_64Backend,
     callconv,
     enc::{self, Cc},
-    fusion::{map_float_cond, map_int_cond},
+    fusion::map_int_cond,
     helpers::x86_64_saturating_trunc,
     reg::X86Reg,
 };
 use crate::vm::arch::common::helpers::convert_result_float_width;
 
-use crate::vm::machine::machine_ir::{MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG};
+use crate::vm::machine::machine_ir::{MachineAddr, MACHINE_CTX_REG};
 
 /// Map a `MachineConvertOp` to the u32 op code consumed by the runtime
 /// trunc/saturating-trunc helpers. Returns `u32::MAX` for ops that do not
@@ -353,24 +351,7 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    // ── LEA / Load / Store ───────────────────────────────────────────────────
-
-    pub(super) fn lower_lea(
-        &mut self,
-        dst: MachineReg,
-        addr: MachineAddr,
-    ) -> Result<(), WasmError> {
-        let dst_gp = self.map_gp_reg(dst)?;
-        let base = self.map_gp_reg(addr.base)?;
-        if addr.offset == 0 {
-            if dst_gp != base {
-                enc::mov_rr_64(&mut self.core.text, dst_gp, base);
-            }
-        } else {
-            enc::lea_64(&mut self.core.text, dst_gp, base, addr.offset);
-        }
-        Ok(())
-    }
+    // ── Load / Store ─────────────────────────────────────────────────────────
 
     pub(super) fn lower_load(
         &mut self,

@@ -1639,7 +1639,7 @@ pub(super) struct MemoryLoadSpec {
 impl MemoryLoadSpec {
     #[inline]
     fn access_bytes(self) -> u32 {
-        mem_width_bytes(self.width)
+        self.width.bytes()
     }
 }
 
@@ -1654,7 +1654,7 @@ pub(super) struct MemoryStoreSpec {
 impl MemoryStoreSpec {
     #[inline]
     fn access_bytes(self) -> u32 {
-        mem_width_bytes(self.width)
+        self.width.bytes()
     }
 }
 
@@ -1824,15 +1824,6 @@ pub(super) fn machine_store(primitive: &PrimitiveOpKind) -> Option<MemoryStoreSp
         },
         _ => return None,
     })
-}
-
-fn mem_width_bytes(width: MachineMemWidth) -> u32 {
-    match width {
-        MachineMemWidth::U8 => 1,
-        MachineMemWidth::U16 => 2,
-        MachineMemWidth::U32 => 4,
-        MachineMemWidth::U64 => 8,
-    }
 }
 
 pub(super) fn addr_with_byte_offset(

@@ -25,7 +25,7 @@ pub(crate) mod arm64;
 #[cfg(sf_arch_armv7a)]
 pub(crate) mod armv7a;
 #[cfg(sf_arch_x64)]
-pub mod x86_64;
+pub(crate) mod x86_64;
 
 #[cfg(debug_assertions)]
 #[allow(dead_code)]

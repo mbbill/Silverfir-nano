@@ -8,5 +8,3 @@ mod gp_scratch;
 pub(crate) mod helpers;
 mod inst;
 mod reg;
-
-pub(crate) use helpers::{x86_64_raise_trap, x86_64_raise_unsupported};
