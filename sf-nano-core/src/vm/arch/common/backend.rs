@@ -180,11 +180,4 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     /// Write NOP/INT3 padding into the executable code buffer (true emission).
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize);
-
-    type CompiledEntry: Clone + core::fmt::Debug;
-
-    fn make_entry(
-        buf: &CodeBuffer,
-        emitted: &super::pipeline::EmittedFunction,
-    ) -> Self::CompiledEntry;
 }

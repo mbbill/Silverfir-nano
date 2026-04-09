@@ -17,8 +17,9 @@ use super::{
     reg::X86Reg,
 };
 
-use crate::vm::arch::common::helpers::{is_fallthrough_edge, trap_code};
+use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
+use crate::vm::arch::shared_64::is_fallthrough_edge;
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────

@@ -190,23 +190,6 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
         })
 }
 
-#[inline]
-pub(super) fn inv_map_reg(reg: Arm32Reg) -> MachineReg {
-    match reg {
-        Arm32Reg::R8 => MACHINE_CTX_REG,
-        Arm32Reg::R10 => MACHINE_FP_REG,
-        Arm32Reg::R11 => MACHINE_MEM0_BASE_REG,
-        Arm32Reg::R4 => MACHINE_MEM0_SIZE_REG,
-        other => {
-            let i = GP_DYNAMIC
-                .iter()
-                .position(|c| *c == other)
-                .expect("mapped reg must come from dynamic table");
-            MachineReg(MACHINE_FIXED_REG_COUNT + i as u16)
-        }
-    }
-}
-
 /// Build the register mask for PUSH/POP from the callee-saved list.
 fn callee_saved_gp_mask() -> u16 {
     let mut mask = 0u16;

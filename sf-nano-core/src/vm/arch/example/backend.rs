@@ -279,17 +279,4 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
             buf.emit_bytes(&0u32.to_le_bytes());
         }
     }
-
-    type CompiledEntry = CompiledExampleEntry;
-
-    fn make_entry(
-        buf: &CodeBuffer,
-        emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
-    ) -> Self::CompiledEntry {
-        let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
-        CompiledExampleEntry {
-            entry,
-            text_len: emitted.text_len,
-        }
-    }
 }

@@ -1843,10 +1843,6 @@ impl<'a> Arm32Backend<'a> {
                 self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
             }
-            other => Err(WasmError::invalid(alloc::format!(
-                "armv7a: unsupported i64 pair unary op {:?}",
-                other
-            ))),
         }
     }
 

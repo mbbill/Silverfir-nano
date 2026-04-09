@@ -624,14 +624,18 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             buf.emit_bytes(&ARM64_NOP);
         }
     }
+}
 
+impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for Arm64Backend<'a> {
     type CompiledEntry = CompiledArm64Entry;
 
     fn make_entry(
         buf: &CodeBuffer,
-        emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
+        emitted: &crate::vm::arch::shared_64::EmittedFunction64,
     ) -> Self::CompiledEntry {
-        let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
+        let entry = unsafe {
+            buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset)
+        };
         CompiledArm64Entry {
             entry,
             text_len: emitted.text_len,

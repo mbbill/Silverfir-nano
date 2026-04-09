@@ -96,34 +96,3 @@ pub(crate) fn page_align_function(offset: usize, func_size: usize) -> usize {
     }
     aligned
 }
-
-// ── Fallthrough check ────────────────────────────────────────────────────────
-
-use crate::vm::machine::machine_ir::{MachineBlockId, MachineValue};
-
-/// Returns true if jumping to `target` with `args` can be elided because the
-/// target is the physical fallthrough and the args are an identity mapping.
-pub(crate) fn is_fallthrough_edge(
-    target: MachineBlockId,
-    args: &[MachineValue],
-    fallthrough: Option<MachineBlockId>,
-    blocks: &[crate::vm::machine::machine_ir::MachineBlock],
-) -> bool {
-    if fallthrough != Some(target) {
-        return false;
-    }
-    let Some(block) = blocks.get(target.as_usize()) else {
-        return false;
-    };
-    if block.params.len() != args.len() {
-        return false;
-    }
-    block
-        .params
-        .iter()
-        .zip(args.iter())
-        .all(|(param, arg)| match arg {
-            MachineValue::Reg(r) | MachineValue::ReservedReg(r) => *r == param.reg,
-            MachineValue::Imm64(_) => false,
-        })
-}

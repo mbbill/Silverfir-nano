@@ -103,6 +103,7 @@ impl CompiledNativeModule {
         &self.abi
     }
 
+    #[cfg(sf_emulator)]
     #[inline]
     pub(crate) fn function(
         &self,

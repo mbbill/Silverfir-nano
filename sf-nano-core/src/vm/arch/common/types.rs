@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
 };
-use crate::vm::runtime::dispatch_view::NativeLocalCallInfo64;
 
 use super::text_emitter::TextEmitter;
 
@@ -75,14 +74,6 @@ pub(crate) struct FunctionArtifact {
     #[cfg(sf_has_debug_regions)]
     pub debug_regions: Vec<DebugRegion>,
 }
-
-// ── Function info table entry ────────────────────────────────────────────────
-
-/// Per-function metadata written to the executable code buffer for indirect
-/// call dispatch. Layout is identical across arm64 and x86_64.
-pub(crate) type NativeFunctionInfo = NativeLocalCallInfo64;
-
-pub(crate) const NATIVE_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<NativeFunctionInfo>();
 
 // ── Parallel move source ─────────────────────────────────────────────────────
 

@@ -54,6 +54,7 @@ impl GpScratchPool {
         self.claim_named(X86Reg::RAX)
     }
 
+    #[cfg(not(sf_os_windows))]
     pub(super) fn try_claim_rax(&self) -> Option<GpScratchGuard<'_>> {
         self.try_claim_named(X86Reg::RAX)
     }
@@ -62,16 +63,13 @@ impl GpScratchPool {
         self.claim_named(X86Reg::RCX)
     }
 
+    #[cfg(not(sf_os_windows))]
     pub(super) fn try_claim_rcx(&self) -> Option<GpScratchGuard<'_>> {
         self.try_claim_named(X86Reg::RCX)
     }
 
     pub(super) fn claim_rdx(&self) -> GpScratchGuard<'_> {
         self.claim_named(X86Reg::RDX)
-    }
-
-    pub(super) fn try_claim_rdx(&self) -> Option<GpScratchGuard<'_>> {
-        self.try_claim_named(X86Reg::RDX)
     }
 
     pub(super) fn alloc(&self) -> u8 {

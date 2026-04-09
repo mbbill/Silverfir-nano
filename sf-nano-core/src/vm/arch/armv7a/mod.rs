@@ -5,6 +5,7 @@ mod control;
 mod enc;
 mod inst;
 mod operands;
+mod preserved;
 mod reg;
 mod select;
 

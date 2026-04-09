@@ -7,4 +7,5 @@ mod fusion;
 mod gp_scratch;
 pub(crate) mod helpers;
 mod inst;
+mod preserved;
 mod reg;

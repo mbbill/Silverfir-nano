@@ -21,6 +21,8 @@ use crate::vm::arch::common::types::DebugRegion;
 pub(crate) mod common;
 #[cfg(sf_emulator)]
 pub(crate) mod emulator;
+#[cfg(any(sf_arch_arm64, sf_arch_x64))]
+mod shared_64;
 
 #[cfg(sf_arch_arm64)]
 pub(crate) mod arm64;
@@ -228,13 +230,12 @@ pub(crate) fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
 
 /// Normalized view of a backend's per-function compile result.
 ///
-/// Each `ArchBackend::CompiledEntry` carries whatever arch-specific state
-/// its linker pass needs (root-return offset, error-tail offset, branch
-/// fixup lists, etc.). The module-build pipeline in `vm::build` only cares
-/// about three facts after compilation is done — the entry pointer, the
-/// function's text size, and (under `sf_ir_dump`) the debug region list —
-/// so `dispatch_compile_module` projects every backend's entry type into
-/// this uniform shape.
+/// Each backend-specific module linker returns an entry type carrying whatever
+/// arch-local state it needs. The module-build pipeline in `vm::build` only
+/// cares about three facts after compilation is done — the entry pointer, the
+/// function's text size, and (under `sf_ir_dump`) the debug region list — so
+/// `dispatch_compile_module` projects every backend's entry type into this
+/// uniform shape.
 pub(crate) struct CompiledArchEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
@@ -257,8 +258,9 @@ pub(crate) fn dispatch_compile_module(
     match active_backend {
         #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => {
-            let entries =
-                common::pipeline::compile_module::<arm64::backend::Arm64Backend>(module, compiled)?;
+            let entries = shared_64::compile_module_64::<arm64::backend::Arm64Backend>(
+                module, compiled,
+            )?;
             Ok(entries
                 .into_iter()
                 .map(|opt| {
@@ -288,7 +290,7 @@ pub(crate) fn dispatch_compile_module(
         }
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => {
-            let entries = common::pipeline::compile_module::<x86_64::backend::X86_64Backend>(
+            let entries = shared_64::compile_module_64::<x86_64::backend::X86_64Backend>(
                 module, compiled,
             )?;
             Ok(entries

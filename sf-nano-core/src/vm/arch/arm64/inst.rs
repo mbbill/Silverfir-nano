@@ -169,7 +169,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
     // ── Register mapping ─────────────────────────────────────────────────
 
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
-        self.core.validate_gp_reg(reg)?;
+        crate::vm::arch::shared_64::validate_gp_reg(self, reg)?;
         map_reg(reg)
     }
 

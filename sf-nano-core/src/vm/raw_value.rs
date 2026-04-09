@@ -55,11 +55,13 @@ pub(crate) const fn as_ref(val: RawValue) -> RefHandle {
     RefHandle::new(val as usize)
 }
 
+#[cfg(sf_emulator)]
 #[inline(always)]
 pub(crate) const fn as_u32(val: RawValue) -> u32 {
     val as u32
 }
 
+#[cfg(sf_emulator)]
 #[inline(always)]
 pub(crate) const fn as_u64(val: RawValue) -> u64 {
     val

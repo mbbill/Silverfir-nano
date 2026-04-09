@@ -335,13 +335,18 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         }
     }
 
+}
+
+impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Backend<'a> {
     type CompiledEntry = CompiledX86_64Entry;
 
     fn make_entry(
         buf: &CodeBuffer,
-        emitted: &crate::vm::arch::common::pipeline::EmittedFunction,
+        emitted: &crate::vm::arch::shared_64::EmittedFunction64,
     ) -> Self::CompiledEntry {
-        let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
+        let entry = unsafe {
+            buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset)
+        };
         CompiledX86_64Entry {
             entry,
             text_len: emitted.text_len,
@@ -437,7 +442,7 @@ impl<'a> X86_64Backend<'a> {
     // ── Register mapping ─────────────────────────────────────────────────
 
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<X86Reg, WasmError> {
-        self.core.validate_gp_reg(reg)?;
+        crate::vm::arch::shared_64::validate_gp_reg(self, reg)?;
         map_reg(reg)
     }
 

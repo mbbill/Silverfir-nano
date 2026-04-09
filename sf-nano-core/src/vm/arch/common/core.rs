@@ -209,17 +209,6 @@ impl<'a> CompilerCore<'a> {
         is_fp_reg(reg, self.compiled.backend())
     }
 
-    /// Validate that `reg` is a GP register (not FP). Returns the reg unchanged.
-    pub(crate) fn validate_gp_reg(&self, reg: MachineReg) -> Result<MachineReg, WasmError> {
-        if self.is_fp_reg(reg) {
-            return Err(WasmError::invalid(format!(
-                "expected GP register, got FP machine reg {}",
-                reg.0
-            )));
-        }
-        Ok(reg)
-    }
-
     /// Return the FP bank index for a machine register.
     pub(crate) fn fp_reg_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
         fp_reg_index(reg, self.compiled.backend()).ok_or_else(|| {
