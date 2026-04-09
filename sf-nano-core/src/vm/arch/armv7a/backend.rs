@@ -34,7 +34,7 @@ use crate::{
 use super::{
     abi::{
         self, emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg, map_reg,
-        SCRATCH0,
+        SCRATCH0, SCRATCH1,
     },
     armv7a_raise_trap,
     enc::{self, Cond},
@@ -488,15 +488,17 @@ impl<'a> Arm32Backend<'a> {
             .and_then(|runtime| runtime.helper_scratch);
         if let Some(helper_scratch) = helper_scratch {
             debug_assert!(
-                helper_scratch.slots >= 5,
-                "armv7a helper scratch must reserve five 64-bit slots for D3-D7"
+                helper_scratch.slots >= 8,
+                "armv7a helper scratch must reserve eight 64-bit slots for D3-D7 plus fixed regs"
             );
+            self.emit_fixed_helper_state_save(helper_scratch);
             self.emit_helper_scratch_save(helper_scratch);
         }
         emit_load_u32_into(&mut self.core.text, SCRATCH0, target as u32);
         self.core.text.emit_u32(enc::blx_reg(SCRATCH0));
         if let Some(helper_scratch) = helper_scratch {
             self.emit_helper_scratch_restore(helper_scratch);
+            self.emit_fixed_helper_state_restore(helper_scratch);
         }
     }
 
@@ -510,8 +512,10 @@ impl<'a> Arm32Backend<'a> {
         helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
     ) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let gp_lo = self.gp_scratch.reg(0);
-        let gp_hi = self.gp_scratch.reg(1);
+        // These saves are emitted only inside `emit_host_call`, which has
+        // already preserved both backend-owned GP scratch registers.
+        let gp_lo = SCRATCH0;
+        let gp_hi = SCRATCH1;
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
         let last_byte_offset = base_byte_offset + 4 * 8 + 4; // D7 high half
         let direct = base_byte_offset >= 0 && last_byte_offset <= 4095;
@@ -565,8 +569,8 @@ impl<'a> Arm32Backend<'a> {
         helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
     ) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let gp_lo = self.gp_scratch.reg(0);
-        let gp_hi = self.gp_scratch.reg(1);
+        let gp_lo = SCRATCH0;
+        let gp_hi = SCRATCH1;
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
         let last_byte_offset = base_byte_offset + 4 * 8 + 4;
         let direct = base_byte_offset >= 0 && last_byte_offset <= 4095;
@@ -605,6 +609,62 @@ impl<'a> Arm32Backend<'a> {
             }
             self.restore_helper_base_reg();
         }
+    }
+
+    /// Save the fixed MachineIR roles plus both backend-owned GP scratches
+    /// into helper-scratch slots 5..=7 without perturbing `SP`.
+    fn emit_fixed_helper_state_save(
+        &mut self,
+        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
+    ) {
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
+
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R4, fp_reg, base_byte_offset + 40));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R8, fp_reg, base_byte_offset + 44));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R10, fp_reg, base_byte_offset + 48));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(SCRATCH0, fp_reg, base_byte_offset + 56));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(SCRATCH1, fp_reg, base_byte_offset + 60));
+    }
+
+    fn emit_fixed_helper_state_restore(
+        &mut self,
+        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
+    ) {
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
+
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R4, fp_reg, base_byte_offset + 40));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R8, fp_reg, base_byte_offset + 44));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R10, fp_reg, base_byte_offset + 48));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(SCRATCH0, fp_reg, base_byte_offset + 56));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(SCRATCH1, fp_reg, base_byte_offset + 60));
     }
 
     /// `push {r5}` — save the dynamic GP register we're about to use as a

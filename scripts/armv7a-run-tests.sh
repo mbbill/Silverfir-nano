@@ -3,10 +3,11 @@
 # Run the WASI benchmark tests on ARMv7 under QEMU inside Colima.
 #
 # Usage:
-#   ./scripts/armv7a-run-tests.sh [--release]
+#   ./scripts/armv7a-run-tests.sh [--fast] [--release]
 #
 # By default builds and runs in debug mode. Pass --release for an
-# optimised build (much faster under QEMU).
+# optimised build (much faster under QEMU). Pass --fast to use the
+# reduced-workload benchmark suite for slower ARMv7a/QEMU iteration.
 
 set -euo pipefail
 
@@ -14,17 +15,23 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=armv7-unknown-linux-musleabihf
 PROFILE=debug
 CARGO_PROFILE_FLAG=()
+FAST_RUN=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --fast) FAST_RUN=1; shift ;;
         --release) PROFILE=release; CARGO_PROFILE_FLAG=(--release); shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--release]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--fast] [--release]"; exit 1 ;;
     esac
 done
 
 CLI_BIN="$REPO_ROOT/target/$TARGET/$PROFILE/sf-nano-cli"
-RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests.py"
-STATE_DIR="$REPO_ROOT/tmp/armv7a-run-tests"
+if [[ "$FAST_RUN" -eq 1 ]]; then
+    RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests_fast.py"
+else
+    RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests.py"
+fi
+STATE_DIR="$(mktemp -d /tmp/armv7a-run-tests.XXXXXX)"
 WRAPPER=""
 
 cleanup_remote_qemu_pattern() {
@@ -52,7 +59,6 @@ cleanup_remote_qemu_pidfile() {
     fi
 
     qemu_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
-    rm -f "$pid_file"
 
     if [[ -z "$qemu_pid" ]] || ! colima status &>/dev/null; then
         return
@@ -81,9 +87,6 @@ cleanup_remote_qemu_state_dir() {
 }
 
 cleanup() {
-    if [[ -n "${WRAPPER:-}" && -f "${WRAPPER:-}" ]]; then
-        rm -f "$WRAPPER"
-    fi
     cleanup_remote_qemu_state_dir
     cleanup_remote_qemu_pattern
     if [[ "${COLIMA_STARTED:-}" = "1" ]]; then
@@ -119,7 +122,6 @@ fi
 
 # --- Build ---
 
-mkdir -p "$STATE_DIR"
 cleanup_remote_qemu_state_dir
 cleanup_remote_qemu_pattern
 
@@ -152,7 +154,6 @@ cleanup_remote_qemu_pidfile() {
     fi
 
     qemu_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
-    rm -f "$pid_file"
 
     if [[ -z "$qemu_pid" ]]; then
         return
@@ -190,12 +191,19 @@ pid=$!
 printf "%s\n" "$pid" > "$pid_file"
 wait "$pid"
 status=$?
-rm -f "$pid_file"
 exit "$status"
 ' sh "$pid_file" "$cli_bin" "$@"
 WRAPPER_EOF
 chmod +x "$WRAPPER"
 
-echo "[armv7-run-tests] Running benchmarks under QEMU ($PROFILE)..."
+if [[ "$FAST_RUN" -eq 1 ]]; then
+    echo "[armv7-run-tests] Running reduced benchmarks under QEMU ($PROFILE)..."
+else
+    echo "[armv7-run-tests] Running benchmarks under QEMU ($PROFILE)..."
+fi
 echo
-python3 "$RUN_TESTS" --exec "$WRAPPER $CLI_BIN"
+if [[ "$FAST_RUN" -eq 1 ]]; then
+    python3 "$RUN_TESTS" --exec "$WRAPPER" --cli-args "$CLI_BIN"
+else
+    python3 "$RUN_TESTS" --exec "$WRAPPER $CLI_BIN"
+fi

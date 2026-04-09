@@ -24,7 +24,7 @@ use crate::{
 };
 
 use super::{
-    abi::{fp_machine_reg, inv_map_reg, map_fixed_reg, map_reg, FP_SCRATCH0},
+    abi::{fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0},
     armv7a_f32_ceil, armv7a_f32_floor, armv7a_f32_nearest_bits, armv7a_f32_trunc, armv7a_f64_ceil,
     armv7a_f64_floor, armv7a_f64_nearest_bits, armv7a_f64_trunc, armv7a_i64_clz, armv7a_i64_ctz,
     armv7a_i64_div_s, armv7a_i64_div_u, armv7a_i64_mul, armv7a_i64_popcnt, armv7a_i64_rem_s,
@@ -73,6 +73,41 @@ pub(super) fn prepare_gp<'p>(
             emit_load_u32_into(text, *scratch, v as u32);
             Ok(PreparedGp::Scratch(scratch))
         }
+    }
+}
+
+/// Prepare the rhs half of an `i64pair.(And|Or|Xor)` so it survives writing
+/// the lhs into the destination pair. If the rhs physical register aliases
+/// either destination half, snapshot it into owned scratch first.
+fn prepare_pair_bitop_rhs(
+    text: &mut TextEmitter,
+    pool: &ScratchPool<Arm32Reg, 2>,
+    value: MachineValue,
+    dst_lo: Arm32Reg,
+    dst_hi: Arm32Reg,
+) -> Result<OwnedPreparedGp, WasmError> {
+    match value {
+        MachineValue::Reg(reg) => {
+            let src = map_reg(reg)?;
+            if src == dst_lo || src == dst_hi {
+                let scratch = pool.scoped_alloc().detach();
+                if *scratch != src {
+                    text.emit_u32(enc::mov_reg(*scratch, src));
+                }
+                Ok(OwnedPreparedGp::Scratch(scratch))
+            } else {
+                Ok(OwnedPreparedGp::Mapped(src))
+            }
+        }
+        MachineValue::Imm64(v) => {
+            let scratch = pool.scoped_alloc().detach();
+            emit_load_u32_into(text, *scratch, v as u32);
+            Ok(OwnedPreparedGp::Scratch(scratch))
+        }
+        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+            "armv7a pair bitop rhs cannot consume reserved cache register {} as a real value",
+            reg.0
+        ))),
     }
 }
 
@@ -639,19 +674,9 @@ impl<'a> Arm32Backend<'a> {
                 // ARMv7 is 32-bit — no UXTW needed (index_extend is ignored).
                 let base_hw = map_reg(*base)?;
                 let index_hw = map_reg(*index)?;
-                let s = self.gp_scratch.scoped_alloc();
+                let s = self.gp_scratch.scoped_alloc().detach();
                 self.core.text.emit_u32(enc::add_reg(*s, base_hw, index_hw));
-                let scratch_mr = inv_map_reg(*s);
-                drop(s);
-                self.compile_load(
-                    *dst,
-                    &MachineAddr {
-                        base: scratch_mr,
-                        offset: *offset,
-                    },
-                    *width,
-                    *extension,
-                )?;
+                self.compile_load_from_base_hw(*dst, *s, *offset, *width, *extension)?;
             }
             MachineInstKind::IndexedStore {
                 base,
@@ -663,16 +688,12 @@ impl<'a> Arm32Backend<'a> {
             } => {
                 let base_hw = map_reg(*base)?;
                 let index_hw = map_reg(*index)?;
-                let s = self.gp_scratch.scoped_alloc();
+                let s = self.gp_scratch.scoped_alloc().detach();
                 self.core.text.emit_u32(enc::add_reg(*s, base_hw, index_hw));
-                let scratch_mr = inv_map_reg(*s);
-                drop(s);
-                self.compile_store(
+                self.compile_store_from_base_hw(
                     MachineStorageType::GpWord,
-                    &MachineAddr {
-                        base: scratch_mr,
-                        offset: *offset,
-                    },
+                    *s,
+                    *offset,
                     *width,
                     src,
                 )?;
@@ -887,7 +908,17 @@ impl<'a> Arm32Backend<'a> {
         extension: MachineLoadExtension,
     ) -> Result<(), WasmError> {
         let base_hw = map_reg(addr.base)?;
-        let offset = addr.offset;
+        self.compile_load_from_base_hw(dst, base_hw, addr.offset, width, extension)
+    }
+
+    fn compile_load_from_base_hw(
+        &mut self,
+        dst: MachineReg,
+        base_hw: Arm32Reg,
+        offset: i32,
+        width: MachineMemWidth,
+        extension: MachineLoadExtension,
+    ) -> Result<(), WasmError> {
 
         // ARMv7 VFP loads/stores require alignment that Wasm memory does not
         // guarantee. MachineAddr does not currently preserve enough provenance to
@@ -963,7 +994,17 @@ impl<'a> Arm32Backend<'a> {
         src: &MachineValue,
     ) -> Result<(), WasmError> {
         let base_hw = map_reg(addr.base)?;
-        let offset = addr.offset;
+        self.compile_store_from_base_hw(ty, base_hw, addr.offset, width, src)
+    }
+
+    fn compile_store_from_base_hw(
+        &mut self,
+        ty: MachineStorageType,
+        base_hw: Arm32Reg,
+        offset: i32,
+        width: MachineMemWidth,
+        src: &MachineValue,
+    ) -> Result<(), WasmError> {
 
         if matches!(ty, MachineStorageType::Fp32 | MachineStorageType::Fp64) {
             match src {
@@ -1703,10 +1744,26 @@ impl<'a> Arm32Backend<'a> {
             MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
                 let dst_lo_hw = map_reg(dst_lo)?;
                 let dst_hi_hw = map_reg(dst_hi)?;
+                // Snapshot the rhs halves into owned scratch *before* writing
+                // the lhs into the destination pair, so a rhs that aliases
+                // either destination half survives the materialize. Lua's
+                // SWAR string hash exposes this pattern via i64 And/Or/Xor.
+                let rhs_lo_gp = prepare_pair_bitop_rhs(
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    *rhs_lo,
+                    dst_lo_hw,
+                    dst_hi_hw,
+                )?;
+                let rhs_hi_gp = prepare_pair_bitop_rhs(
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    *rhs_hi,
+                    dst_lo_hw,
+                    dst_hi_hw,
+                )?;
                 self.materialize_gp_into(dst_lo_hw, lhs_lo)?;
                 self.materialize_gp_into(dst_hi_hw, lhs_hi)?;
-                let rhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_lo)?;
-                let rhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_hi)?;
                 let emit = match op {
                     MachineIntBinaryOp::And => enc::and_reg,
                     MachineIntBinaryOp::Or => enc::orr_reg,
@@ -3532,6 +3589,11 @@ impl<'a> Arm32Backend<'a> {
 
         let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;
 
+        // Imported calls cross the foreign C ABI, so the caller-saved GP
+        // dynamic subset must be spilled explicitly before we stage the ABI
+        // arguments into R0-R2.
+        self.spill_caller_saved_gp_regs();
+
         // EABI: fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32
         self.core
             .text
@@ -3542,6 +3604,16 @@ impl<'a> Arm32Backend<'a> {
         self.emit_load_addr(Arm32Reg::R2, metadata as usize);
 
         self.emit_host_call(helper_ptr);
+
+        // Preserve the status code across the GP restore, then re-materialize
+        // it in R0 for the post-call error check.
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(Arm32Reg::R12, Arm32Reg::R0));
+        self.restore_caller_saved_gp_regs(&[]);
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R12));
 
         // Check return value: if non-zero, return error
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));

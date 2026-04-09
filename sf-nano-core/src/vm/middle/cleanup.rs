@@ -253,6 +253,9 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         if succ_index == pred_index || succ_index >= program.blocks.len() {
             continue;
         }
+        if succ_index == program.entry.as_usize() {
+            continue;
+        }
         if predecessor_counts[succ_index] != 1 {
             continue;
         }
@@ -959,6 +962,47 @@ mod tests {
         assert!(remove_unreachable_blocks(&mut program));
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.entry, SsaTarget(0));
+    }
+
+    #[test]
+    fn does_not_merge_unreachable_predecessor_into_entry() {
+        let mut program = SsaProgram {
+            entry: SsaTarget(1),
+            blocks: alloc::vec![
+                SsaBlock {
+                    id: SsaTarget(0),
+                    params: Vec::new(),
+                    ops: alloc::vec![value_inst(0)],
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: Vec::new(),
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(1),
+                    params: Vec::new(),
+                    ops: alloc::vec![value_inst(1)],
+                    terminator: SsaTerminator::Return { results: None },
+                },
+            ],
+            local_slot_types: Vec::new(),
+            local_slot_info: Vec::new(),
+            block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new()],
+            block_cfg_origins: alloc::vec![],
+            value_types: alloc::vec![crate::value_type::ValueType::I32; 2],
+            value_sink_local: alloc::vec![None; 2],
+        };
+
+        assert!(!merge_one_goto_successor(&mut program));
+        assert!(remove_unreachable_blocks(&mut program));
+        assert_eq!(program.entry, SsaTarget(0));
+        assert_eq!(program.blocks.len(), 1);
+        assert_eq!(program.blocks[0].id, SsaTarget(0));
+        assert!(matches!(
+            program.blocks[0].terminator,
+            SsaTerminator::Return { .. }
+        ));
+        validate_program(&program).unwrap();
     }
 
     #[test]
