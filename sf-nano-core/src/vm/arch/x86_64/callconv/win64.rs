@@ -206,8 +206,8 @@ pub(in crate::vm::arch::x86_64) fn emit_trapping_trunc_call(
     backend.materialize_u64(C_ARG2, op_code);
     // Out-pointer = current RSP (scratch in the padding slot above).
     enc::mov_rr_64(&mut backend.core.text, C_ARG3, X86Reg::RSP);
-    backend.materialize_u64(result_scratch, x86_64_trapping_trunc_win as usize as u64);
-    enc::call_reg(&mut backend.core.text, result_scratch);
+    backend.materialize_u64(X86Reg::R11, x86_64_trapping_trunc_win as usize as u64);
+    enc::call_reg(&mut backend.core.text, X86Reg::R11);
     // Read result from [RSP + 0].
     enc::load_64(&mut backend.core.text, result_scratch, X86Reg::RSP, 0);
 

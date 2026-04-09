@@ -263,7 +263,10 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, trap_code(kind));
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(*call_scratch, crate::vm::runtime::trap::raise_trap as usize as u64);
+        self.materialize_u64(
+            *call_scratch,
+            crate::vm::runtime::trap::raise_trap as usize as u64,
+        );
         enc::call_reg(&mut self.core.text, *call_scratch);
         // JMP body_local_error_label — preserves RAX (the trap kind).
         let body_local_error_label = self.core.body_local_error_label;
@@ -320,11 +323,7 @@ impl<'a> X86_64Backend<'a> {
         enc::load_64(&mut self.core.text, fp, X86Reg::RSP, 16);
 
         // 5. Success status: C_RET0 = 0. (xor eax, eax)
-        enc::xor_rr_32(
-            &mut self.core.text,
-            super::abi::C_RET0,
-            super::abi::C_RET0,
-        );
+        enc::xor_rr_32(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
 
         // 6. Native return. `ret 16` pops the return address and then
         //    releases the 16-byte call record sitting just above it.
@@ -378,11 +377,7 @@ impl<'a> X86_64Backend<'a> {
 
         // --- callee returns here. C_RET0 holds 0 (success) or trap kind
         //     (error). Status check propagates to body_local_error_label.
-        enc::test_rr_64(
-            &mut self.core.text,
-            super::abi::C_RET0,
-            super::abi::C_RET0,
-        );
+        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
         self.emit_jcc(Cc::NE, body_local_error_label);
 
         // Continuation: branch only if the next emitted block is not the
@@ -423,11 +418,7 @@ impl<'a> X86_64Backend<'a> {
         enc::call_reg(&mut self.core.text, callee_entry);
 
         // Status check + continuation branch.
-        enc::test_rr_64(
-            &mut self.core.text,
-            super::abi::C_RET0,
-            super::abi::C_RET0,
-        );
+        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
         self.emit_jcc(Cc::NE, body_local_error_label);
         if !continuation_is_fallthrough {
             self.emit_jmp(continuation_label);
@@ -437,10 +428,7 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Call external ────────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_external_term(
-        &mut self,
-        const_idx: usize,
-    ) -> Result<(), WasmError> {
+    pub(super) fn lower_call_external_term(&mut self, const_idx: usize) -> Result<(), WasmError> {
         let metadata = self
             .core
             .compiled
@@ -453,7 +441,7 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
-        let call_scratch = self.gp_scratch.claim_rcx().detach();
+        let call_scratch = self.gp_scratch.claim_rax().detach();
         self.materialize_u64(
             *call_scratch,
             crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
@@ -462,11 +450,7 @@ impl<'a> X86_64Backend<'a> {
 
         // Nonzero helper status → propagate via body_local_error_label.
         // C_RET0 is already set by raise_trap to NativeCallStatus::Error.
-        enc::test_rr_64(
-            &mut self.core.text,
-            super::abi::C_RET0,
-            super::abi::C_RET0,
-        );
+        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
         let body_local_error_label = self.core.body_local_error_label;
         self.emit_jcc(Cc::NE, body_local_error_label);
         Ok(())
@@ -514,12 +498,7 @@ impl<'a> X86_64Backend<'a> {
         // Clamp index to (entries.len() - 1) using 32-bit unsigned compare.
         self.materialize_u64(*table_scratch, (entries.len() - 1) as u64);
         enc::cmp_rr_32(&mut self.core.text, *index_scratch, *table_scratch);
-        enc::cmovcc_rr_32(
-            &mut self.core.text,
-            Cc::A,
-            *index_scratch,
-            *table_scratch,
-        );
+        enc::cmovcc_rr_32(&mut self.core.text, Cc::A, *index_scratch, *table_scratch);
 
         // Load table base address (absolute, patched later)
         enc::movabs_ri_64(&mut self.core.text, *table_scratch, 0);

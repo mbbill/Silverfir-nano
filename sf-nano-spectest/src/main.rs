@@ -6,10 +6,17 @@ mod wast_test_runner;
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
-    active_runtime_engine, reset_native_runtime_state, set_backend_mode, set_reference_backend,
-    set_reference_backend_mode, BackendMode, ReferenceBackendMode,
+    active_runtime_engine, constants::MAX_STACK_SIZE, reset_native_runtime_state, set_backend_mode,
+    set_reference_backend, set_reference_backend_mode, BackendMode, ReferenceBackendMode,
 };
-use std::{env, panic::AssertUnwindSafe, path::Path, sync::Mutex, time::Instant};
+use std::{
+    env,
+    panic::AssertUnwindSafe,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    thread,
+    time::Instant,
+};
 use structopt::StructOpt;
 use summary::print_summary;
 use types::TestStats;
@@ -152,7 +159,24 @@ fn main() {
 
     info!("Using testsuite from: {}", testsuite_dir.display());
 
-    run_wast_tests(&testsuite_dir, &args.filters);
+    run_wast_tests_with_large_stack(testsuite_dir, args.filters);
+}
+
+fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>) {
+    let stack_size = recommended_worker_stack_size();
+    let builder = thread::Builder::new()
+        .name("sf-nano-spectest".into())
+        .stack_size(stack_size);
+    let handle = builder
+        .spawn(move || run_wast_tests(&testsuite_dir, &filters))
+        .unwrap_or_else(|err| panic!("failed to spawn spectest worker thread: {err}"));
+    handle
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
+fn recommended_worker_stack_size() -> usize {
+    std::cmp::max(MAX_STACK_SIZE * 4, 8 * 1024 * 1024)
 }
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {

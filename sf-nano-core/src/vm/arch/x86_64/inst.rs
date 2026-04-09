@@ -3,11 +3,10 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp,
-        MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
-        MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
-        MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
-        MachineTrapKind, MachineValue,
+        MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
+        MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
+        MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+        MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
     },
 };
 
@@ -339,12 +338,8 @@ impl<'a> X86_64Backend<'a> {
             let scratch = self.gp_scratch.scoped_alloc().detach();
             self.materialize_u64(*scratch, imm);
             match width {
-                MachineFloatWidth::F32 => {
-                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch)
-                }
-                MachineFloatWidth::F64 => {
-                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch)
-                }
+                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch),
+                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch),
             };
         }
         self.core.set_fp_reg_width(dst, width)?;
@@ -491,11 +486,7 @@ impl<'a> X86_64Backend<'a> {
         // Indexed stores compute the effective address into gp_scratch[0]
         // before calling lower_store_to(). Do not reuse that register to
         // materialize the source or the base address will be lost.
-        let materialize_scratch = if base == scratch0 {
-            scratch1
-        } else {
-            scratch0
-        };
+        let materialize_scratch = if base == scratch0 { scratch1 } else { scratch0 };
         let src_gp = self.materialize_value(materialize_scratch, src)?;
         match width {
             MachineMemWidth::U8 => enc::store_8(&mut self.core.text, base, disp, src_gp),
@@ -1058,7 +1049,8 @@ impl<'a> X86_64Backend<'a> {
                         MachineIntWidth::I32 => enc::test_ri_32(&mut self.core.text, src_gp, imm),
                     }
                 } else {
-                    let mask_gp = self.materialize_value(*scratch1, MachineValue::Imm64(imm_val))?;
+                    let mask_gp =
+                        self.materialize_value(*scratch1, MachineValue::Imm64(imm_val))?;
                     match width {
                         MachineIntWidth::I64 => {
                             enc::test_rr_64(&mut self.core.text, src_gp, mask_gp)
@@ -1308,12 +1300,7 @@ impl<'a> X86_64Backend<'a> {
                     // upper half that may remain in a GpWord carrier.
                     enc::test_rr_32(&mut self.core.text, cond_gp, cond_gp);
                     self.emit_jcc(Cc::E, false_label);
-                    let true_fp = self.prepare_float_operand(
-                        width,
-                        on_true,
-                        *gp0,
-                        *fp0,
-                    )?;
+                    let true_fp = self.prepare_float_operand(width, on_true, *gp0, *fp0)?;
                     if dst_fp != true_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
@@ -1326,12 +1313,7 @@ impl<'a> X86_64Backend<'a> {
                     }
                     self.emit_jmp(done);
                     self.core.bind_label(false_label);
-                    let false_fp = self.prepare_float_operand(
-                        width,
-                        on_false,
-                        *gp1,
-                        *fp1,
-                    )?;
+                    let false_fp = self.prepare_float_operand(width, on_false, *gp1, *fp1)?;
                     if dst_fp != false_fp as u8 {
                         match width {
                             MachineFloatWidth::F32 => {
@@ -1915,8 +1897,7 @@ impl<'a> X86_64Backend<'a> {
                 // magnitude of lhs, sign of rhs.
                 // Strategy: clear sign of lhs (abs), extract sign of rhs, OR them.
                 // Use a mask scratch that doesn't conflict with result_fp or rhs_fp.
-                let mask_xmm = if result_fp != *fp0 as u8 && rhs_fp as u8 != *fp0 as u8
-                {
+                let mask_xmm = if result_fp != *fp0 as u8 && rhs_fp as u8 != *fp0 as u8 {
                     *fp0 as u8
                 } else {
                     *fp1 as u8
@@ -1978,11 +1959,7 @@ impl<'a> X86_64Backend<'a> {
         // Choose an rhs FP scratch that doesn't conflict with lhs. When lhs
         // already lives in a mapped FP register (not `fp0`), reuse `fp0` for
         // rhs to avoid clobbering a live FP SSA value.
-        let rhs_fp_scratch = if lhs_fp != *fp0 as u32 {
-            *fp0
-        } else {
-            *fp1
-        };
+        let rhs_fp_scratch = if lhs_fp != *fp0 as u32 { *fp0 } else { *fp1 };
         if matches!(rhs, MachineValue::Imm64(0)) {
             enc::xorpd(
                 &mut self.core.text,
@@ -2139,7 +2116,10 @@ impl<'a> X86_64Backend<'a> {
         // the whole save → arg-setup → call → restore → test → branch
         // sequence and leaves the 64-bit result in the supplied backend-owned
         // scratch register.
-        let call_scratch = self
+        #[cfg(sf_os_windows)]
+        let result_scratch = X86Reg::RDX;
+        #[cfg(not(sf_os_windows))]
+        let result_scratch = *self
             .gp_scratch
             .try_claim_rcx()
             .or_else(|| self.gp_scratch.try_claim_rax())
@@ -2150,7 +2130,7 @@ impl<'a> X86_64Backend<'a> {
             self,
             src,
             convert_op_code(op) as u64,
-            *call_scratch,
+            result_scratch,
             error_label,
         );
         if dst != X86Reg::RDX {
@@ -2165,19 +2145,14 @@ impl<'a> X86_64Backend<'a> {
         dst: X86Reg,
         src: X86Reg,
     ) -> Result<(), WasmError> {
-        let call_scratch = self
-            .gp_scratch
-            .try_claim_rcx()
-            .or_else(|| self.gp_scratch.try_claim_rdx())
-            .or_else(|| self.gp_scratch.try_claim_rax())
-            .expect("x86_64 saturating trunc needs one backend-owned call-target register")
-            .detach();
-        // The C helper call clobbers the caller-clobbered GP dynamic subset.
+        // Keep the helper target out of ABI result registers. Win64 returns
+        // the saturating result in RAX, so use backend-owned R11 for the
+        // helper entry address.
         self.save_caller_clobbered_gp_dynamic();
         enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
         self.materialize_u64(C_ARG1, convert_op_code(op) as u64);
-        self.materialize_u64(*call_scratch, x86_64_saturating_trunc as usize as u64);
-        enc::call_reg(&mut self.core.text, *call_scratch);
+        self.materialize_u64(X86Reg::R11, x86_64_saturating_trunc as usize as u64);
+        enc::call_reg(&mut self.core.text, X86Reg::R11);
         self.restore_caller_clobbered_gp_dynamic();
         if dst != X86Reg::RAX {
             enc::mov_rr_64(&mut self.core.text, dst, X86Reg::RAX);
@@ -2293,11 +2268,7 @@ impl<'a> X86_64Backend<'a> {
         );
     }
 
-    fn emit_io_store_value(
-        &mut self,
-        slot: usize,
-        value: MachineValue,
-    ) -> Result<(), WasmError> {
+    fn emit_io_store_value(&mut self, slot: usize, value: MachineValue) -> Result<(), WasmError> {
         let scratch = self.gp_scratch.scoped_alloc().detach();
         let gp = self.materialize_value(*scratch, value)?;
         enc::store_64(&mut self.core.text, X86Reg::RSP, (slot as i32) * 8, gp);
@@ -2326,34 +2297,38 @@ impl<'a> X86_64Backend<'a> {
                 )));
             }
         }
-        enc::store_64(&mut self.core.text, X86Reg::RSP, (slot as i32) * 8, *scratch);
+        enc::store_64(
+            &mut self.core.text,
+            X86Reg::RSP,
+            (slot as i32) * 8,
+            *scratch,
+        );
         Ok(())
     }
 
     /// Call preserved_entry, handle status/result, tear down frame, check
     /// status. If `result_dst` is `Some`, the RET0 slot is loaded into
     /// that register *after* the caller-clobbered restore.
-    fn emit_preserved_call_and_close(
-        &mut self,
-        op_code: u32,
-        result_dst: Option<X86Reg>,
-    ) {
+    fn emit_preserved_call_and_close(&mut self, op_code: u32, result_dst: Option<X86Reg>) {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
-        let call_scratch = self.gp_scratch.claim_rcx().detach();
+        // `R11` is volatile on both SysV and Win64 and is not used for any
+        // argument slot here, so it can carry the helper target without
+        // clobbering ABI inputs.
+        let call_target = X86Reg::R11;
+        // Keep the result in a non-restored caller-clobbered register so the
+        // dynamic restore below cannot overwrite it.
+        let result_scratch = X86Reg::RCX;
 
-        // C ABI setup: rdi=ctx, rsi=op_code, rdx=rsp (io_ptr).
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, op_code as u64);
         enc::mov_rr_64(&mut self.core.text, C_ARG2, X86Reg::RSP);
-        // Load helper address into a backend-owned scratch and call.
-        self.materialize_u64(*call_scratch, preserved_entry as usize as u64);
-        enc::call_reg(&mut self.core.text, *call_scratch);
+        self.materialize_u64(call_target, preserved_entry as usize as u64);
+        enc::call_reg(&mut self.core.text, call_target);
 
         // Read the result slot (if any) *before* restoring caller-clobbered
         // regs, because `result_dst` might alias one of the pushed regs.
-        // We stash it into the call scratch and move it after
-        // restoration below.
-        let result_scratch = *call_scratch;
+        // We stash it into `result_scratch` and move it after restoration
+        // below.
         if result_dst.is_some() {
             enc::load_64(
                 &mut self.core.text,

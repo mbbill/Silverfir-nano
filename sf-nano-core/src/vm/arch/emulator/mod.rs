@@ -881,8 +881,7 @@ impl<'a> Emulator<'a> {
         // cache edges are identity-only: the target register already holds
         // the cached-local value, so no move happens across the edge — we
         // only verify the identity invariant the native backends rely on.
-        let mut pending: Vec<(MachineReg, u64, RegAddrKind)> =
-            Vec::with_capacity(edge.args.len());
+        let mut pending: Vec<(MachineReg, u64, RegAddrKind)> = Vec::with_capacity(edge.args.len());
         for (param, arg) in target_params.iter().zip(edge.args.iter()) {
             match *arg {
                 MachineValue::ReservedReg(reg) => {
@@ -1240,13 +1239,17 @@ impl<'a> Emulator<'a> {
         if mem_base == 0 {
             return Ok(());
         }
-        // On 64-bit with guard pages, the 8 GB virtual reservation reliably
-        // separates wasm-memory pointers from frame/stack pointers.  On 32-bit
-        // (no guard pages) we just check the actual committed memory range.
-        #[cfg(target_pointer_width = "64")]
+        // Only guard-page targets reserve the large virtual window that lets
+        // us distinguish wasm-memory addresses from unrelated host pointers.
+        // Without guard pages, frame/stack pointers can legitimately sit near
+        // the committed memory allocation, so we must check only the committed
+        // range.
+        #[cfg(all(target_pointer_width = "64", sf_has_guard_pages))]
         const GUARD_WINDOW: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
-        #[cfg(target_pointer_width = "64")]
+        #[cfg(all(target_pointer_width = "64", sf_has_guard_pages))]
         let in_wasm_region = ptr >= mem_base && ptr < mem_base.saturating_add(GUARD_WINDOW);
+        #[cfg(all(target_pointer_width = "64", not(sf_has_guard_pages)))]
+        let in_wasm_region = ptr >= mem_base && ptr < mem_base + mem_size;
         #[cfg(target_pointer_width = "32")]
         let in_wasm_region = ptr >= mem_base && ptr < mem_base + mem_size;
         if in_wasm_region {
@@ -2474,6 +2477,46 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(1).to_raw());
     }
 
+    #[test]
+    fn runtime_eval_emu64_simple_block_result_survives_with_memory_present() {
+        let _guard = enable_reference_backend();
+
+        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
+        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let mut module = ModuleInst::new(String::from("m"), types);
+
+        // (func (result i32)
+        //   (block (nop))
+        //   (block (result i32) (i32.const 7)))
+        let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
+        spec.set_code(
+            (&[
+                0x02, 0x40, // block
+                0x01, //   nop
+                0x0b, // end
+                0x02, 0x7f, // block (result i32)
+                0x41, 0x07, //   i32.const 7
+                0x0b, // end
+                0x0b, // end
+            ][..])
+                .into(),
+        );
+        module.functions.push(FunctionInst::Local {
+            spec,
+            type_index: 0,
+        });
+        module
+            .memories
+            .push(native_test_memory(Limits::new(1, Some(1)).unwrap()));
+
+        let mut store = Store::new(module);
+        let func_ptr = &store.module().functions[0] as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let results =
+            runtime::eval(func_ref, &mut store, &[]).expect("block result should not trap");
+        assert_eq!(results.peek_at_index(0), Value::I32(7).to_raw());
+    }
     #[test]
     fn runtime_eval_emu64_call_indirect_accepts_simple_local_target() {
         let _guard = enable_reference_backend();
