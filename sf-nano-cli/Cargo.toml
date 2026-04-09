@@ -15,4 +15,4 @@ default = ["jit"]
 jit = ["sf-nano-core/jit"]
 call-trace = ["sf-nano-core/call-trace"]
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["wasi", "emulator"] }

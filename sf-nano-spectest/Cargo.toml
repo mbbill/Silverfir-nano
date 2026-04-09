@@ -15,7 +15,7 @@ default = []
 jit = ["sf-nano-core/jit"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["validator"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["validator", "emulator"] }
 log = { version = "0.4", features = ["release_max_level_debug"] }
 env_logger = "0.9"
 structopt = "0.3"

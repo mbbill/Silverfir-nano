@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -199,7 +198,7 @@ fn run_self_test() -> i32 {
         };
         match inst.invoke("test", &[]) {
             Ok(ref r) if check_i32(r, 42) => { println!("PASS const: test() = 42"); passed += 1; }
-            Ok(ref r) => { eprintln!("FAIL const: expected 42, got {:?}", r); failed += 1; }
+            Ok(_) => { eprintln!("FAIL const: wrong result"); failed += 1; }
             Err(e) => { eprintln!("FAIL const: {}", e); failed += 1; }
         }
     }
@@ -213,7 +212,7 @@ fn run_self_test() -> i32 {
         let args = [Value::I32(13), Value::I32(29)];
         match inst.invoke("add", &args) {
             Ok(ref r) if check_i32(r, 42) => { println!("PASS add: add(13, 29) = 42"); passed += 1; }
-            Ok(ref r) => { eprintln!("FAIL add: expected 42, got {:?}", r); failed += 1; }
+            Ok(_) => { eprintln!("FAIL add: wrong result"); failed += 1; }
             Err(e) => { eprintln!("FAIL add: {}", e); failed += 1; }
         }
     }
@@ -227,7 +226,7 @@ fn run_self_test() -> i32 {
         let args = [Value::I32(10)];
         match inst.invoke("sum_to", &args) {
             Ok(ref r) if check_i32(r, 55) => { println!("PASS loop: sum_to(10) = 55"); passed += 1; }
-            Ok(ref r) => { eprintln!("FAIL loop: expected 55, got {:?}", r); failed += 1; }
+            Ok(_) => { eprintln!("FAIL loop: wrong result"); failed += 1; }
             Err(e) => { eprintln!("FAIL loop: {}", e); failed += 1; }
         }
     }
@@ -241,7 +240,7 @@ fn run_self_test() -> i32 {
         let args = [Value::I32(10)];
         match inst.invoke("fib", &args) {
             Ok(ref r) if check_i32(r, 55) => { println!("PASS fib: fib(10) = 55"); passed += 1; }
-            Ok(ref r) => { eprintln!("FAIL fib: expected 55, got {:?}", r); failed += 1; }
+            Ok(_) => { eprintln!("FAIL fib: wrong result"); failed += 1; }
             Err(e) => { eprintln!("FAIL fib: {}", e); failed += 1; }
         }
     }
@@ -306,13 +305,12 @@ pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
         }
     };
 
-    let result = instance.invoke("_start", &[]);
-    let result = match result {
-        Err(ref err) if err.to_string().contains("not found") => {
-            instance.invoke("main", &[])
-        }
-        _ => result,
+    let entry = if instance.has_function_export("_start") {
+        "_start"
+    } else {
+        "main"
     };
+    let result = instance.invoke(entry, &[]);
 
     match result {
         Ok(_) => 0,

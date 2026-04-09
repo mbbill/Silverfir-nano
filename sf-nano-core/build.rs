@@ -37,6 +37,7 @@
 //   (derived)      → sf_has_debug_regions (set when any consumer of DebugRegion is compiled
 //                                          in: sf_ir_dump or sf_jitdump)
 //   jit            → sf_jit
+//   emulator       → sf_emulator
 //   wasi           → sf_wasi_host
 //   validator      → sf_module_validator
 //   call-trace     → sf_call_trace
@@ -64,6 +65,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_has_guard_pages",
     "sf_has_debug_regions",
     "sf_jit",
+    "sf_emulator",
     "sf_wasi_host",
     "sf_module_validator",
     "sf_call_trace",
@@ -139,6 +141,9 @@ fn emit_has_std_cfg() {
 fn emit_subsystem_cfgs() {
     if env::var_os("CARGO_FEATURE_JIT").is_some() {
         println!("cargo:rustc-cfg=sf_jit");
+    }
+    if env::var_os("CARGO_FEATURE_EMULATOR").is_some() {
+        println!("cargo:rustc-cfg=sf_emulator");
     }
     if env::var_os("CARGO_FEATURE_WASI").is_some() {
         println!("cargo:rustc-cfg=sf_wasi_host");

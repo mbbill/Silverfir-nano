@@ -126,11 +126,12 @@ fn main() {
     });
 
     // Invoke _start, fallback to main
-    let result = instance.invoke("_start", &[]);
-    let result = match result {
-        Err(ref err) if err.to_string().contains("not found") => instance.invoke("main", &[]),
-        _ => result,
+    let entry = if instance.has_function_export("_start") {
+        "_start"
+    } else {
+        "main"
     };
+    let result = instance.invoke(entry, &[]);
 
     // Print native backend compile stats on exit
     #[cfg(feature = "jit")]

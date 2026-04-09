@@ -470,6 +470,12 @@ impl Instance {
         Ok(results)
     }
 
+    pub fn has_function_export(&self, name: &str) -> bool {
+        self.exports
+            .iter()
+            .any(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }

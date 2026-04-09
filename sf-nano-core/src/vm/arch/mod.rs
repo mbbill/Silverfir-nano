@@ -1,4 +1,5 @@
 use alloc::{rc::Rc, vec::Vec};
+#[cfg(sf_emulator)]
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{
@@ -18,6 +19,7 @@ use crate::{
 use crate::vm::arch::common::types::DebugRegion;
 
 pub(crate) mod common;
+#[cfg(sf_emulator)]
 pub(crate) mod emulator;
 
 #[cfg(sf_arch_arm64)]
@@ -31,21 +33,12 @@ pub(crate) mod x86_64;
 #[allow(dead_code)]
 mod example;
 
-/// Macro for cfg-gating items that require the emulator/reference backend.
-///
-/// The emulator is available on all targets and build profiles so that
-/// `--emu64` / `--emu32` always work, including in release builds.
-macro_rules! cfg_has_reference {
-    ($($item:item)*) => {
-        $($item)*
-    };
-}
-
-/// Process-global reference backend target mode.
+/// Process-global emulator/reference-backend target mode.
 ///
 /// `Disabled` means "do not force the emulator backend on a host that has a
-/// real native backend". When the emulator is the only available backend on a
-/// target, `Disabled` still falls back to the default `Emu64` profile.
+/// real native backend". When the emulator feature is compiled and it is the
+/// only available backend on a target, `Disabled` still falls back to the
+/// default `Emu64` profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ReferenceBackendMode {
@@ -79,6 +72,7 @@ pub(crate) enum NativeBackend {
     Armv7a,
     #[cfg(sf_arch_x64)]
     X86_64,
+    #[cfg(sf_emulator)]
     Reference,
 }
 
@@ -94,6 +88,7 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         NativeBackend::Armv7a => armv7a::abi::compile_backend_config(),
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
+        #[cfg(sf_emulator)]
         NativeBackend::Reference => {
             emulator::config::compile_backend_config(effective_reference_backend_mode())
         }
@@ -110,17 +105,18 @@ impl NativeBackend {
             Self::Armv7a => "armv7a",
             #[cfg(sf_arch_x64)]
             Self::X86_64 => "x86_64",
+            #[cfg(sf_emulator)]
             Self::Reference => "emulator",
         }
     }
 }
 
-cfg_has_reference! {
-    static REFERENCE_BACKEND_MODE: AtomicU8 =
-        AtomicU8::new(ReferenceBackendMode::Disabled as u8);
-}
+#[cfg(sf_emulator)]
+static REFERENCE_BACKEND_MODE: AtomicU8 =
+    AtomicU8::new(ReferenceBackendMode::Disabled as u8);
 
 #[inline]
+#[cfg(sf_emulator)]
 fn selected_reference_backend_mode() -> ReferenceBackendMode {
     match REFERENCE_BACKEND_MODE.load(Ordering::Relaxed) {
         x if x == ReferenceBackendMode::Disabled as u8 => ReferenceBackendMode::Disabled,
@@ -131,6 +127,13 @@ fn selected_reference_backend_mode() -> ReferenceBackendMode {
 }
 
 #[inline]
+#[cfg(not(sf_emulator))]
+const fn selected_reference_backend_mode() -> ReferenceBackendMode {
+    ReferenceBackendMode::Disabled
+}
+
+#[inline]
+#[cfg(sf_emulator)]
 fn effective_reference_backend_mode() -> ReferenceBackendMode {
     match selected_reference_backend_mode() {
         ReferenceBackendMode::Disabled => ReferenceBackendMode::Emu64,
@@ -161,6 +164,7 @@ fn host_native_backend() -> Option<NativeBackend> {
 
 pub(crate) fn active_native_backend() -> Result<NativeBackend, &'static str> {
     if selected_reference_backend_mode().is_enabled() {
+        #[cfg(sf_emulator)]
         return Ok(NativeBackend::Reference);
     }
 
@@ -168,7 +172,15 @@ pub(crate) fn active_native_backend() -> Result<NativeBackend, &'static str> {
         return Ok(backend);
     }
 
-    Ok(NativeBackend::Reference)
+    #[cfg(sf_emulator)]
+    {
+        Ok(NativeBackend::Reference)
+    }
+
+    #[cfg(not(sf_emulator))]
+    {
+        Err("native backend unavailable for this target; rebuild with emulator feature")
+    }
 }
 
 #[inline]
@@ -179,6 +191,7 @@ pub(crate) fn active_backend_config() -> Result<BackendConfig, &'static str> {
 #[inline]
 pub(crate) fn backend_display_name(backend: NativeBackend) -> &'static str {
     match backend {
+        #[cfg(sf_emulator)]
         NativeBackend::Reference => effective_reference_backend_mode().as_str(),
         _ => backend.as_str(),
     }
@@ -190,8 +203,19 @@ pub(crate) fn active_native_backend_name() -> Result<&'static str, &'static str>
 }
 
 pub(crate) fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
-    REFERENCE_BACKEND_MODE.store(mode as u8, Ordering::Relaxed);
-    Ok(())
+    #[cfg(sf_emulator)]
+    {
+        REFERENCE_BACKEND_MODE.store(mode as u8, Ordering::Relaxed);
+        return Ok(());
+    }
+
+    #[cfg(not(sf_emulator))]
+    {
+        if mode.is_enabled() {
+            return Err("reference backend requires emulator feature");
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
@@ -222,8 +246,9 @@ pub(crate) struct CompiledArchEntry {
 /// per-function projection the build pipeline consumes.
 ///
 /// Single place in the crate where per-arch `compile_module` calls live.
-/// Callers stay free of `sf_arch_*` cfgs — unsupported builds get an empty
-/// vec (fallback to the emulator path).
+/// Callers stay free of `sf_arch_*` cfgs. When the emulator feature is
+/// compiled, the reference backend reports an empty native-code vector and
+/// execution falls back to the MIR interpreter path.
 pub(crate) fn dispatch_compile_module(
     active_backend: NativeBackend,
     module: &ModuleInst,
@@ -278,6 +303,7 @@ pub(crate) fn dispatch_compile_module(
                 })
                 .collect())
         }
+        #[cfg(sf_emulator)]
         NativeBackend::Reference => Ok(Vec::new()),
     }
 }
@@ -303,6 +329,7 @@ pub(crate) fn dispatch_eval(
         NativeBackend::Armv7a => armv7a::eval(spec, code, store, args, backend_name),
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
+        #[cfg(sf_emulator)]
         NativeBackend::Reference => emulator::eval(spec, code, store, args, backend_name),
     }
 }
@@ -315,7 +342,7 @@ pub(crate) fn backend_mode_test_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, sf_emulator))]
 mod tests {
     use super::{
         backend_display_name, backend_mode_test_lock, compile_backend_config,
