@@ -12,7 +12,6 @@
 //! These are structural cleanups only. They must preserve the prepared SSA
 //! semantics exactly; they are not heuristic optimizations.
 
-use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -26,24 +25,15 @@ use super::ssa_ir::{
 
 pub(crate) fn cleanup_program(program: &mut SsaProgram) {
     loop {
-        let mut changed = false;
-
-        if simplify_cache_only_runs(program) {
-            changed = true;
-        }
-        if thread_one_empty_goto_block(program) {
-            continue;
-        }
+        simplify_cache_only_runs(program);
+        while thread_one_empty_goto_block(program) {}
         if merge_one_goto_successor(program) {
             continue;
         }
         if remove_unreachable_blocks(program) {
             continue;
         }
-
-        if !changed {
-            break;
-        }
+        break;
     }
 }
 
@@ -87,60 +77,64 @@ enum EdgeLocation {
     BrTable { block: usize, entry: usize },
 }
 
-fn simplify_cache_only_runs(program: &mut SsaProgram) -> bool {
-    let mut changed = false;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ValueSubstitution {
+    from: SsaValue,
+    to: SsaValue,
+}
 
+fn simplify_cache_only_runs(program: &mut SsaProgram) {
     for block in &mut program.blocks {
         let old_ops = core::mem::take(&mut block.ops);
         let mut new_ops = Vec::with_capacity(old_ops.len());
-        let mut pending = old_ops.into_iter().peekable();
-        while let Some(inst) = pending.next() {
+        let mut cache_run = Vec::new();
+        for inst in old_ops {
             if !is_cache_only_op(&inst.kind) {
+                flush_cache_run(&mut new_ops, &mut cache_run);
                 new_ops.push(inst);
                 continue;
             }
-
-            let mut run = vec![inst];
-            while pending
-                .peek()
-                .map(|next| is_cache_only_op(&next.kind))
-                .unwrap_or(false)
-            {
-                run.push(
-                    pending
-                        .next()
-                        .expect("peeked Some above when extending cache-only run"),
-                );
-            }
-
-            let replacement = simplify_cache_run(&run);
-            if replacement.len() != run.len()
-                || replacement
-                    .iter()
-                    .zip(run.iter())
-                    .any(|(new_inst, old_inst)| new_inst.kind != old_inst.kind)
-            {
-                changed = true;
-            }
-            new_ops.extend(replacement);
+            accumulate_cache_run_state(&mut cache_run, &inst.kind);
         }
+        flush_cache_run(&mut new_ops, &mut cache_run);
 
         block.ops = new_ops;
     }
-
-    changed
 }
 
+#[cfg(test)]
 fn simplify_cache_run(run: &[SsaInst]) -> Vec<SsaInst> {
-    let mut by_slot = BTreeMap::<u16, CacheRunState>::new();
+    let mut by_slot = Vec::<(u16, CacheRunState)>::new();
     for inst in run {
-        let slot =
-            cache_run_slot(&inst.kind).expect("cache-only run should only contain cache ops");
-        by_slot.entry(slot.0).or_default().apply(&inst.kind);
+        accumulate_cache_run_state(&mut by_slot, &inst.kind);
     }
 
-    let mut out = Vec::new();
-    for (&slot_index, state) in &by_slot {
+    let mut out = Vec::with_capacity(by_slot.len().saturating_mul(2));
+    flush_cache_run(&mut out, &mut by_slot);
+    out
+}
+
+fn accumulate_cache_run_state(by_slot: &mut Vec<(u16, CacheRunState)>, kind: &SsaInstKind) {
+    let slot = cache_run_slot(kind).expect("cache-only run should only contain cache ops");
+    match by_slot
+        .iter_mut()
+        .find(|(slot_index, _)| *slot_index == slot.0)
+    {
+        Some((_, state)) => state.apply(kind),
+        None => {
+            let mut state = CacheRunState::default();
+            state.apply(kind);
+            by_slot.push((slot.0, state));
+        }
+    }
+}
+
+fn flush_cache_run(out: &mut Vec<SsaInst>, by_slot: &mut Vec<(u16, CacheRunState)>) {
+    if by_slot.is_empty() {
+        return;
+    }
+    by_slot.sort_unstable_by_key(|(slot_index, _)| *slot_index);
+    for &(slot_index, state) in by_slot.iter() {
         let slot = super::frame::FrameSlot(slot_index);
         if state.needs_drop {
             out.push(SsaInst {
@@ -148,7 +142,7 @@ fn simplify_cache_run(run: &[SsaInst]) -> Vec<SsaInst> {
             });
         }
     }
-    for (&slot_index, state) in &by_slot {
+    for &(slot_index, state) in by_slot.iter() {
         let slot = super::frame::FrameSlot(slot_index);
         match state.present {
             Some(CachePresence::Ensured) => out.push(SsaInst {
@@ -160,7 +154,7 @@ fn simplify_cache_run(run: &[SsaInst]) -> Vec<SsaInst> {
             None => {}
         }
     }
-    out
+    by_slot.clear();
 }
 
 #[inline]
@@ -185,33 +179,30 @@ fn cache_run_slot(kind: &SsaInstKind) -> Option<super::frame::FrameSlot> {
 
 fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
     for block_index in 0..program.blocks.len() {
-        let Some(out_edge) = (match &program.blocks[block_index].terminator {
+        let (target, bindings_empty) = match &program.blocks[block_index].terminator {
             SsaTerminator::Goto(edge) if program.blocks[block_index].ops.is_empty() => {
-                Some(edge.clone())
+                (edge.target, edge.bindings.is_empty())
             }
-            _ => None,
-        }) else {
-            continue;
+            _ => continue,
         };
-        if out_edge.target.as_usize() == block_index {
+        if target.as_usize() == block_index {
             continue;
         }
 
-        let params = program.blocks[block_index].params.clone();
         if block_index == program.entry.as_usize() {
-            if !params.is_empty() || !out_edge.bindings.is_empty() {
+            if !program.blocks[block_index].params.is_empty() || !bindings_empty {
                 continue;
             }
             if program
                 .block_entry_cached_slots
-                .get(out_edge.target.as_usize())
+                .get(target.as_usize())
                 .map(|slots| !slots.is_empty())
                 .unwrap_or(false)
             {
                 continue;
             }
-            merge_block_origins_into_target(program, block_index, out_edge.target.as_usize());
-            program.entry = out_edge.target;
+            merge_block_origins_into_target(program, block_index, target.as_usize());
+            program.entry = target;
             remove_blocks(program, &[block_index]);
             return true;
         }
@@ -222,13 +213,20 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
         }
 
         let mut composed = Vec::with_capacity(incoming.len());
-        for &loc in &incoming {
-            let edge = edge_at(program, loc);
-            let Some(new_edge) = compose_edge(edge, &params, &out_edge) else {
-                composed.clear();
-                break;
+        {
+            let block = &program.blocks[block_index];
+            let params = &block.params;
+            let SsaTerminator::Goto(out_edge) = &block.terminator else {
+                unreachable!("empty goto block should still end in goto");
             };
-            composed.push(new_edge);
+            for &loc in &incoming {
+                let edge = edge_at(program, loc);
+                let Some(new_edge) = compose_edge(edge, params, out_edge) else {
+                    composed.clear();
+                    break;
+                };
+                composed.push(new_edge);
+            }
         }
         if composed.is_empty() {
             continue;
@@ -237,7 +235,7 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
         for (loc, new_edge) in incoming.into_iter().zip(composed.into_iter()) {
             *edge_at_mut(program, loc) = new_edge;
         }
-        merge_block_origins_into_target(program, block_index, out_edge.target.as_usize());
+        merge_block_origins_into_target(program, block_index, target.as_usize());
         remove_blocks(program, &[block_index]);
         return true;
     }
@@ -248,10 +246,7 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
 fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
     let predecessor_counts = predecessor_counts(program);
     for pred_index in 0..program.blocks.len() {
-        let Some(edge) = (match &program.blocks[pred_index].terminator {
-            SsaTerminator::Goto(edge) => Some(edge.clone()),
-            _ => None,
-        }) else {
+        let SsaTerminator::Goto(edge) = &program.blocks[pred_index].terminator else {
             continue;
         };
         let succ_index = edge.target.as_usize();
@@ -262,7 +257,8 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             continue;
         }
 
-        let Some(subst) = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
+        let Some(subst) =
+            binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
         else {
             continue;
         };
@@ -305,9 +301,9 @@ fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
             continue;
         }
         reachable[block_index] = true;
-        for edge in outgoing_edges(&program.blocks[block_index].terminator) {
+        visit_outgoing_edges(&program.blocks[block_index].terminator, |edge| {
             stack.push(edge.target.as_usize());
-        }
+        });
     }
 
     let removed = reachable
@@ -325,11 +321,11 @@ fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
 fn predecessor_counts(program: &SsaProgram) -> Vec<usize> {
     let mut counts = vec![0usize; program.blocks.len()];
     for block in &program.blocks {
-        for edge in outgoing_edges(&block.terminator) {
+        visit_outgoing_edges(&block.terminator, |edge| {
             if let Some(count) = counts.get_mut(edge.target.as_usize()) {
                 *count += 1;
             }
-        }
+        });
     }
     counts
 }
@@ -372,17 +368,10 @@ fn incoming_edge_locations(program: &SsaProgram, target_index: usize) -> Vec<Edg
 }
 
 fn compose_edge(in_edge: &SsaEdge, params: &[SsaValue], out_edge: &SsaEdge) -> Option<SsaEdge> {
-    let param_set = params.iter().copied().collect::<BTreeSet<_>>();
-    let param_map = in_edge
-        .bindings
-        .iter()
-        .map(|binding| (binding.param, binding.value))
-        .collect::<BTreeMap<_, _>>();
-
     let mut bindings = Vec::with_capacity(out_edge.bindings.len());
     for binding in &out_edge.bindings {
-        let value = if param_set.contains(&binding.value) {
-            *param_map.get(&binding.value)?
+        let value = if params.contains(&binding.value) {
+            find_binding_value(&in_edge.bindings, binding.value)?
         } else {
             binding.value
         };
@@ -401,18 +390,18 @@ fn compose_edge(in_edge: &SsaEdge, params: &[SsaValue], out_edge: &SsaEdge) -> O
 fn binding_substitution(
     params: &[SsaValue],
     bindings: &[SsaBinding],
-) -> Option<BTreeMap<SsaValue, SsaValue>> {
-    let map = bindings
-        .iter()
-        .map(|binding| (binding.param, binding.value))
-        .collect::<BTreeMap<_, _>>();
+) -> Option<Vec<ValueSubstitution>> {
+    let mut subst = Vec::with_capacity(params.len());
     for &param in params {
-        map.get(&param)?;
+        subst.push(ValueSubstitution {
+            from: param,
+            to: find_binding_value(bindings, param)?,
+        });
     }
-    Some(map)
+    Some(subst)
 }
 
-fn substitute_inst(inst: SsaInst, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaInst {
+fn substitute_inst(inst: SsaInst, subst: &[ValueSubstitution]) -> SsaInst {
     SsaInst {
         kind: match inst.kind {
             SsaInstKind::Value { op, args, results } => SsaInstKind::Value {
@@ -453,7 +442,7 @@ fn substitute_inst(inst: SsaInst, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaIn
 
 fn substitute_terminator(
     terminator: SsaTerminator,
-    subst: &BTreeMap<SsaValue, SsaValue>,
+    subst: &[ValueSubstitution],
 ) -> SsaTerminator {
     match terminator {
         SsaTerminator::Goto(edge) => SsaTerminator::Goto(substitute_edge(edge, subst)),
@@ -478,7 +467,7 @@ fn substitute_terminator(
     }
 }
 
-fn substitute_edge(edge: SsaEdge, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaEdge {
+fn substitute_edge(edge: SsaEdge, subst: &[ValueSubstitution]) -> SsaEdge {
     SsaEdge {
         target: edge.target,
         bindings: edge
@@ -493,12 +482,16 @@ fn substitute_edge(edge: SsaEdge, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaEd
 }
 
 #[inline]
-fn substitute_value(value: SsaValue, subst: &BTreeMap<SsaValue, SsaValue>) -> SsaValue {
-    subst.get(&value).copied().unwrap_or(value)
+fn substitute_value(value: SsaValue, subst: &[ValueSubstitution]) -> SsaValue {
+    subst.iter().find(|entry| entry.from == value).map_or(value, |entry| entry.to)
 }
 
 fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     if removed.is_empty() {
+        return;
+    }
+    if removed.len() == 1 {
+        remove_one_block(program, removed[0]);
         return;
     }
 
@@ -579,6 +572,31 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     }
 }
 
+fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
+    debug_assert!(
+        removed_index < program.blocks.len(),
+        "removed block index out of range"
+    );
+    debug_assert_ne!(program.entry.as_usize(), removed_index);
+
+    program.blocks.remove(removed_index);
+    program.block_entry_cached_slots.remove(removed_index);
+    if !program.block_cfg_origins.is_empty() {
+        program.block_cfg_origins.remove(removed_index);
+    }
+
+    if program.entry.as_usize() > removed_index {
+        program.entry = SsaTarget(program.entry.0 - 1);
+    }
+
+    for (index, block) in program.blocks.iter_mut().enumerate().skip(removed_index) {
+        block.id = SsaTarget(index as u32);
+    }
+    for block in &mut program.blocks {
+        remap_terminator_target_after_single_removal(&mut block.terminator, removed_index);
+    }
+}
+
 fn merge_block_origins_into_target(program: &mut SsaProgram, from: usize, to: usize) {
     if program.block_cfg_origins.is_empty()
         || from == to
@@ -642,17 +660,63 @@ fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
     }
 }
 
-fn outgoing_edges(term: &SsaTerminator) -> Vec<&SsaEdge> {
+fn remap_terminator_target_after_single_removal(term: &mut SsaTerminator, removed_index: usize) {
     match term {
-        SsaTerminator::Goto(edge) => alloc::vec![edge],
+        SsaTerminator::Goto(edge) => {
+            remap_target_after_single_removal(&mut edge.target, removed_index);
+        }
         SsaTerminator::Branch {
             then_edge,
             else_edge,
             ..
-        } => alloc::vec![then_edge, else_edge],
-        SsaTerminator::BrTable { entries, .. } => entries.iter().collect(),
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => Vec::new(),
+        } => {
+            remap_target_after_single_removal(&mut then_edge.target, removed_index);
+            remap_target_after_single_removal(&mut else_edge.target, removed_index);
+        }
+        SsaTerminator::BrTable { entries, .. } => {
+            for edge in entries {
+                remap_target_after_single_removal(&mut edge.target, removed_index);
+            }
+        }
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
     }
+}
+
+#[inline]
+fn remap_target_after_single_removal(target: &mut SsaTarget, removed_index: usize) {
+    let target_index = target.as_usize();
+    debug_assert_ne!(target_index, removed_index);
+    if target_index > removed_index {
+        target.0 -= 1;
+    }
+}
+
+fn visit_outgoing_edges(term: &SsaTerminator, mut visit: impl FnMut(&SsaEdge)) {
+    match term {
+        SsaTerminator::Goto(edge) => visit(edge),
+        SsaTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            visit(then_edge);
+            visit(else_edge);
+        }
+        SsaTerminator::BrTable { entries, .. } => {
+            for edge in entries {
+                visit(edge);
+            }
+        }
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+    }
+}
+
+#[inline]
+fn find_binding_value(bindings: &[SsaBinding], param: SsaValue) -> Option<SsaValue> {
+    bindings
+        .iter()
+        .find(|binding| binding.param == param)
+        .map(|binding| binding.value)
 }
 
 fn edge_at(program: &SsaProgram, location: EdgeLocation) -> &SsaEdge {
@@ -895,5 +959,96 @@ mod tests {
         assert!(remove_unreachable_blocks(&mut program));
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.entry, SsaTarget(0));
+    }
+
+    #[test]
+    fn remove_single_block_reindexes_targets_and_entry() {
+        let mut program = SsaProgram {
+            entry: SsaTarget(2),
+            blocks: alloc::vec![
+                SsaBlock {
+                    id: SsaTarget(0),
+                    params: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(2),
+                        bindings: Vec::new(),
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(1),
+                    params: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SsaTerminator::Return { results: None },
+                },
+                SsaBlock {
+                    id: SsaTarget(2),
+                    params: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(3),
+                        bindings: Vec::new(),
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(3),
+                    params: Vec::new(),
+                    ops: Vec::new(),
+                    terminator: SsaTerminator::Return { results: None },
+                },
+            ],
+            local_slot_types: Vec::new(),
+            local_slot_info: Vec::new(),
+            block_entry_cached_slots: alloc::vec![
+                alloc::vec![FrameSlot(0)],
+                alloc::vec![FrameSlot(1)],
+                alloc::vec![FrameSlot(2)],
+                alloc::vec![FrameSlot(3)],
+            ],
+            block_cfg_origins: alloc::vec![
+                alloc::vec![10],
+                alloc::vec![11],
+                alloc::vec![12],
+                alloc::vec![13],
+            ],
+            value_types: Vec::new(),
+            value_sink_local: Vec::new(),
+        };
+
+        remove_blocks(&mut program, &[1]);
+
+        assert_eq!(program.entry, SsaTarget(1));
+        assert_eq!(program.blocks.len(), 3);
+        assert_eq!(
+            program.blocks.iter().map(|block| block.id).collect::<Vec<_>>(),
+            alloc::vec![SsaTarget(0), SsaTarget(1), SsaTarget(2)]
+        );
+        assert_eq!(
+            match &program.blocks[0].terminator {
+                SsaTerminator::Goto(edge) => edge.target,
+                other => panic!("expected goto, got {other:?}"),
+            },
+            SsaTarget(1)
+        );
+        assert_eq!(
+            match &program.blocks[1].terminator {
+                SsaTerminator::Goto(edge) => edge.target,
+                other => panic!("expected goto, got {other:?}"),
+            },
+            SsaTarget(2)
+        );
+        assert_eq!(
+            program.block_entry_cached_slots,
+            alloc::vec![
+                alloc::vec![FrameSlot(0)],
+                alloc::vec![FrameSlot(2)],
+                alloc::vec![FrameSlot(3)],
+            ]
+        );
+        assert_eq!(
+            program.block_cfg_origins,
+            alloc::vec![alloc::vec![10], alloc::vec![12], alloc::vec![13],]
+        );
+        validate_program(&program).unwrap();
     }
 }

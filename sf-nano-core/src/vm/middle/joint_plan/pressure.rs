@@ -10,8 +10,8 @@
 //! - values required by the current local op shape are effectively pinned by
 //!   giving them the strongest keep key
 
+#[cfg(test)]
 use alloc::collections::BTreeSet;
-
 #[cfg(test)]
 use crate::vm::middle::budget::count_live_bank_budget_units;
 use crate::{
@@ -97,26 +97,6 @@ pub(crate) fn fits_with_cached_locals(
         semantic_successor_live_types(plan, semantic_index),
         resident_cache,
     )
-}
-
-pub(crate) fn weakest_cached_local(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    resident_cache: &BTreeSet<FrameSlot>,
-    bank: CacheBank,
-    used_now: Option<FrameSlot>,
-) -> Option<FrameSlot> {
-    let mut best: Option<(FrameSlot, KeepKey)> = None;
-    for &slot in resident_cache {
-        if slot_bank(&plan.local_slot_types, slot) != bank {
-            continue;
-        }
-        let key = keep_key(plan, semantic_index, slot, used_now, false);
-        if best.map(|(_, current)| key < current).unwrap_or(true) {
-            best = Some((slot, key));
-        }
-    }
-    best.map(|(slot, _)| slot)
 }
 
 pub(crate) fn keep_key(
