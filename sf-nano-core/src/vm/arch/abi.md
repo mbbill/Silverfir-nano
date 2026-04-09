@@ -24,10 +24,10 @@ This document does **not** define:
 
 ## The Two Rules
 
-### Rule 1: Only fixed MachineIR registers require free preservation
+### Rule 1: Only fixed MachineIR registers require mandatory call-boundary preservation
 
-Only the fixed MachineIR registers are required to survive foreign-call
-boundaries without compiler-inserted spills.
+Only the fixed MachineIR registers are required to stay live across helper
+calls and local native calls as part of the ABI contract.
 
 Those fixed roles are:
 
@@ -36,21 +36,30 @@ Those fixed roles are:
 - `MACHINE_MEM0_BASE_REG`
 - `MACHINE_MEM0_SIZE_REG`
 
-Therefore, each backend must map these fixed roles to physical registers that
-are unquestionably preserved across the target's foreign ABI boundary.
+Each backend must define how these four roles survive both boundary classes:
 
-Cached locals and linear values do **not** require free preservation. They may be
-saved and restored explicitly by lowering.
+- **Foreign helper / runtime boundaries**: preferably map them to physical
+  registers that are unquestionably preserved by the platform C ABI. If that
+  is impossible on a target, the boundary wrapper must save and restore the
+  fixed roles explicitly.
+- **Local native calls**: the engine's JIT-to-JIT ABI must preserve them,
+  again preferably by keeping them in preserved host registers and otherwise
+  by an explicit save/restore sequence in the local-call boundary.
 
-### Rule 2: If a register is not unquestionably callee-saved, treat it as caller-saved
+Cached locals and linear values do **not** require this mandatory
+preservation. They may be published to frame slots and reloaded explicitly by
+lowering.
+
+### Rule 2: If a register is not unquestionably callee-saved at the foreign ABI boundary, treat it as caller-saved there
 
 If a platform ABI, OS ABI, toolchain convention, or platform register rule is
 ambiguous, the backend must not rely on that register for fixed MachineIR
-state.
+state across foreign calls.
 
 Use the conservative policy:
 
-- fixed MachineIR roles only in unquestionably preserved registers
+- fixed MachineIR roles only in unquestionably preserved registers, unless the
+  foreign-boundary wrapper saves and restores them explicitly
 - ambiguous or platform-sensitive registers treated as caller-saved
 - caller-saved registers are still usable for cached locals or linear values if
   lowering already spills them at the relevant boundaries
@@ -102,6 +111,15 @@ native calls:
 Fixed registers are part of the native ABI contract. A backend must not model
 them as disposable temporaries.
 
+Backends should preserve them in the cheapest robust way:
+
+- preferred: choose host registers that already survive the relevant boundary
+  (for example, host callee-saved registers across the C ABI)
+- fallback: save and restore the fixed roles explicitly in the backend's
+  helper-boundary wrapper or local-call sequence
+
+Callers should observe the fixed roles as continuously live either way.
+
 ### Dynamic GP / FP banks
 
 Each backend exposes one ordered GP dynamic bank and one ordered FP dynamic
@@ -138,7 +156,8 @@ only touch:
 - the physical registers named by the MIR operands being lowered
 - the 4 fixed MachineIR registers, when the instruction's semantics require
   them
-- scratch registers that were explicitly acquired from the scratch pool
+- backend-owned temporary registers that were explicitly claimed from the
+  relevant ownership tracker
 - foreign ABI argument / return registers, but only while lowering the
   boundary itself
 
@@ -148,29 +167,34 @@ What a backend must **not** do during ordinary lowering:
 - pick a convenient dynamic FP register as an extra temp
 - use `C_ARG*` / `C_RET*` as general-purpose temporaries away from the
   boundary
-- touch scratch-only registers without first reserving them from the pool
+- touch backend-owned temp registers without first claiming them
 
 If a lowering sequence needs one more temporary than its explicit operands
-provide, it must reserve one from the scratch pool. "This register looks dead
-here" is not a valid reason to bypass ownership tracking.
+provide, it must claim one through the backend's ownership mechanism. For many
+targets that is the shared scratch pool; for ISA-specific registers it may be a
+target-local owner. "This register looks dead here" is not a valid reason to
+bypass ownership tracking.
 
-### Scratch registers require explicit ownership
+### Backend-owned temporary registers require explicit ownership
 
-Scratch-only registers exist specifically so backends have a place to put
-temporary values while lowering.
+Backend-owned temporary registers exist specifically so backends have a place
+to put temporary values while lowering. Some targets use the shared generic
+scratch pool for this. Others may also need target-local ownership for
+architecturally fixed registers that certain instruction forms require.
 
-The scratch pool is the ownership protocol for those registers:
+Whatever mechanism a backend uses, it must provide the same ownership
+guarantees:
 
 - reserve before use
 - keep the reservation for the whole period the temp is live
 - release when the temp is dead
 
-The purpose of the pool is not just convenience. It prevents unrelated lowering
-helpers from accidentally clobbering each other when they are composed, nested,
-or refactored.
+The purpose of the ownership tracker is not just convenience. It prevents
+unrelated lowering helpers from accidentally clobbering each other when they
+are composed, nested, or refactored.
 
-Backend code should therefore treat naked scratch-register use as a correctness
-bug, not as an optimization shortcut.
+Backend code should therefore treat naked backend-owned-temp use as a
+correctness bug, not as an optimization shortcut.
 
 ### Dynamic registers are not backend temporaries
 
@@ -203,7 +227,8 @@ how dynamic state becomes safe:
 - transients are dead before the boundary
 - cached locals are published back to their canonical frame slots before the
   boundary
-- fixed registers remain live across the boundary by ABI design
+- fixed registers remain live across the boundary because the backend preserves
+  them there
 
 Therefore the backend must **not** paper over a bug by conservatively saving
 and restoring the dynamic GP bank, the dynamic FP bank, or some guessed subset
@@ -212,9 +237,10 @@ of them around a helper or local call.
 If such a save/restore seems necessary, the bug is almost certainly one of:
 
 - ordinary lowering touched a register it did not own
-- a scratch register was used without pool ownership
+- a backend-owned temporary register was used without explicit ownership
 - boundary lowering failed to follow the shared publish / reload protocol
-- the target's `abi.rs` mapped a fixed role to the wrong physical register
+- the target's `abi.rs` mapped a fixed role to the wrong physical register or
+  forgot to preserve it at the boundary
 
 The fix is to repair ownership or boundary semantics at the root cause, not to
 promote dynamic registers into hidden ABI-preserved state.
@@ -231,10 +257,12 @@ These constraints exist for three reasons:
 - **Performance**: blanket save/restore of dynamic banks hides the real bug and
   adds hot-path overhead to every boundary.
 
-The arm64 backend is the reference implementation for this discipline: it
-mostly confines itself to explicit operands plus scratch-pool temps, and it
-asserts that scratch reservations are fully released between instructions.
-Other backends are expected to follow the same model.
+The arm64 backend is the simplest reference implementation for this discipline:
+it mostly confines itself to explicit operands plus common-pool temps, and it
+asserts that scratch reservations are fully released between instructions. x64
+adds target-local ownership for ISA-mandated GP registers, but the rule is the
+same: no naked touching of non-operand temporaries. Other backends are expected
+to follow the same model.
 
 ## Boundary Semantics
 
@@ -243,11 +271,18 @@ Other backends are expected to follow the same model.
 At a helper-backed boundary, lowering owns synchronization of non-fixed dynamic
 state.
 
+Independently, the backend must preserve the 4 fixed MachineIR roles across the
+foreign boundary. The preferred strategy is to keep them in host
+callee-saved/preserved registers; the fallback is an explicit save/restore in
+the helper-boundary wrapper. Shared cache publication does **not** preserve
+fixed regs for the backend.
+
 The shared model is:
 
 1. publish all cached locals to their canonical frame slots
 2. issue `CallExternal`
-3. reload any fixed cached views that are modeled as explicit MachineIR state
+3. refresh any fixed cached views whose semantic contents may have changed
+   across the helper (for example `mem0` base/size after helper side effects)
 4. reload cached locals from their frame slots
 
 In the current code, this is implemented by:
@@ -260,6 +295,8 @@ In the current code, this is implemented by:
 This means:
 
 - helper-time cache synchronization is shared MachineIR behavior
+- refreshing `mem0` cache regs after a helper is a semantic cache update, not
+  compensation for fixed-register clobbering
 - backends should not invent hidden cache-reload policy beyond what the
   MachineIR contract requires
 
@@ -276,6 +313,12 @@ The engine defines its own JIT-to-JIT ABI. Therefore:
 - cached locals are not required to survive local calls in registers
 - fixed registers are the only always-live machine state across local calls
 
+The local-call ABI must preserve those fixed registers. The preferred strategy
+is again to keep them in host registers that the callee does not clobber. If a
+target cannot do that, its local-call sequence must save and restore the fixed
+roles explicitly. Either way, callers should observe the fixed roles as live on
+return.
+
 ### Foreign C ABI argument and return registers
 
 Per-target `abi.rs` may also define physical C ABI boundary registers such as
@@ -286,7 +329,8 @@ facts used only while entering or leaving a helper or other foreign boundary.
 
 Rules:
 
-- `C_ARG*` / `C_RET*` may overlap caller-clobbered dynamic or scratch registers
+- `C_ARG*` / `C_RET*` may overlap caller-clobbered dynamic or backend-owned
+  temp registers
 - `C_ARG*` / `C_RET*` must not overlap the 4 fixed MachineIR roles
 - non-boundary backend code must not treat `C_ARG*` / `C_RET*` as general
   allocatable registers
@@ -295,7 +339,8 @@ Why the overlap is safe:
 
 - SSA values are required to be dead before the foreign boundary
 - cached locals are published to frame slots before the foreign boundary
-- fixed registers remain live across the boundary
+- fixed registers are preserved across the boundary by the backend's fixed-role
+  strategy
 
 So the foreign ABI temporarily reuses caller-saved physical registers only
 after shared lowering has made dynamic MachineIR state unavailable there.
@@ -307,7 +352,7 @@ Frame slots are the canonical storage for:
 - locals
 - spilled cached locals
 - call arguments/results
-- machine call-link metadata
+- backend-private local-call record metadata
 
 Registers are an execution cache over that canonical frame state.
 
@@ -323,11 +368,14 @@ Consequences:
 Each backend `abi.rs` must define:
 
 - which physical registers back the 4 fixed MachineIR roles
+- how those 4 fixed roles are preserved across foreign helper boundaries and
+  local native calls
 - which physical GP/FP registers are allocatable for dynamic MachineIR regs
 - the ordering of those dynamic registers
 - which subset of the dynamic bank is caller-clobbered vs callee-saved, when
   that matters for helper wrappers or shared prologues
-- which physical registers are scratch-only
+- which physical registers are backend-owned temporaries (generic scratch,
+  ISA-mandated temps, or both)
 - what the backend must save/restore in the shared prologue/epilogue
 - stack-alignment and other target ABI facts needed by code generation
 
@@ -340,13 +388,18 @@ When bringing up a new native target:
 
 1. Identify the target's unquestionably preserved registers at the foreign ABI
    boundary.
-2. Place the 4 fixed MachineIR roles only in that unquestionably preserved set.
-3. Prefer caller-saved registers for linear values.
-4. Place cached locals in whatever remaining registers are useful, including
+2. Prefer to place the 4 fixed MachineIR roles only in that unquestionably
+   preserved set.
+3. If that is impossible, implement explicit save/restore of the 4 fixed roles
+   in the foreign-boundary wrapper and document the choice in `abi.rs`.
+4. Define how local native calls preserve the 4 fixed roles as well; reuse the
+   same physical mapping when possible.
+5. Prefer caller-saved registers for linear values.
+6. Place cached locals in whatever remaining registers are useful, including
    caller-saved ones if lowering already spills them.
-5. If a register has platform-specific meaning or uncertain preservation, do
+7. If a register has platform-specific meaning or uncertain preservation, do
    not use it for fixed MachineIR state.
-6. Keep any target-specific exception in the target's `abi.rs`, not in shared
+8. Keep any target-specific exception in the target's `abi.rs`, not in shared
    runtime structures.
 
 ## 32-Bit Note
@@ -387,9 +440,10 @@ external callbacks).
 
 ### Body prelude and terminal sequences
 
-If the body emits any native call (direct, indirect, external, or trap
-helper), the function starts with a backend-specific **body prelude**
-between `internal_entry_label` and the first body block:
+Today, native backends emit a backend-specific **body prelude** between
+`internal_entry_label` and the first body block. This prelude is what makes
+nested native calls safe in the body; leaf bodies may eventually skip it as an
+optimization, but that gating is not part of the current ABI metadata yet.
 
 | Backend  | Body prelude                                |
 |----------|---------------------------------------------|
@@ -398,12 +452,11 @@ between `internal_entry_label` and the first body block:
 | x86_64   | `sub rsp, 8` — alignment shim               |
 | emulator | none                                        |
 
-`MachineFunctionAbi::body_emits_native_call` records whether the body
-needs the prelude, computed during machine lowering by walking the MIR
-and asking `mir_op_emits_host_call(&kind)` for each op (true for
-`CallDirect`, `CallIndirect`, `CallExternal`, `Trap`, and `TrapIf`).
-A pure leaf body skips the prelude — and the matching epilogue cost in
-both terminal sequences below — entirely.
+The current implementation always emits the prelude on native backends and
+never emits one in the emulator. If we later add a per-function
+`body_emits_native_call` bit, it should mean "this body actually needs the
+native-call prelude"; until then, readers should treat the prelude as
+unconditional on native backends.
 
 The body has exactly two terminal sequences:
 
@@ -517,16 +570,16 @@ publishes:
 - `init_locals` — non-param local slots that may be read before being
   written. The callee zero-initialises these at function entry; locals
   not listed here are written before any read.
-- `body_emits_native_call` — see above.
 
 ### Host-stack-depth caveat
 
 The local-call ABI consumes host stack proportional to native call
 depth: each nested local call pushes a 16-byte backend-private call
-record, and on arm64/armv7a a non-leaf body also pushes 16 bytes for
-its link save. For a wasm program that recurses W levels deep, host
-stack consumption is roughly `16 * W + 16 * (non_leaves on the path)`
-bytes.
+record, and each native body also pays its backend-specific body
+prelude cost (currently 16 bytes on arm64/armv7a, 8 bytes on x86_64,
+0 in the emulator). For a wasm program that recurses W levels deep,
+host stack consumption is therefore roughly "call-record cost per edge
++ body-prelude cost per active native body" along the active path.
 
 `vm/runtime/context.rs` does **not** maintain a `native_call_depth`
 guard today. The current assumption is that the wasm-side stack

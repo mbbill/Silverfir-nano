@@ -93,6 +93,11 @@ impl<R: Copy, const N: usize> ScratchPool<R, N> {
 
     /// Get the physical register at a pool index (allocated by `alloc()`).
     pub(crate) fn reg(&self, idx: u8) -> R {
+        debug_assert!(
+            self.in_use.get() & (1 << idx) != 0,
+            "ScratchPool: slot {} read without ownership",
+            idx
+        );
         self.regs[idx as usize]
     }
 

@@ -268,14 +268,13 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.lower_bl(internal_entry_label);
     }
 
-    /// Body entry prelude. Always-on in 1A: push x29/x30 onto the host
-    /// stack so the body can freely make nested `bl`s without losing the
-    /// LR set by the caller's `bl` into this function. The body's unified
-    /// Return and `body_local_error_label` both pop this pair before the
-    /// native `ret`.
+    /// Body entry prelude. Push x29/x30 onto the host stack so the body can
+    /// freely make nested `bl`s without losing the LR set by the caller's
+    /// `bl` into this function. The body's unified Return and
+    /// `body_local_error_label` both pop this pair before the native `ret`.
     ///
-    /// (1A.8 will gate this on `body_emits_native_call` so leaves don't
-    /// pay the unused stp/ldp pair.)
+    /// Native backends emit this prelude unconditionally today; a future leaf
+    /// optimization may skip it when the body makes no native calls.
     fn lower_body_prelude(&mut self) {
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();

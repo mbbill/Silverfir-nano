@@ -152,8 +152,9 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
     }
 
     fn lower_body_prelude(&mut self) {
-        // A real backend would push x29/x30 (or equivalent) when the body
-        // makes any host calls — see `body_emits_native_call`.
+        // A real backend would emit whatever body prelude its native-call ABI
+        // requires here. Today native backends do that unconditionally; a
+        // future leaf optimization may skip it for pure bodies.
     }
 
     fn lower_body_local_error_tail(&mut self) {

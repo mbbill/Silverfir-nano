@@ -20,6 +20,11 @@ use crate::vm::runtime::code_buf::CodeBuffer;
 /// - `emit_nop_padding` — the one exception: writes raw padding bytes into
 ///   the code buffer, not MachineIR lowering.
 ///
+/// Backends must follow the register-ownership and boundary rules documented in
+/// `vm/arch/abi.md`. In particular: ordinary lowering may touch only explicit
+/// operands, fixed regs when semantically required, and backend-owned temp regs
+/// that were explicitly claimed from the relevant ownership tracker.
+///
 /// The backend MUST have a `pub core: CompilerCore<'a>` field.
 /// Pipeline functions access it directly for shared state.
 pub(crate) trait ArchBackend<'a>: Sized {
@@ -63,11 +68,11 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //                                    kind (error) — see §9.
     //   4. (internal_entry_label binding)
     //   5. `lower_body_prelude`       — body entry prelude: per-arch
-    //                                    non-leaf setup (link save on
+    //                                    native-call setup (link save on
     //                                    arm64/armv7a, alignment shim on
-    //                                    x86_64). Always emitted in 1A;
-    //                                    1A.8 will gate it on
-    //                                    `body_emits_native_call`.
+    //                                    x86_64). Today native backends emit
+    //                                    it unconditionally; a future leaf
+    //                                    optimization may gate it.
     //   6. (body blocks + edge stubs)
     //   7. `lower_body_local_error_tail` — bound at `body_local_error_label`,
     //                                    pops link save + call record,
