@@ -18,7 +18,8 @@ use alloc::vec::Vec;
 
 use super::ssa_ir::{
     ir::{
-        SsaBinding, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+        SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator,
+        SsaValue,
     },
     target::SsaTarget,
 };
@@ -90,25 +91,33 @@ fn simplify_cache_only_runs(program: &mut SsaProgram) -> bool {
     let mut changed = false;
 
     for block in &mut program.blocks {
-        let mut new_ops = Vec::with_capacity(block.ops.len());
-        let mut index = 0usize;
-        while index < block.ops.len() {
-            if !is_cache_only_op(&block.ops[index].kind) {
-                new_ops.push(block.ops[index].clone());
-                index += 1;
+        let old_ops = core::mem::take(&mut block.ops);
+        let mut new_ops = Vec::with_capacity(old_ops.len());
+        let mut pending = old_ops.into_iter().peekable();
+        while let Some(inst) = pending.next() {
+            if !is_cache_only_op(&inst.kind) {
+                new_ops.push(inst);
                 continue;
             }
 
-            let start = index;
-            while index < block.ops.len() && is_cache_only_op(&block.ops[index].kind) {
-                index += 1;
+            let mut run = vec![inst];
+            while pending
+                .peek()
+                .map(|next| is_cache_only_op(&next.kind))
+                .unwrap_or(false)
+            {
+                run.push(
+                    pending
+                        .next()
+                        .expect("peeked Some above when extending cache-only run"),
+                );
             }
 
-            let replacement = simplify_cache_run(&block.ops[start..index]);
-            if replacement.len() != index - start
+            let replacement = simplify_cache_run(&run);
+            if replacement.len() != run.len()
                 || replacement
                     .iter()
-                    .zip(block.ops[start..index].iter())
+                    .zip(run.iter())
                     .any(|(new_inst, old_inst)| new_inst.kind != old_inst.kind)
             {
                 changed = true;
@@ -253,15 +262,23 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             continue;
         }
 
-        let succ = program.blocks[succ_index].clone();
-        let Some(subst) = binding_substitution(&succ.params, &edge.bindings) else {
+        let Some(subst) = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
+        else {
             continue;
         };
+        let succ = core::mem::replace(
+            &mut program.blocks[succ_index],
+            SsaBlock {
+                id: SsaTarget(u32::MAX),
+                params: Vec::new(),
+                ops: Vec::new(),
+                terminator: SsaTerminator::TrapUnreachable,
+            },
+        );
 
         let merged_ops = succ
             .ops
-            .iter()
-            .cloned()
+            .into_iter()
             .map(|inst| substitute_inst(inst, &subst))
             .collect::<Vec<_>>();
         let merged_terminator = substitute_terminator(succ.terminator, &subst);
@@ -485,48 +502,75 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
         return;
     }
 
-    let removed = removed.iter().copied().collect::<BTreeSet<_>>();
-    let mut mapping = vec![SsaTarget::default(); program.blocks.len()];
+    let block_len = program.blocks.len();
+    let mut removed_mask = vec![false; block_len];
+    for &index in removed {
+        debug_assert!(index < block_len, "removed block index out of range");
+        if let Some(slot) = removed_mask.get_mut(index) {
+            *slot = true;
+        }
+    }
+
+    let mut mapping = vec![SsaTarget::default(); block_len];
     let mut next = 0u32;
-    for (old_index, _) in program.blocks.iter().enumerate() {
-        if removed.contains(&old_index) {
+    for (old_index, is_removed) in removed_mask.iter().copied().enumerate() {
+        if is_removed {
             continue;
         }
         mapping[old_index] = SsaTarget(next);
         next += 1;
     }
 
-    let mut new_blocks = Vec::with_capacity(program.blocks.len() - removed.len());
-    let mut new_entries = Vec::with_capacity(
-        program
-            .block_entry_cached_slots
-            .len()
-            .saturating_sub(removed.len()),
-    );
+    let old_blocks = core::mem::take(&mut program.blocks);
+    let old_entries = core::mem::take(&mut program.block_entry_cached_slots);
     let keep_origins = !program.block_cfg_origins.is_empty();
-    let mut new_origins = if keep_origins {
-        Vec::with_capacity(
-            program
-                .block_cfg_origins
-                .len()
-                .saturating_sub(removed.len()),
-        )
+    let old_origins = if keep_origins {
+        core::mem::take(&mut program.block_cfg_origins)
     } else {
         Vec::new()
     };
-    for (old_index, mut block) in program.blocks.drain(..).enumerate() {
-        if removed.contains(&old_index) {
-            continue;
+    let kept_blocks = block_len.saturating_sub(removed.len());
+    let mut new_blocks = Vec::with_capacity(kept_blocks);
+    let mut new_entries = Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
+    let mut new_origins = if keep_origins {
+        Vec::with_capacity(old_origins.len().saturating_sub(removed.len()))
+    } else {
+        Vec::new()
+    };
+
+    if keep_origins {
+        for (old_index, ((mut block, entry_slots), origins)) in old_blocks
+            .into_iter()
+            .zip(old_entries.into_iter())
+            .zip(old_origins.into_iter())
+            .enumerate()
+        {
+            if removed_mask[old_index] {
+                continue;
+            }
+            remap_terminator_targets(&mut block.terminator, &mapping);
+            block.id = mapping[old_index];
+            new_blocks.push(block);
+            new_entries.push(entry_slots);
+            new_origins.push(origins);
         }
-        remap_terminator_targets(&mut block.terminator, &mapping);
-        block.id = mapping[old_index];
-        new_blocks.push(block);
-        new_entries.push(program.block_entry_cached_slots[old_index].clone());
-        if keep_origins {
-            new_origins.push(program.block_cfg_origins[old_index].clone());
+    } else {
+        for (old_index, (mut block, entry_slots)) in old_blocks
+            .into_iter()
+            .zip(old_entries.into_iter())
+            .enumerate()
+        {
+            if removed_mask[old_index] {
+                continue;
+            }
+            remap_terminator_targets(&mut block.terminator, &mapping);
+            block.id = mapping[old_index];
+            new_blocks.push(block);
+            new_entries.push(entry_slots);
         }
     }
 
+    debug_assert!(removed_mask.get(program.entry.as_usize()).copied() != Some(true));
     program.entry = mapping[program.entry.as_usize()];
     program.blocks = new_blocks;
     program.block_entry_cached_slots = new_entries;
@@ -543,26 +587,39 @@ fn merge_block_origins_into_target(program: &mut SsaProgram, from: usize, to: us
     {
         return;
     }
-    let from_origins = program.block_cfg_origins[from].clone();
-    for origin in from_origins {
-        if !program.block_cfg_origins[to].contains(&origin) {
-            program.block_cfg_origins[to].push(origin);
-        }
-    }
-    program.block_cfg_origins[to].sort_unstable();
+
+    let (from_origins, to_origins) = if from < to {
+        let (head, tail) = program.block_cfg_origins.split_at_mut(to);
+        (&head[from], &mut tail[0])
+    } else {
+        let (head, tail) = program.block_cfg_origins.split_at_mut(from);
+        (&tail[0], &mut head[to])
+    };
+    merge_origin_lists(from_origins, to_origins);
 }
 
 fn merge_block_origins(dst: usize, src: usize, origins: &mut [Vec<u32>]) {
     if origins.is_empty() || dst == src || dst >= origins.len() || src >= origins.len() {
         return;
     }
-    let src_origins = origins[src].clone();
-    for origin in src_origins {
-        if !origins[dst].contains(&origin) {
-            origins[dst].push(origin);
+
+    let (src_origins, dst_origins) = if src < dst {
+        let (head, tail) = origins.split_at_mut(dst);
+        (&head[src], &mut tail[0])
+    } else {
+        let (head, tail) = origins.split_at_mut(src);
+        (&tail[0], &mut head[dst])
+    };
+    merge_origin_lists(src_origins, dst_origins);
+}
+
+fn merge_origin_lists(src: &[u32], dst: &mut Vec<u32>) {
+    for &origin in src {
+        if !dst.contains(&origin) {
+            dst.push(origin);
         }
     }
-    origins[dst].sort_unstable();
+    dst.sort_unstable();
 }
 
 fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
