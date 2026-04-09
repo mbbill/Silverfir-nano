@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Build and run spectest for all backends: arm64, emu64, emu32, then armv7.
+# Build and run spectest for all supported native backends: arm64, x64,
+# emu64, emu32, then armv7.
 # Stops on first failure.
 #
 # Usage:
@@ -38,6 +39,16 @@ echo "=== spectest: arm64 ==="
 "$SPECTEST" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 echo
 
+# --- x64 ---
+
+echo "=== spectest: x64 ==="
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    "$REPO_ROOT/scripts/x64-spectest.sh" -- "${EXTRA_ARGS[@]}"
+else
+    "$REPO_ROOT/scripts/x64-spectest.sh"
+fi
+echo
+
 # --- emu64 ---
 
 echo "=== spectest: emu64 ==="
@@ -54,9 +65,9 @@ echo
 
 echo "=== spectest: armv7 ==="
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
-    "$REPO_ROOT/scripts/armv7-spectest.sh" -- "${EXTRA_ARGS[@]}"
+    "$REPO_ROOT/scripts/armv7a-spectest.sh" -- "${EXTRA_ARGS[@]}"
 else
-    "$REPO_ROOT/scripts/armv7-spectest.sh"
+    "$REPO_ROOT/scripts/armv7a-spectest.sh"
 fi
 echo
 

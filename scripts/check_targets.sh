@@ -1,46 +1,43 @@
 #!/usr/bin/env bash
 #
-# check-targets.sh — cross-compile `cargo check` sf-nano-core against every
-# supported (target_arch × target_os) combination in the host's installed
+# check-targets.sh — cross-compile `cargo check` for sf-nano-core, sf-nano-cli,
+# and sf-nano-spectest against every supported target in the host's installed
 # rustup target set.
 #
 # What it does
 # ------------
 # Runs `cargo check --target <t>` for each target in the matrix below and
-# reports pass/fail. Non-arm64 targets are currently skipped by default
-# because the x86_64 and armv7a backends on this branch lag behind the
-# arm64 + common pipeline refactor and do not build — the failures swamp
-# any real OS-layer regressions. Pass `--all` to exercise them anyway.
+# reports per-package pass/fail plus warning counts. arm64 and x86_64 targets
+# are included by default. Pass `--all` to include the still-noisy armv7a
+# target as well.
 #
 # Usage
 # -----
-#   scripts/check-targets.sh            # arm64 targets only (default)
-#   scripts/check-targets.sh --all      # include non-arm64 backends (noisy)
+#   scripts/check-targets.sh            # arm64 + x64 targets (default)
+#   scripts/check-targets.sh --all      # include armv7a as well
 #   scripts/check-targets.sh --install  # rustup target add anything missing
 #
-# Exit status is 0 only if every selected target passed.
+# Exit status is 0 only if every selected package check passed.
 #
 # Target matrix
 # -------------
-# | target                             | clean today? | exercises                |
-# |------------------------------------|--------------|---------------------------|
-# | aarch64-apple-darwin (host)        | yes          | runtime/os/macos.rs       |
-# | aarch64-unknown-linux-gnu          | yes          | runtime/os/linux.rs       |
-# | aarch64-unknown-none               | yes (1)      | runtime/os/none.rs        |
-# | x86_64-apple-darwin                | no (2)       | runtime/os/macos.rs       |
-# | x86_64-unknown-linux-gnu           | no (2)       | runtime/os/linux.rs + x64 trap handler |
-# | x86_64-pc-windows-gnu              | no (2)       | runtime/os/windows.rs     |
-# | armv7-unknown-linux-musleabihf     | no (3)       | runtime/os/linux.rs (32-bit) |
+# | target                             | pkg set                | exercises                |
+# |------------------------------------|------------------------|---------------------------|
+# | aarch64-apple-darwin (host)        | core + cli + spectest  | runtime/os/macos.rs       |
+# | aarch64-unknown-linux-gnu          | core + cli + spectest  | runtime/os/linux.rs       |
+# | aarch64-unknown-none               | core only (1)          | runtime/os/none.rs        |
+# | x86_64-apple-darwin                | core + cli + spectest  | runtime/os/macos.rs + x64 backend |
+# | x86_64-unknown-linux-gnu           | core + cli + spectest  | runtime/os/linux.rs + x64 trap handler |
+# | x86_64-pc-windows-gnu              | core + cli + spectest  | runtime/os/windows.rs     |
+# | armv7-unknown-linux-musleabihf     | core + cli + spectest  | runtime/os/linux.rs (32-bit) |
 #
 # (1) Must be built with --no-default-features --features jit (no guard-pages on bare-metal).
-# (2) Fails on pre-existing x86_64 backend drift, unrelated to the OS layer.
-# (3) Fails on pre-existing armv7a backend drift, unrelated to the OS layer.
+# (2) armv7a still fails today; keep it behind --all until that backend catches up.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CORE_DIR="$ROOT_DIR/sf-nano-core"
 BARE_SMOKE_DIR="$ROOT_DIR/sf-nano-bare-smoke"
 
 INCLUDE_ALL=0
@@ -60,24 +57,24 @@ for arg in "$@"; do
     esac
 done
 
-# Each entry: "label|target|extra cargo args"
-ARM64_TARGETS=(
-    "arm64-darwin|aarch64-apple-darwin|"
-    "arm64-linux|aarch64-unknown-linux-gnu|"
-    "arm64-none|aarch64-unknown-none|--no-default-features --features jit"
+# Each entry: "label|target|kind|core extra cargo args"
+DEFAULT_TARGETS=(
+    "arm64-darwin|aarch64-apple-darwin|hosted|"
+    "arm64-linux|aarch64-unknown-linux-gnu|hosted|"
+    "arm64-none|aarch64-unknown-none|bare|--no-default-features --features jit"
+    "x64-darwin|x86_64-apple-darwin|hosted|"
+    "x64-linux|x86_64-unknown-linux-gnu|hosted|"
+    "x64-windows|x86_64-pc-windows-gnu|hosted|"
 )
 
-NON_ARM64_TARGETS=(
-    "x64-darwin|x86_64-apple-darwin|"
-    "x64-linux|x86_64-unknown-linux-gnu|"
-    "x64-windows|x86_64-pc-windows-gnu|"
-    "armv7-linux|armv7-unknown-linux-musleabihf|"
+EXTRA_TARGETS=(
+    "armv7-linux|armv7-unknown-linux-musleabihf|hosted|"
 )
 
 if [[ $INCLUDE_ALL -eq 1 ]]; then
-    TARGETS=("${ARM64_TARGETS[@]}" "${NON_ARM64_TARGETS[@]}")
+    TARGETS=("${DEFAULT_TARGETS[@]}" "${EXTRA_TARGETS[@]}")
 else
-    TARGETS=("${ARM64_TARGETS[@]}")
+    TARGETS=("${DEFAULT_TARGETS[@]}")
 fi
 
 ensure_installed() {
@@ -96,26 +93,144 @@ ensure_installed() {
 LOG_DIR="$ROOT_DIR/target/check-targets-logs"
 mkdir -p "$LOG_DIR"
 
-printf '%-14s  %-32s  %s\n' "label" "target" "result"
-printf '%-14s  %-32s  %s\n' "-----" "------" "------"
+BUILD_DIR="$ROOT_DIR/target/check-targets-build"
+mkdir -p "$BUILD_DIR"
+
+PACKAGES=(core cli spectest)
+
+warning_count_from_log() {
+    local log="$1"
+    awk '
+        match($0, /generated [0-9]+ warnings/) {
+            text = substr($0, RSTART, RLENGTH)
+            gsub(/[^0-9]/, "", text)
+            total += text + 0
+            found = 1
+        }
+        END {
+            if (found) {
+                print total
+            } else {
+                print 0
+            }
+        }
+    ' "$log"
+}
+
+format_cell() {
+    local status="$1"
+    local warnings="${2:-0}"
+    case "$status" in
+        ok)
+            if [[ "$warnings" -gt 0 ]]; then
+                printf 'ok (%sw)' "$warnings"
+            else
+                printf 'ok'
+            fi
+            ;;
+        fail)
+            if [[ "$warnings" -gt 0 ]]; then
+                printf 'FAIL (%sw)' "$warnings"
+            else
+                printf 'FAIL'
+            fi
+            ;;
+        skip) printf 'SKIP' ;;
+        na) printf 'n/a' ;;
+        *) printf '%s' "$status" ;;
+    esac
+}
+
+run_package_check() {
+    local label="$1"
+    local target="$2"
+    local package_key="$3"
+    local core_extra="$4"
+    local log="$LOG_DIR/$label.$package_key.log"
+    local target_dir="$BUILD_DIR/$label-$package_key"
+    local cargo_args=()
+
+    case "$package_key" in
+        core)
+            cargo_args=(-p sf-nano-core)
+            if [[ -n "$core_extra" ]]; then
+                # shellcheck disable=SC2206  # split extra flags into argv
+                cargo_args+=($core_extra)
+            fi
+            ;;
+        cli)
+            cargo_args=(-p sf-nano-cli --no-default-features --features jit)
+            ;;
+        spectest)
+            cargo_args=(-p sf-nano-spectest --no-default-features --features jit)
+            ;;
+        *)
+            echo "internal error: unknown package key '$package_key'" >&2
+            return 2
+            ;;
+    esac
+
+    mkdir -p "$target_dir"
+    if (cd "$ROOT_DIR" && CARGO_TARGET_DIR="$target_dir" cargo check --target "$target" "${cargo_args[@]}") >"$log" 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+failure_details=()
+
+printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "label" "target" "core" "cli" "spectest"
+printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "-----" "------" "----" "---" "--------"
 
 fail=0
 for entry in "${TARGETS[@]}"; do
-    IFS='|' read -r label target extra <<<"$entry"
-    log="$LOG_DIR/$label.log"
+    IFS='|' read -r label target kind core_extra <<<"$entry"
+    core_cell=""
+    cli_cell=""
+    spectest_cell=""
 
     if ! ensure_installed "$target"; then
-        printf '%-14s  %-32s  %s\n' "$label" "$target" "SKIP (target not installed; rerun with --install)"
+        core_cell=$(format_cell skip)
+        if [[ "$kind" == "hosted" ]]; then
+            cli_cell=$(format_cell skip)
+            spectest_cell=$(format_cell skip)
+        else
+            cli_cell=$(format_cell na)
+            spectest_cell=$(format_cell na)
+        fi
+        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell"
         continue
     fi
 
-    # shellcheck disable=SC2086  # $extra is intentionally word-split
-    if (cd "$CORE_DIR" && cargo check --target "$target" $extra) >"$log" 2>&1; then
-        printf '%-14s  %-32s  %s\n' "$label" "$target" "ok"
+    if [[ "$kind" == "hosted" ]]; then
+        for package_key in "${PACKAGES[@]}"; do
+            if run_package_check "$label" "$target" "$package_key" "$core_extra"; then
+                pkg_status=ok
+            else
+                pkg_status=fail
+                fail=1
+                failure_details+=("$label/$package_key -> $LOG_DIR/$label.$package_key.log")
+            fi
+            pkg_warnings=$(warning_count_from_log "$LOG_DIR/$label.$package_key.log")
+            case "$package_key" in
+                core) core_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
+                cli) cli_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
+                spectest) spectest_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
+            esac
+        done
     else
-        printf '%-14s  %-32s  %s\n' "$label" "$target" "FAIL (see $log)"
-        fail=1
+        if run_package_check "$label" "$target" core "$core_extra"; then
+            core_cell=$(format_cell ok "$(warning_count_from_log "$LOG_DIR/$label.core.log")")
+        else
+            core_cell=$(format_cell fail "$(warning_count_from_log "$LOG_DIR/$label.core.log")")
+            fail=1
+            failure_details+=("$label/core -> $LOG_DIR/$label.core.log")
+        fi
+        cli_cell=$(format_cell na)
+        spectest_cell=$(format_cell na)
     fi
+
+    printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell"
 done
 
 # Bare-metal smoke crate: a standalone package that pins its own target
@@ -125,11 +240,22 @@ done
 if [[ -d "$BARE_SMOKE_DIR" ]]; then
     log="$LOG_DIR/bare-smoke.log"
     if (cd "$BARE_SMOKE_DIR" && cargo check) >"$log" 2>&1; then
-        printf '%-14s  %-32s  %s\n' "bare-smoke" "(aarch64-unknown-none)" "ok"
+        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' \
+            "bare-smoke" "(aarch64-unknown-none)" "$(format_cell ok)" "$(format_cell na)" "$(format_cell na)"
     else
-        printf '%-14s  %-32s  %s\n' "bare-smoke" "(aarch64-unknown-none)" "FAIL (see $log)"
+        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' \
+            "bare-smoke" "(aarch64-unknown-none)" "$(format_cell fail)" "$(format_cell na)" "$(format_cell na)"
         fail=1
+        failure_details+=("bare-smoke/core -> $log")
     fi
+fi
+
+if [[ ${#failure_details[@]} -gt 0 ]]; then
+    echo
+    echo "Failure logs:"
+    for detail in "${failure_details[@]}"; do
+        echo "  $detail"
+    done
 fi
 
 exit $fail
