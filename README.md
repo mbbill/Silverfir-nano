@@ -1,6 +1,6 @@
 # Silverfir-nano
 
-## A 277 KB no_std WebAssembly JIT engine that goes head-to-head with V8 and Wasmtime.
+## A compact no_std WebAssembly JIT engine that goes head-to-head with V8 and Wasmtime.
 
 
 On Apple M4, Silverfir-nano **beats Wasmtime's Cranelift** on multiple benchmarks and **goes head-to-head with V8 TurboFan**, while staying ultra-compact and `no_std`-compatible.
@@ -32,7 +32,7 @@ See the charts above and [full benchmark results](benchmarks/wasi/RESULTS.md) fo
 ## Highlights
 
 - **Competes with optimizing JITs** — beats Cranelift on CoreMark and Lua benchmarks, beats V8 on STREAM and floating-point workloads
-- **Ultra-compact** — the minimal `no_std` JIT binary is just **277 KB** stripped, with zero runtime dependencies
+- **Compact** — the minimal `no_std` JIT binary stays in the few-hundred-KB range stripped, with zero runtime dependencies; exact size depends on target, toolchain, and enabled features
 - **Full WebAssembly 2.0** — multi-value, reference types, bulk memory, multiple tables
 - **`no_std`** — core library requires only `alloc`; runs on embedded and bare-metal
 
@@ -69,7 +69,7 @@ python3 benchmarks/wasi/run_tests.py
 # Run benchmarks in V8 (Node.js)
 node benchmarks/wasi/run_v8.mjs
 
-# Minimal no_std build (277 KB, no WASI, JIT only)
+# Minimal no_std build (few-hundred-KB stripped, no WASI, JIT only)
 # Must be built standalone (excluded from workspace due to no_std)
 cd sf-nano-cli-minimal && cargo run --release
 ```
