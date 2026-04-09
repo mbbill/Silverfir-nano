@@ -89,7 +89,8 @@ pub(crate) fn compile_module(
         } as usize);
     }
 
-    // Build ARM32-specific function info table (4x u32 = 16 bytes per entry)
+    // Build ARM32-specific function info table (3x u32 = 12 bytes per entry).
+    // Layout matches `NativeLocalCallInfo32` after the call-link removal.
     let mut function_info_bytes =
         Vec::with_capacity(compiled.abi().functions.len() * ARM32_FUNCTION_INFO_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
@@ -99,17 +100,10 @@ pub(crate) fn compile_module(
             })? as u32,
             total_frame_bytes: u32::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u32::from(runtime.frame_prefix_slots),
-            call_scratch_base_slot: u32::from(
-                runtime
-                    .call_scratch
-                    .map(|region| region.base_slot)
-                    .unwrap_or(0),
-            ),
         };
         function_info_bytes.extend_from_slice(&info.entry.to_le_bytes());
         function_info_bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
         function_info_bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
-        function_info_bytes.extend_from_slice(&info.call_scratch_base_slot.to_le_bytes());
     }
 
     // Pass 2.5: patch MOVW/MOVT addresses in artifacts
@@ -140,6 +134,8 @@ pub(crate) fn compile_module(
 
     let written_start = executable.len();
     let mut entries = Vec::with_capacity(artifacts.len());
+    #[cfg(sf_has_guard_pages)]
+    let mut body_local_error_addrs: Vec<usize> = Vec::with_capacity(artifacts.len());
     for (func_idx, artifact) in artifacts.into_iter().enumerate() {
         let current = executable.len() - written_start;
         let expected = base_offsets[func_idx];
@@ -152,16 +148,16 @@ pub(crate) fn compile_module(
         let text_len = text_bytes.len();
         #[cfg(sf_has_debug_regions)]
         let debug_regions = artifact.debug_regions;
+        #[cfg(sf_has_guard_pages)]
+        let body_local_error_offset = artifact.body_local_error_offset;
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
-        let root_return = unsafe { executable.ptr(offset + artifact.root_return_offset) };
         #[cfg(sf_has_guard_pages)]
-        let return_error = unsafe { executable.ptr(offset + artifact.return_error_offset) };
+        body_local_error_addrs.push(unsafe {
+            executable.ptr(offset + body_local_error_offset)
+        } as usize);
         entries.push(Some(CompiledArm32Entry {
             entry,
-            root_return,
-            #[cfg(sf_has_guard_pages)]
-            return_error,
             text_len,
             #[cfg(sf_has_debug_regions)]
             debug_regions,
@@ -203,22 +199,24 @@ pub(crate) fn compile_module(
         }
     }
 
-    // Register guard-pages JIT ranges
+    // Register guard-pages JIT ranges. The signal handler redirects faulting
+    // PCs to the function's `body_local_error_label`, which is the trap
+    // propagation tail under the new ABI.
     #[cfg(sf_has_guard_pages)]
     {
         let ranges: Vec<_> = entries
             .iter()
-            .flatten()
-            .map(|e| {
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.as_ref().map(|e| (idx, e)))
+            .map(|(idx, e)| {
                 (
                     e.entry as usize,
                     e.entry as usize + e.text_len,
-                    e.return_error as usize,
+                    body_local_error_addrs[idx],
                 )
             })
             .collect();
         crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);
     }
-
     Ok(entries)
 }

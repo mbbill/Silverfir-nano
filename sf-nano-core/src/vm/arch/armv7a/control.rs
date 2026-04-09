@@ -55,24 +55,29 @@ impl<'a> Arm32Backend<'a> {
             MachineTerminator::CallDirect {
                 callee,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
             } => {
-                self.emit_call_direct(*callee, *callee_frame_base, *call_link_base, *continuation)?;
+                self.emit_call_direct(
+                    *callee,
+                    *callee_frame_base,
+                    *caller_result_base,
+                    *continuation,
+                )?;
             }
 
             MachineTerminator::CallIndirect {
                 callee_target,
                 callee_entry,
                 callee_frame_base,
-                call_link_base,
+                caller_result_base,
                 continuation,
             } => {
                 self.emit_call_indirect(
                     *callee_target,
                     *callee_entry,
                     *callee_frame_base,
-                    *call_link_base,
+                    *caller_result_base,
                     *continuation,
                 )?;
             }
@@ -166,6 +171,12 @@ impl<'a> Arm32Backend<'a> {
                             self.core.text.emit_u32(enc::cmp_reg(lhs_hw, *s));
                         }
                     }
+                    MachineValue::ReservedReg(reg) => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "armv7a branch IntCompare cannot read reserved cache register {} as rhs",
+                            reg.0
+                        )));
+                    }
                 }
                 drop(lhs_gp);
 
@@ -195,6 +206,12 @@ impl<'a> Arm32Backend<'a> {
                         drop(s);
                         hw
                     }
+                    MachineValue::ReservedReg(reg) => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "armv7a branch TestBits cannot read reserved cache register {} as src",
+                            reg.0
+                        )));
+                    }
                 };
                 match mask {
                     MachineValue::Reg(r) => {
@@ -209,6 +226,12 @@ impl<'a> Arm32Backend<'a> {
                             emit_load_u32_into(&mut self.core.text, tmp, *v as u32);
                             self.core.text.emit_u32(enc::tst_reg(src_hw, tmp));
                         }
+                    }
+                    MachineValue::ReservedReg(reg) => {
+                        return Err(WasmError::internal(alloc::format!(
+                            "armv7a branch TestBits cannot read reserved cache register {} as mask",
+                            reg.0
+                        )));
                     }
                 }
                 Ok(match kind {

@@ -8,29 +8,13 @@ mod operands;
 mod reg;
 mod select;
 
-use alloc::vec;
-
 use crate::{
-    constants::MAX_STACK_SIZE,
     error::WasmError,
-    module::entities::FunctionSpec,
     vm::{
-        machine::machine_ir::MachineFunctionAbi,
         raw_value::{as_f32, as_f64, from_f32, from_f64, from_i32, from_i64},
-        result_buffer::ResultBuffer,
-        runtime::{
-            code::{CompiledNativeModule, NativeCode},
-            context::NativeContext,
-        },
-        store::Store,
-        value::Value,
+        runtime::context::NativeContext,
     },
 };
-
-#[cfg(sf_call_trace)]
-use crate::vm::debug::function_trace;
-
-const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
 
 unsafe extern "C" {
     fn ceilf(x: f32) -> f32;
@@ -41,193 +25,23 @@ unsafe extern "C" {
     fn trunc(x: f64) -> f64;
 }
 
-pub(crate) fn eval(
-    spec: &FunctionSpec,
-    code: &NativeCode,
-    store: &mut Store,
-    args: &[Value],
-    backend: &'static str,
-) -> Result<ResultBuffer, WasmError> {
-    #[cfg(not(sf_call_trace))]
-    let _ = backend;
+// `eval` is now provided by the shared `arch::common::eval::eval`. The
+// `dispatch_eval` central switch in `arch/mod.rs` routes Armv7a callers
+// directly to the common entry point — no per-arch wrapper is required.
 
-    let func_type = spec.func_type();
-    if args.len() != func_type.params().len() {
-        return Err(WasmError::invalid(alloc::format!(
-            "invalid argument count: got {}, expected {}",
-            args.len(),
-            func_type.params().len()
-        )));
-    }
-
-    let compiled = code.compiled();
-    let func_id = code.func_id();
-    let runtime = compiled
-        .abi()
-        .functions
-        .get(func_id.0 as usize)
-        .ok_or_else(|| {
-            WasmError::internal("native entry function is missing runtime metadata".into())
-        })?;
-    let entry = code.native_entry().ok_or_else(|| {
-        WasmError::internal("armv7a native entry is missing finalized code".into())
-    })?;
-    let root_return = code.native_root_return().ok_or_else(|| {
-        WasmError::internal("armv7a native root return continuation is missing".into())
-    })?;
-
-    let mut stack = vec![0u64; MAX_STACK_SLOTS];
-    let stack_base = stack.as_mut_ptr();
-    let stack_end = unsafe { stack_base.add(MAX_STACK_SLOTS) };
-
-    unsafe {
-        for (index, arg) in args.iter().enumerate() {
-            *stack_base.add(index) = arg.to_raw();
-        }
-        if runtime.frame_prefix_slots as usize > args.len() {
-            core::ptr::write_bytes(
-                stack_base.add(args.len()),
-                0,
-                runtime.frame_prefix_slots as usize - args.len(),
-            );
-        }
-    }
-    ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
-
-    let mut ctx = NativeContext::new(store as *mut Store, stack_end);
-    ctx.seed_local_call_infos(compiled);
-    seed_root_call_link(compiled, runtime, stack_base, root_return)?;
-    #[cfg(sf_call_trace)]
-    {
-        function_trace::init_from_env();
-        function_trace::native_root_entry(&mut ctx, spec, backend);
-    }
-
-    #[cfg(sf_has_guard_pages)]
-    {
-        use crate::vm::machine::{runtime::context::ctx_offset, trap_signal};
-        trap_signal::install_signal_handler();
-        trap_signal::set_trap_kind_offset(ctx_offset::TRAP_KIND as usize);
-        trap_signal::reset_debug_state();
-        ctx.trap_kind = 0;
-    }
-
-    let status = unsafe { entry(&mut ctx, stack_base) };
-
-    #[cfg(sf_has_guard_pages)]
-    if ctx.trap_kind != 0 {
-        let error = WasmError::trap("out of bounds memory access".into());
-        #[cfg(sf_call_trace)]
-        function_trace::native_trap_current(&mut ctx, &error);
-        return Err(error);
-    }
-
-    if status != 0 {
-        let error = ctx.error.take().unwrap_or_else(|| {
-            WasmError::internal("armv7a root entry failed without setting an error".into())
-        });
-        #[cfg(sf_call_trace)]
-        function_trace::native_trap_current(&mut ctx, &error);
-        return Err(error);
-    }
-
-    let results_len = func_type.results().len();
-    let mut out = ResultBuffer::with_exact_capacity(results_len);
-    unsafe {
-        for index in 0..results_len {
-            out.push(*stack_base.add(index));
-        }
-    }
-    #[cfg(sf_call_trace)]
-    {
-        let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
-        function_trace::native_root_exit(&mut ctx, spec, results);
-    }
-    Ok(out)
-}
-
-fn seed_root_call_link(
-    compiled: &CompiledNativeModule,
-    runtime: &MachineFunctionAbi,
-    fp: *mut u64,
-    root_return: *const u8,
-) -> Result<(), WasmError> {
-    let call_scratch = runtime.call_scratch.ok_or_else(|| {
-        WasmError::internal("armv7a root entry requires call scratch for unified return".into())
-    })?;
-    let layout = compiled.abi().call_link;
-    unsafe {
-        *fp.add(call_scratch.base_slot as usize + (layout.continuation_offset / 8) as usize) =
-            root_return as u64;
-        *fp.add(call_scratch.base_slot as usize + (layout.caller_frame_offset / 8) as usize) =
-            fp as u64;
-        *fp.add(
-            call_scratch.base_slot as usize + (layout.caller_result_base_offset / 8) as usize,
-        ) = 0;
-    }
-    Ok(())
-}
-
-fn ensure_stack_capacity(
-    fp: *mut u64,
-    stack_end: *mut u64,
-    total_frame_slots: u16,
-) -> Result<(), WasmError> {
-    let end =
-        (fp as usize).saturating_add(total_frame_slots as usize * core::mem::size_of::<u64>());
-    if end > stack_end as usize {
-        return Err(WasmError::exhaustion("stack overflow".into()));
-    }
-    Ok(())
-}
-
+/// AAPCS-friendly shim around the canonical `runtime::trap::raise_trap`
+/// helper. The canonical entry takes `kind: u64`, which AAPCS would force
+/// into register pair `r2/r3` (skipping `r1`) — annoying for the JIT trap
+/// stub to set up. This shim accepts `kind: u32` so we can pass it cleanly
+/// in `r1`, then widens it before delegating.
+///
+/// # Safety
+/// `ctx` must point to a valid `NativeContext` for the duration of the call.
 pub(crate) unsafe extern "C" fn armv7a_raise_trap(
     ctx: *mut NativeContext,
     kind: u32,
-    site: u32,
 ) -> u32 {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return 1;
-    };
-    let error = match kind {
-        0 => WasmError::trap(trap_message("unreachable executed", site)),
-        1 => WasmError::trap(trap_message("out of bounds memory access", site)),
-        2 => WasmError::trap(trap_message("out of bounds table access", site)),
-        3 => WasmError::trap(trap_message("invalid function reference", site)),
-        4 => WasmError::trap(trap_message("indirect call type mismatch", site)),
-        5 => WasmError::trap(trap_message("integer divide by zero", site)),
-        6 => WasmError::trap(trap_message("integer overflow", site)),
-        7 => WasmError::exhaustion(trap_message("stack overflow", site)),
-        _ => WasmError::trap(trap_message("native helper failed", site)),
-    };
-    #[cfg(sf_call_trace)]
-    function_trace::native_trap_current(ctx, &error);
-    ctx.error = Some(error);
-    1
-}
-
-fn trap_message(base: &str, site: u32) -> alloc::string::String {
-    if !trap_site_debug_enabled() {
-        return base.into();
-    }
-    let func_idx = site >> 12;
-    let block_idx = site & 0x0fff;
-    if block_idx == 0x0fff {
-        alloc::format!("{base} [armv7a site func{func_idx}]")
-    } else {
-        alloc::format!("{base} [armv7a site func{func_idx} block{block_idx}]")
-    }
-}
-
-fn trap_site_debug_enabled() -> bool {
-    #[cfg(any(sf_has_std, test))]
-    {
-        std::env::var_os("SF_ARMV7_TRAP_SITE").is_some()
-    }
-    #[cfg(not(any(sf_has_std, test)))]
-    {
-        false
-    }
+    unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
 }
 
 // ─── Software integer division helpers (ARMv7-A has no UDIV/SDIV) ───────────

@@ -699,6 +699,15 @@ pub(super) fn b_cond(cond: Cond, byte_offset: i32) -> u32 {
     cond_bits(cond) | (0b1010 << 24) | ((adjusted as u32) & 0x00FF_FFFF)
 }
 
+/// BL <offset> (branch with link, PC-relative; populates LR with the address
+/// of the next instruction). Same imm24 encoding as `b` but with the H bit set.
+#[inline]
+pub(super) fn bl(byte_offset: i32) -> u32 {
+    // BL: cond 1011 imm24    (h=1 vs unconditional B's 1010)
+    let adjusted = (byte_offset >> 2) - 2;
+    cond_bits(Cond::Al) | (0b1011 << 24) | ((adjusted as u32) & 0x00FF_FFFF)
+}
+
 /// BX Rm (branch and exchange — return via LR or indirect call)
 #[inline]
 pub(super) fn bx(reg: Arm32Reg) -> u32 {
@@ -1279,9 +1288,14 @@ pub(super) fn dp_imm_cond(
 }
 
 /// NOP (ARMv6K+: hint encoding)
+///
+/// Encoding A1: `cond 0011 0010 0000 1111 0000 0000 0000 0000`
+/// With cond=AL the canonical encoding is `0xe320f000`. The static-bits
+/// literal must use bits [27:0] only so OR'ing with `cond_bits(Cond::Al)`
+/// produces the correct cond field.
 #[inline]
 pub(super) fn nop() -> u32 {
-    cond_bits(Cond::Al) | (0b0011_0010_0000_1111_0000_0000_0000_0000)
+    cond_bits(Cond::Al) | 0x0320_f000
 }
 
 /// VPUSH {Dd-D(d+n-1)} (push consecutive D registers)

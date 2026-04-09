@@ -326,7 +326,7 @@ pub(crate) fn dispatch_eval(
         #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_arch_armv7a)]
-        NativeBackend::Armv7a => armv7a::eval(spec, code, store, args, backend_name),
+        NativeBackend::Armv7a => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_emulator)]
