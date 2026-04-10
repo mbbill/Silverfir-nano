@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::{
-    abi::{map_fixed_reg, map_reg, SCRATCH0, SCRATCH1},
+    abi::{map_fixed_reg, map_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
     arm32_f32_ceil, arm32_f32_floor, arm32_f32_nearest_bits, arm32_f32_trunc, arm32_f64_ceil,
     arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_clz, arm32_i64_ctz,
     arm32_i64_div_s, arm32_i64_div_u, arm32_i64_mul, arm32_i64_popcnt, arm32_i64_rem_s,
@@ -40,7 +40,7 @@ use super::{
     select,
 };
 
-use super::abi::{fp_machine_reg, FP_SCRATCH0};
+use super::abi::{fp_machine_reg, C_FP_RET0};
 
 // ── Operand preparation (free functions) ─────────────────────────────────────
 
@@ -134,12 +134,7 @@ pub(super) fn prepare_fp<'p>(
                 // for FP regs so we detect via fp_machine_reg lookup.
                 // Instead, we use the index computation from the backend.
                 // This is a simplified path — callers pass FP regs only.
-                crate::vm::backend::BackendConfig::new(
-                    super::abi::GP_DYNAMIC.len() as u8,
-                    super::abi::FP_MACHINE_REG_COUNT as u8,
-                    super::abi::GP_UNIT_BYTES,
-                    8,
-                ),
+                super::abi::compile_backend_config(),
             )
             .ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
@@ -1165,25 +1160,6 @@ impl<'a> Arm32Backend<'a> {
 
     // ─── Integer ALU ────────────────────────────────────────────────────────────
 
-    /// Materialize a division rhs into a physical register. Uses SCRATCH1
-    /// (R14/LR) for immediates, keeping SCRATCH0 free for the INT_MIN
-    /// overflow check in DivS/RemS.
-    fn emit_materialize_rhs_for_div(
-        &mut self,
-        rhs: &MachineValue,
-    ) -> Result<Arm32Reg, WasmError> {
-        match rhs {
-            MachineValue::Reg(r) => map_reg(*r),
-            MachineValue::Imm64(v) => {
-                emit_load_u32_into(&mut self.core.text, SCRATCH1, *v as u32);
-                Ok(SCRATCH1)
-            }
-            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                "arm32 div/rem cannot consume reserved cache register {} as rhs",
-                reg.0
-            ))),
-        }
-    }
 
     fn compile_int_binary(
         &mut self,
@@ -1455,10 +1431,9 @@ impl<'a> Arm32Backend<'a> {
                 }
             }
             MachineIntBinaryOp::DivU => {
-                // Materialize rhs into SCRATCH0 so we can branch freely.
-                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
+                let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(*rhs_gp, 0, 0));
                 let ok = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
                 let trap = self
@@ -1468,12 +1443,12 @@ impl<'a> Arm32Backend<'a> {
                 self.core.bind_label(ok);
                 self.core
                     .text
-                    .emit_u32(enc::udiv(dst_hw, lhs_hw, rhs_hw));
+                    .emit_u32(enc::udiv(dst_hw, lhs_hw, *rhs_gp));
             }
             MachineIntBinaryOp::DivS => {
-                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
+                let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(*rhs_gp, 0, 0));
                 let not_zero = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_zero);
                 let trap_dz = self
@@ -1489,7 +1464,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 let not_min = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_min);
-                self.core.text.emit_u32(enc::cmn_imm(rhs_hw, 1, 0));
+                self.core.text.emit_u32(enc::cmn_imm(*rhs_gp, 1, 0));
                 let not_neg1 = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_neg1);
                 let trap_ov = self
@@ -1500,12 +1475,12 @@ impl<'a> Arm32Backend<'a> {
                 self.core.bind_label(not_neg1);
                 self.core
                     .text
-                    .emit_u32(enc::sdiv(dst_hw, lhs_hw, rhs_hw));
+                    .emit_u32(enc::sdiv(dst_hw, lhs_hw, *rhs_gp));
             }
             MachineIntBinaryOp::RemU => {
-                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
+                let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(*rhs_gp, 0, 0));
                 let ok = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
                 let trap = self
@@ -1514,18 +1489,19 @@ impl<'a> Arm32Backend<'a> {
                 self.emit_branch(BranchFixupKind::B, trap);
                 self.core.bind_label(ok);
                 // rem = lhs - (lhs / rhs) * rhs
-                // UDIV scratch, lhs, rhs; MLS dst, scratch, rhs, lhs
+                // UDIV quotient, lhs, rhs; MLS dst, quotient, rhs, lhs
+                let quotient = self.gp_scratch.scoped_alloc();
                 self.core
                     .text
-                    .emit_u32(enc::udiv(SCRATCH0, lhs_hw, rhs_hw));
+                    .emit_u32(enc::udiv(*quotient, lhs_hw, *rhs_gp));
                 self.core
                     .text
-                    .emit_u32(enc::mls(dst_hw, SCRATCH0, rhs_hw, lhs_hw));
+                    .emit_u32(enc::mls(dst_hw, *quotient, *rhs_gp, lhs_hw));
             }
             MachineIntBinaryOp::RemS => {
-                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
+                let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(*rhs_gp, 0, 0));
                 let ok = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
                 let trap = self
@@ -1535,7 +1511,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core.bind_label(ok);
                 // ARM SDIV returns 0 for INT_MIN/-1, so MLS would give
                 // INT_MIN instead of the correct 0. Guard: any x % -1 = 0.
-                self.core.text.emit_u32(enc::cmn_imm(rhs_hw, 1, 0));
+                self.core.text.emit_u32(enc::cmn_imm(*rhs_gp, 1, 0));
                 let not_neg1 = self.core.new_label();
                 let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_neg1);
@@ -1544,13 +1520,14 @@ impl<'a> Arm32Backend<'a> {
                     .emit_u32(enc::mov_imm(dst_hw, 0, 0));
                 self.emit_branch(BranchFixupKind::B, done);
                 self.core.bind_label(not_neg1);
-                // SDIV scratch, lhs, rhs; MLS dst, scratch, rhs, lhs
+                // SDIV quotient, lhs, rhs; MLS dst, quotient, rhs, lhs
+                let quotient = self.gp_scratch.scoped_alloc();
                 self.core
                     .text
-                    .emit_u32(enc::sdiv(SCRATCH0, lhs_hw, rhs_hw));
+                    .emit_u32(enc::sdiv(*quotient, lhs_hw, *rhs_gp));
                 self.core
                     .text
-                    .emit_u32(enc::mls(dst_hw, SCRATCH0, rhs_hw, lhs_hw));
+                    .emit_u32(enc::mls(dst_hw, *quotient, *rhs_gp, lhs_hw));
                 self.core.bind_label(done);
             }
         }
@@ -2025,15 +2002,15 @@ impl<'a> Arm32Backend<'a> {
         match width {
             MachineFloatWidth::F32 => {
                 let dst_s = self.map_fp_dreg(dst)? * 2;
-                let s0 = FP_SCRATCH0 * 2;
+                let s0 = C_FP_RET0 * 2;
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
             }
             MachineFloatWidth::F64 => {
                 let dst_d = self.map_fp_dreg(dst)?;
-                if dst_d != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dst_d, FP_SCRATCH0));
+                if dst_d != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dst_d, C_FP_RET0));
                 }
             }
         }
@@ -2076,19 +2053,19 @@ impl<'a> Arm32Backend<'a> {
 
         if src_is_f32 {
             let src_s = *src_d * 2;
-            let s0 = FP_SCRATCH0 * 2;
+            let s0 = C_FP_RET0 * 2;
             if src_s != s0 {
                 self.core.text.emit_u32(enc::vmov_s(s0, src_s));
             }
             self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
-            self.emit_load_u32(Arm32Reg::R1, 0);
+            emit_load_u32_into(&mut self.core.text, Arm32Reg::R1, 0);
         } else {
-            if *src_d != FP_SCRATCH0 {
-                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *src_d));
+            if *src_d != C_FP_RET0 {
+                self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *src_d));
             }
             self.core
                 .text
-                .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, FP_SCRATCH0));
+                .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, C_FP_RET0));
         }
         self.emit_load_u32(Arm32Reg::R2, select::convert_op_code(op));
 
@@ -2174,19 +2151,19 @@ impl<'a> Arm32Backend<'a> {
 
         if src_is_f32 {
             let src_s = *src_d * 2;
-            let s0 = FP_SCRATCH0 * 2;
+            let s0 = C_FP_RET0 * 2;
             if src_s != s0 {
                 self.core.text.emit_u32(enc::vmov_s(s0, src_s));
             }
             self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, s0));
-            self.emit_load_u32(Arm32Reg::R1, 0);
+            emit_load_u32_into(&mut self.core.text, Arm32Reg::R1, 0);
         } else {
-            if *src_d != FP_SCRATCH0 {
-                self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *src_d));
+            if *src_d != C_FP_RET0 {
+                self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *src_d));
             }
             self.core
                 .text
-                .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, FP_SCRATCH0));
+                .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, C_FP_RET0));
         }
         self.emit_load_u32(Arm32Reg::R2, select::convert_op_code(op));
 
@@ -2658,34 +2635,34 @@ impl<'a> Arm32Backend<'a> {
             }
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Ceil) => {
                 self.spill_caller_saved_gp_regs();
-                if *dm != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
+                if *dm != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
                 self.emit_host_call(arm32_f64_ceil as usize);
-                if dd != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                if dd != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Floor) => {
                 self.spill_caller_saved_gp_regs();
-                if *dm != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
+                if *dm != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
                 self.emit_host_call(arm32_f64_floor as usize);
-                if dd != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                if dd != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
             (MachineFloatWidth::F64, MachineFloatUnaryOp::Trunc) => {
                 self.spill_caller_saved_gp_regs();
-                if *dm != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
+                if *dm != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
                 self.emit_host_call(arm32_f64_trunc as usize);
-                if dd != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                if dd != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -2713,7 +2690,7 @@ impl<'a> Arm32Backend<'a> {
                 self.spill_caller_saved_gp_regs();
                 let src_s = *dm * 2;
                 let dst_s = dd * 2;
-                let s0 = FP_SCRATCH0 * 2;
+                let s0 = C_FP_RET0 * 2;
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
@@ -2727,7 +2704,7 @@ impl<'a> Arm32Backend<'a> {
                 self.spill_caller_saved_gp_regs();
                 let src_s = *dm * 2;
                 let dst_s = dd * 2;
-                let s0 = FP_SCRATCH0 * 2;
+                let s0 = C_FP_RET0 * 2;
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
@@ -2741,7 +2718,7 @@ impl<'a> Arm32Backend<'a> {
                 self.spill_caller_saved_gp_regs();
                 let src_s = *dm * 2;
                 let dst_s = dd * 2;
-                let s0 = FP_SCRATCH0 * 2;
+                let s0 = C_FP_RET0 * 2;
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
@@ -2943,14 +2920,16 @@ impl<'a> Arm32Backend<'a> {
             MachineConvertOp::F64ConvertI32S => {
                 let dd = self.map_fp_dreg(dst)?;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
-                let sd_tmp = FP_SCRATCH0 * 2;
+                let fp_s = self.fp_scratch.scoped_alloc();
+                let sd_tmp = *fp_s * 2;
                 self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_d_s32(dd, sd_tmp));
             }
             MachineConvertOp::F64ConvertI32U => {
                 let dd = self.map_fp_dreg(dst)?;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
-                let sd_tmp = FP_SCRATCH0 * 2;
+                let fp_s = self.fp_scratch.scoped_alloc();
+                let sd_tmp = *fp_s * 2;
                 self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_d_u32(dd, sd_tmp));
             }
@@ -2959,14 +2938,16 @@ impl<'a> Arm32Backend<'a> {
             MachineConvertOp::F32ConvertI32S => {
                 let sd = self.map_fp_dreg(dst)? * 2; // S-register
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
-                let sd_tmp = FP_SCRATCH0 * 2;
+                let fp_s = self.fp_scratch.scoped_alloc();
+                let sd_tmp = *fp_s * 2;
                 self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_s_s32(sd, sd_tmp));
             }
             MachineConvertOp::F32ConvertI32U => {
                 let sd = self.map_fp_dreg(dst)? * 2;
                 let src_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?;
-                let sd_tmp = FP_SCRATCH0 * 2;
+                let fp_s = self.fp_scratch.scoped_alloc();
+                let sd_tmp = *fp_s * 2;
                 self.core.text.emit_u32(enc::vmov_s_r(sd_tmp, *src_gp));
                 self.core.text.emit_u32(enc::vcvt_s_u32(sd, sd_tmp));
             }
@@ -2983,7 +2964,8 @@ impl<'a> Arm32Backend<'a> {
                 )?;
                 let mut sm = *src_fp * 2;
                 if *src_fp == dd {
-                    sm = FP_SCRATCH0 * 2;
+                    let fp_s = self.fp_scratch.scoped_alloc();
+                    sm = *fp_s * 2;
                     self.core.text.emit_u32(enc::vmov_s(sm, *src_fp * 2));
                 }
                 self.core.text.emit_u32(enc::vcvt_d_s(dd, sm));
@@ -2999,7 +2981,8 @@ impl<'a> Arm32Backend<'a> {
                 )?;
                 let mut dm = *src_fp;
                 if dm * 2 == sd {
-                    dm = FP_SCRATCH0;
+                    let fp_s = self.fp_scratch.scoped_alloc();
+                    dm = *fp_s;
                     self.core.text.emit_u32(enc::vmov_d(dm, *src_fp));
                 }
                 self.core.text.emit_u32(enc::vcvt_s_d(sd, dm));
@@ -3020,8 +3003,8 @@ impl<'a> Arm32Backend<'a> {
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
                 self.emit_host_call(arm32_i64s_to_f64 as usize);
                 // Result is in D0 (EABI: f64 returned in D0)
-                if dd != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                if dd != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -3033,8 +3016,8 @@ impl<'a> Arm32Backend<'a> {
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
                 self.emit_host_call(arm32_i64u_to_f64 as usize);
-                if dd != FP_SCRATCH0 {
-                    self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
+                if dd != C_FP_RET0 {
+                    self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -3048,9 +3031,11 @@ impl<'a> Arm32Backend<'a> {
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
                 self.emit_host_call(arm32_i64s_to_f32 as usize);
                 // Result in S0 (EABI: f32 returned in S0)
-                let s0 = FP_SCRATCH0 * 2;
-                if sd != s0 {
-                    self.core.text.emit_u32(enc::vmov_s(sd, s0));
+                {
+                    let s0 = C_FP_RET0 * 2;
+                    if sd != s0 {
+                        self.core.text.emit_u32(enc::vmov_s(sd, s0));
+                    }
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -3061,9 +3046,11 @@ impl<'a> Arm32Backend<'a> {
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
                 self.emit_host_call(arm32_i64u_to_f32 as usize);
-                let s0 = FP_SCRATCH0 * 2;
-                if sd != s0 {
-                    self.core.text.emit_u32(enc::vmov_s(sd, s0));
+                {
+                    let s0 = C_FP_RET0 * 2;
+                    if sd != s0 {
+                        self.core.text.emit_u32(enc::vmov_s(sd, s0));
+                    }
                 }
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -3550,26 +3537,29 @@ impl<'a> Arm32Backend<'a> {
         // EABI: fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32
         self.core
             .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
+            .emit_u32(enc::mov_reg(C_ARG0, map_fixed_reg(MACHINE_CTX_REG)));
         self.core
             .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R1, map_fixed_reg(MACHINE_FP_REG)));
-        self.emit_load_addr(Arm32Reg::R2, metadata as usize);
+            .emit_u32(enc::mov_reg(C_ARG1, map_fixed_reg(MACHINE_FP_REG)));
+        self.emit_load_addr(C_ARG2, metadata as usize);
 
         self.emit_host_call(helper_ptr);
 
         // Preserve the status code across the GP restore, then re-materialize
-        // it in R0 for the post-call error check.
-        self.core
-            .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R12, Arm32Reg::R0));
-        self.restore_caller_saved_gp_regs(&[]);
-        self.core
-            .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R0, Arm32Reg::R12));
+        // it in C_RET0 for the post-call error check.
+        {
+            let s = self.gp_scratch.scoped_alloc().detach();
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(*s, C_RET0));
+            self.restore_caller_saved_gp_regs(&[]);
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(C_RET0, *s));
+        }
 
         // Check return value: if non-zero, return error
-        self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
+        self.core.text.emit_u32(enc::cmp_imm(C_RET0, 0, 0));
         let body_local_error = self.core.body_local_error_label;
         self.emit_branch(BranchFixupKind::BCond(Cond::Ne), body_local_error);
 

@@ -47,98 +47,124 @@ use crate::{
 use super::{enc, reg::Arm32Reg};
 use crate::vm::arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter};
 
-pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
-/// Call-local scratch. LR is saved in the shared prologue and only used as a
-/// linear-value scratch within straight-line sequences that do not issue calls.
-pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
+// ── Register plan ────────────────────────────────────────────────────────────
 
-/// FP scratch registers (caller-saved, not used for values or parameters).
-/// These constants are unconditional — the lowering code that references them
-/// is dead when `fp_dynamic_budget = 0`, but must still compile.
-pub(super) const FP_SCRATCH0: u32 = 0; // D0
-pub(super) const FP_SCRATCH1: u32 = 1; // D1
-pub(super) const FP_SCRATCH2: u32 = 2; // D2
-
-// ── Scratch pool construction ────────────────────────────────────────────────
-
-const GP_SCRATCHES: [Arm32Reg; 2] = [SCRATCH0, SCRATCH1];
-const FP_SCRATCHES: [u32; 3] = [FP_SCRATCH0, FP_SCRATCH1, FP_SCRATCH2];
-
-pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm32Reg, 2> {
-    ScratchPool::new(GP_SCRATCHES)
+struct RegPlan {
+    // Fixed MachineIR roles
+    ctx: Arm32Reg,
+    fp: Arm32Reg,
+    mem0_base: Arm32Reg,
+    mem0_size: Arm32Reg,
+    // GP budget unit size
+    gp_unit_bytes: u8,
+    // Preferred GP dynamic order. Allocation-order preference only.
+    gp_dynamic: &'static [Arm32Reg],
+    gp_scratch: &'static [Arm32Reg],
+    // Preferred FP dynamic order (D-register indices).
+    fp_dynamic: &'static [u32],
+    fp_scratch: &'static [u32],
+    // Callee-saved sets
+    callee_saved_gp: &'static [Arm32Reg],
+    // Stack
+    stack_alignment_bytes: u32,
 }
 
-pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
-    ScratchPool::new(FP_SCRATCHES)
-}
+const REG_PLAN: RegPlan = RegPlan {
+    ctx: Arm32Reg::R8,
+    fp: Arm32Reg::R10,
+    mem0_base: Arm32Reg::R11,
+    mem0_size: Arm32Reg::R4,
 
-// ── Dynamic register arrays (MachineIR allocation) ───────────────────────────
-//
-// These arrays are the single source of truth for register budgets.
-// `config.rs` derives BackendConfig from their lengths.
-// Ordering is the preferred dynamic allocation order, not semantic ownership.
+    gp_unit_bytes: 4,
 
-pub(super) const GP_UNIT_BYTES: u8 = 4;
+    gp_dynamic: &[
+        Arm32Reg::R3,
+        Arm32Reg::R9,
+        Arm32Reg::R0,
+        Arm32Reg::R1,
+        Arm32Reg::R2,
+        Arm32Reg::R5,
+        Arm32Reg::R6,
+        Arm32Reg::R7,
+    ],
+    gp_scratch: &[Arm32Reg::R12, Arm32Reg::R14],
 
-/// Preferred GP dynamic order. Caller-clobbered regs come first so short-lived
-/// SSA values and lowering helpers naturally bias toward them, but all entries
-/// are part of the same dynamic bank.
-pub(super) const GP_DYNAMIC: [Arm32Reg; 8] = [
-    Arm32Reg::R3,
-    Arm32Reg::R9,
-    Arm32Reg::R0,
-    Arm32Reg::R1,
-    Arm32Reg::R2,
-    Arm32Reg::R5,
-    Arm32Reg::R6,
-    Arm32Reg::R7,
-];
+    #[cfg(sf_fp_dp)]
+    fp_dynamic: &[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    #[cfg(not(sf_fp_dp))]
+    fp_dynamic: &[],
 
-/// Preferred FP dynamic order. Earlier lanes are caller-clobbered; later lanes
-/// are callee-saved, but ownership is decided by lowering state, not the index.
-/// Empty when `sf_fp_dp` is off — `fp_dynamic_budget` becomes 0.
-#[cfg(sf_fp_dp)]
-pub(super) const FP_DYNAMIC: &[u32] = &[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-#[cfg(not(sf_fp_dp))]
-pub(super) const FP_DYNAMIC: &[u32] = &[];
+    fp_scratch: &[0, 1, 2], // D0, D1, D2
 
-/// Total FP machine-register capacity.
-pub(super) const FP_MACHINE_REG_COUNT: usize = FP_DYNAMIC.len();
+    callee_saved_gp: &[
+        Arm32Reg::R4,
+        Arm32Reg::R5,
+        Arm32Reg::R6,
+        Arm32Reg::R7,
+        Arm32Reg::R8,
+        Arm32Reg::R9,
+        Arm32Reg::R10,
+        Arm32Reg::R11,
+        Arm32Reg::R14, // LR
+    ],
+
+    stack_alignment_bytes: 8,
+};
 
 // Compile-time check: dynamic + scratch must cover all 16 D-regs.
 #[cfg(sf_fp_dp)]
 const _: () = assert!(
-    FP_DYNAMIC.len() + 3 == 16,
+    REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 16,
     "FP register plan must account for all 16 D-registers (VFPv3-D16)"
 );
+
+// ── C ABI boundary registers ─────────────────────────────────────────────────
+// Platform calling-convention facts, used only at the C↔JIT boundary.
+//
+// These are foreign ABI registers, not extra MachineIR roles. They may alias
+// caller-clobbered dynamic or scratch regs, but must not alias the fixed
+// MachineIR roles. Boundary lowering is what makes that safe: SSA values are
+// dead at the boundary and local state has already been published.
+
+pub(super) const C_ARG0: Arm32Reg = Arm32Reg::R0;
+pub(super) const C_ARG1: Arm32Reg = Arm32Reg::R1;
+pub(super) const C_ARG2: Arm32Reg = Arm32Reg::R2;
+pub(super) const C_RET0: Arm32Reg = Arm32Reg::R0;
+
+/// FP C-ABI boundary register. AAPCS passes/returns f64 in D0, f32 in S0
+/// (= D0 low half). Used only at foreign helper call boundaries.
+pub(super) const C_FP_RET0: u32 = 0; // D0
+
+// ── Derived constants from REG_PLAN ─────────────────────────────────────────
+
+pub(super) const GP_UNIT_BYTES: u8 = REG_PLAN.gp_unit_bytes;
+
+/// Total FP machine-register capacity.
+pub(super) const FP_MACHINE_REG_COUNT: usize = REG_PLAN.fp_dynamic.len();
+
+// ── Scratch pool construction ────────────────────────────────────────────────
+
+pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm32Reg, 2> {
+    ScratchPool::new([REG_PLAN.gp_scratch[0], REG_PLAN.gp_scratch[1]])
+}
+
+pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
+    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1], REG_PLAN.fp_scratch[2]])
+}
 
 // ── Derived config ───────────────────────────────────────────────────────────
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
     BackendConfig::new(
-        GP_DYNAMIC.len() as u8,
-        FP_DYNAMIC.len() as u8,
+        REG_PLAN.gp_dynamic.len() as u8,
+        REG_PLAN.fp_dynamic.len() as u8,
         GP_UNIT_BYTES,
         8,
     )
 }
 
 // ── Callee-saved sets (ARMv7-specific encoding) ─────────────────────────────
-
-/// Callee-saved GP registers to save/restore in prologue/epilogue.
-/// R4-R11 are callee-saved in EABI; R14(LR) must also be saved since we call helpers.
-const CALLEE_SAVED_GP_REGS: [Arm32Reg; 9] = [
-    Arm32Reg::R4,
-    Arm32Reg::R5,
-    Arm32Reg::R6,
-    Arm32Reg::R7,
-    Arm32Reg::R8,
-    Arm32Reg::R9,
-    Arm32Reg::R10,
-    Arm32Reg::R11,
-    Arm32Reg::R14, // LR
-];
 
 /// EABI callee-saved FP regs (D8-D15). Count is 0 when FP is off.
 const CALLEE_SAVED_FP_FIRST: u32 = 8;
@@ -147,15 +173,23 @@ const CALLEE_SAVED_FP_COUNT: u32 = 8;
 #[cfg(not(sf_fp_dp))]
 const CALLEE_SAVED_FP_COUNT: u32 = 0;
 
-const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 == 1 {
-    4
-} else {
-    0
+/// Pad the GP save set to maintain `stack_alignment_bytes` alignment across
+/// the PUSH. Each GP register is 4 bytes, so an odd count needs one extra
+/// 4-byte slot when the required alignment is 8.
+const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = {
+    let word_bytes = 4u32;
+    let pushed = REG_PLAN.callee_saved_gp.len() as u32 * word_bytes;
+    let rem = pushed % REG_PLAN.stack_alignment_bytes;
+    if rem != 0 {
+        REG_PLAN.stack_alignment_bytes - rem
+    } else {
+        0
+    }
 };
 
 #[inline]
 pub(super) const fn max_gp_mapped_regs() -> usize {
-    MACHINE_FIXED_REG_COUNT as usize + GP_DYNAMIC.len()
+    MACHINE_FIXED_REG_COUNT as usize + REG_PLAN.gp_dynamic.len()
 }
 
 #[inline]
@@ -170,16 +204,16 @@ pub(super) const fn max_total_machine_regs() -> usize {
 
 #[inline]
 pub(super) fn fp_machine_reg(index: usize) -> Option<u32> {
-    FP_DYNAMIC.get(index).copied()
+    REG_PLAN.fp_dynamic.get(index).copied()
 }
 
 #[inline]
 pub(super) fn map_fixed_reg(reg: MachineReg) -> Arm32Reg {
     match reg {
-        MACHINE_CTX_REG => Arm32Reg::R8,
-        MACHINE_FP_REG => Arm32Reg::R10,
-        MACHINE_MEM0_BASE_REG => Arm32Reg::R11,
-        MACHINE_MEM0_SIZE_REG => Arm32Reg::R4,
+        MACHINE_CTX_REG => REG_PLAN.ctx,
+        MACHINE_FP_REG => REG_PLAN.fp,
+        MACHINE_MEM0_BASE_REG => REG_PLAN.mem0_base,
+        MACHINE_MEM0_SIZE_REG => REG_PLAN.mem0_size,
         _ => unreachable!("not a fixed machine reg"),
     }
 }
@@ -191,7 +225,7 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
     }
     let config = compile_backend_config();
     gp_dynamic_index(reg, config)
-        .and_then(|index| GP_DYNAMIC.get(index).copied())
+        .and_then(|index| REG_PLAN.gp_dynamic.get(index).copied())
         .ok_or_else(|| {
             WasmError::invalid(alloc::format!(
                 "arm32 MachineIR backend has no physical mapping for machine reg {}",
@@ -204,8 +238,8 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
 fn callee_saved_gp_mask() -> u16 {
     let mut mask = 0u16;
     let mut i = 0;
-    while i < CALLEE_SAVED_GP_REGS.len() {
-        mask |= 1 << CALLEE_SAVED_GP_REGS[i].idx();
+    while i < REG_PLAN.callee_saved_gp.len() {
+        mask |= 1 << REG_PLAN.callee_saved_gp[i].idx();
         i += 1;
     }
     mask
