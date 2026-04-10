@@ -3,34 +3,30 @@
 # Run the WASI benchmark tests on ARMv7 under QEMU inside Colima.
 #
 # Usage:
-#   ./scripts/armv7a-run-tests.sh [--full] [--release]
+#   ./scripts/armv7a-run-tests.sh [--full] [--debug]
 #
-# By default builds and runs the reduced-workload (fast) benchmark
-# suite. Pass --full to run the complete benchmark suite. Pass
-# --release for an optimised build (much faster under QEMU).
+# By default builds a release binary and runs the reduced-workload
+# (fast) benchmark suite. Pass --full to run the complete benchmark
+# suite. Pass --debug to build in debug mode (much slower under QEMU).
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=armv7-unknown-linux-musleabihf
-PROFILE=debug
-CARGO_PROFILE_FLAG=()
+PROFILE=release
+CARGO_PROFILE_FLAG=(--release)
 FAST_RUN=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --full) FAST_RUN=0; shift ;;
-        --release) PROFILE=release; CARGO_PROFILE_FLAG=(--release); shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--full] [--release]"; exit 1 ;;
+        --debug) PROFILE=debug; CARGO_PROFILE_FLAG=(); shift ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--full] [--debug]"; exit 1 ;;
     esac
 done
 
 CLI_BIN="$REPO_ROOT/target/$TARGET/$PROFILE/sf-nano-cli"
-if [[ "$FAST_RUN" -eq 1 ]]; then
-    RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests_fast.py"
-else
-    RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests.py"
-fi
+RUN_TESTS="$REPO_ROOT/benchmarks/wasi/run_tests.py"
 STATE_DIR="$(mktemp -d /tmp/armv7a-run-tests.XXXXXX)"
 WRAPPER=""
 
@@ -196,14 +192,12 @@ exit "$status"
 WRAPPER_EOF
 chmod +x "$WRAPPER"
 
+FAST_FLAG=""
 if [[ "$FAST_RUN" -eq 1 ]]; then
-    echo "[armv7-run-tests] Running reduced benchmarks under QEMU ($PROFILE)..."
+    FAST_FLAG="--fast"
+    echo "[armv7-run-tests] Running benchmarks under QEMU ($PROFILE, fast)..."
 else
-    echo "[armv7-run-tests] Running benchmarks under QEMU ($PROFILE)..."
+    echo "[armv7-run-tests] Running benchmarks under QEMU ($PROFILE, full)..."
 fi
 echo
-if [[ "$FAST_RUN" -eq 1 ]]; then
-    python3 "$RUN_TESTS" --exec "$WRAPPER" --cli-args "$CLI_BIN"
-else
-    python3 "$RUN_TESTS" --exec "$WRAPPER $CLI_BIN"
-fi
+python3 "$RUN_TESTS" $FAST_FLAG --exec "$WRAPPER" --cli-args "$CLI_BIN"

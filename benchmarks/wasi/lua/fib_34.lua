@@ -3,5 +3,5 @@ local function fib(n)
   return fib(n-1) + fib(n-2)
 end
 
-local result = fib(20)
-print(string.format("fib(20) = %d", result))
+local result = fib(34)
+print(string.format("fib(34) = %d", result))
