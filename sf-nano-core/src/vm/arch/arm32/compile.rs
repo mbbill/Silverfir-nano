@@ -1,4 +1,4 @@
-//! ARMv7-A module compilation and linking.
+//! 32-bit ARM module compilation and linking.
 //!
 //! Per-function compilation is delegated to the common pipeline via
 //! `compile_function::<Arm32Backend>`. This module handles ARM32-specific
@@ -96,7 +96,7 @@ pub(crate) fn compile_module(
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = Arm32FunctionInfo {
             entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
-                WasmError::internal("armv7a function entry is out of range".into())
+                WasmError::internal("arm32 function entry is out of range".into())
             })? as u32,
             total_frame_bytes: u32::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u32::from(runtime.frame_prefix_slots),
@@ -119,7 +119,7 @@ pub(crate) fn compile_module(
             let callee_addr = *internal_entry_addrs
                 .get(patch.callee.0 as usize)
                 .ok_or_else(|| {
-                    WasmError::internal("armv7a direct callee address is out of range".into())
+                    WasmError::internal("arm32 direct callee address is out of range".into())
                 })? as u32;
             patch_movw_movt(&mut artifact.text, patch.literal_offset, callee_addr);
         }

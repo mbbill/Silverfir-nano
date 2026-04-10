@@ -150,7 +150,7 @@ impl MachineMemWidth {
 /// width.
 ///
 /// Shared lowering must key off the backend ABI it is targeting, not the host
-/// compiler's `usize`, because armv7a lowering runs on 64-bit hosts.
+/// compiler's `usize`, because arm32 lowering runs on 64-bit hosts.
 #[inline]
 pub(crate) const fn machine_ptr_width(gp_reg_width: u8) -> MachineMemWidth {
     match gp_reg_width {

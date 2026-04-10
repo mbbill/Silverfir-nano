@@ -28,8 +28,8 @@ mod shared_64;
 
 #[cfg(sf_arch_arm64)]
 pub(crate) mod arm64;
-#[cfg(sf_arch_armv7a)]
-pub(crate) mod armv7a;
+#[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+pub(crate) mod arm32;
 #[cfg(sf_arch_x64)]
 pub(crate) mod x86_64;
 
@@ -74,6 +74,8 @@ pub(crate) enum NativeBackend {
     Arm64,
     #[cfg(sf_arch_armv7a)]
     Armv7a,
+    #[cfg(sf_arch_thumbm)]
+    ThumbM,
     #[cfg(sf_arch_x64)]
     X86_64,
     #[cfg(sf_emulator)]
@@ -89,7 +91,9 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => arm64::abi::compile_backend_config(),
         #[cfg(sf_arch_armv7a)]
-        NativeBackend::Armv7a => armv7a::abi::compile_backend_config(),
+        NativeBackend::Armv7a => arm32::abi::compile_backend_config(),
+        #[cfg(sf_arch_thumbm)]
+        NativeBackend::ThumbM => arm32::abi::compile_backend_config(),
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
         #[cfg(sf_emulator)]
@@ -107,6 +111,8 @@ impl NativeBackend {
             Self::Arm64 => "arm64",
             #[cfg(sf_arch_armv7a)]
             Self::Armv7a => "armv7a",
+            #[cfg(sf_arch_thumbm)]
+            Self::ThumbM => "thumbm",
             #[cfg(sf_arch_x64)]
             Self::X86_64 => "x86_64",
             #[cfg(sf_emulator)]
@@ -154,6 +160,11 @@ fn host_native_backend() -> Option<NativeBackend> {
     #[cfg(sf_arch_armv7a)]
     {
         return Some(NativeBackend::Armv7a);
+    }
+
+    #[cfg(sf_arch_thumbm)]
+    {
+        return Some(NativeBackend::ThumbM);
     }
 
     #[cfg(sf_arch_x64)]
@@ -275,7 +286,22 @@ pub(crate) fn dispatch_compile_module(
         }
         #[cfg(sf_arch_armv7a)]
         NativeBackend::Armv7a => {
-            let entries = armv7a::compile::compile_module(module, compiled)?;
+            let entries = arm32::compile::compile_module(module, compiled)?;
+            Ok(entries
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|e| CompiledArchEntry {
+                        entry: e.entry,
+                        text_len: e.text_len,
+                        #[cfg(sf_ir_dump)]
+                        debug_regions: e.debug_regions,
+                    })
+                })
+                .collect())
+        }
+        #[cfg(sf_arch_thumbm)]
+        NativeBackend::ThumbM => {
+            let entries = arm32::compile::compile_module(module, compiled)?;
             Ok(entries
                 .into_iter()
                 .map(|opt| {
@@ -328,6 +354,8 @@ pub(crate) fn dispatch_eval(
         NativeBackend::Arm64 => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_arch_armv7a)]
         NativeBackend::Armv7a => common::eval::eval(spec, code, store, args, backend_name),
+        #[cfg(sf_arch_thumbm)]
+        NativeBackend::ThumbM => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_emulator)]

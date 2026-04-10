@@ -3,11 +3,11 @@
 # Run the WASI benchmark tests on ARMv7 under QEMU inside Colima.
 #
 # Usage:
-#   ./scripts/armv7a-run-tests.sh [--fast] [--release]
+#   ./scripts/armv7a-run-tests.sh [--full] [--release]
 #
-# By default builds and runs in debug mode. Pass --release for an
-# optimised build (much faster under QEMU). Pass --fast to use the
-# reduced-workload benchmark suite for slower ARMv7a/QEMU iteration.
+# By default builds and runs the reduced-workload (fast) benchmark
+# suite. Pass --full to run the complete benchmark suite. Pass
+# --release for an optimised build (much faster under QEMU).
 
 set -euo pipefail
 
@@ -15,13 +15,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=armv7-unknown-linux-musleabihf
 PROFILE=debug
 CARGO_PROFILE_FLAG=()
-FAST_RUN=0
+FAST_RUN=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --fast) FAST_RUN=1; shift ;;
+        --full) FAST_RUN=0; shift ;;
         --release) PROFILE=release; CARGO_PROFILE_FLAG=(--release); shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--fast] [--release]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--full] [--release]"; exit 1 ;;
     esac
 done
 

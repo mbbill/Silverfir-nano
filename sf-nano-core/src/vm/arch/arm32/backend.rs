@@ -1,4 +1,4 @@
-//! Backend state and `ArchBackend` trait glue for ARMv7-A.
+//! Backend state and `ArchBackend` trait glue for 32-bit ARM.
 //!
 //! This is the bridge between the common pipeline and the ARM32-specific
 //! instruction lowering. All lowering logic lives in `inst.rs` and `control.rs`.
@@ -33,7 +33,7 @@ use super::{
         self, emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg, map_reg,
         SCRATCH0, SCRATCH1,
     },
-    armv7a_raise_trap,
+    arm32_raise_trap,
     enc::{self, Cond},
     inst::{emit_load_u32_into, emit_patchable_addr_into},
     reg::Arm32Reg,
@@ -81,7 +81,7 @@ pub(crate) struct Arm32Backend<'a> {
 // ── ArchBackend trait implementation ─────────────────────────────────────────
 
 impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
-    const NAME: &'static str = "armv7a";
+    const NAME: &'static str = "arm32";
 
     fn max_total_regs() -> usize {
         abi::max_total_machine_regs()
@@ -246,7 +246,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
             .text
             .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
         self.emit_load_u32(Arm32Reg::R1, trap_code(kind) as u32);
-        self.emit_host_call(armv7a_raise_trap as usize);
+        self.emit_host_call(arm32_raise_trap as usize);
         // The shim returns NativeCallStatus::Error (= 1) in R0. Branch to
         // body_local_error_label, which preserves R0 and propagates upward
         // through the unified Return tail.
@@ -265,7 +265,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
                 .labels
                 .get(fixup.target)
                 .and_then(|v| *v)
-                .ok_or_else(|| WasmError::internal("armv7a branch label unresolved".into()))?;
+                .ok_or_else(|| WasmError::internal("arm32 branch label unresolved".into()))?;
             let delta = target_offset as i32 - fixup.offset as i32;
             let inst = match fixup.kind {
                 BranchFixupKind::B => enc::b(delta),
@@ -356,13 +356,13 @@ impl<'a> Arm32Backend<'a> {
             crate::vm::machine::machine_ir::fp_reg_index(reg, self.core.compiled.backend())
                 .ok_or_else(|| {
                     WasmError::invalid(alloc::format!(
-                        "armv7a: expected FP register, got GP machine reg {}",
+                        "arm32: expected FP register, got GP machine reg {}",
                         reg.0
                     ))
                 })?;
         fp_machine_reg(fp_idx).ok_or_else(|| {
             WasmError::invalid(alloc::format!(
-                "armv7a: FP machine reg index {} out of range",
+                "arm32: FP machine reg index {} out of range",
                 fp_idx
             ))
         })
@@ -418,7 +418,7 @@ impl<'a> Arm32Backend<'a> {
         if let Some(helper_scratch) = helper_scratch {
             debug_assert!(
                 helper_scratch.slots >= 8,
-                "armv7a helper scratch must reserve eight 64-bit slots for D3-D7 plus fixed regs"
+                "arm32 helper scratch must reserve eight 64-bit slots for D3-D7 plus fixed regs"
             );
             self.emit_fixed_helper_state_save(helper_scratch);
             self.emit_helper_scratch_save(helper_scratch);
@@ -652,7 +652,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Imm64(value) => self.emit_load_u32(dst, *value as u32),
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a emit_move_gp_value cannot consume reserved cache register {} as a real value",
+                    "arm32 emit_move_gp_value cannot consume reserved cache register {} as a real value",
                     reg.0
                 )));
             }
@@ -677,7 +677,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a materialize_gp_into cannot consume reserved cache register {} as a real value",
+                    "arm32 materialize_gp_into cannot consume reserved cache register {} as a real value",
                     reg.0
                 )));
             }
@@ -697,7 +697,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Imm64(_) => None,
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as lo half",
+                    "arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as lo half",
                     reg.0
                 )));
             }
@@ -707,7 +707,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Imm64(_) => None,
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as hi half",
+                    "arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as hi half",
                     reg.0
                 )));
             }
@@ -844,7 +844,7 @@ impl<'a> Arm32Backend<'a> {
     ) -> Result<(), WasmError> {
         if regs.len() != values.len() {
             return Err(WasmError::internal(
-                "armv7a stack-staged value move requires matching regs and values".into(),
+                "arm32 stack-staged value move requires matching regs and values".into(),
             ));
         }
         for value in values {
@@ -860,7 +860,7 @@ impl<'a> Arm32Backend<'a> {
                 MachineValue::Imm64(v) => emit_load_u32_into(&mut self.core.text, *s, *v as u32),
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a emit_values_to_regs_via_stack cannot consume reserved cache register {} as a real value",
+                        "arm32 emit_values_to_regs_via_stack cannot consume reserved cache register {} as a real value",
                         reg.0
                     )));
                 }
@@ -938,7 +938,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 ParallelSource::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a received non-identity reserved cache edge move into {} from {}",
+                        "arm32 received non-identity reserved cache edge move into {} from {}",
                         dst.reg.0,
                         reg.0
                     )));
@@ -990,7 +990,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 ParallelSource::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a received non-identity reserved cache edge move into {} from {}",
+                        "arm32 received non-identity reserved cache edge move into {} from {}",
                         dst.reg.0,
                         reg.0
                     )));

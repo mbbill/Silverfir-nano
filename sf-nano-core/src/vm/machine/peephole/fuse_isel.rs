@@ -10,17 +10,17 @@
 //! 1. **Bitfield extract** (`try_fuse_ubfx`):
 //!    `ShrU(src, #lsb) + And(shifted, #mask)` → `BitfieldExtractU { src, lsb, bits }`
 //!    where mask = `(1 << bits) - 1` (contiguous low-bit mask).
-//!    - ARM64/armv7a: `UBFX` (1 insn). x86_64: `SHR + AND` (no net gain, but correct).
+//!    - ARM64/arm32: `UBFX` (1 insn). x86_64: `SHR + AND` (no net gain, but correct).
 //!
 //! 2. **Shifted operand** (`try_fuse_shifted_binop`):
 //!    `shift(rhs, #amount) + binop(lhs, shifted)` → `IntBinaryShifted { lhs, rhs, shift, amount }`
 //!    for Add/Sub/And/Or/Xor with LSL/LSR/ASR.
-//!    - ARM64/armv7a: barrel-shifter form (1 insn). x86_64: decomposed (no gain).
+//!    - ARM64/arm32: barrel-shifter form (1 insn). x86_64: decomposed (no gain).
 //!
 //! 3. **Test bits** (`try_fuse_test_bits`):
 //!    `And(src, mask) + IntCompare(result, 0, Eq|Ne)` → `TestBits { src, mask, kind }`
 //!    when the AND result is only used by the compare.
-//!    - ARM64/armv7a: `TST`. x86_64: `TEST`. All backends benefit (1 insn vs 2).
+//!    - ARM64/arm32: `TST`. x86_64: `TEST`. All backends benefit (1 insn vs 2).
 //!
 //! # Ordering
 //!
