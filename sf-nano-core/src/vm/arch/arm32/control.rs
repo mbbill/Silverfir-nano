@@ -1,4 +1,4 @@
-//! Terminator and branch-condition compilation for the ARMv7-A backend.
+//! Terminator and branch-condition compilation for the 32-bit ARM backend.
 
 use crate::{
     error::WasmError,
@@ -85,7 +85,7 @@ impl<'a> Arm32Backend<'a> {
             MachineTerminator::JumpTable { index, entries } => {
                 if entries.is_empty() {
                     return Err(WasmError::internal(
-                        "armv7a jump table requires at least one entry".into(),
+                        "arm32 jump table requires at least one entry".into(),
                     ));
                 }
                 if entries.len() == 1 {
@@ -173,7 +173,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a branch IntCompare cannot read reserved cache register {} as rhs",
+                            "arm32 branch IntCompare cannot read reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -208,7 +208,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a branch TestBits cannot read reserved cache register {} as src",
+                            "arm32 branch TestBits cannot read reserved cache register {} as src",
                             reg.0
                         )));
                     }
@@ -229,7 +229,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a branch TestBits cannot read reserved cache register {} as mask",
+                            "arm32 branch TestBits cannot read reserved cache register {} as mask",
                             reg.0
                         )));
                     }

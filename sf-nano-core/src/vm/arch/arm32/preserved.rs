@@ -2,7 +2,7 @@
 //! `preserved_entry` runtime helper.
 //!
 //! The arm64 backend has a dedicated preserved-helper frame that saves all
-//! caller-clobbered JIT registers before the call. armv7a piggy-backs on the
+//! caller-clobbered JIT registers before the call. arm32 piggy-backs on the
 //! existing `emit_host_call` path, which already saves D3-D7 via the
 //! per-function `helper_scratch` slots; we additionally spill R0-R3 and R9.
 //!
@@ -76,7 +76,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a preserved-helper cannot consume reserved cache register {} as a real value",
+                    "arm32 preserved-helper cannot consume reserved cache register {} as a real value",
                     reg.0
                 )));
             }

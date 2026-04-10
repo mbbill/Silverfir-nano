@@ -723,7 +723,7 @@ pub(super) fn blx_reg(reg: Arm32Reg) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::arch::armv7a::reg::Arm32Reg;
+    use crate::vm::arch::arm32::reg::Arm32Reg;
 
     #[test]
     fn encodes_bx_and_blx_register_forms_at_the_correct_bit_position() {

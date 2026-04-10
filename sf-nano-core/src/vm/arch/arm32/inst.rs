@@ -1,4 +1,4 @@
-//! Instruction emission for the ARMv7-A backend.
+//! Instruction emission for the 32-bit ARM backend.
 //!
 //! ## Split-borrow pattern
 //!
@@ -25,12 +25,12 @@ use crate::{
 
 use super::{
     abi::{fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0},
-    armv7a_f32_ceil, armv7a_f32_floor, armv7a_f32_nearest_bits, armv7a_f32_trunc, armv7a_f64_ceil,
-    armv7a_f64_floor, armv7a_f64_nearest_bits, armv7a_f64_trunc, armv7a_i64_clz, armv7a_i64_ctz,
-    armv7a_i64_div_s, armv7a_i64_div_u, armv7a_i64_mul, armv7a_i64_popcnt, armv7a_i64_rem_s,
-    armv7a_i64_rem_u, armv7a_i64_rotl, armv7a_i64_rotr, armv7a_i64_shl, armv7a_i64_shr_s,
-    armv7a_i64_shr_u, armv7a_i64s_to_f32, armv7a_i64s_to_f64, armv7a_i64u_to_f32,
-    armv7a_i64u_to_f64, armv7a_saturating_trunc, armv7a_sdiv, armv7a_trapping_trunc, armv7a_udiv,
+    arm32_f32_ceil, arm32_f32_floor, arm32_f32_nearest_bits, arm32_f32_trunc, arm32_f64_ceil,
+    arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_clz, arm32_i64_ctz,
+    arm32_i64_div_s, arm32_i64_div_u, arm32_i64_mul, arm32_i64_popcnt, arm32_i64_rem_s,
+    arm32_i64_rem_u, arm32_i64_rotl, arm32_i64_rotr, arm32_i64_shl, arm32_i64_shr_s,
+    arm32_i64_shr_u, arm32_i64s_to_f32, arm32_i64s_to_f64, arm32_i64u_to_f32,
+    arm32_i64u_to_f64, arm32_saturating_trunc, arm32_sdiv, arm32_trapping_trunc, arm32_udiv,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     operands::{OwnedPreparedGp, PreparedFp, PreparedGp},
@@ -65,7 +65,7 @@ pub(super) fn prepare_gp<'p>(
     match value {
         MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_reg(reg)?)),
         MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "armv7a prepare_gp cannot consume reserved cache register {} as a real value",
+            "arm32 prepare_gp cannot consume reserved cache register {} as a real value",
             reg.0
         ))),
         MachineValue::Imm64(v) => {
@@ -105,7 +105,7 @@ fn prepare_pair_bitop_rhs(
             Ok(OwnedPreparedGp::Scratch(scratch))
         }
         MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "armv7a pair bitop rhs cannot consume reserved cache register {} as a real value",
+            "arm32 pair bitop rhs cannot consume reserved cache register {} as a real value",
             reg.0
         ))),
     }
@@ -139,20 +139,20 @@ pub(super) fn prepare_fp<'p>(
             )
             .ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
-                    "armv7a prepare_fp: expected FP register, got machine reg {}",
+                    "arm32 prepare_fp: expected FP register, got machine reg {}",
                     reg.0
                 ))
             })?;
             let d = fp_machine_reg(fp_idx).ok_or_else(|| {
                 WasmError::invalid(alloc::format!(
-                    "armv7a prepare_fp: FP index {} out of range",
+                    "arm32 prepare_fp: FP index {} out of range",
                     fp_idx
                 ))
             })?;
             Ok(PreparedFp::Mapped(d))
         }
         MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "armv7a prepare_fp cannot consume reserved cache register {} as a real value",
+            "arm32 prepare_fp cannot consume reserved cache register {} as a real value",
             reg.0
         ))),
         MachineValue::Imm64(bits) => {
@@ -327,7 +327,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => self.is_fp_machine_reg(*r),
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a Move cannot consume reserved cache register {} as source",
+                            "arm32 Move cannot consume reserved cache register {} as source",
                             reg.0
                         )));
                     }
@@ -365,7 +365,7 @@ impl<'a> Arm32Backend<'a> {
                         }
                         MachineValue::ReservedReg(reg) => {
                             return Err(WasmError::internal(alloc::format!(
-                                "armv7a Move GP->FP cannot consume reserved cache register {} as source",
+                                "arm32 Move GP->FP cannot consume reserved cache register {} as source",
                                 reg.0
                             )));
                         }
@@ -414,7 +414,7 @@ impl<'a> Arm32Backend<'a> {
                         }
                         MachineValue::ReservedReg(reg) => {
                             return Err(WasmError::internal(alloc::format!(
-                                "armv7a Move GP->GP cannot consume reserved cache register {} as source",
+                                "arm32 Move GP->GP cannot consume reserved cache register {} as source",
                                 reg.0
                             )));
                         }
@@ -942,7 +942,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 _ => {
                     return Err(WasmError::invalid(alloc::format!(
-                        "armv7a: unsupported FP load width {:?}",
+                        "arm32: unsupported FP load width {:?}",
                         width
                     )));
                 }
@@ -1048,7 +1048,7 @@ impl<'a> Arm32Backend<'a> {
                         }
                         _ => {
                             return Err(WasmError::invalid(alloc::format!(
-                                "armv7a: unsupported FP store width {:?}",
+                                "arm32: unsupported FP store width {:?}",
                                 width
                             )));
                         }
@@ -1092,20 +1092,20 @@ impl<'a> Arm32Backend<'a> {
                     }
                     _ => {
                         return Err(WasmError::invalid(alloc::format!(
-                            "armv7a: unsupported FP store width {:?}",
+                            "arm32: unsupported FP store width {:?}",
                             width
                         )));
                     }
                 },
                 MachineValue::Reg(r) => {
                     return Err(WasmError::invalid(alloc::format!(
-                        "armv7a: FP store expects an FP register source, got GP machine reg {}",
+                        "arm32: FP store expects an FP register source, got GP machine reg {}",
                         r.0
                     )));
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a FP store cannot consume reserved cache register {} as source value",
+                        "arm32 FP store cannot consume reserved cache register {} as source value",
                         reg.0
                     )));
                 }
@@ -1183,7 +1183,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Reg(r) => OwnedPreparedGp::Mapped(map_reg(*r)?),
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a compile_int_binary cannot consume reserved cache register {} as lhs",
+                    "arm32 compile_int_binary cannot consume reserved cache register {} as lhs",
                     reg.0
                 )));
             }
@@ -1224,7 +1224,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a int Add cannot consume reserved cache register {} as rhs",
+                        "arm32 int Add cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -1248,7 +1248,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a int Sub cannot consume reserved cache register {} as rhs",
+                        "arm32 int Sub cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -1277,7 +1277,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a int And cannot consume reserved cache register {} as rhs",
+                        "arm32 int And cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -1301,7 +1301,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a int Or cannot consume reserved cache register {} as rhs",
+                        "arm32 int Or cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -1325,7 +1325,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a int Xor cannot consume reserved cache register {} as rhs",
+                        "arm32 int Xor cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -1340,7 +1340,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => map_reg(*r)?,
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a int Shl cannot consume reserved cache register {} as rhs",
+                            "arm32 int Shl cannot consume reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -1362,7 +1362,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => map_reg(*r)?,
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a int ShrU cannot consume reserved cache register {} as rhs",
+                            "arm32 int ShrU cannot consume reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -1383,7 +1383,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => map_reg(*r)?,
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a int ShrS cannot consume reserved cache register {} as rhs",
+                            "arm32 int ShrS cannot consume reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -1405,7 +1405,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => map_reg(*r)?,
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a int Rotl cannot consume reserved cache register {} as rhs",
+                            "arm32 int Rotl cannot consume reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -1427,7 +1427,7 @@ impl<'a> Arm32Backend<'a> {
                     MachineValue::Reg(r) => map_reg(*r)?,
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a int Rotr cannot consume reserved cache register {} as rhs",
+                            "arm32 int Rotr cannot consume reserved cache register {} as rhs",
                             reg.0
                         )));
                     }
@@ -1447,9 +1447,9 @@ impl<'a> Arm32Backend<'a> {
                 let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
                 self.emit_branch(BranchFixupKind::B, trap_div_zero);
-                // Call armv7a_udiv(num, den) -> quotient in R0
+                // Call arm32_udiv(num, den) -> quotient in R0
                 self.core.bind_label(ok);
-                self.emit_host_call(armv7a_udiv as usize);
+                self.emit_host_call(arm32_udiv as usize);
                 if dst_hw != Arm32Reg::R0 {
                     self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
                 }
@@ -1503,8 +1503,8 @@ impl<'a> Arm32Backend<'a> {
                     .ensure_trap_label(MachineTrapKind::IntegerOverflow);
                 self.emit_branch(BranchFixupKind::B, trap_label);
                 self.core.bind_label(after_traps);
-                // Call armv7a_sdiv(num, den)
-                self.emit_host_call(armv7a_sdiv as usize);
+                // Call arm32_sdiv(num, den)
+                self.emit_host_call(arm32_sdiv as usize);
                 if dst_hw != Arm32Reg::R0 {
                     self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
                 }
@@ -1529,7 +1529,7 @@ impl<'a> Arm32Backend<'a> {
                     .text
                     .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
                 // rem = lhs - (lhs / rhs) * rhs
-                self.emit_host_call(armv7a_udiv as usize);
+                self.emit_host_call(arm32_udiv as usize);
                 // R0 = quotient. Restore lhs, rhs
                 self.core
                     .text
@@ -1578,7 +1578,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
-                self.emit_host_call(armv7a_sdiv as usize);
+                self.emit_host_call(arm32_sdiv as usize);
                 // R0 = quotient. Restore lhs, rhs
                 self.core
                     .text
@@ -1626,7 +1626,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Reg(r) => map_reg(*r)?,
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a compile_int_unary cannot consume reserved cache register {} as src",
+                    "arm32 compile_int_unary cannot consume reserved cache register {} as src",
                     reg.0
                 )));
             }
@@ -1736,7 +1736,7 @@ impl<'a> Arm32Backend<'a> {
                 let dst_hi_hw = map_reg(dst_hi)?;
                 self.spill_caller_saved_gp_regs();
                 self.emit_quad_args_to_r0_r3(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
-                self.emit_host_call(armv7a_i64_mul as usize);
+                self.emit_host_call(arm32_i64_mul as usize);
                 self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
                 self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
@@ -1779,7 +1779,7 @@ impl<'a> Arm32Backend<'a> {
                 Ok(())
             }
             other => Err(WasmError::invalid(alloc::format!(
-                "armv7a: unsupported i64 pair binary op {:?}",
+                "arm32: unsupported i64 pair binary op {:?}",
                 other
             ))),
         }
@@ -1802,9 +1802,9 @@ impl<'a> Arm32Backend<'a> {
             MachineIntUnaryOp::Clz | MachineIntUnaryOp::Ctz | MachineIntUnaryOp::Popcnt => {
                 self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
                 self.emit_host_call(match op {
-                    MachineIntUnaryOp::Clz => armv7a_i64_clz as usize,
-                    MachineIntUnaryOp::Ctz => armv7a_i64_ctz as usize,
-                    MachineIntUnaryOp::Popcnt => armv7a_i64_popcnt as usize,
+                    MachineIntUnaryOp::Clz => arm32_i64_clz as usize,
+                    MachineIntUnaryOp::Ctz => arm32_i64_ctz as usize,
+                    MachineIntUnaryOp::Popcnt => arm32_i64_popcnt as usize,
                     _ => unreachable!(),
                 });
                 self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
@@ -1929,10 +1929,10 @@ impl<'a> Arm32Backend<'a> {
         self.core.bind_label(after_traps);
 
         self.emit_host_call(match (sign, rem) {
-            (MachineSign::Signed, false) => armv7a_i64_div_s as usize,
-            (MachineSign::Unsigned, false) => armv7a_i64_div_u as usize,
-            (MachineSign::Signed, true) => armv7a_i64_rem_s as usize,
-            (MachineSign::Unsigned, true) => armv7a_i64_rem_u as usize,
+            (MachineSign::Signed, false) => arm32_i64_div_s as usize,
+            (MachineSign::Unsigned, false) => arm32_i64_div_u as usize,
+            (MachineSign::Signed, true) => arm32_i64_rem_s as usize,
+            (MachineSign::Unsigned, true) => arm32_i64_rem_u as usize,
         });
         self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
         self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
@@ -1956,14 +1956,14 @@ impl<'a> Arm32Backend<'a> {
         self.emit_move_gp_value(Arm32Reg::R2, rhs)?;
         self.emit_pair_args_to_r0_r1(lhs_lo, lhs_hi)?;
         self.emit_host_call(match op {
-            MachineIntBinaryOp::Shl => armv7a_i64_shl as usize,
-            MachineIntBinaryOp::ShrS => armv7a_i64_shr_s as usize,
-            MachineIntBinaryOp::ShrU => armv7a_i64_shr_u as usize,
-            MachineIntBinaryOp::Rotl => armv7a_i64_rotl as usize,
-            MachineIntBinaryOp::Rotr => armv7a_i64_rotr as usize,
+            MachineIntBinaryOp::Shl => arm32_i64_shl as usize,
+            MachineIntBinaryOp::ShrS => arm32_i64_shr_s as usize,
+            MachineIntBinaryOp::ShrU => arm32_i64_shr_u as usize,
+            MachineIntBinaryOp::Rotl => arm32_i64_rotl as usize,
+            MachineIntBinaryOp::Rotr => arm32_i64_rotr as usize,
             other => {
                 return Err(WasmError::invalid(alloc::format!(
-                    "armv7a: unsupported i64 pair shift op {:?}",
+                    "arm32: unsupported i64 pair shift op {:?}",
                     other
                 )));
             }
@@ -2070,10 +2070,10 @@ impl<'a> Arm32Backend<'a> {
         self.spill_caller_saved_gp_regs();
         self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
         self.emit_host_call(match (width, sign) {
-            (MachineFloatWidth::F32, MachineSign::Signed) => armv7a_i64s_to_f32 as usize,
-            (MachineFloatWidth::F32, MachineSign::Unsigned) => armv7a_i64u_to_f32 as usize,
-            (MachineFloatWidth::F64, MachineSign::Signed) => armv7a_i64s_to_f64 as usize,
-            (MachineFloatWidth::F64, MachineSign::Unsigned) => armv7a_i64u_to_f64 as usize,
+            (MachineFloatWidth::F32, MachineSign::Signed) => arm32_i64s_to_f32 as usize,
+            (MachineFloatWidth::F32, MachineSign::Unsigned) => arm32_i64u_to_f32 as usize,
+            (MachineFloatWidth::F64, MachineSign::Signed) => arm32_i64s_to_f64 as usize,
+            (MachineFloatWidth::F64, MachineSign::Unsigned) => arm32_i64u_to_f64 as usize,
         });
 
         match width {
@@ -2153,7 +2153,7 @@ impl<'a> Arm32Backend<'a> {
                 | MachineConvertOp::I64TruncSatF64S
                 | MachineConvertOp::I64TruncSatF64U
         ) {
-            self.emit_host_call(armv7a_saturating_trunc as usize);
+            self.emit_host_call(arm32_saturating_trunc as usize);
             self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
             self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
             return Ok(());
@@ -2170,7 +2170,7 @@ impl<'a> Arm32Backend<'a> {
                 .emit_u32(enc::add_imm(*s, Arm32Reg::SP, 8, 0));
             self.core.text.emit_u32(enc::str_imm(*s, Arm32Reg::SP, 0));
         }
-        self.emit_host_call(armv7a_trapping_trunc as usize);
+        self.emit_host_call(arm32_trapping_trunc as usize);
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         let ok = self.core.new_label();
         self.emit_branch(BranchFixupKind::BCond(Cond::Eq), ok);
@@ -2251,7 +2251,7 @@ impl<'a> Arm32Backend<'a> {
                 | MachineConvertOp::I32TruncSatF64S
                 | MachineConvertOp::I32TruncSatF64U
         ) {
-            self.emit_host_call(armv7a_saturating_trunc as usize);
+            self.emit_host_call(arm32_saturating_trunc as usize);
             if dst_hw != Arm32Reg::R0 {
                 self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
             }
@@ -2270,7 +2270,7 @@ impl<'a> Arm32Backend<'a> {
                 .emit_u32(enc::add_imm(*s, Arm32Reg::SP, 8, 0));
             self.core.text.emit_u32(enc::str_imm(*s, Arm32Reg::SP, 0));
         }
-        self.emit_host_call(armv7a_trapping_trunc as usize);
+        self.emit_host_call(arm32_trapping_trunc as usize);
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         let ok = self.core.new_label();
         self.emit_branch(BranchFixupKind::BCond(Cond::Eq), ok);
@@ -2313,7 +2313,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a reinterpret_f64_to_i64_pair cannot consume reserved cache register {} as src",
+                    "arm32 reinterpret_f64_to_i64_pair cannot consume reserved cache register {} as src",
                     reg.0
                 )));
             }
@@ -2630,7 +2630,7 @@ impl<'a> Arm32Backend<'a> {
         // For F64 we need to combine both 32-bit halves of each operand.
         // Move dn to (dn_lo, dn_hi), dm to (dm_lo, dm_hi), then combine
         // each half with OR/AND, and re-pack into dd. This needs four GP
-        // scratch slots; armv7a only has two in the pool, so we serialise
+        // scratch slots; arm32 only has two in the pool, so we serialise
         // through R0/R1 with the spill/restore pattern used elsewhere.
         self.core.bind_label(eq_case);
         self.spill_caller_saved_gp_regs();
@@ -2715,7 +2715,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
                 }
-                self.emit_host_call(armv7a_f64_ceil as usize);
+                self.emit_host_call(arm32_f64_ceil as usize);
                 if dd != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
                 }
@@ -2726,7 +2726,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
                 }
-                self.emit_host_call(armv7a_f64_floor as usize);
+                self.emit_host_call(arm32_f64_floor as usize);
                 if dd != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
                 }
@@ -2737,7 +2737,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(FP_SCRATCH0, *dm));
                 }
-                self.emit_host_call(armv7a_f64_trunc as usize);
+                self.emit_host_call(arm32_f64_trunc as usize);
                 if dd != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
                 }
@@ -2748,7 +2748,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, *dm));
-                self.emit_host_call(armv7a_f64_nearest_bits as usize);
+                self.emit_host_call(arm32_f64_nearest_bits as usize);
                 self.core
                     .text
                     .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
@@ -2771,7 +2771,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(armv7a_f32_ceil as usize);
+                self.emit_host_call(arm32_f32_ceil as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -2785,7 +2785,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(armv7a_f32_floor as usize);
+                self.emit_host_call(arm32_f32_floor as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -2799,7 +2799,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(armv7a_f32_trunc as usize);
+                self.emit_host_call(arm32_f32_trunc as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -2810,7 +2810,7 @@ impl<'a> Arm32Backend<'a> {
                 let src_s = *dm * 2;
                 let dst_s = dd * 2;
                 self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, src_s));
-                self.emit_host_call(armv7a_f32_nearest_bits as usize);
+                self.emit_host_call(arm32_f32_nearest_bits as usize);
                 self.core.text.emit_u32(enc::vmov_s_r(dst_s, Arm32Reg::R0));
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -2924,7 +2924,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a I32WrapI64 cannot consume reserved cache register {} as src",
+                            "arm32 I32WrapI64 cannot consume reserved cache register {} as src",
                             reg.0
                         )));
                     }
@@ -2942,7 +2942,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a I64ExtendI32 cannot consume reserved cache register {} as src",
+                            "arm32 I64ExtendI32 cannot consume reserved cache register {} as src",
                             reg.0
                         )));
                     }
@@ -2972,7 +2972,7 @@ impl<'a> Arm32Backend<'a> {
             | MachineConvertOp::I64TruncF32U
             | MachineConvertOp::I64TruncSatF32U => {
                 return Err(WasmError::internal(
-                    "armv7a direct i64 trunc convert should be legalized to ConvertFloatToI64Pair"
+                    "arm32 direct i64 trunc convert should be legalized to ConvertFloatToI64Pair"
                         .into(),
                 ));
             }
@@ -3056,7 +3056,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
-                self.emit_host_call(armv7a_i64s_to_f64 as usize);
+                self.emit_host_call(arm32_i64s_to_f64 as usize);
                 // Result is in D0 (EABI: f64 returned in D0)
                 if dd != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
@@ -3070,7 +3070,7 @@ impl<'a> Arm32Backend<'a> {
                 // R0 = lo, R1 = 0 (zero-extend)
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
-                self.emit_host_call(armv7a_i64u_to_f64 as usize);
+                self.emit_host_call(arm32_i64u_to_f64 as usize);
                 if dd != FP_SCRATCH0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, FP_SCRATCH0));
                 }
@@ -3084,7 +3084,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
-                self.emit_host_call(armv7a_i64s_to_f32 as usize);
+                self.emit_host_call(arm32_i64s_to_f32 as usize);
                 // Result in S0 (EABI: f32 returned in S0)
                 let s0 = FP_SCRATCH0 * 2;
                 if sd != s0 {
@@ -3098,7 +3098,7 @@ impl<'a> Arm32Backend<'a> {
                 self.spill_caller_saved_gp_regs();
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
-                self.emit_host_call(armv7a_i64u_to_f32 as usize);
+                self.emit_host_call(arm32_i64u_to_f32 as usize);
                 let s0 = FP_SCRATCH0 * 2;
                 if sd != s0 {
                     self.core.text.emit_u32(enc::vmov_s(sd, s0));
@@ -3159,7 +3159,7 @@ impl<'a> Arm32Backend<'a> {
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
-                            "armv7a F64ReinterpretI64 cannot consume reserved cache register {} as src",
+                            "arm32 F64ReinterpretI64 cannot consume reserved cache register {} as src",
                             reg.0
                         )));
                     }
@@ -3219,7 +3219,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a FP select cannot consume reserved cache register {} as false_val",
+                        "arm32 FP select cannot consume reserved cache register {} as false_val",
                         reg.0
                     )));
                 }
@@ -3254,7 +3254,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a FP select cannot consume reserved cache register {} as true_val",
+                        "arm32 FP select cannot consume reserved cache register {} as true_val",
                         reg.0
                     )));
                 }
@@ -3325,7 +3325,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a emit_gp_select_value cannot consume reserved cache register {} as value",
+                    "arm32 emit_gp_select_value cannot consume reserved cache register {} as value",
                     reg.0
                 )));
             }
@@ -3361,7 +3361,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a emit_gp_select_value_cond cannot consume reserved cache register {} as value",
+                    "arm32 emit_gp_select_value_cond cannot consume reserved cache register {} as value",
                     reg.0
                 )));
             }
@@ -3395,7 +3395,7 @@ impl<'a> Arm32Backend<'a> {
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
-                        "armv7a compile_int_compare cannot consume reserved cache register {} as rhs",
+                        "arm32 compile_int_compare cannot consume reserved cache register {} as rhs",
                         reg.0
                     )));
                 }
@@ -3522,7 +3522,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::ReservedReg(reg) => {
                 return Err(WasmError::internal(alloc::format!(
-                    "armv7a compile_test_bits cannot consume reserved cache register {} as mask",
+                    "arm32 compile_test_bits cannot consume reserved cache register {} as mask",
                     reg.0
                 )));
             }
@@ -3580,7 +3580,7 @@ impl<'a> Arm32Backend<'a> {
 
     fn compile_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
         let metadata = self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
-            WasmError::internal("armv7a: external-call metadata is out of range".into())
+            WasmError::internal("arm32: external-call metadata is out of range".into())
         })?;
 
         let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;

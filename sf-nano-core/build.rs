@@ -12,9 +12,10 @@
 //   sf_*      — user-enabled subsystem
 //
 // Arch cfgs (from CARGO_CFG_TARGET_ARCH):
-//   aarch64 → sf_arch_arm64
-//   arm     → sf_arch_armv7a
-//   x86_64  → sf_arch_x64
+//   aarch64                → sf_arch_arm64
+//   arm + thumbv*-none-*   → sf_arch_thumbm   (arm32 module, Thumb-2 encoding)
+//   arm (everything else)  → sf_arch_armv7a   (arm32 module, A32 encoding)
+//   x86_64                 → sf_arch_x64
 //
 // OS cfgs (from CARGO_CFG_TARGET_OS):
 //   linux   → sf_os_linux   (+ sf_has_posix)
@@ -55,6 +56,7 @@ use std::env;
 const DECLARED_CFGS: &[&str] = &[
     "sf_arch_arm64",
     "sf_arch_armv7a",
+    "sf_arch_thumbm",
     "sf_arch_x64",
     "sf_os_linux",
     "sf_os_macos",
@@ -103,9 +105,16 @@ fn emit_arch_cfgs() {
     // Exactly one `sf_arch_*` is set on the three supported architectures;
     // unsupported targets set none and fall through to the emulator.
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target = env::var("TARGET").unwrap_or_default();
     match arch.as_str() {
         "aarch64" => println!("cargo:rustc-cfg=sf_arch_arm64"),
-        "arm" => println!("cargo:rustc-cfg=sf_arch_armv7a"),
+        "arm" => {
+            if target.starts_with("thumbv") {
+                println!("cargo:rustc-cfg=sf_arch_thumbm");
+            } else {
+                println!("cargo:rustc-cfg=sf_arch_armv7a");
+            }
+        }
         "x86_64" => println!("cargo:rustc-cfg=sf_arch_x64"),
         _ => {}
     }

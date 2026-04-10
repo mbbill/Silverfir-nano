@@ -1,4 +1,4 @@
-//! ARMv7-A physical register mapping and EABI-derived layout.
+//! 32-bit ARM physical register mapping and EABI-derived layout.
 //!
 //! # GP register plan (R0-R15)
 //!
@@ -184,7 +184,7 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
         .and_then(|index| GP_DYNAMIC.get(index).copied())
         .ok_or_else(|| {
             WasmError::invalid(alloc::format!(
-                "armv7a MachineIR backend has no physical mapping for machine reg {}",
+                "arm32 MachineIR backend has no physical mapping for machine reg {}",
                 reg.0
             ))
         })

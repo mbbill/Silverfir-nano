@@ -69,7 +69,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //   4. (internal_entry_label binding)
     //   5. `lower_body_prelude`       — body entry prelude: per-arch
     //                                    native-call setup (link save on
-    //                                    arm64/armv7a, alignment shim on
+    //                                    arm64/arm32, alignment shim on
     //                                    x86_64). Today native backends emit
     //                                    it unconditionally; a future leaf
     //                                    optimization may gate it.

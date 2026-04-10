@@ -27,7 +27,7 @@ unsafe extern "C" {
 }
 
 // `eval` is now provided by the shared `arch::common::eval::eval`. The
-// `dispatch_eval` central switch in `arch/mod.rs` routes Armv7a callers
+// `dispatch_eval` central switch in `arch/mod.rs` routes arm32 callers
 // directly to the common entry point — no per-arch wrapper is required.
 
 /// AAPCS-friendly shim around the canonical `runtime::trap::raise_trap`
@@ -38,23 +38,23 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// `ctx` must point to a valid `NativeContext` for the duration of the call.
-pub(crate) unsafe extern "C" fn armv7a_raise_trap(
+pub(crate) unsafe extern "C" fn arm32_raise_trap(
     ctx: *mut NativeContext,
     kind: u32,
 ) -> u32 {
     unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
 }
 
-// ─── Software integer division helpers (ARMv7-A has no UDIV/SDIV) ───────────
+// ─── Software integer division helpers ──────────────────────────────────────
 
 /// Unsigned 32-bit division. Returns quotient.
-pub(crate) extern "C" fn armv7a_udiv(num: u32, den: u32) -> u32 {
+pub(crate) extern "C" fn arm32_udiv(num: u32, den: u32) -> u32 {
     // Caller guarantees den != 0 (JIT emits trap check before calling)
     num / den
 }
 
 /// Signed 32-bit division. Returns quotient.
-pub(crate) extern "C" fn armv7a_sdiv(num: i32, den: i32) -> i32 {
+pub(crate) extern "C" fn arm32_sdiv(num: i32, den: i32) -> i32 {
     // The backend emits the Wasm overflow trap for i32.div_s before calling
     // this helper. Use wrapping semantics here anyway so helper-backed
     // remainder paths can safely compute INT_MIN / -1 as an intermediate.
@@ -67,52 +67,52 @@ fn join_u64(lo: u32, hi: u32) -> u64 {
 }
 
 /// Count leading zeros in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_clz(lo: u32, hi: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_clz(lo: u32, hi: u32) -> u64 {
     u64::from(join_u64(lo, hi).leading_zeros())
 }
 
 /// Count trailing zeros in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_ctz(lo: u32, hi: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_ctz(lo: u32, hi: u32) -> u64 {
     u64::from(join_u64(lo, hi).trailing_zeros())
 }
 
 /// Count set bits in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_popcnt(lo: u32, hi: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_popcnt(lo: u32, hi: u32) -> u64 {
     u64::from(join_u64(lo, hi).count_ones())
 }
 
 /// Shift a 64-bit value left by the low 6 bits of `count`.
-pub(crate) extern "C" fn armv7a_i64_shl(lo: u32, hi: u32, count: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_shl(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi) << (count & 63)
 }
 
 /// Arithmetic right shift of a 64-bit value by the low 6 bits of `count`.
-pub(crate) extern "C" fn armv7a_i64_shr_s(lo: u32, hi: u32, count: u32) -> i64 {
+pub(crate) extern "C" fn arm32_i64_shr_s(lo: u32, hi: u32, count: u32) -> i64 {
     ((join_u64(lo, hi)) as i64) >> (count & 63)
 }
 
 /// Logical right shift of a 64-bit value by the low 6 bits of `count`.
-pub(crate) extern "C" fn armv7a_i64_shr_u(lo: u32, hi: u32, count: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_shr_u(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi) >> (count & 63)
 }
 
 /// Rotate a 64-bit value left by the low 6 bits of `count`.
-pub(crate) extern "C" fn armv7a_i64_rotl(lo: u32, hi: u32, count: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_rotl(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi).rotate_left(count & 63)
 }
 
 /// Rotate a 64-bit value right by the low 6 bits of `count`.
-pub(crate) extern "C" fn armv7a_i64_rotr(lo: u32, hi: u32, count: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_rotr(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi).rotate_right(count & 63)
 }
 
 /// Add two 64-bit values passed as lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_mul(lhs_lo: u32, lhs_hi: u32, rhs_lo: u32, rhs_hi: u32) -> u64 {
+pub(crate) extern "C" fn arm32_i64_mul(lhs_lo: u32, lhs_hi: u32, rhs_lo: u32, rhs_hi: u32) -> u64 {
     join_u64(lhs_lo, lhs_hi).wrapping_mul(join_u64(rhs_lo, rhs_hi))
 }
 
 /// Signed 64-bit division over split lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_div_s(
+pub(crate) extern "C" fn arm32_i64_div_s(
     lhs_lo: u32,
     lhs_hi: u32,
     rhs_lo: u32,
@@ -124,7 +124,7 @@ pub(crate) extern "C" fn armv7a_i64_div_s(
 }
 
 /// Unsigned 64-bit division over split lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_div_u(
+pub(crate) extern "C" fn arm32_i64_div_u(
     lhs_lo: u32,
     lhs_hi: u32,
     rhs_lo: u32,
@@ -134,7 +134,7 @@ pub(crate) extern "C" fn armv7a_i64_div_u(
 }
 
 /// Signed 64-bit remainder over split lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_rem_s(
+pub(crate) extern "C" fn arm32_i64_rem_s(
     lhs_lo: u32,
     lhs_hi: u32,
     rhs_lo: u32,
@@ -146,7 +146,7 @@ pub(crate) extern "C" fn armv7a_i64_rem_s(
 }
 
 /// Unsigned 64-bit remainder over split lo/hi halves.
-pub(crate) extern "C" fn armv7a_i64_rem_u(
+pub(crate) extern "C" fn arm32_i64_rem_u(
     lhs_lo: u32,
     lhs_hi: u32,
     rhs_lo: u32,
@@ -158,31 +158,31 @@ pub(crate) extern "C" fn armv7a_i64_rem_u(
 // ─── i64 ↔ float conversion helpers ─────────────────────────────────────────
 
 /// Convert signed i64 (passed as lo/hi halves) to f64.
-pub(crate) extern "C" fn armv7a_i64s_to_f64(lo: u32, hi: u32) -> f64 {
+pub(crate) extern "C" fn arm32_i64s_to_f64(lo: u32, hi: u32) -> f64 {
     let val = (lo as u64) | ((hi as u64) << 32);
     (val as i64) as f64
 }
 
 /// Convert unsigned i64 (passed as lo/hi halves) to f64.
-pub(crate) extern "C" fn armv7a_i64u_to_f64(lo: u32, hi: u32) -> f64 {
+pub(crate) extern "C" fn arm32_i64u_to_f64(lo: u32, hi: u32) -> f64 {
     let val = (lo as u64) | ((hi as u64) << 32);
     val as f64
 }
 
 /// Convert signed i64 (passed as lo/hi halves) to f32.
-pub(crate) extern "C" fn armv7a_i64s_to_f32(lo: u32, hi: u32) -> f32 {
+pub(crate) extern "C" fn arm32_i64s_to_f32(lo: u32, hi: u32) -> f32 {
     let val = (lo as u64) | ((hi as u64) << 32);
     (val as i64) as f32
 }
 
 /// Convert unsigned i64 (passed as lo/hi halves) to f32.
-pub(crate) extern "C" fn armv7a_i64u_to_f32(lo: u32, hi: u32) -> f32 {
+pub(crate) extern "C" fn arm32_i64u_to_f32(lo: u32, hi: u32) -> f32 {
     let val = (lo as u64) | ((hi as u64) << 32);
     val as f32
 }
 
 /// Saturating float-to-i64 conversion helper for legalized pair results.
-pub(crate) extern "C" fn armv7a_saturating_trunc(src_bits: u64, op_code: u32) -> u64 {
+pub(crate) extern "C" fn arm32_saturating_trunc(src_bits: u64, op_code: u32) -> u64 {
     match op_code {
         8 => trunc_sat_f32_to_i32_s(src_bits as u32),
         9 => trunc_sat_f32_to_i32_u(src_bits as u32),
@@ -197,7 +197,7 @@ pub(crate) extern "C" fn armv7a_saturating_trunc(src_bits: u64, op_code: u32) ->
 }
 
 /// Trapping float-to-i64 conversion helper for legalized pair results.
-pub(crate) unsafe extern "C" fn armv7a_trapping_trunc(
+pub(crate) unsafe extern "C" fn arm32_trapping_trunc(
     src_bits: u64,
     op_code: u32,
     ctx: *mut NativeContext,
@@ -230,35 +230,35 @@ pub(crate) unsafe extern "C" fn armv7a_trapping_trunc(
     }
 }
 
-pub(crate) extern "C" fn armv7a_f32_ceil(val: f32) -> f32 {
+pub(crate) extern "C" fn arm32_f32_ceil(val: f32) -> f32 {
     ceil_f32(val)
 }
 
-pub(crate) extern "C" fn armv7a_f32_floor(val: f32) -> f32 {
+pub(crate) extern "C" fn arm32_f32_floor(val: f32) -> f32 {
     floor_f32(val)
 }
 
-pub(crate) extern "C" fn armv7a_f32_trunc(val: f32) -> f32 {
+pub(crate) extern "C" fn arm32_f32_trunc(val: f32) -> f32 {
     trunc_f32(val)
 }
 
-pub(crate) extern "C" fn armv7a_f32_nearest_bits(bits: u32) -> u32 {
+pub(crate) extern "C" fn arm32_f32_nearest_bits(bits: u32) -> u32 {
     wasm_f32_nearest_bits(bits) as u32
 }
 
-pub(crate) extern "C" fn armv7a_f64_ceil(val: f64) -> f64 {
+pub(crate) extern "C" fn arm32_f64_ceil(val: f64) -> f64 {
     ceil_f64(val)
 }
 
-pub(crate) extern "C" fn armv7a_f64_floor(val: f64) -> f64 {
+pub(crate) extern "C" fn arm32_f64_floor(val: f64) -> f64 {
     floor_f64(val)
 }
 
-pub(crate) extern "C" fn armv7a_f64_trunc(val: f64) -> f64 {
+pub(crate) extern "C" fn arm32_f64_trunc(val: f64) -> f64 {
     trunc_f64(val)
 }
 
-pub(crate) extern "C" fn armv7a_f64_nearest_bits(bits: u64) -> u64 {
+pub(crate) extern "C" fn arm32_f64_nearest_bits(bits: u64) -> u64 {
     wasm_f64_nearest_bits(bits)
 }
 
