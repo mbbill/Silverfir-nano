@@ -4,6 +4,7 @@ members = [
     "sf-nano-cli",
     "sf-nano-spectest",
     "sf-nano-wasitest",
+    "tools/memtrace",
 ]
 exclude = [
     "sf-nano-cli-minimal",

@@ -54,10 +54,13 @@ impl GuardPageMemory {
             }
         }
 
-        Ok(Self {
+        let memory = Self {
             base,
             committed: initial_bytes,
-        })
+        };
+        #[cfg(feature = "memtrace")]
+        sf_nano_memtrace::record_guard_region_new(base as usize, GUARD_RESERVATION, initial_bytes);
+        Ok(memory)
     }
 
     /// Grow by `delta_pages`. Returns the old size in pages.
@@ -78,6 +81,8 @@ impl GuardPageMemory {
                 .map_err(|msg| WasmError::internal(msg.into()))?;
         }
         self.committed = new_bytes;
+        #[cfg(feature = "memtrace")]
+        sf_nano_memtrace::record_guard_region_grow(self.base as usize, new_bytes);
         Ok(old_pages)
     }
 
@@ -104,6 +109,8 @@ impl GuardPageMemory {
 
 impl Drop for GuardPageMemory {
     fn drop(&mut self) {
+        #[cfg(feature = "memtrace")]
+        sf_nano_memtrace::record_guard_region_drop(self.base as usize);
         os::release_guarded(self.base, GUARD_RESERVATION);
     }
 }

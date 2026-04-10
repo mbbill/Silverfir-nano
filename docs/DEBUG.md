@@ -5,6 +5,7 @@ This page is the practical entry point for debugging `sf-nano` today:
 - how to run the JIT backend
 - how to run spec tests
 - what `native` and `reference` mean
+- how to trace startup/JIT memory usage and spikes
 - how to get static native dumps and runtime profiles
 - where the other debug helpers fit
 
@@ -32,6 +33,13 @@ Run native spectest:
 
 ```bash
 cargo run --bin sf-nano-spectest -- --backend native
+```
+
+Run the memory tracer:
+
+```bash
+cargo memprof --memtrace-output /tmp/run.jsonl -- \
+  --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
 ```
 
 Run the core library regression loop used most often during bring-up:
@@ -142,6 +150,70 @@ Example:
 TESTSUITE_DIR=$PWD/target/webassembly-testsuite-2.0 \
 RUST_BACKTRACE=1 \
 cargo run --bin sf-nano-spectest -- --backend native --log-level info if
+```
+
+## Memory Trace
+
+Use the CLI's `memtrace` feature when you want exact raw allocation tracing
+from process startup through wasm parsing, validation, instantiation, JIT
+compilation, and execution.
+
+What it records:
+
+- `alloc::` heap traffic through the process global allocator
+- raw alloc/free/realloc events with timestamps
+- interned stack tables with raw PCs
+- JIT executable buffer usage
+- guard-page linear-memory reservation and committed bytes
+
+Build and run through the cargo alias:
+
+```bash
+cargo memprof --memtrace-output /tmp/coremark-mem.jsonl -- \
+  --backend native benchmarks/wasi/coremark/coremark.wasm
+```
+
+Equivalent manual build/run:
+
+```bash
+cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
+
+target/release/sf-nano-cli \
+  --memtrace \
+  --memtrace-output /tmp/coremark-mem.jsonl \
+  --backend native \
+  benchmarks/wasi/coremark/coremark.wasm
+```
+
+Useful flags:
+
+- `--memtrace` enables raw tracing
+- `--memtrace-output <path>` writes the raw trace log to `<path>`
+- `--memtrace-help` shows memtrace-specific CLI help
+
+Outputs:
+
+- one raw JSONL trace file
+- one short stderr line that prints the final trace path
+
+Example:
+
+```bash
+cargo memprof --memtrace-output /tmp/lua-mem.jsonl -- \
+  --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
+```
+
+Notes:
+
+- `cargo memprof` is just a convenience alias for `sf-nano-cli --features memtrace`
+- the runtime trace is intentionally raw; peak finding, curves, categorization,
+  and flamegraphs belong in post-processing tools, not in the CLI
+- the raw trace can get large because it logs every allocation event
+- if you want cleaner native call stacks, rebuild with frame pointers:
+
+```bash
+RUSTFLAGS="-C force-frame-pointers=yes" \
+cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
 ```
 
 ## Static Native Dump
@@ -345,6 +417,20 @@ Then use:
 - `/tmp/coremark-native-dump/native_code.bin`
 - `samply-for-ai query ... hotspots`
 - `samply-for-ai query ... asm "<symbol>"`
+
+### Inspect a memory spike
+
+```bash
+cargo memprof --memtrace-output /tmp/coremark-mem.jsonl -- \
+  --backend native benchmarks/wasi/coremark/coremark.wasm
+```
+
+Then inspect:
+
+- the raw event log in `/tmp/coremark-mem.jsonl`
+- the interned stack records in the same file
+- an offline post-processing tool or UI for curves, peak reconstruction, and
+  flamegraphs at selected times
 
 ## Useful Environment Variables
 

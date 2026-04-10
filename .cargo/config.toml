@@ -1,6 +1,8 @@
+[alias]
+memprof = "run --release -p sf-nano-cli --features memtrace --bin sf-nano-cli -- --memtrace"
+
 [target.armv7-unknown-linux-musleabihf]
 linker = "rust-lld"
 
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link.exe"
-
