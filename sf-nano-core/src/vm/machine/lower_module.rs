@@ -44,9 +44,9 @@ use super::{
     lower_regalloc::{machine_block_params_for_value, MachineRegFile},
 };
 
-/// One prepared function ready for SSA-IR -> MachineIR lowering.
+/// One prepared function borrowed for internal lowering helpers.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LowerFunctionInput<'a> {
+struct BorrowedLowerFunctionInput<'a> {
     pub id: MachineFuncId,
     pub frame: FrameLayoutPlan,
     pub ssa: &'a SsaProgram,
@@ -55,11 +55,34 @@ pub(crate) struct LowerFunctionInput<'a> {
     pub result_count: u16,
 }
 
-/// One lowering request for a whole machine module.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct LowerModuleInput<'a> {
+/// Owned lowering input that allows the caller to release prepared SSA
+/// progressively while MachineIR is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LowerFunctionInput {
+    pub id: MachineFuncId,
+    pub frame: FrameLayoutPlan,
+    pub ssa: SsaProgram,
+    pub result_count: u16,
+}
+
+impl LowerFunctionInput {
+    #[inline]
+    fn borrowed(&self) -> BorrowedLowerFunctionInput<'_> {
+        BorrowedLowerFunctionInput {
+            id: self.id,
+            frame: self.frame,
+            ssa: &self.ssa,
+            result_count: self.result_count,
+        }
+    }
+}
+
+/// Owned whole-module lowering request. This is used by the production compile
+/// pipeline so SSA can be dropped function-by-function during lowering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LowerModuleInput {
     pub backend: BackendConfig,
-    pub functions: &'a [LowerFunctionInput<'a>],
+    pub functions: Vec<LowerFunctionInput>,
     #[cfg(sf_has_guard_pages)]
     pub use_guard_pages: bool,
 }
@@ -72,7 +95,9 @@ pub(crate) struct LoweredMachineModule {
     pub abi: MachineModuleAbi,
 }
 
-pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachineModule, WasmError> {
+pub(crate) fn lower_module(
+    input: LowerModuleInput,
+) -> Result<LoweredMachineModule, WasmError> {
     let max_regfile = MachineRegFile::new(input.backend)?;
 
     let function_count = input
@@ -91,16 +116,18 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
         })
         .collect::<Vec<_>>();
     let mut const_pool = ConstPoolBuilder::new();
-    for function in input.functions {
-        validate_program(function.ssa)?;
-        is_local_func[function.id.0 as usize] = true;
-        function_abis[function.id.0 as usize] = lower_function_runtime(*function)?;
+    for function in &input.functions {
+        let borrowed = function.borrowed();
+        validate_program(borrowed.ssa)?;
+        is_local_func[borrowed.id.0 as usize] = true;
+        function_abis[borrowed.id.0 as usize] = lower_function_runtime(borrowed)?;
     }
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
     for function in input.functions {
-        functions[function.id.0 as usize] = Some(lower_function(
-            *function,
+        let borrowed = function.borrowed();
+        functions[borrowed.id.0 as usize] = Some(lower_function(
+            borrowed,
             input.backend,
             &max_regfile,
             &function_abis,
@@ -132,7 +159,9 @@ pub(crate) fn lower_module(input: LowerModuleInput<'_>) -> Result<LoweredMachine
     Ok(LoweredMachineModule { module, abi })
 }
 
-fn lower_function_runtime(input: LowerFunctionInput<'_>) -> Result<MachineFunctionAbi, WasmError> {
+fn lower_function_runtime(
+    input: BorrowedLowerFunctionInput<'_>,
+) -> Result<MachineFunctionAbi, WasmError> {
     // Under the new local-call ABI, the dead "call_link" half of
     // `call_scratch` is gone — `FrameLayoutPlan::call_scratch` now only
     // carries helper-scratch slots (the live half). Expose the whole region
@@ -167,7 +196,7 @@ fn lower_function_runtime(input: LowerFunctionInput<'_>) -> Result<MachineFuncti
 }
 
 fn lower_function(
-    input: LowerFunctionInput<'_>,
+    input: BorrowedLowerFunctionInput<'_>,
     config: BackendConfig,
     regfile: &MachineRegFile,
     runtime: &[MachineFunctionAbi],

@@ -52,8 +52,8 @@ impl AlignedConstData {
 pub(crate) struct CompiledNativeModule {
     backend_kind: NativeBackend,
     backend: BackendConfig,
-    module: MachineModule,
-    abi: MachineModuleAbi,
+    module: Option<MachineModule>,
+    abi: Option<MachineModuleAbi>,
     aligned_consts: Vec<AlignedConstData>,
     dispatch_metadata: NativeDispatchMetadata,
 }
@@ -76,8 +76,8 @@ impl CompiledNativeModule {
         Ok(Self {
             backend_kind,
             backend,
-            module,
-            abi,
+            module: Some(module),
+            abi: Some(abi),
             aligned_consts,
             dispatch_metadata,
         })
@@ -94,13 +94,24 @@ impl CompiledNativeModule {
     }
 
     #[inline]
-    pub(crate) const fn module(&self) -> &MachineModule {
-        &self.module
+    pub(crate) fn module(&self) -> &MachineModule {
+        match &self.module {
+            Some(module) => module,
+            None => panic!("compiled machine module is not retained for this backend"),
+        }
     }
 
     #[inline]
-    pub(crate) const fn abi(&self) -> &MachineModuleAbi {
-        &self.abi
+    pub(crate) fn abi(&self) -> &MachineModuleAbi {
+        match &self.abi {
+            Some(abi) => abi,
+            None => panic!("compiled machine ABI is not retained for this backend"),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn strip_machine_ir_for_runtime(&mut self) {
+        self.module = None;
     }
 
     #[cfg(sf_emulator)]
@@ -109,7 +120,7 @@ impl CompiledNativeModule {
         &self,
         id: MachineFuncId,
     ) -> Option<&super::super::machine::machine_ir::MachineFunction> {
-        self.module.functions.get(id.0 as usize)
+        self.module().functions.get(id.0 as usize)
     }
 
     #[inline]

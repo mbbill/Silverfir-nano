@@ -32,9 +32,12 @@ use std::{
 };
 
 /// Per-function SSA-IR data for the dump.
-pub(crate) struct DumpFunctionLir<'a> {
+///
+/// This is intentionally owned so debug dumping can preserve exactly the data
+/// it needs without forcing the production compile pipeline to keep SSA alive.
+pub(crate) struct DumpFunctionLir {
     pub func_idx: u32,
-    pub ssa: &'a SsaProgram,
+    pub ssa: SsaProgram,
 }
 
 /// Per-function debug regions from compilation.
@@ -62,7 +65,7 @@ pub(crate) fn dump_enabled() -> bool {
 pub(crate) fn write_module_dump(
     module_name: &str,
     function_count: usize,
-    lir_inputs: &[DumpFunctionLir<'_>],
+    lir_inputs: &[DumpFunctionLir],
     machine_module: &MachineModule,
     runtime: &MachineModuleAbi,
     code_slices: &[(u32, &[u8])],
@@ -104,7 +107,7 @@ pub(crate) fn write_module_dump(
 fn write_dump_impl(
     module_name: &str,
     function_count: usize,
-    lir_inputs: &[DumpFunctionLir<'_>],
+    lir_inputs: &[DumpFunctionLir],
     machine_module: &MachineModule,
     runtime: &MachineModuleAbi,
     code_slices: &[(u32, &[u8])],
@@ -165,7 +168,7 @@ fn write_dump_impl(
     // Per-function sections
     let lir_by_func: alloc::collections::BTreeMap<u32, &SsaProgram> = lir_inputs
         .iter()
-        .map(|entry| (entry.func_idx, entry.ssa))
+        .map(|entry| (entry.func_idx, &entry.ssa))
         .collect();
 
     for func in &machine_module.functions {

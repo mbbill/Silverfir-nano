@@ -59,8 +59,8 @@ use crate::{
     vm::{
         arch,
         machine::{
-            machine_ir::MachineFuncId,
-            {lower_module, optimize_module, LowerFunctionInput, LowerModuleInput},
+            machine_ir::MachineFuncId, lower_module, optimize_module, LoweredMachineModule,
+            LowerFunctionInput, LowerModuleInput,
         },
         middle::{prepare_function, PrepareInput},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
@@ -70,6 +70,7 @@ use crate::{
 };
 #[cfg(sf_ir_dump)]
 use crate::vm::debug::ir_dump;
+use crate::vm::{backend::BackendConfig, entities::ModuleInst};
 
 #[cfg(sf_memtrace)]
 type MemtraceScope = sf_nano_memtrace::ScopeGuard;
@@ -86,6 +87,104 @@ fn memtrace_scope(name: &'static str) -> MemtraceScope {
 #[cfg(not(sf_memtrace))]
 fn memtrace_scope(_name: &'static str) -> MemtraceScope {
     MemtraceScope
+}
+
+fn finish_native_compile(
+    active_backend: arch::NativeBackend,
+    backend: BackendConfig,
+    module: &ModuleInst,
+    groups: usize,
+    ssa_ops: usize,
+    lowered: LoweredMachineModule,
+    #[cfg(sf_ir_dump)] dump_lir_inputs: Option<&[ir_dump::DumpFunctionLir]>,
+) -> Result<(), WasmError> {
+    let mir_ops: usize = lowered
+        .module
+        .functions
+        .iter()
+        .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
+        .sum();
+    let mut compiled = {
+        let _scope = memtrace_scope("native.compile.runtime_module");
+        Rc::new(CompiledNativeModule::new(
+            active_backend,
+            backend,
+            lowered.module,
+            lowered.abi,
+        )?)
+    };
+    let entries = {
+        let _scope = memtrace_scope("native.compile.backend_emit");
+        arch::dispatch_compile_module(active_backend, module, &compiled)?
+    };
+
+    {
+        let _scope = memtrace_scope("native.compile.stats");
+        let bytes: usize = entries
+            .iter()
+            .filter_map(|e| e.as_ref().map(|e| e.text_len))
+            .sum();
+        set_native_stats(groups, ssa_ops, mir_ops, bytes);
+    }
+
+    #[cfg(sf_ir_dump)]
+    if ir_dump::dump_enabled() {
+        let code_slices: Vec<(u32, &[u8])> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                entry.as_ref().map(|e| {
+                    let ptr = e.entry as *const u8;
+                    let len = e.text_len;
+                    (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
+                })
+            })
+            .collect();
+        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
+                    func_idx: idx as u32,
+                    regions: e.debug_regions.clone(),
+                })
+            })
+            .collect();
+        let _ = ir_dump::write_module_dump(
+            &module.name,
+            module.functions.len(),
+            dump_lir_inputs.unwrap_or(&[]),
+            compiled.module(),
+            compiled.abi(),
+            &code_slices,
+            &dump_regions,
+        );
+    }
+
+    #[cfg(sf_emulator)]
+    let keep_machine_ir = matches!(active_backend, arch::NativeBackend::Reference);
+    #[cfg(not(sf_emulator))]
+    let keep_machine_ir = false;
+    if !keep_machine_ir {
+        if let Some(compiled_mut) = Rc::get_mut(&mut compiled) {
+            compiled_mut.strip_machine_ir_for_runtime();
+        }
+    }
+
+    {
+        let _scope = memtrace_scope("native.compile.publish");
+        for (func_idx, func) in module.functions.iter().enumerate() {
+            let Some(spec) = func.spec() else {
+                continue;
+            };
+            let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
+            let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
+            code = code.with_entry(native_entry.map(|e| e.entry));
+            spec.set_native_code(code, NativeCodeCache::compiled());
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
@@ -172,17 +271,18 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
-    let mut lowered_inputs = Vec::new();
-    let mut prepared_functions = Vec::new();
+    let mut groups = 0usize;
+    let mut ssa_ops = 0usize;
+    let mut prepared_functions: Vec<LowerFunctionInput> = Vec::new();
     {
         let _scope = memtrace_scope("native.compile.prepare");
         for (func_idx, func) in module.functions.iter().enumerate() {
             let Some(spec) = func.spec() else {
                 continue;
             };
-            let semantic = semantics[func_idx].as_ref().unwrap();
+            let semantic = semantics[func_idx].take().unwrap();
             let prepared =
-                prepare_function(PrepareInput { config: backend }, semantic).map_err(
+                prepare_function(PrepareInput { config: backend }, &semantic).map_err(
                     |err| {
                         WasmError::internal(alloc::format!(
                             "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
@@ -196,27 +296,39 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                         ))
                     },
                 )?;
-            prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
-        }
-    }
-
-    {
-        let _scope = memtrace_scope("native.compile.lower_inputs");
-        for (id, prepared) in prepared_functions.iter() {
-            let result_count = module
-                .functions
-                .get(id.0 as usize)
-                .and_then(|f| f.spec())
-                .map(|s| s.func_type().results().len() as u16)
-                .unwrap_or(0);
-            lowered_inputs.push(LowerFunctionInput {
-                id: *id,
+            groups += 1;
+            ssa_ops += prepared
+                .ssa
+                .blocks
+                .iter()
+                .map(|block| block.ops.len())
+                .sum::<usize>();
+            let func_id = MachineFuncId(func_idx as u32);
+            let result_count = spec.func_type().results().len() as u16;
+            prepared_functions.push(LowerFunctionInput {
+                id: func_id,
                 frame: prepared.frame,
-                ssa: &prepared.ssa,
+                ssa: prepared.ssa,
                 result_count,
             });
         }
     }
+    drop(semantics);
+
+    #[cfg(sf_ir_dump)]
+    let dump_lir_inputs = if ir_dump::dump_enabled() {
+        Some(
+            prepared_functions
+                .iter()
+                .map(|prepared| ir_dump::DumpFunctionLir {
+                    func_idx: prepared.id.0,
+                    ssa: prepared.ssa.clone(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
 
     #[cfg(sf_has_guard_pages)]
     let use_guard_pages = module
@@ -230,7 +342,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let _scope = memtrace_scope("native.compile.lower");
         lower_module(LowerModuleInput {
             backend,
-            functions: &lowered_inputs,
+            functions: prepared_functions,
             #[cfg(sf_has_guard_pages)]
             use_guard_pages,
         })?
@@ -245,103 +357,16 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             .validate_32bit_gp_target(backend.first_fp_reg())?;
     }
 
-    // Collect SSA-IR for dump before moving lowered data
-    #[cfg(sf_ir_dump)]
-    let dump_lir_inputs: Vec<ir_dump::DumpFunctionLir<'_>> = prepared_functions
-        .iter()
-        .map(|(id, prepared)| ir_dump::DumpFunctionLir {
-            func_idx: id.0,
-            ssa: &prepared.ssa,
-        })
-        .collect();
-
-    let compiled = {
-        let _scope = memtrace_scope("native.compile.runtime_module");
-        Rc::new(CompiledNativeModule::new(
-            active_backend,
-            backend,
-            lowered.module,
-            lowered.abi,
-        )?)
-    };
-    // Per-arch machine-code emission is owned by `arch::dispatch_compile_module`.
-    // We receive a uniform `Vec<Option<CompiledArchEntry>>` and from here on
-    // treat every architecture identically.
-    let entries = {
-        let _scope = memtrace_scope("native.compile.backend_emit");
-        arch::dispatch_compile_module(active_backend, module, &compiled)?
-    };
-
-    // Record compile stats.
-    {
-        let _scope = memtrace_scope("native.compile.stats");
-        let groups = prepared_functions.len();
-        let ssa_ops: usize = prepared_functions
-            .iter()
-            .map(|(_, p)| p.ssa.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
-            .sum();
-        let mir_ops: usize = compiled
-            .module()
-            .functions
-            .iter()
-            .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
-            .sum();
-        let bytes: usize = entries
-            .iter()
-            .filter_map(|e| e.as_ref().map(|e| e.text_len))
-            .sum();
-        set_native_stats(groups, ssa_ops, mir_ops, bytes);
-    }
-
-    // Write dump if SF_NATIVE_DUMP_DIR is set
-    #[cfg(sf_ir_dump)]
-    if ir_dump::dump_enabled() {
-        let code_slices: Vec<(u32, &[u8])> = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| {
-                entry.as_ref().map(|e| {
-                    let ptr = e.entry as *const u8;
-                    let len = e.text_len;
-                    (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
-                })
-            })
-            .collect();
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| {
-                entry.as_ref().map(|e| ir_dump::DumpFunctionRegions {
-                    func_idx: idx as u32,
-                    regions: e.debug_regions.clone(),
-                })
-            })
-            .collect();
-        let _ = ir_dump::write_module_dump(
-            &module.name,
-            module.functions.len(),
-            &dump_lir_inputs,
-            compiled.module(),
-            compiled.abi(),
-            &code_slices,
-            &dump_regions,
-        );
-    }
-
-    {
-        let _scope = memtrace_scope("native.compile.publish");
-        for (func_idx, func) in module.functions.iter().enumerate() {
-            let Some(spec) = func.spec() else {
-                continue;
-            };
-            let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
-            let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
-            code = code.with_entry(native_entry.map(|e| e.entry));
-            spec.set_native_code(code, NativeCodeCache::compiled());
-        }
-    }
-
-    Ok(())
+    finish_native_compile(
+        active_backend,
+        backend,
+        module,
+        groups,
+        ssa_ops,
+        lowered,
+        #[cfg(sf_ir_dump)]
+        dump_lir_inputs.as_deref(),
+    )
 }
 
 #[cfg(test)]
