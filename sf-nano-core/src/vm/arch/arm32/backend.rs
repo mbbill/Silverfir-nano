@@ -33,7 +33,7 @@ use crate::{
 
 use super::{
     abi::{
-        self, emit_shared_epilogue, emit_shared_prologue, fp_machine_reg, map_fixed_reg, map_reg,
+        self, emit_shared_epilogue, emit_shared_prologue, map_fixed_reg, map_reg,
         SCRATCH0, SCRATCH1,
     },
     arm32_raise_trap,
@@ -363,7 +363,7 @@ impl<'a> Arm32Backend<'a> {
                         reg.0
                     ))
                 })?;
-        fp_machine_reg(fp_idx).ok_or_else(|| {
+        abi::fp_machine_reg(fp_idx).ok_or_else(|| {
             WasmError::invalid(alloc::format!(
                 "arm32: FP machine reg index {} out of range",
                 fp_idx
@@ -424,11 +424,13 @@ impl<'a> Arm32Backend<'a> {
                 "arm32 helper scratch must reserve eight 64-bit slots for D3-D7 plus fixed regs"
             );
             self.emit_fixed_helper_state_save(helper_scratch);
+            #[cfg(sf_fp_dp)]
             self.emit_helper_scratch_save(helper_scratch);
         }
         emit_load_u32_into(&mut self.core.text, SCRATCH0, target as u32);
         self.core.text.emit_u32(enc::blx_reg(SCRATCH0));
         if let Some(helper_scratch) = helper_scratch {
+            #[cfg(sf_fp_dp)]
             self.emit_helper_scratch_restore(helper_scratch);
             self.emit_fixed_helper_state_restore(helper_scratch);
         }
@@ -439,6 +441,7 @@ impl<'a> Arm32Backend<'a> {
     /// unsigned immediate field; otherwise falls back to a register-base
     /// path that materializes `fp_reg + base` into a temporary GP register
     /// (spilled to the host stack so the JIT register file is preserved).
+    #[cfg(sf_fp_dp)]
     fn emit_helper_scratch_save(
         &mut self,
         helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
@@ -496,6 +499,7 @@ impl<'a> Arm32Backend<'a> {
 
     /// Restore D3-D7 from the function's `helper_scratch` slots. Mirrors
     /// `emit_helper_scratch_save`.
+    #[cfg(sf_fp_dp)]
     fn emit_helper_scratch_restore(
         &mut self,
         helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
@@ -931,100 +935,116 @@ impl<'a> Arm32Backend<'a> {
         // pending move. All temporaries here must come from the scratch
         // pool (R12 / R14).
         if self.is_fp_machine_reg(dst.reg) {
-            let dd = self.map_fp_dreg(dst.reg)?;
-            match src {
-                ParallelSource::Reg { reg, .. } if self.is_fp_machine_reg(reg) => {
-                    let sd = self.map_fp_dreg(reg)?;
-                    if dd != sd {
-                        self.core.text.emit_u32(enc::vmov_d(dd, sd));
-                    }
-                }
-                ParallelSource::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 received non-identity reserved cache edge move into {} from {}",
-                        dst.reg.0,
-                        reg.0
-                    )));
-                }
-                ParallelSource::Reg { reg, .. } => {
-                    // GP → FP. Use a JIT GP scratch (R12/R14) for the
-                    // zero-extended high half so we don't clobber a
-                    // pending parallel-move source.
-                    let src_gp = map_reg(reg)?;
-                    let zero_s = self.gp_scratch.scoped_alloc();
-                    emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
-                }
-                ParallelSource::Imm(value) => {
-                    let lo = value as u32;
-                    let hi = (value >> 32) as u32;
-                    let lo_s = self.gp_scratch.scoped_alloc();
-                    let hi_s = self.gp_scratch.scoped_alloc();
-                    emit_load_u32_into(&mut self.core.text, *lo_s, lo);
-                    emit_load_u32_into(&mut self.core.text, *hi_s, hi);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
-                }
-                ParallelSource::GpTemp(id) => {
-                    let temp = self.gp_scratch.reg(id);
-                    let zero_s = self.gp_scratch.scoped_alloc();
-                    emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
-                }
-                ParallelSource::FpTemp(id, width) => {
-                    let _ = width;
-                    let temp = self.fp_scratch.reg(id);
-                    self.core.text.emit_u32(enc::vmov_d(dd, temp));
+            return self.lower_source_move_fp_dst(dst, src);
+        }
+        self.lower_source_move_gp_dst(dst, src)
+    }
+
+    fn lower_source_move_fp_dst(
+        &mut self,
+        dst: MachineBlockParam,
+        src: ParallelSource,
+    ) -> Result<(), WasmError> {
+        let dd = self.map_fp_dreg(dst.reg)?;
+        match src {
+            ParallelSource::Reg { reg, .. } if self.is_fp_machine_reg(reg) => {
+                let sd = self.map_fp_dreg(reg)?;
+                if dd != sd {
+                    self.core.text.emit_u32(enc::vmov_d(dd, sd));
                 }
             }
-            if let Some(width) = dst.ty.float_width() {
-                self.core.set_fp_reg_width(dst.reg, width)?;
+            ParallelSource::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm32 received non-identity reserved cache edge move into {} from {}",
+                    dst.reg.0,
+                    reg.0
+                )));
             }
-        } else {
-            let dst_gp = map_reg(dst.reg)?;
-            match src {
-                ParallelSource::Reg { reg, .. } if self.is_fp_machine_reg(reg) => {
-                    // FP → GP: extract low 32 bits via vmov_rr_d. Use a
-                    // JIT GP scratch as the high-half slot.
-                    let sd = self.map_fp_dreg(reg)?;
-                    let hi_scratch = self.gp_scratch.scoped_alloc();
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_rr_d(dst_gp, *hi_scratch, sd));
+            ParallelSource::Reg { reg, .. } => {
+                // GP → FP. Use a JIT GP scratch (R12/R14) for the
+                // zero-extended high half so we don't clobber a
+                // pending parallel-move source.
+                let src_gp = map_reg(reg)?;
+                let zero_s = self.gp_scratch.scoped_alloc();
+                emit_load_u32_into(&mut self.core.text, *zero_s, 0);
+                self.core
+                    .text
+                    .emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
+            }
+            ParallelSource::Imm(value) => {
+                let lo = value as u32;
+                let hi = (value >> 32) as u32;
+                let lo_s = self.gp_scratch.scoped_alloc();
+                let hi_s = self.gp_scratch.scoped_alloc();
+                emit_load_u32_into(&mut self.core.text, *lo_s, lo);
+                emit_load_u32_into(&mut self.core.text, *hi_s, hi);
+                self.core
+                    .text
+                    .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+            }
+            ParallelSource::GpTemp(id) => {
+                let temp = self.gp_scratch.reg(id);
+                let zero_s = self.gp_scratch.scoped_alloc();
+                emit_load_u32_into(&mut self.core.text, *zero_s, 0);
+                self.core
+                    .text
+                    .emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
+            }
+            ParallelSource::FpTemp(id, width) => {
+                let _ = width;
+                let temp = self.fp_scratch.reg(id);
+                self.core.text.emit_u32(enc::vmov_d(dd, temp));
+            }
+        }
+        if let Some(width) = dst.ty.float_width() {
+            self.core.set_fp_reg_width(dst.reg, width)?;
+        }
+        Ok(())
+    }
+
+    fn lower_source_move_gp_dst(
+        &mut self,
+        dst: MachineBlockParam,
+        src: ParallelSource,
+    ) -> Result<(), WasmError> {
+        let dst_gp = map_reg(dst.reg)?;
+        match src {
+            ParallelSource::Reg { reg, .. } if self.is_fp_machine_reg(reg) => {
+                // FP → GP: extract low 32 bits via vmov_rr_d. Use a
+                // JIT GP scratch as the high-half slot.
+                let sd = self.map_fp_dreg(reg)?;
+                let hi_scratch = self.gp_scratch.scoped_alloc();
+                self.core
+                    .text
+                    .emit_u32(enc::vmov_rr_d(dst_gp, *hi_scratch, sd));
+            }
+            ParallelSource::ReservedReg(reg) => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm32 received non-identity reserved cache edge move into {} from {}",
+                    dst.reg.0,
+                    reg.0
+                )));
+            }
+            ParallelSource::Reg { reg, .. } => {
+                let src_gp = map_reg(reg)?;
+                if dst_gp != src_gp {
+                    self.core.text.emit_u32(enc::mov_reg(dst_gp, src_gp));
                 }
-                ParallelSource::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 received non-identity reserved cache edge move into {} from {}",
-                        dst.reg.0,
-                        reg.0
-                    )));
-                }
-                ParallelSource::Reg { reg, .. } => {
-                    let src_gp = map_reg(reg)?;
-                    if dst_gp != src_gp {
-                        self.core.text.emit_u32(enc::mov_reg(dst_gp, src_gp));
-                    }
-                }
-                ParallelSource::Imm(value) => {
-                    self.emit_load_u32(dst_gp, value as u32);
-                }
-                ParallelSource::GpTemp(id) => {
-                    let temp = self.gp_scratch.reg(id);
-                    self.core.text.emit_u32(enc::mov_reg(dst_gp, temp));
-                }
-                ParallelSource::FpTemp(id, width) => {
-                    let _ = width;
-                    let temp = self.fp_scratch.reg(id);
-                    let hi_scratch = self.gp_scratch.scoped_alloc();
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_rr_d(dst_gp, *hi_scratch, temp));
-                }
+            }
+            ParallelSource::Imm(value) => {
+                self.emit_load_u32(dst_gp, value as u32);
+            }
+            ParallelSource::GpTemp(id) => {
+                let temp = self.gp_scratch.reg(id);
+                self.core.text.emit_u32(enc::mov_reg(dst_gp, temp));
+            }
+            ParallelSource::FpTemp(id, width) => {
+                let _ = width;
+                let temp = self.fp_scratch.reg(id);
+                let hi_scratch = self.gp_scratch.scoped_alloc();
+                self.core
+                    .text
+                    .emit_u32(enc::vmov_rr_d(dst_gp, *hi_scratch, temp));
             }
         }
         Ok(())
