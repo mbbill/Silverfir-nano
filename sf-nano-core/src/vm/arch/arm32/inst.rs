@@ -26,19 +26,21 @@ use crate::{
 };
 
 use super::{
-    abi::{fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0, SCRATCH0, SCRATCH1},
+    abi::{map_fixed_reg, map_reg, SCRATCH0, SCRATCH1},
     arm32_f32_ceil, arm32_f32_floor, arm32_f32_nearest_bits, arm32_f32_trunc, arm32_f64_ceil,
     arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_clz, arm32_i64_ctz,
     arm32_i64_div_s, arm32_i64_div_u, arm32_i64_mul, arm32_i64_popcnt, arm32_i64_rem_s,
     arm32_i64_rem_u, arm32_i64_rotl, arm32_i64_rotr, arm32_i64_shl, arm32_i64_shr_s,
-    arm32_i64_shr_u, arm32_i64s_to_f32, arm32_i64s_to_f64, arm32_i64u_to_f32,
-    arm32_i64u_to_f64, arm32_saturating_trunc, arm32_trapping_trunc,
+    arm32_i64_shr_u, arm32_i64s_to_f32, arm32_i64s_to_f64, arm32_i64u_to_f32, arm32_i64u_to_f64,
+    arm32_saturating_trunc, arm32_trapping_trunc,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     operands::{OwnedPreparedGp, PreparedFp, PreparedGp},
     reg::Arm32Reg,
     select,
 };
+
+use super::abi::{fp_machine_reg, FP_SCRATCH0};
 
 // ── Operand preparation (free functions) ─────────────────────────────────────
 
@@ -134,7 +136,7 @@ pub(super) fn prepare_fp<'p>(
                 // This is a simplified path — callers pass FP regs only.
                 crate::vm::backend::BackendConfig::new(
                     super::abi::GP_DYNAMIC.len() as u8,
-                    super::abi::FP_DYNAMIC.len() as u8,
+                    super::abi::FP_MACHINE_REG_COUNT as u8,
                     super::abi::GP_UNIT_BYTES,
                     8,
                 ),
@@ -2894,6 +2896,22 @@ impl<'a> Arm32Backend<'a> {
                 }
             }
 
+            // All remaining Convert ops involve FP registers.
+            op_fp => {
+                self.compile_convert_fp(op_fp, dst, src)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// FP-involving Convert operations.
+    fn compile_convert_fp(
+        &mut self,
+        op: MachineConvertOp,
+        dst: MachineReg,
+        src: &MachineValue,
+    ) -> Result<(), WasmError> {
+        match op {
             // ─── F64/F32 → I32 (helper-backed for Wasm trap/sat semantics) ───
             MachineConvertOp::I32TruncF64S
             | MachineConvertOp::I32TruncF64U
@@ -3113,6 +3131,13 @@ impl<'a> Arm32Backend<'a> {
                         self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                     }
                 }
+            }
+            // GP-only ops are handled above; this arm should be unreachable.
+            _ => {
+                return Err(WasmError::internal(alloc::format!(
+                    "arm32 compile_convert_fp: unexpected GP-only convert op {:?}",
+                    op
+                )));
             }
         }
         Ok(())

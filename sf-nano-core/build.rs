@@ -71,6 +71,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_wasi_host",
     "sf_module_validator",
     "sf_call_trace",
+    "sf_fp_dp",
     "sf_ir_dump",
     "sf_jitdump",
 ];
@@ -111,8 +112,13 @@ fn emit_arch_cfgs() {
         "arm" => {
             if target.starts_with("thumbv") {
                 println!("cargo:rustc-cfg=sf_arch_thumbm");
+                // thumbm does not set sf_fp_dp by default (many Cortex-M
+                // cores are SP-only or have no FPU). Enable via a future
+                // cargo feature when targeting a DP-capable core.
             } else {
                 println!("cargo:rustc-cfg=sf_arch_armv7a");
+                // ARMv7-A targets with IDIV always have VFPv3-D16+.
+                println!("cargo:rustc-cfg=sf_fp_dp");
             }
         }
         "x86_64" => println!("cargo:rustc-cfg=sf_arch_x64"),

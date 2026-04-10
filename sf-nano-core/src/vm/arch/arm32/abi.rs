@@ -22,7 +22,7 @@
 //!                         GP scratch                  2
 //! ```
 //!
-//! # FP register plan (D0-D15, VFPv3-D16)
+//! # FP register plan (D0-D15, VFPv3-D16) — requires `sf_fp_dp`
 //!
 //! ```text
 //! Reg    EABI             Role                    Count
@@ -53,6 +53,8 @@ pub(super) const SCRATCH0: Arm32Reg = Arm32Reg::R12;
 pub(super) const SCRATCH1: Arm32Reg = Arm32Reg::R14;
 
 /// FP scratch registers (caller-saved, not used for values or parameters).
+/// These constants are unconditional — the lowering code that references them
+/// is dead when `fp_dynamic_budget = 0`, but must still compile.
 pub(super) const FP_SCRATCH0: u32 = 0; // D0
 pub(super) const FP_SCRATCH1: u32 = 1; // D1
 pub(super) const FP_SCRATCH2: u32 = 2; // D2
@@ -94,12 +96,17 @@ pub(super) const GP_DYNAMIC: [Arm32Reg; 8] = [
 
 /// Preferred FP dynamic order. Earlier lanes are caller-clobbered; later lanes
 /// are callee-saved, but ownership is decided by lowering state, not the index.
-pub(super) const FP_DYNAMIC: [u32; 13] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+/// Empty when `sf_fp_dp` is off — `fp_dynamic_budget` becomes 0.
+#[cfg(sf_fp_dp)]
+pub(super) const FP_DYNAMIC: &[u32] = &[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+#[cfg(not(sf_fp_dp))]
+pub(super) const FP_DYNAMIC: &[u32] = &[];
 
 /// Total FP machine-register capacity.
 pub(super) const FP_MACHINE_REG_COUNT: usize = FP_DYNAMIC.len();
 
 // Compile-time check: dynamic + scratch must cover all 16 D-regs.
+#[cfg(sf_fp_dp)]
 const _: () = assert!(
     FP_DYNAMIC.len() + 3 == 16,
     "FP register plan must account for all 16 D-registers (VFPv3-D16)"
@@ -133,9 +140,12 @@ const CALLEE_SAVED_GP_REGS: [Arm32Reg; 9] = [
     Arm32Reg::R14, // LR
 ];
 
-/// EABI callee-saved FP regs (D8-D15).
+/// EABI callee-saved FP regs (D8-D15). Count is 0 when FP is off.
 const CALLEE_SAVED_FP_FIRST: u32 = 8;
+#[cfg(sf_fp_dp)]
 const CALLEE_SAVED_FP_COUNT: u32 = 8;
+#[cfg(not(sf_fp_dp))]
+const CALLEE_SAVED_FP_COUNT: u32 = 0;
 
 const SHARED_PROLOGUE_ALIGN_PAD_BYTES: u32 = if CALLEE_SAVED_GP_REGS.len() % 2 == 1 {
     4
@@ -215,13 +225,15 @@ pub(super) fn emit_shared_prologue(text: &mut TextEmitter) {
     }
     // PUSH {R4-R11, LR}
     text.emit_u32(enc::push(callee_saved_gp_mask()));
-    // VPUSH {D8-D15}
-    text.emit_u32(enc::vpush_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+    if CALLEE_SAVED_FP_COUNT > 0 {
+        text.emit_u32(enc::vpush_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+    }
 }
 
 pub(super) fn emit_shared_epilogue(text: &mut TextEmitter) {
-    // VPOP {D8-D15}
-    text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+    if CALLEE_SAVED_FP_COUNT > 0 {
+        text.emit_u32(enc::vpop_d(CALLEE_SAVED_FP_FIRST, CALLEE_SAVED_FP_COUNT));
+    }
     // Restore the GP save set, then drop the alignment pad and return via LR.
     let pop_mask = callee_saved_gp_mask();
     text.emit_u32(enc::pop(pop_mask));
