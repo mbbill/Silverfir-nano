@@ -24,13 +24,13 @@ use crate::{
 };
 
 use super::{
-    abi::{fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0},
+    abi::{fp_machine_reg, map_fixed_reg, map_reg, FP_SCRATCH0, SCRATCH0, SCRATCH1},
     arm32_f32_ceil, arm32_f32_floor, arm32_f32_nearest_bits, arm32_f32_trunc, arm32_f64_ceil,
     arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_clz, arm32_i64_ctz,
     arm32_i64_div_s, arm32_i64_div_u, arm32_i64_mul, arm32_i64_popcnt, arm32_i64_rem_s,
     arm32_i64_rem_u, arm32_i64_rotl, arm32_i64_rotr, arm32_i64_shl, arm32_i64_shr_s,
     arm32_i64_shr_u, arm32_i64s_to_f32, arm32_i64s_to_f64, arm32_i64u_to_f32,
-    arm32_i64u_to_f64, arm32_saturating_trunc, arm32_sdiv, arm32_trapping_trunc, arm32_udiv,
+    arm32_i64u_to_f64, arm32_saturating_trunc, arm32_trapping_trunc,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     operands::{OwnedPreparedGp, PreparedFp, PreparedGp},
@@ -1169,6 +1169,26 @@ impl<'a> Arm32Backend<'a> {
 
     // ─── Integer ALU ────────────────────────────────────────────────────────────
 
+    /// Materialize a division rhs into a physical register. Uses SCRATCH1
+    /// (R14/LR) for immediates, keeping SCRATCH0 free for the INT_MIN
+    /// overflow check in DivS/RemS.
+    fn emit_materialize_rhs_for_div(
+        &mut self,
+        rhs: &MachineValue,
+    ) -> Result<Arm32Reg, WasmError> {
+        match rhs {
+            MachineValue::Reg(r) => map_reg(*r),
+            MachineValue::Imm64(v) => {
+                emit_load_u32_into(&mut self.core.text, SCRATCH1, *v as u32);
+                Ok(SCRATCH1)
+            }
+            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
+                "arm32 div/rem cannot consume reserved cache register {} as rhs",
+                reg.0
+            ))),
+        }
+    }
+
     fn compile_int_binary(
         &mut self,
         _width: MachineIntWidth,
@@ -1439,172 +1459,102 @@ impl<'a> Arm32Backend<'a> {
                 }
             }
             MachineIntBinaryOp::DivU => {
-                self.spill_caller_saved_gp_regs();
-                self.emit_values_to_regs_via_stack(&[Arm32Reg::R0, Arm32Reg::R1], &[lhs, rhs])?;
-                self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R1, 0, 0));
+                // Materialize rhs into SCRATCH0 so we can branch freely.
+                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
+                // Trap on divide by zero
+                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
                 let ok = self.core.new_label();
-                let trap_div_zero = self.core.new_label();
-                let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
-                self.emit_branch(BranchFixupKind::B, trap_div_zero);
-                // Call arm32_udiv(num, den) -> quotient in R0
-                self.core.bind_label(ok);
-                self.emit_host_call(arm32_udiv as usize);
-                if dst_hw != Arm32Reg::R0 {
-                    self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
-                }
-                self.restore_caller_saved_gp_regs(&[dst_hw]);
-                self.emit_branch(BranchFixupKind::B, done);
-                self.core.bind_label(trap_div_zero);
-                self.restore_caller_saved_gp_regs(&[]);
-                let trap_label = self
+                let trap = self
                     .core
                     .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
-                self.emit_branch(BranchFixupKind::B, trap_label);
-                self.core.bind_label(done);
+                self.emit_branch(BranchFixupKind::B, trap);
+                self.core.bind_label(ok);
+                self.core
+                    .text
+                    .emit_u32(enc::udiv(dst_hw, lhs_hw, rhs_hw));
             }
             MachineIntBinaryOp::DivS => {
-                self.spill_caller_saved_gp_regs();
-                self.emit_values_to_regs_via_stack(&[Arm32Reg::R0, Arm32Reg::R1], &[lhs, rhs])?;
+                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R1, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
                 let not_zero = self.core.new_label();
-                let trap_div_zero = self.core.new_label();
-                let trap_overflow = self.core.new_label();
-                let after_traps = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_zero);
-                self.emit_branch(BranchFixupKind::B, trap_div_zero);
+                let trap_dz = self
+                    .core
+                    .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
+                self.emit_branch(BranchFixupKind::B, trap_dz);
                 self.core.bind_label(not_zero);
                 // Trap on INT_MIN / -1 (integer overflow)
                 {
                     let s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *s, 0x80000000u32);
-                    self.core.text.emit_u32(enc::cmp_reg(Arm32Reg::R0, *s));
+                    self.core.text.emit_u32(enc::cmp_reg(lhs_hw, *s));
                 }
-                let not_overflow = self.core.new_label();
-                self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_overflow);
-                self.core.text.emit_u32(enc::cmn_imm(Arm32Reg::R1, 1, 0)); // CMN rhs, #1 == CMP rhs, #-1
-                let not_overflow2 = self.core.new_label();
-                self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_overflow2);
-                self.emit_branch(BranchFixupKind::B, trap_overflow);
-                self.core.bind_label(not_overflow);
-                self.core.bind_label(not_overflow2);
-                self.emit_branch(BranchFixupKind::B, after_traps);
-                self.core.bind_label(trap_div_zero);
-                self.restore_caller_saved_gp_regs(&[]);
-                let trap_label = self
-                    .core
-                    .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
-                self.emit_branch(BranchFixupKind::B, trap_label);
-                self.core.bind_label(trap_overflow);
-                self.restore_caller_saved_gp_regs(&[]);
-                let trap_label = self
+                let not_min = self.core.new_label();
+                self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_min);
+                self.core.text.emit_u32(enc::cmn_imm(rhs_hw, 1, 0));
+                let not_neg1 = self.core.new_label();
+                self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_neg1);
+                let trap_ov = self
                     .core
                     .ensure_trap_label(MachineTrapKind::IntegerOverflow);
-                self.emit_branch(BranchFixupKind::B, trap_label);
-                self.core.bind_label(after_traps);
-                // Call arm32_sdiv(num, den)
-                self.emit_host_call(arm32_sdiv as usize);
-                if dst_hw != Arm32Reg::R0 {
-                    self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
-                }
-                self.restore_caller_saved_gp_regs(&[dst_hw]);
+                self.emit_branch(BranchFixupKind::B, trap_ov);
+                self.core.bind_label(not_min);
+                self.core.bind_label(not_neg1);
+                self.core
+                    .text
+                    .emit_u32(enc::sdiv(dst_hw, lhs_hw, rhs_hw));
             }
             MachineIntBinaryOp::RemU => {
-                self.spill_caller_saved_gp_regs();
-                self.emit_values_to_regs_via_stack(&[Arm32Reg::R0, Arm32Reg::R1], &[lhs, rhs])?;
+                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R1, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
                 let ok = self.core.new_label();
-                let trap_div_zero = self.core.new_label();
-                let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
-                self.emit_branch(BranchFixupKind::B, trap_div_zero);
-                self.core.bind_label(ok);
-                self.emit_stack_temp_alloc(8);
-                self.core
-                    .text
-                    .emit_u32(enc::str_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
-                // rem = lhs - (lhs / rhs) * rhs
-                self.emit_host_call(arm32_udiv as usize);
-                // R0 = quotient. Restore lhs, rhs
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_imm(Arm32Reg::R2, Arm32Reg::SP, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_imm(Arm32Reg::R3, Arm32Reg::SP, 4));
-                self.emit_stack_temp_free(8);
-                {
-                    let s = self.gp_scratch.scoped_alloc();
-                    self.core
-                        .text
-                        .emit_u32(enc::mul(*s, Arm32Reg::R0, Arm32Reg::R3));
-                    self.core
-                        .text
-                        .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, *s));
-                }
-                self.restore_caller_saved_gp_regs(&[dst_hw]);
-                self.emit_branch(BranchFixupKind::B, done);
-                self.core.bind_label(trap_div_zero);
-                self.restore_caller_saved_gp_regs(&[]);
-                let trap_label = self
+                let trap = self
                     .core
                     .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
-                self.emit_branch(BranchFixupKind::B, trap_label);
-                self.core.bind_label(done);
+                self.emit_branch(BranchFixupKind::B, trap);
+                self.core.bind_label(ok);
+                // rem = lhs - (lhs / rhs) * rhs
+                // UDIV scratch, lhs, rhs; MLS dst, scratch, rhs, lhs
+                self.core
+                    .text
+                    .emit_u32(enc::udiv(SCRATCH0, lhs_hw, rhs_hw));
+                self.core
+                    .text
+                    .emit_u32(enc::mls(dst_hw, SCRATCH0, rhs_hw, lhs_hw));
             }
             MachineIntBinaryOp::RemS => {
-                self.spill_caller_saved_gp_regs();
-                self.emit_values_to_regs_via_stack(&[Arm32Reg::R0, Arm32Reg::R1], &[lhs, rhs])?;
+                let rhs_hw = self.emit_materialize_rhs_for_div(rhs)?;
                 // Trap on divide by zero
-                self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R1, 0, 0));
+                self.core.text.emit_u32(enc::cmp_imm(rhs_hw, 0, 0));
                 let ok = self.core.new_label();
-                let trap_div_zero = self.core.new_label();
-                let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), ok);
-                self.emit_branch(BranchFixupKind::B, trap_div_zero);
-                self.core.bind_label(ok);
-                // INT_MIN % -1 == 0 in wasm (no trap, just returns 0)
-                // rem = num - (num / den) * den — this naturally gives 0
-                // Save lhs and rhs, call sdiv, compute remainder
-                self.emit_stack_temp_alloc(8);
-                self.core
-                    .text
-                    .emit_u32(enc::str_imm(Arm32Reg::R0, Arm32Reg::SP, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::str_imm(Arm32Reg::R1, Arm32Reg::SP, 4));
-                self.emit_host_call(arm32_sdiv as usize);
-                // R0 = quotient. Restore lhs, rhs
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_imm(Arm32Reg::R2, Arm32Reg::SP, 0));
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_imm(Arm32Reg::R3, Arm32Reg::SP, 4));
-                self.emit_stack_temp_free(8);
-                // rem = lhs - quotient * rhs: MLS dst, R0, R3, R2
-                {
-                    let s = self.gp_scratch.scoped_alloc();
-                    self.core
-                        .text
-                        .emit_u32(enc::mul(*s, Arm32Reg::R0, Arm32Reg::R3));
-                    self.core
-                        .text
-                        .emit_u32(enc::sub_reg(dst_hw, Arm32Reg::R2, *s));
-                }
-                self.restore_caller_saved_gp_regs(&[dst_hw]);
-                self.emit_branch(BranchFixupKind::B, done);
-                self.core.bind_label(trap_div_zero);
-                self.restore_caller_saved_gp_regs(&[]);
-                let trap_label = self
+                let trap = self
                     .core
                     .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
-                self.emit_branch(BranchFixupKind::B, trap_label);
+                self.emit_branch(BranchFixupKind::B, trap);
+                self.core.bind_label(ok);
+                // ARM SDIV returns 0 for INT_MIN/-1, so MLS would give
+                // INT_MIN instead of the correct 0. Guard: any x % -1 = 0.
+                self.core.text.emit_u32(enc::cmn_imm(rhs_hw, 1, 0));
+                let not_neg1 = self.core.new_label();
+                let done = self.core.new_label();
+                self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_neg1);
+                self.core
+                    .text
+                    .emit_u32(enc::mov_imm(dst_hw, 0, 0));
+                self.emit_branch(BranchFixupKind::B, done);
+                self.core.bind_label(not_neg1);
+                // SDIV scratch, lhs, rhs; MLS dst, scratch, rhs, lhs
+                self.core
+                    .text
+                    .emit_u32(enc::sdiv(SCRATCH0, lhs_hw, rhs_hw));
+                self.core
+                    .text
+                    .emit_u32(enc::mls(dst_hw, SCRATCH0, rhs_hw, lhs_hw));
                 self.core.bind_label(done);
             }
         }

@@ -523,6 +523,29 @@ pub(super) fn mul(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
     cond_bits(Cond::Al) | rn(dst) | rs(rhs) | (0b1001 << 4) | rm(lhs)
 }
 
+/// MLS Rd, Rn, Rm, Ra (Rd = Ra - Rn * Rm)
+#[inline]
+pub(super) fn mls(dst: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg, acc: Arm32Reg) -> u32 {
+    // MLS: cond 0000 0110 Rd Ra Rm 1001 Rn
+    cond_bits(Cond::Al) | (0b0000_0110 << 20) | rn(dst) | rd(acc) | rs(mul_rhs) | (0b1001 << 4) | rm(mul_lhs)
+}
+
+// ─── Divide ────────────────────────────────────────────────────────────────
+
+/// SDIV Rd, Rn, Rm (Rd = Rn / Rm, signed)
+#[inline]
+pub(super) fn sdiv(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
+    // SDIV: cond 0111 0001 Rd 1111 Rm 0001 Rn
+    cond_bits(Cond::Al) | (0b0111_0001 << 20) | rn(dst) | (0b1111 << 12) | rs(rhs) | (0b0001 << 4) | rm(lhs)
+}
+
+/// UDIV Rd, Rn, Rm (Rd = Rn / Rm, unsigned)
+#[inline]
+pub(super) fn udiv(dst: Arm32Reg, lhs: Arm32Reg, rhs: Arm32Reg) -> u32 {
+    // UDIV: cond 0111 0011 Rd 1111 Rm 0001 Rn
+    cond_bits(Cond::Al) | (0b0111_0011 << 20) | rn(dst) | (0b1111 << 12) | rs(rhs) | (0b0001 << 4) | rm(lhs)
+}
+
 // ─── CLZ ────────────────────────────────────────────────────────────────────
 
 /// CLZ Rd, Rm (count leading zeros)

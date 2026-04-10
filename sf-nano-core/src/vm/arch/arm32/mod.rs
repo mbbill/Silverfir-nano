@@ -45,22 +45,6 @@ pub(crate) unsafe extern "C" fn arm32_raise_trap(
     unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
 }
 
-// ─── Software integer division helpers ──────────────────────────────────────
-
-/// Unsigned 32-bit division. Returns quotient.
-pub(crate) extern "C" fn arm32_udiv(num: u32, den: u32) -> u32 {
-    // Caller guarantees den != 0 (JIT emits trap check before calling)
-    num / den
-}
-
-/// Signed 32-bit division. Returns quotient.
-pub(crate) extern "C" fn arm32_sdiv(num: i32, den: i32) -> i32 {
-    // The backend emits the Wasm overflow trap for i32.div_s before calling
-    // this helper. Use wrapping semantics here anyway so helper-backed
-    // remainder paths can safely compute INT_MIN / -1 as an intermediate.
-    num.wrapping_div(den)
-}
-
 #[inline]
 fn join_u64(lo: u32, hi: u32) -> u64 {
     u64::from(lo) | (u64::from(hi) << 32)

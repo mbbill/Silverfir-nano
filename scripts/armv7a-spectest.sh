@@ -82,4 +82,4 @@ fi
 echo "[armv7-spectest] Running spectest under QEMU..."
 echo
 colima ssh -- env TESTSUITE_DIR="$TESTSUITE_DIR" \
-    qemu-arm-static "$SPECTEST_BIN" --backend native ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    qemu-arm-static -cpu cortex-a15 "$SPECTEST_BIN" --backend native ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
