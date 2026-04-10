@@ -209,10 +209,147 @@ Notes:
 - the runtime trace is intentionally raw; peak finding, curves, categorization,
   and flamegraphs belong in post-processing tools, not in the CLI
 - the raw trace can get large because it logs every allocation event
+- the raw trace includes:
+  - `meta` with command line and schema version
+  - `image` records for offline symbolization on macOS
+  - `stack` records with interned raw PCs
+  - `alloc` / `free` / `realloc`
+  - `exec` / `exec_drop`
+  - `guard` / `guard_drop`
 - if you want cleaner native call stacks, rebuild with frame pointers:
 
 ```bash
 RUSTFLAGS="-C force-frame-pointers=yes" \
+cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
+```
+
+## Memory Trace Analysis
+
+Use the offline analyzer in `tools/memtrace/analyze.py` to turn the raw JSONL
+trace into spike candidates, bucketed timeline data, or one selected snapshot.
+
+Best current workflow: run the trace and launch the local viewer in one command:
+
+```bash
+python3 tools/memtrace/analyze.py record-view -- \
+  --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
+```
+
+That command will:
+
+1. run `sf-nano-cli` with `memtrace`
+2. write one raw trace file
+3. build the bucketed curve data
+4. start a localhost viewer
+5. open the browser
+
+Inside the viewer:
+
+- the top pane is the live-memory step curve
+- clicking any point requests an exact snapshot for that timestamp
+- the lower pane renders a flamegraph for allocations still live at that moment
+- the flamegraph root is grouped by logical memtrace tags first
+- the right pane shows top live tags first, then top live stack sites
+
+If you already have a raw trace and only want the viewer:
+
+```bash
+python3 tools/memtrace/analyze.py serve /tmp/lua-mem.jsonl
+```
+
+Find the biggest spike timestamps:
+
+```bash
+python3 tools/memtrace/analyze.py spikes /tmp/lua-mem.jsonl --top 10
+```
+
+Emit bucketed timeline data for a step-curve viewer:
+
+```bash
+python3 tools/memtrace/analyze.py timeline /tmp/lua-mem.jsonl \
+  --bucket-us 1000 \
+  --json /tmp/lua-timeline.json
+```
+
+Write a standalone HTML curve viewer:
+
+```bash
+python3 tools/memtrace/analyze.py curve-html /tmp/lua-mem.jsonl \
+  --bucket-us 1000 \
+  --out /tmp/lua-curve.html
+```
+
+Reconstruct live memory at one selected timestamp:
+
+```bash
+python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
+  --time-us 3095866 \
+  --top 20
+```
+
+Tagged snapshot output now includes:
+
+- `top_live_tags`
+- `top_live_stacks`
+
+The main tags are aligned with the native compiler pipeline:
+
+- `native.compile.decode`
+- `native.compile.inline`
+- `native.compile.prepare`
+- `native.compile.lower_inputs`
+- `native.compile.lower`
+- `native.compile.optimize`
+- `native.compile.runtime_module`
+- `native.compile.backend_emit`
+- `native.compile.publish`
+
+Backend emission also has narrower tags such as:
+
+- `native.compile.backend.blocks`
+- `native.compile.backend.edges`
+- `native.compile.backend.literal_pool`
+- `native.compile.backend.tail`
+- `native.compile.backend.patch_fixups`
+
+Interpretation:
+
+- `top_live_tags` tells you which compiler phase still owns memory at the chosen time
+- `top_live_stacks` tells you which allocation site inside that phase contributed the bytes
+- a row like `tag=native.compile.prepare ...` is usually much more actionable than a raw caller stack alone
+
+Generate collapsed stacks for flamegraph tools from a selected snapshot:
+
+```bash
+python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
+  --time-us 3095866 \
+  --collapsed-out /tmp/lua-peak.folded
+```
+
+Symbolize snapshot frames with `atos` when the trace contains `image` records:
+
+```bash
+python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
+  --time-us 3095866 \
+  --symbolize \
+  --top 20
+```
+
+Practical workflow:
+
+1. Record one raw trace with `cargo memprof`.
+2. Prefer `record-view` when you want the curve and click-to-flamegraph UI immediately.
+3. Use `serve` when you already have a raw trace file.
+4. Use `spikes` when you want the peak times in plain text or JSON.
+5. Use `timeline` when you want compact curve data for a future custom UI.
+6. Use `snapshot --time-us <peak>` when you want a one-off exact dump at a chosen time.
+7. Add `--collapsed-out` when you want a flamegraph input file for external tools.
+8. Add `--symbolize` when you want function names instead of raw PCs.
+
+If `--symbolize` is too sparse, rebuild with debug info:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=1 \
 cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
 ```
 

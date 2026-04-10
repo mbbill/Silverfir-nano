@@ -46,7 +46,7 @@ impl CodeBuffer {
             capacity,
             offset: 0,
         };
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(base as usize, capacity, 0);
         Ok(buffer)
     }
@@ -61,7 +61,7 @@ impl CodeBuffer {
         unsafe {
             os::finish_write_executable(self.base, self.capacity, written_start, written_len);
         }
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(self.base as usize, self.capacity, self.offset);
     }
 
@@ -73,7 +73,7 @@ impl CodeBuffer {
             (self.base.add(offset) as *mut u32).write(inst);
         }
         self.offset += 4;
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(self.base as usize, self.capacity, self.offset);
         offset
     }
@@ -86,7 +86,7 @@ impl CodeBuffer {
             (self.base.add(offset) as *mut u64).write(value);
         }
         self.offset += 8;
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(self.base as usize, self.capacity, self.offset);
         offset
     }
@@ -102,7 +102,7 @@ impl CodeBuffer {
             ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.add(offset), bytes.len());
         }
         self.offset += bytes.len();
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(self.base as usize, self.capacity, self.offset);
         offset
     }
@@ -150,14 +150,14 @@ impl CodeBuffer {
     #[inline]
     pub fn reset(&mut self) {
         self.offset = 0;
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_state(self.base as usize, self.capacity, 0);
     }
 }
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {
-        #[cfg(feature = "memtrace")]
+        #[cfg(sf_memtrace)]
         sf_nano_memtrace::record_exec_buffer_drop(self.base as usize);
         os::free_executable(self.base, self.capacity);
     }

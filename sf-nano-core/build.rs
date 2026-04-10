@@ -44,6 +44,7 @@
 //   ir-dump        → sf_ir_dump          (also auto-on when PROFILE=debug; requires std)
 //   jitdump        → sf_jitdump          (emits JIT symbol/code info for external profilers
 //                                          like samply/perf; requires jit + std)
+//   memtrace       → sf_memtrace         (exact raw allocation/event tracing; requires std)
 //
 // There is no user-facing `std` feature. libstd availability is derived from
 // whichever std-requiring feature the user selected, not requested directly.
@@ -71,6 +72,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_call_trace",
     "sf_ir_dump",
     "sf_jitdump",
+    "sf_memtrace",
 ];
 
 fn main() {
@@ -153,6 +155,9 @@ fn emit_subsystem_cfgs() {
     }
     if env::var_os("CARGO_FEATURE_CALL_TRACE").is_some() {
         println!("cargo:rustc-cfg=sf_call_trace");
+    }
+    if env::var_os("CARGO_FEATURE_MEMTRACE").is_some() {
+        println!("cargo:rustc-cfg=sf_memtrace");
     }
 }
 

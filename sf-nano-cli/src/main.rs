@@ -280,15 +280,20 @@ fn run_cli(args: &[String]) -> i32 {
 
 #[cfg(feature = "memtrace")]
 fn finish_tracing(mut exit_code: i32, trace_output: Option<PathBuf>) -> ! {
+    let printed_path = if trace_output.is_some() {
+        sf_nano_memtrace::trace_output_path().or(trace_output.clone())
+    } else {
+        None
+    };
     if trace_output.is_some() {
         if let Err(err) = sf_nano_memtrace::flush_trace() {
             eprintln!("Error flushing memtrace output: {}", err);
             if exit_code == 0 {
                 exit_code = 1;
             }
-        } else if let Some(path) = sf_nano_memtrace::trace_output_path() {
-            eprintln!("[memtrace] raw trace={}", path.display());
-        } else if let Some(path) = trace_output {
+        }
+        sf_nano_memtrace::disable_trace();
+        if let Some(path) = printed_path {
             eprintln!("[memtrace] raw trace={}", path.display());
         }
     }

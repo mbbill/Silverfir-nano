@@ -71,6 +71,23 @@ use crate::{
 #[cfg(sf_ir_dump)]
 use crate::vm::debug::ir_dump;
 
+#[cfg(sf_memtrace)]
+type MemtraceScope = sf_nano_memtrace::ScopeGuard;
+#[cfg(not(sf_memtrace))]
+struct MemtraceScope;
+
+#[inline]
+#[cfg(sf_memtrace)]
+fn memtrace_scope(name: &'static str) -> MemtraceScope {
+    sf_nano_memtrace::scope(name)
+}
+
+#[inline]
+#[cfg(not(sf_memtrace))]
+fn memtrace_scope(_name: &'static str) -> MemtraceScope {
+    MemtraceScope
+}
+
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
         .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
@@ -95,98 +112,110 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
     // Phase 1: Decode all functions to semantic IR.
     let mut semantics: Vec<Option<SemanticProgram>> = Vec::with_capacity(module.functions.len());
-    for (func_idx, func) in module.functions.iter().enumerate() {
-        let Some(spec) = func.spec() else {
-            semantics.push(None);
-            continue;
-        };
-        let params = spec.func_type().params().len() as u16;
-        let local_count = params.saturating_add(spec.locals().len() as u16);
-        let results = spec.func_type().results().len() as u16;
-        let mut local_types = Vec::with_capacity(local_count as usize);
-        local_types.extend_from_slice(spec.func_type().params());
-        local_types.extend_from_slice(spec.locals());
-        let semantic = decode::decode_to_semantic_ir(
-            spec.code(),
-            CompileContext::with_value_types(
-                &module.types,
-                store,
-                params,
-                local_count,
-                results,
-                &local_types,
-                spec.func_type().results(),
-            ),
-        )
-        .map_err(|err| {
-            WasmError::internal(alloc::format!(
-                "native decode failed for function {}: {}",
-                func_idx,
-                err
-            ))
-        })?;
-        semantics.push(Some(semantic));
+    {
+        let _scope = memtrace_scope("native.compile.decode");
+        for (func_idx, func) in module.functions.iter().enumerate() {
+            let Some(spec) = func.spec() else {
+                semantics.push(None);
+                continue;
+            };
+            let params = spec.func_type().params().len() as u16;
+            let local_count = params.saturating_add(spec.locals().len() as u16);
+            let results = spec.func_type().results().len() as u16;
+            let mut local_types = Vec::with_capacity(local_count as usize);
+            local_types.extend_from_slice(spec.func_type().params());
+            local_types.extend_from_slice(spec.locals());
+            let semantic = decode::decode_to_semantic_ir(
+                spec.code(),
+                CompileContext::with_value_types(
+                    &module.types,
+                    store,
+                    params,
+                    local_count,
+                    results,
+                    &local_types,
+                    spec.func_type().results(),
+                ),
+            )
+            .map_err(|err| {
+                WasmError::internal(alloc::format!(
+                    "native decode failed for function {}: {}",
+                    func_idx,
+                    err
+                ))
+            })?;
+            semantics.push(Some(semantic));
+        }
     }
 
     // Phase 2: Inline small leaf callees into their callers.
     // Iterate until fixed-point so that transitive chains (A→B→C) are fully
     // resolved regardless of function index ordering.
-    loop {
-        let mut any_inlined = false;
-        for func_idx in 0..semantics.len() {
-            if semantics[func_idx].is_none() {
-                continue;
+    {
+        let _scope = memtrace_scope("native.compile.inline");
+        loop {
+            let mut any_inlined = false;
+            for func_idx in 0..semantics.len() {
+                if semantics[func_idx].is_none() {
+                    continue;
+                }
+                let mut caller = semantics[func_idx].take().unwrap();
+                if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
+                    any_inlined = true;
+                }
+                semantics[func_idx] = Some(caller);
             }
-            let mut caller = semantics[func_idx].take().unwrap();
-            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
-                any_inlined = true;
+            if !any_inlined {
+                break;
             }
-            semantics[func_idx] = Some(caller);
-        }
-        if !any_inlined {
-            break;
         }
     }
 
     // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
     let mut lowered_inputs = Vec::new();
     let mut prepared_functions = Vec::new();
-    for (func_idx, func) in module.functions.iter().enumerate() {
-        let Some(spec) = func.spec() else {
-            continue;
-        };
-        let semantic = semantics[func_idx].as_ref().unwrap();
-        let prepared =
-            prepare_function(PrepareInput { config: backend }, semantic).map_err(
-                |err| {
-                    WasmError::internal(alloc::format!(
-                        "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
-                        func_idx,
-                        spec.type_index(),
-                        spec.func_type().params().len(),
-                        spec.func_type().results().len(),
-                        semantic.max_stack_height,
-                        semantic.ops.len(),
-                        err
-                    ))
-                },
-            )?;
-        prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
+    {
+        let _scope = memtrace_scope("native.compile.prepare");
+        for (func_idx, func) in module.functions.iter().enumerate() {
+            let Some(spec) = func.spec() else {
+                continue;
+            };
+            let semantic = semantics[func_idx].as_ref().unwrap();
+            let prepared =
+                prepare_function(PrepareInput { config: backend }, semantic).map_err(
+                    |err| {
+                        WasmError::internal(alloc::format!(
+                            "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
+                            func_idx,
+                            spec.type_index(),
+                            spec.func_type().params().len(),
+                            spec.func_type().results().len(),
+                            semantic.max_stack_height,
+                            semantic.ops.len(),
+                            err
+                        ))
+                    },
+                )?;
+            prepared_functions.push((MachineFuncId(func_idx as u32), prepared));
+        }
     }
 
-    for (id, prepared) in prepared_functions.iter() {
-        let result_count = module
-            .functions
-            .get(id.0 as usize)
-            .and_then(|f| f.spec())
-            .map(|s| s.func_type().results().len() as u16)
-            .unwrap_or(0);
-        lowered_inputs.push(LowerFunctionInput {
-            id: *id,
-            frame: prepared.frame,
-            ssa: &prepared.ssa,
-            result_count,
-        });
+    {
+        let _scope = memtrace_scope("native.compile.lower_inputs");
+        for (id, prepared) in prepared_functions.iter() {
+            let result_count = module
+                .functions
+                .get(id.0 as usize)
+                .and_then(|f| f.spec())
+                .map(|s| s.func_type().results().len() as u16)
+                .unwrap_or(0);
+            lowered_inputs.push(LowerFunctionInput {
+                id: *id,
+                frame: prepared.frame,
+                ssa: &prepared.ssa,
+                result_count,
+            });
+        }
     }
 
     #[cfg(sf_has_guard_pages)]
@@ -197,13 +226,19 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .unwrap_or(false);
     #[cfg(sf_has_guard_pages)]
     let use_guard_pages = use_guard_pages && backend.gp_unit_bytes == 8;
-    let mut lowered = lower_module(LowerModuleInput {
-        backend,
-        functions: &lowered_inputs,
-        #[cfg(sf_has_guard_pages)]
-        use_guard_pages,
-    })?;
-    optimize_module(&mut lowered.module);
+    let mut lowered = {
+        let _scope = memtrace_scope("native.compile.lower");
+        lower_module(LowerModuleInput {
+            backend,
+            functions: &lowered_inputs,
+            #[cfg(sf_has_guard_pages)]
+            use_guard_pages,
+        })?
+    };
+    {
+        let _scope = memtrace_scope("native.compile.optimize");
+        optimize_module(&mut lowered.module);
+    }
     if backend.is_32bit_gp_target() {
         lowered
             .module
@@ -220,19 +255,26 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         })
         .collect();
 
-    let compiled = Rc::new(CompiledNativeModule::new(
-        active_backend,
-        backend,
-        lowered.module,
-        lowered.abi,
-    )?);
+    let compiled = {
+        let _scope = memtrace_scope("native.compile.runtime_module");
+        Rc::new(CompiledNativeModule::new(
+            active_backend,
+            backend,
+            lowered.module,
+            lowered.abi,
+        )?)
+    };
     // Per-arch machine-code emission is owned by `arch::dispatch_compile_module`.
     // We receive a uniform `Vec<Option<CompiledArchEntry>>` and from here on
     // treat every architecture identically.
-    let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
+    let entries = {
+        let _scope = memtrace_scope("native.compile.backend_emit");
+        arch::dispatch_compile_module(active_backend, module, &compiled)?
+    };
 
     // Record compile stats.
     {
+        let _scope = memtrace_scope("native.compile.stats");
         let groups = prepared_functions.len();
         let ssa_ops: usize = prepared_functions
             .iter()
@@ -286,14 +328,17 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         );
     }
 
-    for (func_idx, func) in module.functions.iter().enumerate() {
-        let Some(spec) = func.spec() else {
-            continue;
-        };
-        let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
-        let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
-        code = code.with_entry(native_entry.map(|e| e.entry));
-        spec.set_native_code(code, NativeCodeCache::compiled());
+    {
+        let _scope = memtrace_scope("native.compile.publish");
+        for (func_idx, func) in module.functions.iter().enumerate() {
+            let Some(spec) = func.spec() else {
+                continue;
+            };
+            let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
+            let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
+            code = code.with_entry(native_entry.map(|e| e.entry));
+            spec.set_native_code(code, NativeCodeCache::compiled());
+        }
     }
 
     Ok(())
