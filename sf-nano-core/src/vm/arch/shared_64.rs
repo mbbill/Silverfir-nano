@@ -8,7 +8,9 @@ use crate::{
         },
         entities::ModuleInst,
         machine::machine_ir::{MachineBlock, MachineBlockId, MachineReg, MachineValue},
-        runtime::{code::CompiledNativeModule, code_buf::CodeBuffer, dispatch_view::NativeLocalCallInfo64},
+        runtime::{
+            code::CompiledNativeModule, code_buf::CodeBuffer, dispatch_view::NativeLocalCallInfo64,
+        },
     },
 };
 
@@ -86,8 +88,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
         }
     }
 
-    let mut function_info_bytes =
-        Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO64_SIZE);
+    let mut function_info_bytes = Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO64_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = NativeFunctionInfo64 {
             entry: *internal_entry_addrs
@@ -213,7 +214,60 @@ pub(crate) fn is_fallthrough_edge(
         .iter()
         .zip(args.iter())
         .all(|(param, arg)| match arg {
-            MachineValue::Reg(reg) => *reg == param.reg,
-            _ => false,
+            MachineValue::Reg(reg) | MachineValue::ReservedReg(reg) => *reg == param.reg,
+            MachineValue::Imm64(_) => false,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::is_fallthrough_edge;
+    use crate::vm::machine::machine_ir::{
+        MachineBlock, MachineBlockId, MachineBlockParam, MachineReg, MachineRegOwner,
+        MachineTerminator, MachineValue,
+    };
+
+    fn block(id: u32, params: &[MachineBlockParam]) -> MachineBlock {
+        MachineBlock {
+            id: MachineBlockId(id),
+            params: params.to_vec(),
+            ops: Vec::new(),
+            terminator: MachineTerminator::Return,
+        }
+    }
+
+    #[test]
+    fn reserved_regs_count_as_identity_for_fallthrough_edges() {
+        let params = [
+            MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedLocal),
+            MachineBlockParam::gp_word(MachineReg(5)).with_owner(MachineRegOwner::CachedLocal),
+        ];
+        let blocks = [block(0, &[]), block(1, &params)];
+
+        assert!(is_fallthrough_edge(
+            MachineBlockId(1),
+            &[
+                MachineValue::ReservedReg(MachineReg(4)),
+                MachineValue::ReservedReg(MachineReg(5)),
+            ],
+            Some(MachineBlockId(1)),
+            &blocks,
+        ));
+    }
+
+    #[test]
+    fn mismatched_reserved_reg_is_not_identity_for_fallthrough_edges() {
+        let params =
+            [MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedLocal)];
+        let blocks = [block(0, &[]), block(1, &params)];
+
+        assert!(!is_fallthrough_edge(
+            MachineBlockId(1),
+            &[MachineValue::ReservedReg(MachineReg(7))],
+            Some(MachineBlockId(1)),
+            &blocks,
+        ));
+    }
 }
