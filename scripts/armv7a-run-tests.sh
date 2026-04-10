@@ -47,7 +47,7 @@ if [ -n "$pids" ]; then
     sleep 1
     kill -9 $pids >/dev/null 2>&1 || true
 fi
-' sh "qemu-arm-static $CLI_BIN" 2>/dev/null || true
+' sh "qemu-arm-static -cpu cortex-a15 $CLI_BIN" 2>/dev/null || true
 }
 
 cleanup_remote_qemu_pidfile() {
@@ -186,7 +186,7 @@ watch_pid=$$
 exec colima ssh -- sh -lc '
 pid_file=$1
 shift
-qemu-arm-static "$@" &
+qemu-arm-static -cpu cortex-a15 "$@" &
 pid=$!
 printf "%s\n" "$pid" > "$pid_file"
 wait "$pid"
