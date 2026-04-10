@@ -32,10 +32,7 @@ use crate::{
 };
 
 use super::{
-    abi::{
-        self, emit_shared_epilogue, emit_shared_prologue, map_fixed_reg, map_reg,
-        SCRATCH0, SCRATCH1,
-    },
+    abi::{self, emit_shared_epilogue, emit_shared_prologue, map_fixed_reg, map_reg, C_ARG0, C_ARG1, C_RET0},
     arm32_raise_trap,
     enc::{self, Cond},
     inst::{emit_load_u32_into, emit_patchable_addr_into},
@@ -54,10 +51,10 @@ pub(super) enum BranchFixupKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct BranchFixup {
-    offset: usize,
-    kind: BranchFixupKind,
-    target: usize,
+pub(super) struct BranchFixup {
+    pub(super) offset: usize,
+    pub(super) kind: BranchFixupKind,
+    pub(super) target: usize,
 }
 
 // ── Compiled entry ───────────────────────────────────────────────────────────
@@ -76,7 +73,7 @@ pub(crate) struct CompiledArm32Entry {
 #[derive(Debug)]
 pub(crate) struct Arm32Backend<'a> {
     pub core: CompilerCore<'a>,
-    fixups: Vec<BranchFixup>,
+    pub(super) fixups: Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm32Reg, 2>,
     pub(super) fp_scratch: ScratchPool<u32, 3>,
 }
@@ -115,13 +112,13 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     fn lower_prologue(&mut self) {
         emit_shared_prologue(&mut self.core.text);
         // Move args: entry is `fn(ctx: *mut NativeContext, fp: *mut u64) -> u32`
-        // R0 = ctx, R1 = fp → fixed CTX / FP machine regs
+        // C_ARG0 = ctx, C_ARG1 = fp → fixed CTX / FP machine regs
         self.core
             .text
-            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_CTX_REG), Arm32Reg::R0));
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_CTX_REG), C_ARG0));
         self.core
             .text
-            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), Arm32Reg::R1));
+            .emit_u32(enc::mov_reg(map_fixed_reg(MACHINE_FP_REG), C_ARG1));
         // Load fixed mem0 registers
         self.core.text.emit_u32(enc::ldr_imm(
             map_fixed_reg(MACHINE_MEM0_BASE_REG),
@@ -247,8 +244,8 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         // fit cleanly in R0/R1 without u64 alignment skipping.
         self.core
             .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
-        self.emit_load_u32(Arm32Reg::R1, trap_code(kind) as u32);
+            .emit_u32(enc::mov_reg(C_ARG0, map_fixed_reg(MACHINE_CTX_REG)));
+        self.emit_load_u32(C_ARG1, trap_code(kind) as u32);
         self.emit_host_call(arm32_raise_trap as usize);
         // The shim returns NativeCallStatus::Error (= 1) in R0. Branch to
         // body_local_error_label, which preserves R0 and propagates upward
@@ -427,8 +424,11 @@ impl<'a> Arm32Backend<'a> {
             #[cfg(sf_fp_dp)]
             self.emit_helper_scratch_save(helper_scratch);
         }
-        emit_load_u32_into(&mut self.core.text, SCRATCH0, target as u32);
-        self.core.text.emit_u32(enc::blx_reg(SCRATCH0));
+        {
+            let s = self.gp_scratch.scoped_alloc();
+            emit_load_u32_into(&mut self.core.text, *s, target as u32);
+            self.core.text.emit_u32(enc::blx_reg(*s));
+        }
         if let Some(helper_scratch) = helper_scratch {
             #[cfg(sf_fp_dp)]
             self.emit_helper_scratch_restore(helper_scratch);
@@ -449,8 +449,10 @@ impl<'a> Arm32Backend<'a> {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         // These saves are emitted only inside `emit_host_call`, which has
         // already preserved both backend-owned GP scratch registers.
-        let gp_lo = SCRATCH0;
-        let gp_hi = SCRATCH1;
+        let gp_lo_s = self.gp_scratch.scoped_alloc().detach();
+        let gp_hi_s = self.gp_scratch.scoped_alloc().detach();
+        let gp_lo = *gp_lo_s;
+        let gp_hi = *gp_hi_s;
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
         let last_byte_offset = base_byte_offset + 4 * 8 + 4; // D7 high half
         let direct = base_byte_offset >= 0 && last_byte_offset <= 4095;
@@ -505,8 +507,10 @@ impl<'a> Arm32Backend<'a> {
         helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
     ) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let gp_lo = SCRATCH0;
-        let gp_hi = SCRATCH1;
+        let gp_lo_s = self.gp_scratch.scoped_alloc().detach();
+        let gp_hi_s = self.gp_scratch.scoped_alloc().detach();
+        let gp_lo = *gp_lo_s;
+        let gp_hi = *gp_hi_s;
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
         let last_byte_offset = base_byte_offset + 4 * 8 + 4;
         let direct = base_byte_offset >= 0 && last_byte_offset <= 4095;
@@ -568,12 +572,16 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::str_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
-        self.core
-            .text
-            .emit_u32(enc::str_imm(SCRATCH0, fp_reg, base_byte_offset + 56));
-        self.core
-            .text
-            .emit_u32(enc::str_imm(SCRATCH1, fp_reg, base_byte_offset + 60));
+        {
+            let s0 = self.gp_scratch.scoped_alloc();
+            self.core
+                .text
+                .emit_u32(enc::str_imm(*s0, fp_reg, base_byte_offset + 56));
+            let s1 = self.gp_scratch.scoped_alloc();
+            self.core
+                .text
+                .emit_u32(enc::str_imm(*s1, fp_reg, base_byte_offset + 60));
+        }
     }
 
     fn emit_fixed_helper_state_restore(
@@ -595,12 +603,16 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::ldr_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
-        self.core
-            .text
-            .emit_u32(enc::ldr_imm(SCRATCH0, fp_reg, base_byte_offset + 56));
-        self.core
-            .text
-            .emit_u32(enc::ldr_imm(SCRATCH1, fp_reg, base_byte_offset + 60));
+        {
+            let s0 = self.gp_scratch.scoped_alloc();
+            let s1 = self.gp_scratch.scoped_alloc();
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(*s0, fp_reg, base_byte_offset + 56));
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(*s1, fp_reg, base_byte_offset + 60));
+        }
     }
 
     /// `push {r5}` — save the dynamic GP register we're about to use as a
@@ -1134,20 +1146,23 @@ impl<'a> Arm32Backend<'a> {
     ///   [sp +  8] = caller_result_base (call record slot 0)
     ///   [sp + 12] = caller_fp           (call record slot 1)
     ///
-    /// The copy loop uses R12 (SCRATCH0) as the result-base pointer and
-    /// R14 (SCRATCH1, alias LR) as the per-iteration data temp. Because
-    /// SCRATCH1 *is* LR, the prelude's saved LR has to stay on the stack
+    /// The copy loop uses GP scratch slots as the result-base pointer and
+    /// per-iteration data temp. Because one scratch *is* LR (R14), the
+    /// prelude's saved LR has to stay on the stack
     /// until *after* the copy loop finishes — only then do we materialize
     /// LR for the final `bx lr`. We bypass the scratch pool here and pin
     /// the two physical registers directly so the ordering is explicit.
     pub(super) fn emit_return_sequence(&mut self) -> Result<(), WasmError> {
         let runtime = self.runtime_for(self.core.function.id)?.clone();
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        // R12 and R14 are the two GP scratches in this backend; both are
+        // Allocate both GP scratches for the return sequence. They are
         // free at function-tail boundaries because every preceding insn
-        // dropped its scratch guards.
-        let result_base = Arm32Reg::R12;
-        let temp = Arm32Reg::R14;
+        // dropped its scratch guards. We detach them since this is a
+        // terminal sequence — no further scratch allocs will follow.
+        let result_base_s = self.gp_scratch.scoped_alloc().detach();
+        let temp_s = self.gp_scratch.scoped_alloc().detach();
+        let result_base = *result_base_s;
+        let temp = *temp_s;
 
         // 1. Load caller_result_base from the call record (sp + 8). The
         //    body prelude link save still occupies sp[0..8]; we leave it
@@ -1195,8 +1210,8 @@ impl<'a> Arm32Backend<'a> {
             .text
             .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, 16, 0));
 
-        // 5. Success status: R0 = 0.
-        self.emit_load_u32(Arm32Reg::R0, 0);
+        // 5. Success status: C_RET0 = 0.
+        self.emit_load_u32(C_RET0, 0);
 
         // 6. Native return (bx lr; LR holds the body prelude's saved LR).
         self.core.text.emit_u32(enc::bx(Arm32Reg::R14));
@@ -1245,10 +1260,10 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
-    /// Emit `cmp r0, #0; b.ne <label>` so the post-call status check
-    /// branches to the body-local error tail when R0 != 0.
+    /// Emit `cmp C_RET0, #0; b.ne <label>` so the post-call status check
+    /// branches to the body-local error tail when C_RET0 != 0.
     fn emit_status_check_to(&mut self, label: usize) {
-        self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
+        self.core.text.emit_u32(enc::cmp_imm(C_RET0, 0, 0));
         self.emit_branch(BranchFixupKind::BCond(Cond::Ne), label);
     }
 

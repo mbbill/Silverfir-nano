@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    abi::{map_fixed_reg, map_reg},
+    abi::{map_fixed_reg, map_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
     backend::{Arm32Backend, BranchFixupKind},
     enc,
     inst::emit_load_u32_into,
@@ -124,43 +124,45 @@ impl<'a> Arm32Backend<'a> {
             self.emit_preserved_io_store_value(slot, value)?;
         }
 
-        // Step 4: set up the C calling convention. r0 = ctx, r1 = op_code,
-        // r2 = io_ptr (= sp). `emit_host_call` below will save/restore D3-D7
+        // Step 4: set up the C calling convention. C_ARG0 = ctx, C_ARG1 = op_code,
+        // C_ARG2 = io_ptr (= sp). `emit_host_call` below will save/restore D3-D7
         // around the BLX via the per-function helper_scratch.
         self.core.text.emit_u32(enc::mov_reg(
-            Arm32Reg::R0,
+            C_ARG0,
             map_fixed_reg(MACHINE_CTX_REG),
         ));
-        self.emit_load_u32(Arm32Reg::R1, op_code);
+        self.emit_load_u32(C_ARG1, op_code);
         self.core
             .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R2, Arm32Reg::SP));
+            .emit_u32(enc::mov_reg(C_ARG2, Arm32Reg::SP));
 
         // Step 5: dispatch the helper.
         self.emit_host_call(preserved_entry as usize);
 
-        // Step 6: stash status (R0) into SCRATCH0 (R12). After this we commit
-        // to two diverging tails — success and error — that need to restore the
-        // JIT register file in different ways. Note that R0 itself is not yet
-        // clobbered: the success-path restore will overwrite it from the spill
-        // area, but the error-path restore skips R0 so the helper's status code
-        // propagates back to the C caller via the body-local error tail.
+        // Step 6: stash status (R0) and optionally result into GP scratches.
+        // After this we commit to two diverging tails — success and error —
+        // that need to restore the JIT register file in different ways.
+        // Note that R0 itself is not yet clobbered: the success-path restore
+        // will overwrite it from the spill area, but the error-path restore
+        // skips R0 so the helper's status code propagates back to the C
+        // caller via the body-local error tail.
+        let status_s = self.gp_scratch.scoped_alloc().detach();
         self.core
             .text
-            .emit_u32(enc::mov_reg(Arm32Reg::R12, Arm32Reg::R0));
+            .emit_u32(enc::mov_reg(*status_s, C_RET0));
 
-        // Step 7: read the result (if any) into SCRATCH1 (R14 / LR). LR is
-        // free at this point — the body prelude saved the body's real LR onto
-        // the host stack at function entry, and the success path will never
-        // need LR before the next instruction-level scratch alloc overwrites
-        // it. (The error tail loads its own LR before `bx`.)
-        if result_dst.is_some() {
+        // Step 7: read the result (if any) into a second GP scratch.
+        let result_s = if result_dst.is_some() {
+            let s = self.gp_scratch.scoped_alloc().detach();
             self.core.text.emit_u32(enc::ldr_imm(
-                Arm32Reg::R14,
+                *s,
                 Arm32Reg::SP,
                 (preserved_io::RET0 * 8) as i32,
             ));
-        }
+            Some(s)
+        } else {
+            None
+        };
 
         // Step 8: free the I/O area. Both tails need this.
         self.core.text.emit_u32(enc::add_imm(
@@ -176,16 +178,20 @@ impl<'a> Arm32Backend<'a> {
         // the error path uses a bare `add sp, #24` so R0 retains the helper's
         // status code while it propagates to `body_local_error_label`.
         let error_path = self.core.new_label();
-        self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R12, 0, 0));
+        self.core
+            .text
+            .emit_u32(enc::cmp_imm(*status_s, 0, 0));
         self.emit_branch(BranchFixupKind::BCond(enc::Cond::Ne), error_path);
 
         // Success tail.
         self.restore_caller_saved_gp_regs(&[]);
         if let Some(dst) = result_dst {
             let dst_hw = map_reg(dst)?;
-            self.core
-                .text
-                .emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R14));
+            if let Some(ref rs) = result_s {
+                self.core
+                    .text
+                    .emit_u32(enc::mov_reg(dst_hw, **rs));
+            }
         }
         let after = self.core.new_label();
         self.emit_branch(BranchFixupKind::B, after);
