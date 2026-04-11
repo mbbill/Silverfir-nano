@@ -9,8 +9,6 @@
 //! can see that the guard borrows only the pool (via `Cell`), while
 //! `&mut TextEmitter` is reborrowed only for the call's duration.
 
-use crate::collections;
-
 use crate::{
     error::WasmError,
     vm::{
@@ -3570,6 +3568,7 @@ impl<'a> Arm32Backend<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections;
     use crate::vm::arch::common::text_emitter::TextEmitter;
 
     #[test]

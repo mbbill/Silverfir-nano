@@ -76,7 +76,6 @@ impl<'a> Validator<'a> {
                     ))
                 })?;
                 let code = spec.code();
-                let mut decoder = op_decoder::Decoder::new(code);
                 let mut validator = FunctionValidator::new(self.module, spec).map_err(|e| {
                     WasmError::invalid(alloc::format!(
                         "Function {} validator setup failed: {}",
@@ -84,6 +83,7 @@ impl<'a> Validator<'a> {
                         e
                     ))
                 })?;
+                let mut decoder = op_decoder::Decoder::new(code);
                 decoder.add_handler(&mut validator);
                 decoder.decode_function().map_err(|e| {
                     WasmError::invalid(alloc::format!("Function {} decode failed: {}", func_idx, e))

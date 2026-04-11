@@ -1,7 +1,7 @@
-#[cfg(sf_emulator)]
 use crate::collections;
 use alloc::rc::Rc;
 
+#[cfg(sf_emulator)]
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-#[cfg(sf_has_debug_regions)]
+#[cfg(sf_ir_dump)]
 use crate::vm::arch::common::types::DebugRegion;
 
 pub(crate) mod common;
@@ -245,9 +245,10 @@ pub(crate) fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
 /// Each backend-specific module linker returns an entry type carrying whatever
 /// arch-local state it needs. The module-build pipeline in `vm::build` only
 /// cares about three facts after compilation is done — the entry pointer, the
-/// function's text size, and (under `sf_ir_dump`) the debug region list — so
+/// function's text size, and the optional IR-dump debug region list — so
 /// `dispatch_compile_module` projects every backend's entry type into this
-/// uniform shape.
+/// uniform shape. `sf_jitdump` consumes debug regions earlier in the
+/// arch-specific linkers instead of through this normalized handoff.
 pub(crate) struct CompiledArchEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,

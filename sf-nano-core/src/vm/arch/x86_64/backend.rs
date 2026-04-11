@@ -33,7 +33,7 @@ use super::{
     gp_scratch::GpScratchPool,
     reg::X86Reg,
 };
-#[cfg(sf_has_debug_regions)]
+#[cfg(sf_ir_dump)]
 use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
     backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool, types::ParallelSource,
