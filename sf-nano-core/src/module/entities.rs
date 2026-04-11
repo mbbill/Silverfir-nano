@@ -7,9 +7,9 @@
 
 use crate::collections;
 
-use alloc::rc::Rc;
-use alloc::string::String;
 use core::ops::Deref;
+use tracked_alloc::rc::Rc;
+use tracked_alloc::string::String;
 
 use crate::constants;
 use crate::error::WasmError;

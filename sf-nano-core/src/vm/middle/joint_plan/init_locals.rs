@@ -121,30 +121,26 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
                         }
                         FrameKind::If => {
                             if let Some(if_arm) = &frame.if_arm_def_set {
-                                let mut paths: collections::Vec<&[bool]> = collections::Vec::new();
-                                if frame.if_arm_reachable {
-                                    paths.push(if_arm);
-                                }
-                                if reachable {
-                                    paths.push(&def_set);
-                                }
-                                if let Some(br) = &frame.branch_def_set {
-                                    paths.push(br);
-                                }
-                                def_set = intersect_all(&paths, n);
+                                def_set = intersect_selected_paths(
+                                    [
+                                        frame.if_arm_reachable.then_some(if_arm.as_slice()),
+                                        reachable.then_some(def_set.as_slice()),
+                                        frame.branch_def_set.as_deref(),
+                                    ],
+                                    n,
+                                );
                                 reachable = reachable
                                     || frame.if_arm_reachable
                                     || frame.branch_def_set.is_some();
                             } else {
-                                let mut paths: collections::Vec<&[bool]> = collections::Vec::new();
-                                if reachable {
-                                    paths.push(&def_set);
-                                }
-                                paths.push(&frame.entry_def_set);
-                                if let Some(br) = &frame.branch_def_set {
-                                    paths.push(br);
-                                }
-                                def_set = intersect_all(&paths, n);
+                                def_set = intersect_selected_paths(
+                                    [
+                                        reachable.then_some(def_set.as_slice()),
+                                        Some(frame.entry_def_set.as_slice()),
+                                        frame.branch_def_set.as_deref(),
+                                    ],
+                                    n,
+                                );
                                 reachable = true;
                             }
                         }
@@ -241,14 +237,17 @@ fn intersect_vecs(a: &[bool], b: &[bool]) -> collections::Vec<bool> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x && y).collect()
 }
 
-fn intersect_all(paths: &[&[bool]], n: usize) -> collections::Vec<bool> {
-    if paths.is_empty() {
-        return collections::vec![false; n];
-    }
-    let mut out = collections::vec![true; n];
-    for path in paths {
-        for (i, bit) in path.iter().enumerate() {
-            out[i] &= *bit;
+fn intersect_selected_paths(paths: [Option<&[bool]>; 3], n: usize) -> collections::Vec<bool> {
+    let mut out = collections::vec![false; n];
+    let mut initialized = false;
+    for path in paths.into_iter().flatten() {
+        if !initialized {
+            out = path.to_vec().into();
+            initialized = true;
+            continue;
+        }
+        for (slot, bit) in out.iter_mut().zip(path.iter()) {
+            *slot &= *bit;
         }
     }
     out

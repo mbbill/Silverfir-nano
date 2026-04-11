@@ -1,7 +1,7 @@
 use crate::collections;
 
 #[cfg(sf_has_debug_regions)]
-use alloc::{format, string::String};
+use tracked_alloc::{format, string::String};
 
 use crate::{
     error::WasmError,

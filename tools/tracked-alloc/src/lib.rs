@@ -4,10 +4,7 @@ extern crate alloc;
 #[cfg(feature = "tracking")]
 extern crate std;
 
-use alloc::boxed::Box;
-#[cfg(feature = "tracking")]
-use alloc::string::ToString;
-use alloc::vec::Vec as RawVec;
+use boxed::Box;
 #[cfg(feature = "tracking")]
 use core::cmp::Ordering;
 #[cfg(feature = "tracking")]
@@ -22,6 +19,8 @@ use core::marker::PhantomData;
 use core::mem;
 #[cfg(feature = "tracking")]
 use core::ops::{Deref, DerefMut, RangeBounds};
+#[cfg(feature = "tracking")]
+use string::ToString;
 
 #[cfg(feature = "tracking")]
 use core::any::type_name;
@@ -30,36 +29,53 @@ use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 #[cfg(feature = "tracking")]
 use std::backtrace::Backtrace;
 #[cfg(feature = "tracking")]
-use std::collections::BTreeMap;
+use std::collections::BTreeMap as StdBTreeMap;
 #[cfg(feature = "tracking")]
 use std::sync::{Mutex, OnceLock};
+
+mod inner {
+    pub use alloc::vec::{Drain, IntoIter, Splice};
+    pub type Vec<T> = alloc::vec::Vec<T>;
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub extern crate alloc as alloc_crate;
+}
 
 #[macro_export]
 macro_rules! vec {
     ($($tt:tt)*) => {
-        $crate::from_alloc_vec(alloc::vec![$($tt)*])
+        $crate::from_alloc_vec($crate::__private::alloc_crate::vec![$($tt)*])
+    };
+}
+
+#[macro_export]
+macro_rules! format {
+    ($($tt:tt)*) => {
+        $crate::__private::alloc_crate::format![$($tt)*]
     };
 }
 
 #[cfg(not(feature = "tracking"))]
-pub type Vec<T> = RawVec<T>;
+pub type Vec<T> = inner::Vec<T>;
 
 #[cfg(not(feature = "tracking"))]
 #[inline]
-pub fn from_alloc_vec<T>(inner: RawVec<T>) -> Vec<T> {
+pub fn from_alloc_vec<T>(inner: inner::Vec<T>) -> Vec<T> {
     inner
 }
 
 #[cfg(not(feature = "tracking"))]
 #[inline]
-pub fn into_alloc_vec<T>(value: Vec<T>) -> RawVec<T> {
+pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
     value
 }
 
 #[cfg(not(feature = "tracking"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrySnapshot {
-    pub records: RawVec<VecSnapshot>,
+    pub records: inner::Vec<VecSnapshot>,
     pub total_buffer_bytes: usize,
 }
 
@@ -104,7 +120,7 @@ pub struct VecSnapshot {
 #[cfg(feature = "tracking")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrySnapshot {
-    pub records: RawVec<VecSnapshot>,
+    pub records: inner::Vec<VecSnapshot>,
     pub total_buffer_bytes: usize,
 }
 
@@ -124,11 +140,11 @@ struct VecRecord {
 #[cfg(feature = "tracking")]
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "tracking")]
-static REGISTRY: OnceLock<Mutex<BTreeMap<u64, VecRecord>>> = OnceLock::new();
+static REGISTRY: OnceLock<Mutex<StdBTreeMap<u64, VecRecord>>> = OnceLock::new();
 
 #[cfg(feature = "tracking")]
-fn registry() -> &'static Mutex<BTreeMap<u64, VecRecord>> {
-    REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
+fn registry() -> &'static Mutex<StdBTreeMap<u64, VecRecord>> {
+    REGISTRY.get_or_init(|| Mutex::new(StdBTreeMap::new()))
 }
 
 #[cfg(feature = "tracking")]
@@ -138,7 +154,7 @@ fn capture_stack() -> Box<str> {
 }
 
 #[cfg(feature = "tracking")]
-fn buffer_ptr<T>(inner: &RawVec<T>) -> usize {
+fn buffer_ptr<T>(inner: &inner::Vec<T>) -> usize {
     if inner.capacity() == 0 {
         0
     } else {
@@ -154,7 +170,7 @@ struct TraceHandle {
 
 #[cfg(feature = "tracking")]
 impl TraceHandle {
-    fn new<T>(inner: &RawVec<T>) -> Self {
+    fn new<T>(inner: &inner::Vec<T>) -> Self {
         let id = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
         let record = VecRecord {
             element_type: type_name::<T>(),
@@ -170,7 +186,7 @@ impl TraceHandle {
         Self { id: Some(id) }
     }
 
-    fn sync<T>(&mut self, inner: &RawVec<T>) {
+    fn sync<T>(&mut self, inner: &inner::Vec<T>) {
         let Some(id) = self.id else {
             return;
         };
@@ -205,7 +221,7 @@ impl Drop for TraceHandle {
 #[cfg(feature = "tracking")]
 pub fn snapshot() -> RegistrySnapshot {
     let registry = registry().lock().unwrap();
-    let mut records: RawVec<VecSnapshot> = registry
+    let mut records: inner::Vec<VecSnapshot> = registry
         .iter()
         .map(|(&id, record)| VecSnapshot {
             id,
@@ -239,7 +255,7 @@ pub fn reset_tracking() {
 
 #[cfg(feature = "tracking")]
 pub struct Vec<T> {
-    inner: RawVec<T>,
+    inner: inner::Vec<T>,
     trace: TraceHandle,
 }
 
@@ -247,16 +263,16 @@ pub struct Vec<T> {
 impl<T> Vec<T> {
     #[inline]
     pub fn new() -> Self {
-        Self::from_alloc_vec(RawVec::new())
+        Self::from_alloc_vec(inner::Vec::new())
     }
 
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::from_alloc_vec(RawVec::with_capacity(capacity))
+        Self::from_alloc_vec(inner::Vec::with_capacity(capacity))
     }
 
     #[inline]
-    pub fn from_alloc_vec(inner: RawVec<T>) -> Self {
+    pub fn from_alloc_vec(inner: inner::Vec<T>) -> Self {
         let trace = TraceHandle::new(&inner);
         Self { inner, trace }
     }
@@ -267,7 +283,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
-    fn mutate<R>(&mut self, f: impl FnOnce(&mut RawVec<T>) -> R) -> R {
+    fn mutate<R>(&mut self, f: impl FnOnce(&mut inner::Vec<T>) -> R) -> R {
         let result = f(&mut self.inner);
         self.sync();
         result
@@ -310,7 +326,7 @@ impl<T> Vec<T> {
 
     #[inline]
     pub fn clear(&mut self) {
-        self.mutate(RawVec::clear);
+        self.mutate(inner::Vec::clear);
     }
 
     #[inline]
@@ -329,10 +345,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
-    pub fn try_reserve(
-        &mut self,
-        additional: usize,
-    ) -> Result<(), alloc::collections::TryReserveError> {
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), collections::TryReserveError> {
         let result = self.inner.try_reserve(additional);
         self.sync();
         result
@@ -342,7 +355,7 @@ impl<T> Vec<T> {
     pub fn try_reserve_exact(
         &mut self,
         additional: usize,
-    ) -> Result<(), alloc::collections::TryReserveError> {
+    ) -> Result<(), collections::TryReserveError> {
         let result = self.inner.try_reserve_exact(additional);
         self.sync();
         result
@@ -350,7 +363,7 @@ impl<T> Vec<T> {
 
     #[inline]
     pub fn shrink_to_fit(&mut self) {
-        self.mutate(RawVec::shrink_to_fit);
+        self.mutate(inner::Vec::shrink_to_fit);
     }
 
     #[inline]
@@ -385,7 +398,7 @@ impl<T> Vec<T> {
     where
         T: PartialEq,
     {
-        self.mutate(RawVec::dedup);
+        self.mutate(inner::Vec::dedup);
     }
 
     #[inline]
@@ -472,7 +485,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
-    pub fn into_alloc_vec(mut self) -> RawVec<T> {
+    pub fn into_alloc_vec(mut self) -> inner::Vec<T> {
         self.trace.remove();
         mem::take(&mut self.inner)
     }
@@ -480,19 +493,19 @@ impl<T> Vec<T> {
 
 #[cfg(feature = "tracking")]
 #[inline]
-pub fn from_alloc_vec<T>(inner: RawVec<T>) -> Vec<T> {
+pub fn from_alloc_vec<T>(inner: inner::Vec<T>) -> Vec<T> {
     Vec::from_alloc_vec(inner)
 }
 
 #[cfg(feature = "tracking")]
 #[inline]
-pub fn into_alloc_vec<T>(value: Vec<T>) -> RawVec<T> {
+pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
     value.into_alloc_vec()
 }
 
 #[cfg(feature = "tracking")]
 pub struct Drain<'a, T> {
-    inner: Option<alloc::vec::Drain<'a, T>>,
+    inner: Option<inner::Drain<'a, T>>,
     owner: *mut Vec<T>,
     marker: PhantomData<&'a mut Vec<T>>,
 }
@@ -535,7 +548,7 @@ impl<'a, T> Drop for Drain<'a, T> {
 
 #[cfg(feature = "tracking")]
 pub struct Splice<'a, T, I: Iterator<Item = T>> {
-    inner: Option<alloc::vec::Splice<'a, I>>,
+    inner: Option<inner::Splice<'a, I>>,
     owner: *mut Vec<T>,
     marker: PhantomData<&'a mut Vec<T>>,
 }
@@ -595,14 +608,14 @@ impl<T: Clone> Clone for Vec<T> {
 }
 
 #[cfg(feature = "tracking")]
-impl<T> From<RawVec<T>> for Vec<T> {
-    fn from(value: RawVec<T>) -> Self {
+impl<T> From<inner::Vec<T>> for Vec<T> {
+    fn from(value: inner::Vec<T>) -> Self {
         from_alloc_vec(value)
     }
 }
 
 #[cfg(feature = "tracking")]
-impl<T> From<Vec<T>> for RawVec<T> {
+impl<T> From<Vec<T>> for inner::Vec<T> {
     fn from(value: Vec<T>) -> Self {
         value.into_alloc_vec()
     }
@@ -618,7 +631,7 @@ impl<T: Clone> From<&[T]> for Vec<T> {
 #[cfg(feature = "tracking")]
 impl<T, const N: usize> From<[T; N]> for Vec<T> {
     fn from(value: [T; N]) -> Self {
-        from_alloc_vec(RawVec::from(value))
+        from_alloc_vec(inner::Vec::from(value))
     }
 }
 
@@ -641,7 +654,7 @@ impl<'a, T: 'a + Clone> Extend<&'a T> for Vec<T> {
 #[cfg(feature = "tracking")]
 impl<T> FromIterator<T> for Vec<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        from_alloc_vec(RawVec::from_iter(iter))
+        from_alloc_vec(inner::Vec::from_iter(iter))
     }
 }
 
@@ -731,7 +744,7 @@ where
 #[cfg(feature = "tracking")]
 impl<T> IntoIterator for Vec<T> {
     type Item = T;
-    type IntoIter = alloc::vec::IntoIter<T>;
+    type IntoIter = inner::IntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.into_alloc_vec().into_iter()
@@ -758,6 +771,28 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
     }
 }
 
+pub mod boxed {
+    pub use alloc::boxed::Box;
+}
+
+pub mod collections {
+    pub use alloc::collections::{BTreeMap, BTreeSet, BinaryHeap, TryReserveError, VecDeque};
+}
+
+pub mod rc {
+    pub use alloc::rc::{Rc, Weak};
+}
+
+pub mod string {
+    pub use alloc::string::{String, ToString};
+}
+
+pub mod vec {
+    pub use crate::inner::IntoIter;
+
+    pub use crate::{from_alloc_vec, into_alloc_vec, Vec};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,14 +815,45 @@ mod tests {
     #[test]
     fn from_alloc_vec_round_trip() {
         let values = from_alloc_vec(alloc::vec![1u8, 2, 3]);
-        let raw: RawVec<u8> = values.into();
+        let raw: inner::Vec<u8> = values.into();
         assert_eq!(raw, alloc::vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    fn alloc_like_surface_is_available() {
+        #[cfg(feature = "tracking")]
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        #[cfg(feature = "tracking")]
+        reset_tracking();
+
+        let mut values = vec::Vec::new();
+        values.push(1u32);
+        let message = format!("values={}", values.len());
+        let boxed = boxed::Box::new(message);
+        let shared = rc::Rc::new(string::String::from(boxed.as_str()));
+        let mut names = collections::BTreeSet::new();
+        names.insert(shared.as_str());
+        assert!(names.contains("values=1"));
+
+        #[cfg(feature = "tracking")]
+        {
+            drop(names);
+            drop(shared);
+            drop(boxed);
+            drop(values);
+            assert!(snapshot().records.is_empty());
+            reset_tracking();
+        }
     }
 
     #[cfg(feature = "tracking")]
     #[test]
     fn tracking_records_lifecycle_and_clone() {
-        let _guard = tracking_test_lock().lock().unwrap();
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_tracking();
         let mut values = Vec::<u32>::new();
         let snapshot0 = snapshot();
@@ -814,7 +880,7 @@ mod tests {
                 .records
                 .iter()
                 .map(|record| record.id)
-                .collect::<RawVec<_>>()
+                .collect::<inner::Vec<_>>()
         );
         assert!(snapshot2.total_buffer_bytes >= snapshot1.total_buffer_bytes);
 
@@ -827,16 +893,18 @@ mod tests {
     #[cfg(feature = "tracking")]
     #[test]
     fn tracking_updates_after_drain_and_splice() {
-        let _guard = tracking_test_lock().lock().unwrap();
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         reset_tracking();
         let mut values = vec![1u8, 2, 3, 4];
-        let drained: RawVec<u8> = values.drain(1..3).collect();
+        let drained: inner::Vec<u8> = values.drain(1..3).collect();
         assert_eq!(drained, alloc::vec![2u8, 3]);
         let snapshot1 = snapshot();
         assert_eq!(snapshot1.records.len(), 1);
         assert_eq!(snapshot1.records[0].len, 2);
 
-        let removed: RawVec<u8> = values.splice(1..1, alloc::vec![9u8, 10]).collect();
+        let removed: inner::Vec<u8> = values.splice(1..1, alloc::vec![9u8, 10]).collect();
         assert!(removed.is_empty());
         let snapshot2 = snapshot();
         assert_eq!(snapshot2.records[0].len, 4);

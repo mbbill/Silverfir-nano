@@ -692,7 +692,7 @@ mod tests {
             ],
             local_types: collections::vec![],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::from([(
+            op_result_types: tracked_alloc::collections::BTreeMap::from([(
                 0usize,
                 collections::vec![ValueType::I32],
             )]),
@@ -715,7 +715,7 @@ mod tests {
             ],
             local_types: collections::vec![],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            op_result_types: tracked_alloc::collections::BTreeMap::new(),
         };
 
         inline_single_call(&mut caller, 0, &callee);
@@ -758,7 +758,7 @@ mod tests {
             ],
             local_types: collections::vec![],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::from([(
+            op_result_types: tracked_alloc::collections::BTreeMap::from([(
                 1usize,
                 collections::vec![ValueType::I32],
             )]),
@@ -781,7 +781,7 @@ mod tests {
             ],
             local_types: collections::vec![ValueType::I32],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            op_result_types: tracked_alloc::collections::BTreeMap::new(),
         };
 
         inline_single_call(&mut caller, 1, &callee);
@@ -828,7 +828,7 @@ mod tests {
             ],
             local_types: collections::vec![ValueType::I32],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::from([(
+            op_result_types: tracked_alloc::collections::BTreeMap::from([(
                 1usize,
                 collections::vec![ValueType::I32],
             )]),

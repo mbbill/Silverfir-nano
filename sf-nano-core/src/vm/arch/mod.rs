@@ -1,5 +1,5 @@
 use crate::collections;
-use alloc::rc::Rc;
+use tracked_alloc::rc::Rc;
 
 #[cfg(sf_emulator)]
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -26,10 +26,10 @@ pub(crate) mod emulator;
 #[cfg(any(sf_arch_arm64, sf_arch_x64))]
 mod shared_64;
 
-#[cfg(sf_arch_arm64)]
-pub(crate) mod arm64;
 #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
 pub(crate) mod arm32;
+#[cfg(sf_arch_arm64)]
+pub(crate) mod arm64;
 #[cfg(sf_arch_x64)]
 pub(crate) mod x86_64;
 

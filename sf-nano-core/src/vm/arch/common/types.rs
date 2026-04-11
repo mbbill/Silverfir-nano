@@ -1,7 +1,7 @@
 use crate::collections;
 
 #[cfg(sf_has_debug_regions)]
-use alloc::string::String;
+use tracked_alloc::string::String;
 
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,

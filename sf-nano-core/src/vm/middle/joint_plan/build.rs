@@ -7,9 +7,9 @@
 
 use crate::collections;
 
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 #[cfg(test)]
-use alloc::collections::BTreeSet;
+use tracked_alloc::collections::BTreeSet;
 
 use crate::{
     error::WasmError,

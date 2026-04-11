@@ -20,9 +20,9 @@ name = "sf-nano-core"
 version = "0.1.0"
 dependencies = [
  "paste",
- "sf-nano-tracked-vec",
+ "sf-nano-tracked-alloc",
 ]
 
 [[package]]
-name = "sf-nano-tracked-vec"
+name = "sf-nano-tracked-alloc"
 version = "0.1.0"

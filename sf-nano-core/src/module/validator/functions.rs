@@ -12,7 +12,7 @@ use crate::{
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
 };
-use alloc::rc::Rc;
+use tracked_alloc::rc::Rc;
 
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,

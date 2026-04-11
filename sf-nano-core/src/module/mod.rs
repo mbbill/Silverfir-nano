@@ -1,4 +1,4 @@
-use alloc::string::String;
+use tracked_alloc::string::String;
 
 use crate::collections;
 

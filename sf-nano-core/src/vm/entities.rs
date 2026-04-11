@@ -2,9 +2,9 @@
 
 use crate::collections;
 
-use alloc::{rc::Rc, string::String};
 #[cfg(sf_jit)]
 use core::cell::RefCell;
+use tracked_alloc::{rc::Rc, string::String};
 
 use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
 use crate::utils::limits::Limits;

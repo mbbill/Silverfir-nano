@@ -1,8 +1,6 @@
 #![no_std]
 #![warn(unreachable_pub)]
 
-extern crate alloc;
-
 #[cfg(any(sf_has_std, test))]
 extern crate std;
 

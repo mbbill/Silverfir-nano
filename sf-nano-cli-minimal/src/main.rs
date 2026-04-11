@@ -1,25 +1,23 @@
 #![no_std]
 #![no_main]
 
-extern crate alloc;
-
-use alloc::vec;
-use alloc::vec::Vec;
+use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use sf_nano_core::{active_backend, Import, Instance, Value};
+use tracked_alloc::{vec, vec::Vec};
 
 // — Minimal allocator using libc malloc/free —
 
 struct LibcAllocator;
 
-unsafe impl alloc::alloc::GlobalAlloc for LibcAllocator {
-    unsafe fn alloc(&self, layout: alloc::alloc::Layout) -> *mut u8 {
+unsafe impl GlobalAlloc for LibcAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { libc::malloc(layout.size()) as *mut u8 }
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: alloc::alloc::Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         unsafe { libc::free(ptr as *mut libc::c_void) }
     }
-    unsafe fn realloc(&self, ptr: *mut u8, _layout: alloc::alloc::Layout, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, _layout: Layout, new_size: usize) -> *mut u8 {
         unsafe { libc::realloc(ptr as *mut libc::c_void, new_size) as *mut u8 }
     }
 }
@@ -96,7 +94,11 @@ fn read_file(path: &[u8]) -> Option<Vec<u8>> {
         let mut buf = vec![0u8; size];
         let mut read_total = 0;
         while read_total < size {
-            let n = libc::read(fd, buf[read_total..].as_mut_ptr() as *mut libc::c_void, size - read_total);
+            let n = libc::read(
+                fd,
+                buf[read_total..].as_mut_ptr() as *mut libc::c_void,
+                size - read_total,
+            );
             if n <= 0 {
                 libc::close(fd);
                 return None;
@@ -112,38 +114,33 @@ fn read_file(path: &[u8]) -> Option<Vec<u8>> {
 
 // (module (func (export "test") (result i32) i32.const 42))
 static WASM_CONST: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
-    0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x74,
-    0x65, 0x73, 0x74, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a,
-    0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03,
+    0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x74, 0x65, 0x73, 0x74, 0x00, 0x00, 0x0a, 0x06, 0x01,
+    0x04, 0x00, 0x41, 0x2a, 0x0b,
 ];
 
 // (module (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))
 static WASM_ADD: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60,
-    0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01,
-    0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x20,
-    0x00, 0x20, 0x01, 0x6a, 0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01,
+    0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09,
+    0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
 ];
 
 // (module (func (export "sum_to") (param i32) (result i32) ... loop sum 1..n ...))
 static WASM_LOOP: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60,
-    0x01, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x0a, 0x01, 0x06,
-    0x73, 0x75, 0x6d, 0x5f, 0x74, 0x6f, 0x00, 0x00, 0x0a, 0x25, 0x01, 0x23,
-    0x01, 0x02, 0x7f, 0x02, 0x40, 0x03, 0x40, 0x20, 0x01, 0x20, 0x00, 0x4e,
-    0x0d, 0x01, 0x20, 0x01, 0x41, 0x01, 0x6a, 0x21, 0x01, 0x20, 0x02, 0x20,
-    0x01, 0x6a, 0x21, 0x02, 0x0c, 0x00, 0x0b, 0x0b, 0x20, 0x02, 0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00, 0x07, 0x0a, 0x01, 0x06, 0x73, 0x75, 0x6d, 0x5f, 0x74, 0x6f, 0x00, 0x00,
+    0x0a, 0x25, 0x01, 0x23, 0x01, 0x02, 0x7f, 0x02, 0x40, 0x03, 0x40, 0x20, 0x01, 0x20, 0x00, 0x4e,
+    0x0d, 0x01, 0x20, 0x01, 0x41, 0x01, 0x6a, 0x21, 0x01, 0x20, 0x02, 0x20, 0x01, 0x6a, 0x21, 0x02,
+    0x0c, 0x00, 0x0b, 0x0b, 0x20, 0x02, 0x0b,
 ];
 
 // (module (func $fib (export "fib") (param i32) (result i32) ... recursive fib ...))
 static WASM_FIB: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60,
-    0x01, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03,
-    0x66, 0x69, 0x62, 0x00, 0x00, 0x0a, 0x1e, 0x01, 0x1c, 0x00, 0x20, 0x00,
-    0x41, 0x01, 0x4c, 0x04, 0x7f, 0x20, 0x00, 0x05, 0x20, 0x00, 0x41, 0x02,
-    0x6b, 0x10, 0x00, 0x20, 0x00, 0x41, 0x01, 0x6b, 0x10, 0x00, 0x6a, 0x0b,
-    0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x66, 0x69, 0x62, 0x00, 0x00, 0x0a, 0x1e, 0x01,
+    0x1c, 0x00, 0x20, 0x00, 0x41, 0x01, 0x4c, 0x04, 0x7f, 0x20, 0x00, 0x05, 0x20, 0x00, 0x41, 0x02,
+    0x6b, 0x10, 0x00, 0x20, 0x00, 0x41, 0x01, 0x6b, 0x10, 0x00, 0x6a, 0x0b, 0x0b,
 ];
 
 // (module
@@ -153,14 +150,12 @@ static WASM_FIB: &[u8] = &[
 //     i32.const 'l' call $print  i32.const 'l' call $print
 //     i32.const 'o' call $print  i32.const '\n' call $print))
 static WASM_HOSTCALL: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60,
-    0x01, 0x7f, 0x00, 0x60, 0x00, 0x00, 0x02, 0x11, 0x01, 0x03, 0x65, 0x6e,
-    0x76, 0x09, 0x70, 0x72, 0x69, 0x6e, 0x74, 0x5f, 0x69, 0x33, 0x32, 0x00,
-    0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e,
-    0x00, 0x01, 0x0a, 0x21, 0x01, 0x1f, 0x00, 0x41, 0xc8, 0x00, 0x10, 0x00,
-    0x41, 0xe5, 0x00, 0x10, 0x00, 0x41, 0xec, 0x00, 0x10, 0x00, 0x41, 0xec,
-    0x00, 0x10, 0x00, 0x41, 0xef, 0x00, 0x10, 0x00, 0x41, 0x0a, 0x10, 0x00,
-    0x0b,
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x01, 0x7f, 0x00, 0x60,
+    0x00, 0x00, 0x02, 0x11, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x09, 0x70, 0x72, 0x69, 0x6e, 0x74, 0x5f,
+    0x69, 0x33, 0x32, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e,
+    0x00, 0x01, 0x0a, 0x21, 0x01, 0x1f, 0x00, 0x41, 0xc8, 0x00, 0x10, 0x00, 0x41, 0xe5, 0x00, 0x10,
+    0x00, 0x41, 0xec, 0x00, 0x10, 0x00, 0x41, 0xec, 0x00, 0x10, 0x00, 0x41, 0xef, 0x00, 0x10, 0x00,
+    0x41, 0x0a, 0x10, 0x00, 0x0b,
 ];
 
 fn host_print_i32(
@@ -183,7 +178,10 @@ fn run_self_test() -> i32 {
     // Print active backend
     match active_backend() {
         Ok(b) => println!("Backend: {}", b.as_str()),
-        Err(e) => { eprintln!("No backend: {}", e); return 1; }
+        Err(e) => {
+            eprintln!("No backend: {}", e);
+            return 1;
+        }
     }
 
     let empty_imports = vec![];
@@ -194,12 +192,24 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_CONST, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL const: instantiate: {}", e); return 1; }
+            Err(e) => {
+                eprintln!("FAIL const: instantiate: {}", e);
+                return 1;
+            }
         };
         match inst.invoke("test", &[]) {
-            Ok(ref r) if check_i32(r, 42) => { println!("PASS const: test() = 42"); passed += 1; }
-            Ok(_) => { eprintln!("FAIL const: wrong result"); failed += 1; }
-            Err(e) => { eprintln!("FAIL const: {}", e); failed += 1; }
+            Ok(ref r) if check_i32(r, 42) => {
+                println!("PASS const: test() = 42");
+                passed += 1;
+            }
+            Ok(_) => {
+                eprintln!("FAIL const: wrong result");
+                failed += 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL const: {}", e);
+                failed += 1;
+            }
         }
     }
 
@@ -207,13 +217,25 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_ADD, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL add: instantiate: {}", e); return 1; }
+            Err(e) => {
+                eprintln!("FAIL add: instantiate: {}", e);
+                return 1;
+            }
         };
         let args = [Value::I32(13), Value::I32(29)];
         match inst.invoke("add", &args) {
-            Ok(ref r) if check_i32(r, 42) => { println!("PASS add: add(13, 29) = 42"); passed += 1; }
-            Ok(_) => { eprintln!("FAIL add: wrong result"); failed += 1; }
-            Err(e) => { eprintln!("FAIL add: {}", e); failed += 1; }
+            Ok(ref r) if check_i32(r, 42) => {
+                println!("PASS add: add(13, 29) = 42");
+                passed += 1;
+            }
+            Ok(_) => {
+                eprintln!("FAIL add: wrong result");
+                failed += 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL add: {}", e);
+                failed += 1;
+            }
         }
     }
 
@@ -221,13 +243,25 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_LOOP, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL loop: instantiate: {}", e); return 1; }
+            Err(e) => {
+                eprintln!("FAIL loop: instantiate: {}", e);
+                return 1;
+            }
         };
         let args = [Value::I32(10)];
         match inst.invoke("sum_to", &args) {
-            Ok(ref r) if check_i32(r, 55) => { println!("PASS loop: sum_to(10) = 55"); passed += 1; }
-            Ok(_) => { eprintln!("FAIL loop: wrong result"); failed += 1; }
-            Err(e) => { eprintln!("FAIL loop: {}", e); failed += 1; }
+            Ok(ref r) if check_i32(r, 55) => {
+                println!("PASS loop: sum_to(10) = 55");
+                passed += 1;
+            }
+            Ok(_) => {
+                eprintln!("FAIL loop: wrong result");
+                failed += 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL loop: {}", e);
+                failed += 1;
+            }
         }
     }
 
@@ -235,33 +269,56 @@ fn run_self_test() -> i32 {
     {
         let mut inst = match Instance::new(WASM_FIB, &empty_imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL fib: instantiate: {}", e); return 1; }
+            Err(e) => {
+                eprintln!("FAIL fib: instantiate: {}", e);
+                return 1;
+            }
         };
         let args = [Value::I32(10)];
         match inst.invoke("fib", &args) {
-            Ok(ref r) if check_i32(r, 55) => { println!("PASS fib: fib(10) = 55"); passed += 1; }
-            Ok(_) => { eprintln!("FAIL fib: wrong result"); failed += 1; }
-            Err(e) => { eprintln!("FAIL fib: {}", e); failed += 1; }
+            Ok(ref r) if check_i32(r, 55) => {
+                println!("PASS fib: fib(10) = 55");
+                passed += 1;
+            }
+            Ok(_) => {
+                eprintln!("FAIL fib: wrong result");
+                failed += 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL fib: {}", e);
+                failed += 1;
+            }
         }
     }
 
     // Test 5: host function import — wasm calls host print_i32 to print "Hello"
     {
-        let imports = vec![
-            Import::func("env", "print_i32", host_print_i32),
-        ];
+        let imports = vec![Import::func("env", "print_i32", host_print_i32)];
         let mut inst = match Instance::new(WASM_HOSTCALL, &imports) {
             Ok(i) => i,
-            Err(e) => { eprintln!("FAIL hostcall: instantiate: {}", e); return 1; }
+            Err(e) => {
+                eprintln!("FAIL hostcall: instantiate: {}", e);
+                return 1;
+            }
         };
         match inst.invoke("run", &[]) {
-            Ok(_) => { println!("PASS hostcall: wasm printed \"Hello\" via host import"); passed += 1; }
-            Err(e) => { eprintln!("FAIL hostcall: {}", e); failed += 1; }
+            Ok(_) => {
+                println!("PASS hostcall: wasm printed \"Hello\" via host import");
+                passed += 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL hostcall: {}", e);
+                failed += 1;
+            }
         }
     }
 
     println!("{} passed, {} failed", passed, failed);
-    if failed > 0 { 1 } else { 0 }
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 // — Entry point —

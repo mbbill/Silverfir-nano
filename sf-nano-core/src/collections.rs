@@ -1,7 +1,7 @@
-pub(crate) use sf_nano_tracked_vec::{into_alloc_vec, vec, Vec};
+pub(crate) use tracked_alloc::{into_alloc_vec, vec, Vec};
 
-#[cfg(feature = "tracked-vec")]
+#[cfg(feature = "tracked-alloc")]
 #[allow(unused_imports)]
-pub(crate) use sf_nano_tracked_vec::{
-    reset_tracking as reset_tracked_vecs, snapshot as tracked_vec_snapshot,
+pub(crate) use tracked_alloc::{
+    reset_tracking as reset_tracked_alloc, snapshot as tracked_alloc_snapshot,
 };

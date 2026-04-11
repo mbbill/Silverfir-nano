@@ -691,8 +691,28 @@ impl MachineModule {
         for func in &self.functions {
             func.program
                 .validate_32bit_gp_target(max_gp_regs, self.config)
-                .map_err(|_err| {
-                    WasmError::internal("machine function is not valid 32-bit GP-target MachineIR")
+                .map_err(|err| {
+                    WasmError::internal(match err.message() {
+                        "32-bit GP target MachineIR has mismatched first_fp_reg boundary" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: mismatched first_fp_reg boundary"
+                        }
+                        "block param still uses GpI64 on a 32-bit GP target" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: block param still uses GpI64 on a 32-bit GP target"
+                        }
+                        "still uses GpI64 storage" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: still uses GpI64 storage"
+                        }
+                        "still uses scalar i64 integer width" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: still uses scalar i64 integer width"
+                        }
+                        "still uses an unsplit i64 convert/reinterpret op" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: still uses an unsplit i64 convert/reinterpret op"
+                        }
+                        "still uses an i64 trap condition" => {
+                            "machine function is not valid 32-bit GP-target MachineIR: still uses an i64 trap condition"
+                        }
+                        _ => "machine function is not valid 32-bit GP-target MachineIR",
+                    })
                 })?;
         }
         Ok(())
@@ -819,8 +839,8 @@ fn validate_32bit_gp_target_inst(
         _ => None,
     };
 
-    if detail.is_some() {
-        return Err(WasmError::internal("block op"));
+    if let Some(detail) = detail {
+        return Err(WasmError::internal(detail));
     }
 
     Ok(())

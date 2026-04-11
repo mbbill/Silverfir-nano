@@ -182,7 +182,7 @@ pub(crate) fn compile_module(
                         let region_start = unsafe { func_base.add(region.offset) };
                         let code_bytes =
                             unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                        let symbol = alloc::format!(
+                        let symbol = tracked_alloc::format!(
                             "jit::{}::func{}::{}",
                             module_name,
                             func_idx,

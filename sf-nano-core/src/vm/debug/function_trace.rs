@@ -6,14 +6,14 @@
 //! - stable/canonicalized values to avoid false diffs between correct runs
 
 mod imp {
-    use alloc::format;
-    use alloc::string::String;
     use core::fmt::Write as _;
     use core::hash::Hasher;
     use core::sync::atomic::{AtomicU64, Ordering};
     use std::fs::File;
     use std::io::{BufWriter, Write};
     use std::sync::{Mutex, OnceLock};
+    use tracked_alloc::format;
+    use tracked_alloc::string::String;
 
     use crate::error::WasmError;
     use crate::module::entities::FunctionSpec;

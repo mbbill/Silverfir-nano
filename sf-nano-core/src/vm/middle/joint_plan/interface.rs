@@ -6,7 +6,7 @@
 
 use crate::collections;
 
-use alloc::collections::BTreeSet;
+use tracked_alloc::collections::BTreeSet;
 
 use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
 

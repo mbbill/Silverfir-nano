@@ -4,7 +4,7 @@ members = [
     "sf-nano-cli",
     "sf-nano-spectest",
     "sf-nano-wasitest",
-    "tools/tracked-vec",
+    "tools/tracked-alloc",
 ]
 exclude = [
     "sf-nano-cli-minimal",

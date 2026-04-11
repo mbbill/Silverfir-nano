@@ -4,7 +4,7 @@
 use crate::collections;
 
 #[cfg(any(debug_assertions, test))]
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 
 use crate::error::WasmError;
 #[cfg(any(debug_assertions, test))]

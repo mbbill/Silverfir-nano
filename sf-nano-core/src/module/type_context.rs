@@ -7,7 +7,7 @@
 
 use crate::collections;
 
-use alloc::rc::Rc;
+use tracked_alloc::rc::Rc;
 
 use crate::module::type_defs::FunctionType;
 use crate::value_type::{HeapType, ValueType};

@@ -152,8 +152,12 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
                     let region_start = unsafe { func_base.add(region.offset) };
                     let code_bytes =
                         unsafe { core::slice::from_raw_parts(region_start, region.len) };
-                    let symbol =
-                        alloc::format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
+                    let symbol = tracked_alloc::format!(
+                        "jit::{}::func{}::{}",
+                        module_name,
+                        func_idx,
+                        region.label
+                    );
                     crate::vm::debug::jitdump::record_function(region_start, code_bytes, &symbol);
                 }
             }

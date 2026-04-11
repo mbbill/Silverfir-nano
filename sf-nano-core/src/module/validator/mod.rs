@@ -17,8 +17,8 @@ use crate::{
     utils::limits::Limitable,
     value_type::{AbstractHeapType, HeapType, ValueType},
 };
-use alloc::collections::BTreeSet;
-use alloc::string::String;
+use tracked_alloc::collections::BTreeSet;
+use tracked_alloc::string::String;
 
 use super::entities::{Data, Element};
 

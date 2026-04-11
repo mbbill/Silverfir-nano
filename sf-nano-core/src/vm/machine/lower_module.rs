@@ -4,7 +4,7 @@
 
 use crate::collections;
 
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,

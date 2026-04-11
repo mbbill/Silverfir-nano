@@ -6,8 +6,8 @@
 
 use crate::collections;
 
-use alloc::rc::Rc;
-use alloc::string::{String, ToString};
+use tracked_alloc::rc::Rc;
+use tracked_alloc::string::{String, ToString};
 
 use crate::{
     constants,

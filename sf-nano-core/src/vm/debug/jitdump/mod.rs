@@ -93,7 +93,7 @@ fn jitdump_path(pid: u32) -> PathBuf {
     let dir = env::var_os("SF_JITDUMP_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir);
-    dir.join(alloc::format!("jit-{pid}.dump"))
+    dir.join(tracked_alloc::format!("jit-{pid}.dump"))
 }
 
 // ── Writer ──────────────────────────────────────────────────────────────────

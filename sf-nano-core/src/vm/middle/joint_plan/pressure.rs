@@ -17,7 +17,7 @@ use crate::{
     vm::middle::{budget::gp_value_budget_units, frame::FrameSlot},
 };
 #[cfg(test)]
-use alloc::collections::BTreeSet;
+use tracked_alloc::collections::BTreeSet;
 
 use super::facts::FunctionPlan;
 
@@ -236,7 +236,7 @@ fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) ->
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeSet;
+    use tracked_alloc::collections::BTreeSet;
 
     use super::*;
     use crate::collections;

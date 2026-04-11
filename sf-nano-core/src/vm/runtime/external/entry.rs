@@ -1,4 +1,4 @@
-use alloc::rc::Rc;
+use tracked_alloc::rc::Rc;
 
 use crate::collections;
 
@@ -212,7 +212,7 @@ fn call_external_by_index(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String};
+    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::*;
     use crate::{

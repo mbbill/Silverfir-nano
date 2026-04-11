@@ -2,7 +2,7 @@
 
 use crate::collections;
 
-use alloc::string::{String, ToString};
+use tracked_alloc::string::{String, ToString};
 
 use crate::error::WasmError;
 use crate::module::entities::{

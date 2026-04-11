@@ -12,7 +12,7 @@
 
 use crate::collections;
 
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
@@ -259,7 +259,7 @@ mod tests {
             }],
             local_types: collections::vec![],
             result_types: collections::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            op_result_types: tracked_alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic
@@ -284,7 +284,7 @@ mod tests {
             }],
             local_types: collections::vec![],
             result_types: collections::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            op_result_types: tracked_alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic
@@ -305,7 +305,7 @@ mod tests {
             }],
             local_types: collections::vec![],
             result_types: collections::vec![],
-            op_result_types: alloc::collections::BTreeMap::new(),
+            op_result_types: tracked_alloc::collections::BTreeMap::new(),
         };
 
         let error = semantic
@@ -354,7 +354,7 @@ mod tests {
             ],
             local_types: collections::vec![ValueType::I32],
             result_types: collections::vec![ValueType::I32],
-            op_result_types: alloc::collections::BTreeMap::from([(
+            op_result_types: tracked_alloc::collections::BTreeMap::from([(
                 1usize,
                 collections::vec![ValueType::I32],
             )]),

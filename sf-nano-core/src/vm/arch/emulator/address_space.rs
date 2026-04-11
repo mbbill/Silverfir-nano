@@ -209,7 +209,7 @@ impl Target32AddressSpace {
 
         if ctx.memory_views_len > MAX_MEMORY_COUNT_32 {
             return Err(WasmError::internal(
-                "emu32 synthetic address space exceeds the supported memory count",
+                "emu32 synthetic address space supports at most 8 memories",
             ));
         }
         for mem_index in 0..ctx.memory_views_len {
@@ -219,7 +219,7 @@ impl Target32AddressSpace {
 
         if ctx.table_views_len > MAX_TABLE_COUNT_32 {
             return Err(WasmError::internal(
-                "emu32 synthetic address space exceeds the supported table count",
+                "emu32 synthetic address space supports at most 16 tables",
             ));
         }
         for table_index in 0..ctx.table_views_len {

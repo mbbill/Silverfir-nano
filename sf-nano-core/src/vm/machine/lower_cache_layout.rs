@@ -1,5 +1,5 @@
 use crate::collections;
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 
 use core::cmp::Reverse;
 

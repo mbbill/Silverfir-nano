@@ -7,8 +7,8 @@
 
 use crate::collections;
 
-use alloc::{format, string::String};
 use core::fmt::Write as _;
+use tracked_alloc::{format, string::String};
 
 use crate::{
     error::WasmError,
@@ -139,10 +139,11 @@ fn write_dump_impl(
 
     // Regions table (per-block granularity)
     let _ = writeln!(index, "[regions]");
-    let regions_by_func: alloc::collections::BTreeMap<u32, &[DebugRegion]> = debug_regions_by_func
-        .iter()
-        .map(|d| (d.func_idx, d.regions.as_slice()))
-        .collect();
+    let regions_by_func: tracked_alloc::collections::BTreeMap<u32, &[DebugRegion]> =
+        debug_regions_by_func
+            .iter()
+            .map(|d| (d.func_idx, d.regions.as_slice()))
+            .collect();
     for (func_idx, file_off, len) in &code_offsets {
         if let Some(regions) = regions_by_func.get(func_idx) {
             for region in *regions {
@@ -168,7 +169,7 @@ fn write_dump_impl(
     // replaced by a backend-private host-stack call record.)
 
     // Per-function sections
-    let lir_by_func: alloc::collections::BTreeMap<u32, &SsaProgram> = lir_inputs
+    let lir_by_func: tracked_alloc::collections::BTreeMap<u32, &SsaProgram> = lir_inputs
         .iter()
         .map(|entry| (entry.func_idx, &entry.ssa))
         .collect();

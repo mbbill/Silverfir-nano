@@ -10,7 +10,7 @@ categories = ["wasm", "no-std"]
 
 [dependencies]
 paste = "1.0"
-sf-nano-tracked-vec = { path = "../tools/tracked-vec" }
+tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc" }
 
 [features]
 default = ["jit", "guard-pages"]
@@ -22,4 +22,4 @@ call-trace = ["jit"]
 guard-pages = ["jit"]
 ir-dump = ["jit"]
 jitdump = ["jit"]
-tracked-vec = ["sf-nano-tracked-vec/tracking"]
+tracked-alloc = ["tracked_alloc/tracking"]

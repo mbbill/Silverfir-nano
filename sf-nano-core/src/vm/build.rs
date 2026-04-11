@@ -1,5 +1,5 @@
 use crate::collections;
-use alloc::rc::Rc;
+use tracked_alloc::rc::Rc;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -315,7 +315,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String};
+    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::ensure_module_compiled;
     use crate::collections;

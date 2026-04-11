@@ -3,8 +3,8 @@
 
 use crate::collections;
 
-use alloc::boxed::Box;
 use core::cell::Cell;
+use tracked_alloc::boxed::Box;
 
 use crate::vm::{backend::BackendConfig, machine::machine_ir::MachineModuleAbi};
 

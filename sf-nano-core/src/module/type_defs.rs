@@ -5,8 +5,8 @@
 
 use crate::collections;
 
-use alloc::string::String;
 use core::fmt;
+use tracked_alloc::string::String;
 
 use crate::value_type::ValueType;
 

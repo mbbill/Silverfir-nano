@@ -400,7 +400,7 @@ pub(crate) mod function_view_offset {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String};
+    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::*;
     use crate::{

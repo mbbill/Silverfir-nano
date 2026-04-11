@@ -1,5 +1,5 @@
 use crate::collections;
-use alloc::collections::BTreeMap;
+use tracked_alloc::collections::BTreeMap;
 
 use core::mem;
 
@@ -106,7 +106,7 @@ pub(super) struct BlockLowerContext<'a> {
     cache_has_value: collections::Vec<bool>,
     cache_dirty: collections::Vec<bool>,
     values: collections::Vec<ValueLocation>,
-    remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
+    remaining_uses: tracked_alloc::collections::BTreeMap<SsaValue, u32>,
     /// Dynamic-register occupancy for linear SSA-like values.
     ///
     /// Cached locals are tracked separately through `cache_bindings`. A dynamic
@@ -547,7 +547,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn remaining_uses_mut(
         &mut self,
-    ) -> &mut alloc::collections::BTreeMap<SsaValue, u32> {
+    ) -> &mut tracked_alloc::collections::BTreeMap<SsaValue, u32> {
         &mut self.remaining_uses
     }
 

@@ -1,13 +1,13 @@
 [package]
-name = "sf-nano-tracked-vec"
+name = "sf-nano-tracked-alloc"
 version = "0.1.0"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
-description = "Feature-gated tracked Vec facade for Silverfir-nano"
+description = "Feature-gated tracked alloc facade for Silverfir-nano"
 license = "MIT/Apache-2.0"
 
 [lib]
-name = "sf_nano_tracked_vec"
+name = "tracked_alloc"
 path = "src/lib.rs"
 
 [features]

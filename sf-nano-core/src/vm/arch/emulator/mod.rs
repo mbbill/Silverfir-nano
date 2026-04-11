@@ -2276,7 +2276,7 @@ fn trunc_sat_f64_to_i64_u(bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String};
+    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::{eval, Emulator, EmulatorAddressSpace, RegAddrKind};
     use crate::collections;

@@ -18,6 +18,7 @@ jit = ["sf-nano-core/jit"]
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", default-features = false }
+tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc" }
 libc = { version = "0.2", default-features = false }
 
 [profile.dev]

@@ -1117,7 +1117,7 @@ pub(super) fn gp_reg_int_width(gp_reg_width: u8) -> MachineIntWidth {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
+    use tracked_alloc::boxed::Box;
 
     use crate::{
         value_type::ValueType,
