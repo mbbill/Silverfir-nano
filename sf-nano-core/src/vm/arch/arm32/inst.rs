@@ -1824,8 +1824,18 @@ impl<'a> Arm32Backend<'a> {
         let dst_lo_hw = map_reg(dst_lo)?;
         let dst_hi_hw = map_reg(dst_hi)?;
         self.spill_caller_saved_gp_regs();
-        self.emit_move_gp_value(Arm32Reg::R2, rhs)?;
-        self.emit_pair_args_to_r0_r1(lhs_lo, lhs_hi)?;
+        // Stack-stage all three helper args together so an input register
+        // mapping that overlaps a target slot (e.g. `lhs_hi` mapped to R2)
+        // survives the initial materialization into the destination reg.
+        // Moving rhs into R2 first and then `lhs_lo/lhs_hi` into R0/R1 is
+        // incorrect: if `lhs_hi` lives in R2, the rhs write loses it before
+        // the pair-args step can read it. Soft-float quad-precision shifts
+        // are the hot trigger (mandelbrot / c-ray) because their operands
+        // sit in high-numbered dynamic regs.
+        self.emit_values_to_regs_via_stack(
+            &[Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2],
+            &[lhs_lo, lhs_hi, rhs],
+        )?;
         self.emit_host_call(match op {
             MachineIntBinaryOp::Shl => arm32_i64_shl as usize,
             MachineIntBinaryOp::ShrS => arm32_i64_shr_s as usize,
