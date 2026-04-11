@@ -1,4 +1,4 @@
-pub(crate) use sf_nano_tracked_vec::{vec, Vec};
+pub(crate) use sf_nano_tracked_vec::{into_alloc_vec, vec, Vec};
 
 #[cfg(feature = "tracked-vec")]
 #[allow(unused_imports)]

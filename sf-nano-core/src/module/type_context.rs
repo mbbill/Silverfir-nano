@@ -29,9 +29,8 @@ pub struct TypeContext {
 impl TypeContext {
     /// Create a new type context from type definitions
     pub fn new(types: collections::Vec<Rc<FunctionType>>) -> Self {
-        let types: alloc::vec::Vec<_> = types.into();
         Self {
-            types: types.into(),
+            types: collections::into_alloc_vec(types).into(),
         }
     }
 

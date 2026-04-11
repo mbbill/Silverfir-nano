@@ -28,7 +28,7 @@
 //!
 //! This module is gated on `#[cfg(sf_has_guard_pages)]`.
 
-use alloc::vec::Vec;
+use crate::collections;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::os::signal::install_platform_handler;
@@ -48,7 +48,7 @@ struct JitCodeRange {
 ///
 /// Access is synchronized by a simple spinlock. The signal handler acquires
 /// a read-only view; registration happens during compilation (rare).
-static mut TRAP_TABLE: Vec<JitCodeRange> = Vec::new();
+static mut TRAP_TABLE: Option<collections::Vec<JitCodeRange>> = None;
 static TRAP_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
 static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -73,14 +73,15 @@ pub(crate) fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
     lock_trap_table();
     unsafe {
         let table = &raw mut TRAP_TABLE;
+        let table = (*table).get_or_insert_with(collections::Vec::new);
         for &(start, end, error_ret) in ranges {
-            (*table).push(JitCodeRange {
+            table.push(JitCodeRange {
                 code_start: start,
                 code_end: end,
                 return_error: error_ret,
             });
         }
-        (*table).sort_unstable_by_key(|r| r.code_start);
+        table.sort_unstable_by_key(|r| r.code_start);
     }
     unlock_trap_table();
 }
@@ -90,7 +91,9 @@ pub(crate) fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
 /// Must be called with the trap table lock held (or from the signal handler
 /// where concurrent modification is not expected on the same thread).
 unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
-    let table = unsafe { &*(&raw const TRAP_TABLE) };
+    let Some(table) = (unsafe { &*(&raw const TRAP_TABLE) }).as_ref() else {
+        return None;
+    };
     let idx = table.partition_point(|r| r.code_start <= pc);
     if idx == 0 {
         return None;
@@ -172,7 +175,9 @@ pub(crate) fn clear_registered_jit_ranges() {
     lock_trap_table();
     unsafe {
         let table = &raw mut TRAP_TABLE;
-        (*table).clear();
+        if let Some(table) = (*table).as_mut() {
+            table.clear();
+        }
     }
     unlock_trap_table();
 }

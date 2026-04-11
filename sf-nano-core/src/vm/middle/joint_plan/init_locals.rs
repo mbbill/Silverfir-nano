@@ -121,7 +121,7 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
                         }
                         FrameKind::If => {
                             if let Some(if_arm) = &frame.if_arm_def_set {
-                                let mut paths: alloc::vec::Vec<&[bool]> = alloc::vec::Vec::new();
+                                let mut paths: collections::Vec<&[bool]> = collections::Vec::new();
                                 if frame.if_arm_reachable {
                                     paths.push(if_arm);
                                 }
@@ -136,7 +136,7 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
                                     || frame.if_arm_reachable
                                     || frame.branch_def_set.is_some();
                             } else {
-                                let mut paths: alloc::vec::Vec<&[bool]> = alloc::vec::Vec::new();
+                                let mut paths: collections::Vec<&[bool]> = collections::Vec::new();
                                 if reachable {
                                     paths.push(&def_set);
                                 }
