@@ -89,17 +89,20 @@ overall_fail=0
 run_step \
     "check_features.sh" \
     "$LOG_DIR/check-features.log" \
-    "$REPO_ROOT/scripts/check_features.sh" "${feature_args[@]}" || overall_fail=1
+    "$REPO_ROOT/scripts/check_features.sh" \
+    ${feature_args[@]+"${feature_args[@]}"} || overall_fail=1
 
 run_step \
     "check_targets.sh" \
     "$LOG_DIR/check-targets.log" \
-    "$REPO_ROOT/scripts/check_targets.sh" "${target_args[@]}" || overall_fail=1
+    "$REPO_ROOT/scripts/check_targets.sh" \
+    ${target_args[@]+"${target_args[@]}"} || overall_fail=1
 
 run_step \
     "spectest_all.sh" \
     "$LOG_DIR/spectest-all.log" \
-    "$REPO_ROOT/scripts/spectest_all.sh" -- "${spectest_args[@]}" || overall_fail=1
+    "$REPO_ROOT/scripts/spectest_all.sh" -- \
+    ${spectest_args[@]+"${spectest_args[@]}"} || overall_fail=1
 
 echo "=== Summary ==="
 printf "  %-20s %-6s %s\n" "step" "status" "log"

@@ -1,6 +1,6 @@
-#[cfg(sf_has_debug_regions)]
 use crate::collections;
 
+#[cfg(sf_has_debug_regions)]
 use alloc::string::String;
 
 use crate::vm::machine::machine_ir::{

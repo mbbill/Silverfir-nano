@@ -6,9 +6,6 @@ use crate::{
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
 };
-
-use alloc::vec;
-
 /// Context for validating constant expressions
 #[derive(Debug, Clone, Default)]
 pub struct ValidationContext {

@@ -13,7 +13,6 @@ use crate::{
     value_type::{HeapType, RefType, ValueType},
 };
 use alloc::rc::Rc;
-use alloc::vec;
 
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
@@ -993,9 +992,9 @@ impl ControlFrame {
 
     fn label_types(&self) -> collections::Vec<ValueType> {
         if self.frame_type == FrameType::Loop {
-            self.function_type.params().to_vec().into()
+            self.function_type.params().iter().copied().collect()
         } else {
-            self.function_type.results().to_vec().into()
+            self.function_type.results().iter().copied().collect()
         }
     }
 }
@@ -1128,15 +1127,8 @@ impl Context {
                 "cannot pop from an empty control frame stack".into(),
             ));
         }
-        let results = self
-            .control_frames
-            .last()
-            .unwrap()
-            .function_type()
-            .results()
-            .to_vec()
-            .into();
-        self.pop_vals(&results)?;
+        let function_type = self.control_frames.last().unwrap().function_type();
+        self.pop_vals(function_type.results())?;
         let frame = self.control_frames.pop().unwrap();
         if frame.height() != self.val_stack.len() {
             return Err(WasmError::invalid("invalid stack height".into()));

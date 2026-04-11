@@ -1,6 +1,6 @@
-#[cfg(sf_has_debug_regions)]
 use crate::collections;
 
+#[cfg(sf_has_debug_regions)]
 use alloc::{format, string::String};
 
 use crate::{
@@ -242,7 +242,7 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
             let dst = pending[index].0.reg;
             let blocked = pending.iter().enumerate().any(|(other_index, (_, src))| {
                 other_index != index
-                    && matches!(src, ParallelSource::Reg { reg, .. } if *reg == dst)
+                    && matches!(src, &ParallelSource::Reg { reg, .. } if reg == dst)
             });
             if !blocked {
                 ready = Some(index);
