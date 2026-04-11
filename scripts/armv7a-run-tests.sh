@@ -46,44 +46,7 @@ fi
 ' sh "qemu-arm-static -cpu cortex-a15 $CLI_BIN" 2>/dev/null || true
 }
 
-cleanup_remote_qemu_pidfile() {
-    local pid_file="$1"
-    local qemu_pid=""
-
-    if [[ ! -f "$pid_file" ]]; then
-        return
-    fi
-
-    qemu_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
-
-    if [[ -z "$qemu_pid" ]] || ! colima status &>/dev/null; then
-        return
-    fi
-
-    colima ssh -- sh -lc '
-pid=$1
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" >/dev/null 2>&1 || true
-    sleep 1
-    kill -9 "$pid" >/dev/null 2>&1 || true
-fi
-' sh "$qemu_pid" 2>/dev/null || true
-}
-
-cleanup_remote_qemu_state_dir() {
-    if [[ ! -d "$STATE_DIR" ]]; then
-        return
-    fi
-
-    shopt -s nullglob
-    for pid_file in "$STATE_DIR"/qemu-pid.*; do
-        cleanup_remote_qemu_pidfile "$pid_file"
-    done
-    shopt -u nullglob
-}
-
 cleanup() {
-    cleanup_remote_qemu_state_dir
     cleanup_remote_qemu_pattern
     if [[ "${COLIMA_STARTED:-}" = "1" ]]; then
         echo "[armv7-run-tests] Stopping Colima (we started it)..."
@@ -118,7 +81,6 @@ fi
 
 # --- Build ---
 
-cleanup_remote_qemu_state_dir
 cleanup_remote_qemu_pattern
 
 echo "[armv7-run-tests] Cross-compiling CLI ($PROFILE) for ARMv7..."
@@ -141,54 +103,18 @@ cat > "$WRAPPER" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-cleanup_remote_qemu_pidfile() {
-    local pid_file="$1"
-    local qemu_pid=""
-
-    if [[ ! -f "$pid_file" ]]; then
-        return
-    fi
-
-    qemu_pid="$(tr -d '[:space:]' < "$pid_file" 2>/dev/null || true)"
-
-    if [[ -z "$qemu_pid" ]]; then
-        return
-    fi
-
-    colima ssh -- sh -lc '
-pid=$1
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" >/dev/null 2>&1 || true
-    sleep 1
-    kill -9 "$pid" >/dev/null 2>&1 || true
-fi
-' sh "$qemu_pid" >/dev/null 2>&1 || true
-}
-
+# Run qemu in the foreground via `exec` so stdin (needed by c-ray's scene
+# input) flows through unchanged. Previously this wrapper backgrounded qemu
+# with `& wait` to stash its pid for cross-process cleanup, but POSIX shells
+# redirect backgrounded-job stdin from /dev/null in non-interactive contexts,
+# which caused c-ray to see an empty scene and render a blank background.
+# Orphan qemu processes are cleaned up via the pattern-based sweep in the
+# parent script (cleanup_remote_qemu_pattern).
 cli_bin="$1"
 shift
-state_dir="$(cd "$(dirname "$0")" && pwd)"
-pid_file="$(mktemp "$state_dir/qemu-pid.XXXXXX")"
-watch_pid=$$
 
-(
-    parent_pid=$watch_pid
-    while kill -0 "$parent_pid" 2>/dev/null; do
-        sleep 1
-    done
-    cleanup_remote_qemu_pidfile "$pid_file"
-) >/dev/null 2>&1 &
-
-exec colima ssh -- sh -lc '
-pid_file=$1
-shift
-qemu-arm-static -cpu cortex-a15 "$@" &
-pid=$!
-printf "%s\n" "$pid" > "$pid_file"
-wait "$pid"
-status=$?
-exit "$status"
-' sh "$pid_file" "$cli_bin" "$@"
+exec colima ssh -- sh -lc 'exec qemu-arm-static -cpu cortex-a15 "$@"' \
+    sh "$cli_bin" "$@"
 WRAPPER_EOF
 chmod +x "$WRAPPER"
 
