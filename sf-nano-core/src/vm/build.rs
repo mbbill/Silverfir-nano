@@ -54,13 +54,16 @@ pub const fn native_capacity_skips() -> (usize, usize) {
     (0, 0)
 }
 
+#[cfg(sf_ir_dump)]
+use crate::vm::debug::ir_dump;
+use crate::vm::{backend::BackendConfig, entities::ModuleInst};
 use crate::{
     error::WasmError,
     vm::{
         arch,
         machine::{
-            machine_ir::MachineFuncId, lower_module, optimize_module, LoweredMachineModule,
-            LowerFunctionInput, LowerModuleInput,
+            lower_module, machine_ir::MachineFuncId, optimize_module, LowerFunctionInput,
+            LowerModuleInput, LoweredMachineModule,
         },
         middle::{prepare_function, PrepareInput},
         runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
@@ -68,9 +71,6 @@ use crate::{
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
     },
 };
-#[cfg(sf_ir_dump)]
-use crate::vm::debug::ir_dump;
-use crate::vm::{backend::BackendConfig, entities::ModuleInst};
 
 #[cfg(sf_memtrace)]
 type MemtraceScope = sf_nano_memtrace::ScopeGuard;

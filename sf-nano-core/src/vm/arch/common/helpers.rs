@@ -1,7 +1,5 @@
 use crate::error::WasmError;
-use crate::vm::machine::machine_ir::{
-    MachineConvertOp, MachineFloatWidth, MachineTrapKind,
-};
+use crate::vm::machine::machine_ir::{MachineConvertOp, MachineFloatWidth, MachineTrapKind};
 
 // ── Trap code mapping ────────────────────────────────────────────────────────
 

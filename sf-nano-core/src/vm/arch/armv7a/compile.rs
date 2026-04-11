@@ -153,9 +153,8 @@ pub(crate) fn compile_module(
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
         #[cfg(sf_has_guard_pages)]
-        body_local_error_addrs.push(unsafe {
-            executable.ptr(offset + body_local_error_offset)
-        } as usize);
+        body_local_error_addrs
+            .push(unsafe { executable.ptr(offset + body_local_error_offset) } as usize);
         entries.push(Some(CompiledArm32Entry {
             entry,
             text_len,

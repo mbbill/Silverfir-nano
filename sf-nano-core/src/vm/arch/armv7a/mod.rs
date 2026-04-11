@@ -38,10 +38,7 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// `ctx` must point to a valid `NativeContext` for the duration of the call.
-pub(crate) unsafe extern "C" fn armv7a_raise_trap(
-    ctx: *mut NativeContext,
-    kind: u32,
-) -> u32 {
+pub(crate) unsafe extern "C" fn armv7a_raise_trap(ctx: *mut NativeContext, kind: u32) -> u32 {
     unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
 }
 

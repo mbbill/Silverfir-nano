@@ -47,7 +47,10 @@ impl GpScratchPool {
                 };
             }
         }
-        panic!("x86_64 GP scratch pool: all {} registers are in use", self.regs.len());
+        panic!(
+            "x86_64 GP scratch pool: all {} registers are in use",
+            self.regs.len()
+        );
     }
 
     pub(super) fn claim_rax(&self) -> GpScratchGuard<'_> {

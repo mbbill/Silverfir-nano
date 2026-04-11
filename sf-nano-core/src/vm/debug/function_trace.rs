@@ -292,7 +292,11 @@ mod imp {
             })
     }
 
-    pub(crate) fn native_root_entry(ctx: &mut NativeContext, spec: &FunctionSpec, backend: &'static str) {
+    pub(crate) fn native_root_entry(
+        ctx: &mut NativeContext,
+        spec: &FunctionSpec,
+        backend: &'static str,
+    ) {
         if !enabled() {
             return;
         }
@@ -408,7 +412,6 @@ mod imp {
             None,
         );
     }
-
 }
 
 pub(crate) use imp::*;

@@ -95,9 +95,7 @@ pub(crate) struct LoweredMachineModule {
     pub abi: MachineModuleAbi,
 }
 
-pub(crate) fn lower_module(
-    input: LowerModuleInput,
-) -> Result<LoweredMachineModule, WasmError> {
+pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModule, WasmError> {
     let max_regfile = MachineRegFile::new(input.backend)?;
 
     let function_count = input

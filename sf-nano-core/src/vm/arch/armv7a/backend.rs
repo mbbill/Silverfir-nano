@@ -11,11 +11,8 @@ use crate::{
     error::WasmError,
     vm::{
         arch::common::{
-            backend::ArchBackend,
-            core::CompilerCore,
-            helpers::trap_code,
-            scratch_pool::ScratchPool,
-            types::ParallelSource,
+            backend::ArchBackend, core::CompilerCore, helpers::trap_code,
+            scratch_pool::ScratchPool, types::ParallelSource,
         },
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
@@ -953,9 +950,7 @@ impl<'a> Arm32Backend<'a> {
                     let src_gp = map_reg(reg)?;
                     let zero_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
                 }
                 ParallelSource::Imm(value) => {
                     let lo = value as u32;
@@ -964,17 +959,13 @@ impl<'a> Arm32Backend<'a> {
                     let hi_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *lo_s, lo);
                     emit_load_u32_into(&mut self.core.text, *hi_s, hi);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                 }
                 ParallelSource::GpTemp(id) => {
                     let temp = self.gp_scratch.reg(id);
                     let zero_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
                 }
                 ParallelSource::FpTemp(id, width) => {
                     let _ = width;
@@ -1143,9 +1134,7 @@ impl<'a> Arm32Backend<'a> {
                 let src_off = (results.base_slot as i32 + index) * 8;
                 let dst_off = index * 8;
                 // lo half
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_imm(temp, fp_reg, src_off));
+                self.core.text.emit_u32(enc::ldr_imm(temp, fp_reg, src_off));
                 self.core
                     .text
                     .emit_u32(enc::str_imm(temp, result_base, dst_off));
@@ -1231,5 +1220,4 @@ impl<'a> Arm32Backend<'a> {
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         self.emit_branch(BranchFixupKind::BCond(Cond::Ne), label);
     }
-
 }

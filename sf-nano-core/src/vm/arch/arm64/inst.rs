@@ -2779,40 +2779,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
             // `result_fp` may safely alias `lhs_fp` (or `rhs_fp`) without
             // losing a still-live operand value.
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Min) => {
-                self.emit_float_min_max_patch(
-                    width,
-                    true,
-                    result_fp,
-                    *lhs_fp,
-                    *rhs_fp,
-                );
+                self.emit_float_min_max_patch(width, true, result_fp, *lhs_fp, *rhs_fp);
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Min) => {
-                self.emit_float_min_max_patch(
-                    width,
-                    true,
-                    result_fp,
-                    *lhs_fp,
-                    *rhs_fp,
-                );
+                self.emit_float_min_max_patch(width, true, result_fp, *lhs_fp, *rhs_fp);
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Max) => {
-                self.emit_float_min_max_patch(
-                    width,
-                    false,
-                    result_fp,
-                    *lhs_fp,
-                    *rhs_fp,
-                );
+                self.emit_float_min_max_patch(width, false, result_fp, *lhs_fp, *rhs_fp);
             }
             (MachineFloatWidth::F64, MachineFloatBinaryOp::Max) => {
-                self.emit_float_min_max_patch(
-                    width,
-                    false,
-                    result_fp,
-                    *lhs_fp,
-                    *rhs_fp,
-                );
+                self.emit_float_min_max_patch(width, false, result_fp, *lhs_fp, *rhs_fp);
             }
             (_, MachineFloatBinaryOp::Copysign) => {
                 unreachable!("copysign handled by lower_float_copysign");

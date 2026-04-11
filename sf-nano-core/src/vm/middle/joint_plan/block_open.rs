@@ -164,7 +164,6 @@ pub(crate) fn pressure_fallback_drops_into(
         }
         dropped.push(victim);
     }
-
 }
 
 fn count_effective_live_bank_budget_units(
@@ -203,10 +202,7 @@ fn weakest_cached_local_in_working_set(
             continue;
         }
         let key = keep_key(plan, semantic_index, slot, used_now, false);
-        if best
-            .map(|(_, _, current)| key < current)
-            .unwrap_or(true)
-        {
+        if best.map(|(_, _, current)| key < current).unwrap_or(true) {
             best = Some((index, slot, key));
         }
     }

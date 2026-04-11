@@ -359,9 +359,7 @@ impl<'a> Arm32Backend<'a> {
                             // state).
                             let zero_s = self.gp_scratch.scoped_alloc();
                             emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                            self.core
-                                .text
-                                .emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
+                            self.core.text.emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
                         }
                         MachineValue::ReservedReg(reg) => {
                             return Err(WasmError::internal(alloc::format!(
@@ -379,9 +377,7 @@ impl<'a> Arm32Backend<'a> {
                             let hi_s = self.gp_scratch.scoped_alloc();
                             emit_load_u32_into(&mut self.core.text, *lo_s, lo);
                             emit_load_u32_into(&mut self.core.text, *hi_s, hi);
-                            self.core
-                                .text
-                                .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                            self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                         }
                     }
                     if let Some(w) = ty.float_width() {
@@ -444,9 +440,7 @@ impl<'a> Arm32Backend<'a> {
                         let hi_s = self.gp_scratch.scoped_alloc();
                         emit_load_u32_into(&mut self.core.text, *lo_s, lo);
                         emit_load_u32_into(&mut self.core.text, *hi_s, hi);
-                        self.core
-                            .text
-                            .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                        self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                     }
                 }
                 self.core.set_fp_reg_width(*dst, *width)?;
@@ -919,7 +913,6 @@ impl<'a> Arm32Backend<'a> {
         width: MachineMemWidth,
         extension: MachineLoadExtension,
     ) -> Result<(), WasmError> {
-
         // ARMv7 VFP loads/stores require alignment that Wasm memory does not
         // guarantee. MachineAddr does not currently preserve enough provenance to
         // distinguish "provably aligned frame/context slot" from "possibly
@@ -1005,7 +998,6 @@ impl<'a> Arm32Backend<'a> {
         width: MachineMemWidth,
         src: &MachineValue,
     ) -> Result<(), WasmError> {
-
         if matches!(ty, MachineStorageType::Fp32 | MachineStorageType::Fp64) {
             match src {
                 MachineValue::Reg(r) if self.is_fp_machine_reg(*r) => {
@@ -3153,9 +3145,7 @@ impl<'a> Arm32Backend<'a> {
                         let src_hw = map_reg(*r)?;
                         let zero_s = self.gp_scratch.scoped_alloc();
                         emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                        self.core
-                            .text
-                            .emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
+                        self.core.text.emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
                     }
                     MachineValue::ReservedReg(reg) => {
                         return Err(WasmError::internal(alloc::format!(
@@ -3168,9 +3158,7 @@ impl<'a> Arm32Backend<'a> {
                         let hi_s = self.gp_scratch.scoped_alloc();
                         emit_load_u32_into(&mut self.core.text, *lo_s, *v as u32);
                         emit_load_u32_into(&mut self.core.text, *hi_s, (*v >> 32) as u32);
-                        self.core
-                            .text
-                            .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                        self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                     }
                 }
             }
@@ -3213,9 +3201,7 @@ impl<'a> Arm32Backend<'a> {
                     let src = map_reg(*r)?;
                     let zero_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
@@ -3228,9 +3214,7 @@ impl<'a> Arm32Backend<'a> {
                     let hi_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *lo_s, *v as u32);
                     emit_load_u32_into(&mut self.core.text, *hi_s, (*v >> 32) as u32);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                 }
             }
             self.emit_branch(BranchFixupKind::B, done_label);
@@ -3248,9 +3232,7 @@ impl<'a> Arm32Backend<'a> {
                     let src = map_reg(*r)?;
                     let zero_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
                 }
                 MachineValue::ReservedReg(reg) => {
                     return Err(WasmError::internal(alloc::format!(
@@ -3263,9 +3245,7 @@ impl<'a> Arm32Backend<'a> {
                     let hi_s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *lo_s, *v as u32);
                     emit_load_u32_into(&mut self.core.text, *hi_s, (*v >> 32) as u32);
-                    self.core
-                        .text
-                        .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                    self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
                 }
             }
             self.core.bind_label(done_label);

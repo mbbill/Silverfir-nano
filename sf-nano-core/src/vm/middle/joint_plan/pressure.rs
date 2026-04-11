@@ -11,13 +11,13 @@
 //!   giving them the strongest keep key
 
 #[cfg(test)]
-use alloc::collections::BTreeSet;
-#[cfg(test)]
 use crate::vm::middle::budget::count_live_bank_budget_units;
 use crate::{
     value_type::ValueType,
     vm::middle::{budget::gp_value_budget_units, frame::FrameSlot},
 };
+#[cfg(test)]
+use alloc::collections::BTreeSet;
 
 use super::facts::FunctionPlan;
 

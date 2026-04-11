@@ -11,9 +11,9 @@
 
 use core::ptr;
 
-use super::posix::{mmap, mprotect, munmap, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 #[cfg(sf_has_guard_pages)]
 use super::posix::PROT_NONE;
+use super::posix::{mmap, mprotect, munmap, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 
 const PROT_EXEC: i32 = 0x04;
 const MAP_ANONYMOUS: i32 = 0x20;
@@ -137,11 +137,7 @@ pub(crate) fn reserve_guarded(total: usize) -> Result<*mut u8, &'static str> {
 }
 
 #[cfg(sf_has_guard_pages)]
-pub(crate) fn commit_guarded(
-    base: *mut u8,
-    offset: usize,
-    len: usize,
-) -> Result<(), &'static str> {
+pub(crate) fn commit_guarded(base: *mut u8, offset: usize, len: usize) -> Result<(), &'static str> {
     if len == 0 {
         return Ok(());
     }

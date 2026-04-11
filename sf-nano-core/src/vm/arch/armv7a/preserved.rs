@@ -127,10 +127,9 @@ impl<'a> Arm32Backend<'a> {
         // Step 4: set up the C calling convention. r0 = ctx, r1 = op_code,
         // r2 = io_ptr (= sp). `emit_host_call` below will save/restore D3-D7
         // around the BLX via the per-function helper_scratch.
-        self.core.text.emit_u32(enc::mov_reg(
-            Arm32Reg::R0,
-            map_fixed_reg(MACHINE_CTX_REG),
-        ));
+        self.core
+            .text
+            .emit_u32(enc::mov_reg(Arm32Reg::R0, map_fixed_reg(MACHINE_CTX_REG)));
         self.emit_load_u32(Arm32Reg::R1, op_code);
         self.core
             .text
@@ -183,9 +182,7 @@ impl<'a> Arm32Backend<'a> {
         self.restore_caller_saved_gp_regs(&[]);
         if let Some(dst) = result_dst {
             let dst_hw = map_reg(dst)?;
-            self.core
-                .text
-                .emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R14));
+            self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R14));
         }
         let after = self.core.new_label();
         self.emit_branch(BranchFixupKind::B, after);

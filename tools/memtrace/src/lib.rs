@@ -1,9 +1,9 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::{c_int, c_void};
 #[cfg(target_os = "macos")]
 use std::ffi::{c_char, CStr};
+use std::ffi::{c_int, c_void};
 use std::fs::File;
 use std::io::{BufWriter, Write as IoWrite};
 use std::path::PathBuf;
@@ -426,10 +426,7 @@ pub fn record_exec_buffer_drop(base: usize) {
     with_tracker_disabled(|| {
         let mut state = trace_state().lock().unwrap();
         let t_us = state.timestamp_us();
-        state.record_event(PendingEvent::ExecDrop {
-            t_us,
-            base,
-        });
+        state.record_event(PendingEvent::ExecDrop { t_us, base });
     });
 }
 
@@ -474,10 +471,7 @@ pub fn record_guard_region_drop(base: usize) {
     with_tracker_disabled(|| {
         let mut state = trace_state().lock().unwrap();
         let t_us = state.timestamp_us();
-        state.record_event(PendingEvent::GuardDrop {
-            t_us,
-            base,
-        });
+        state.record_event(PendingEvent::GuardDrop { t_us, base });
     });
 }
 
@@ -520,7 +514,10 @@ fn default_trace_path() -> PathBuf {
 }
 
 fn write_meta_record(writer: &mut BufWriter<File>, command_line: &[String]) -> std::io::Result<()> {
-    write!(writer, "{{\"type\":\"meta\",\"version\":3,\"time_unit\":\"us\",\"command_line\":[")?;
+    write!(
+        writer,
+        "{{\"type\":\"meta\",\"version\":3,\"time_unit\":\"us\",\"command_line\":["
+    )?;
     for (index, value) in command_line.iter().enumerate() {
         if index > 0 {
             write!(writer, ",")?;
@@ -530,11 +527,7 @@ fn write_meta_record(writer: &mut BufWriter<File>, command_line: &[String]) -> s
     writeln!(writer, "]}}")
 }
 
-fn write_tag_record(
-    writer: &mut BufWriter<File>,
-    tag_id: u32,
-    name: &str,
-) -> std::io::Result<()> {
+fn write_tag_record(writer: &mut BufWriter<File>, tag_id: u32, name: &str) -> std::io::Result<()> {
     write!(writer, "{{\"type\":\"tag\",\"id\":{},\"name\":", tag_id)?;
     write_json_string(writer, name)?;
     writeln!(writer, "}}")
@@ -555,7 +548,11 @@ fn write_stack_record(
     stack_id: u32,
     frames: &[usize],
 ) -> std::io::Result<()> {
-    write!(writer, "{{\"type\":\"stack\",\"id\":{},\"frames\":[", stack_id)?;
+    write!(
+        writer,
+        "{{\"type\":\"stack\",\"id\":{},\"frames\":[",
+        stack_id
+    )?;
     for (index, frame) in frames.iter().enumerate() {
         if index > 0 {
             write!(writer, ",")?;
@@ -732,7 +729,10 @@ unsafe fn text_segment_vmaddr(header: *const MachHeader64) -> Option<u64> {
         if (*command).cmd == LC_SEGMENT_64 {
             let segment = command as *const SegmentCommand64;
             let raw_name = &(*segment).segname;
-            let end = raw_name.iter().position(|&b| b == 0).unwrap_or(raw_name.len());
+            let end = raw_name
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(raw_name.len());
             if &raw_name[..end] == b"__TEXT" {
                 return Some((*segment).vmaddr);
             }

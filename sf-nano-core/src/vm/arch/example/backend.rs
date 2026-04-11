@@ -10,9 +10,7 @@ use crate::{
     error::WasmError,
     vm::{
         arch::common::{
-            backend::ArchBackend,
-            core::CompilerCore,
-            scratch_pool::ScratchPool,
+            backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool,
             types::ParallelSource,
         },
         machine::machine_ir::{

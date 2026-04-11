@@ -260,8 +260,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             continue;
         }
 
-        let Some(subst) =
-            binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
+        let Some(subst) = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
         else {
             continue;
         };
@@ -443,10 +442,7 @@ fn substitute_inst(inst: SsaInst, subst: &[ValueSubstitution]) -> SsaInst {
     }
 }
 
-fn substitute_terminator(
-    terminator: SsaTerminator,
-    subst: &[ValueSubstitution],
-) -> SsaTerminator {
+fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution]) -> SsaTerminator {
     match terminator {
         SsaTerminator::Goto(edge) => SsaTerminator::Goto(substitute_edge(edge, subst)),
         SsaTerminator::Branch {
@@ -486,7 +482,10 @@ fn substitute_edge(edge: SsaEdge, subst: &[ValueSubstitution]) -> SsaEdge {
 
 #[inline]
 fn substitute_value(value: SsaValue, subst: &[ValueSubstitution]) -> SsaValue {
-    subst.iter().find(|entry| entry.from == value).map_or(value, |entry| entry.to)
+    subst
+        .iter()
+        .find(|entry| entry.from == value)
+        .map_or(value, |entry| entry.to)
 }
 
 fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
@@ -1064,7 +1063,11 @@ mod tests {
         assert_eq!(program.entry, SsaTarget(1));
         assert_eq!(program.blocks.len(), 3);
         assert_eq!(
-            program.blocks.iter().map(|block| block.id).collect::<Vec<_>>(),
+            program
+                .blocks
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<_>>(),
             alloc::vec![SsaTarget(0), SsaTarget(1), SsaTarget(2)]
         );
         assert_eq!(

@@ -9,7 +9,7 @@ use crate::{
         backend::BackendConfig,
         entities::ModuleInst,
         result_buffer::ResultBuffer,
-        runtime::code::{CompiledNativeModule, NativeRootEntry, NativeCode},
+        runtime::code::{CompiledNativeModule, NativeCode, NativeRootEntry},
         store::Store,
         value::Value,
     },
@@ -114,8 +114,7 @@ impl NativeBackend {
 }
 
 #[cfg(sf_emulator)]
-static REFERENCE_BACKEND_MODE: AtomicU8 =
-    AtomicU8::new(ReferenceBackendMode::Disabled as u8);
+static REFERENCE_BACKEND_MODE: AtomicU8 = AtomicU8::new(ReferenceBackendMode::Disabled as u8);
 
 #[inline]
 #[cfg(sf_emulator)]
@@ -258,9 +257,8 @@ pub(crate) fn dispatch_compile_module(
     match active_backend {
         #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => {
-            let entries = shared_64::compile_module_64::<arm64::backend::Arm64Backend>(
-                module, compiled,
-            )?;
+            let entries =
+                shared_64::compile_module_64::<arm64::backend::Arm64Backend>(module, compiled)?;
             Ok(entries
                 .into_iter()
                 .map(|opt| {
@@ -290,9 +288,8 @@ pub(crate) fn dispatch_compile_module(
         }
         #[cfg(sf_arch_x64)]
         NativeBackend::X86_64 => {
-            let entries = shared_64::compile_module_64::<x86_64::backend::X86_64Backend>(
-                module, compiled,
-            )?;
+            let entries =
+                shared_64::compile_module_64::<x86_64::backend::X86_64Backend>(module, compiled)?;
             Ok(entries
                 .into_iter()
                 .map(|opt| {

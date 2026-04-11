@@ -12,8 +12,8 @@ use crate::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
             MachineInst, MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator,
-            MachineTrapKind, MachineValue,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
@@ -334,7 +334,6 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             buf.emit_bytes(&[INT3]);
         }
     }
-
 }
 
 impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Backend<'a> {
@@ -344,9 +343,8 @@ impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Backend<'
         buf: &CodeBuffer,
         emitted: &crate::vm::arch::shared_64::EmittedFunction64,
     ) -> Self::CompiledEntry {
-        let entry = unsafe {
-            buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset)
-        };
+        let entry =
+            unsafe { buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset) };
         CompiledX86_64Entry {
             entry,
             text_len: emitted.text_len,

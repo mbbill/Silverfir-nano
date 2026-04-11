@@ -37,8 +37,7 @@ unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8
         std::process::abort();
     }
 
-    let mregs =
-        unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs) };
+    let mregs = unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs) };
     let pc = mregs.pc as usize;
 
     let Some((error_ret, trap_kind_offset)) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {

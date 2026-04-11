@@ -30,10 +30,7 @@ use super::{
 #[cfg(sf_ir_dump)]
 use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
-    backend::ArchBackend,
-    core::CompilerCore,
-    scratch_pool::ScratchPool,
-    types::ParallelSource,
+    backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool, types::ParallelSource,
 };
 
 // ── Frame layout constants ───────────────────────────────────────────────────
@@ -633,9 +630,8 @@ impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for Arm64Backend<'a
         buf: &CodeBuffer,
         emitted: &crate::vm::arch::shared_64::EmittedFunction64,
     ) -> Self::CompiledEntry {
-        let entry = unsafe {
-            buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset)
-        };
+        let entry =
+            unsafe { buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset) };
         CompiledArm64Entry {
             entry,
             text_len: emitted.text_len,
