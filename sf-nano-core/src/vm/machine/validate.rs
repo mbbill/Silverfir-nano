@@ -27,7 +27,7 @@ impl MachineProgram {
         let total = config.total_reg_count();
         if first_fp != max_gp_regs {
             return Err(WasmError::internal(
-                "expected first_fp_reg for 32-bit GP target MachineIR, found",
+                "32-bit GP target MachineIR has mismatched first_fp_reg boundary",
             ));
         }
         if total < first_fp {

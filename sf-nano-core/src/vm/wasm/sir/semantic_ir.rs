@@ -146,22 +146,17 @@ impl SemanticProgram {
                     }
                 }
                 SemanticOpKind::If { else_target, .. } => {
-                    validate_target(*else_target, len, "semantic if else target")?;
+                    validate_target(*else_target, len)?;
                 }
                 SemanticOpKind::Else { end_target } => {
-                    validate_target(*end_target, len, "semantic else end target")?;
+                    validate_target(*end_target, len)?;
                 }
                 SemanticOpKind::Br { target, .. } | SemanticOpKind::BrIf { target, .. } => {
-                    validate_target(*target, len, "semantic branch target")?;
+                    validate_target(*target, len)?;
                 }
                 SemanticOpKind::BrTable { entries } => {
-                    for (entry_index, entry) in entries.iter().enumerate() {
-                        validate_target(
-                            entry.target,
-                            len,
-                            alloc::format!("semantic br_table target for entry {entry_index}")
-                                .as_str(),
-                        )?;
+                    for entry in entries {
+                        validate_target(entry.target, len)?;
                     }
                 }
                 SemanticOpKind::ReturnVoid if self.results != 0 => {
@@ -234,14 +229,16 @@ impl From<PrimitiveOpKind> for SemanticOpKind {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_target(target: SemanticTarget, len: usize, _label: &str) -> Result<(), WasmError> {
+fn validate_target(target: SemanticTarget, len: usize) -> Result<(), WasmError> {
     if target.is_pending() {
         return Err(WasmError::internal(
-            "is still pending at semantic validation time",
+            "semantic target is still pending at validation time",
         ));
     }
     if target.index().as_usize() >= len {
-        return Err(WasmError::internal("is out of range for semantic length"));
+        return Err(WasmError::internal(
+            "semantic target is out of range for semantic program length",
+        ));
     }
     Ok(())
 }

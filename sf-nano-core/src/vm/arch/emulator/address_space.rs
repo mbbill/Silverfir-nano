@@ -171,91 +171,62 @@ impl Target32AddressSpace {
 
     fn validate_runtime_shape(self, ctx: &NativeContext) -> Result<(), WasmError> {
         ensure_window_fits(
-            "emu32 synthetic memory-view metadata",
             checked_region_bytes(
-                "emu32 synthetic memory-view metadata",
                 ctx.memory_views_len,
                 self.layout.pointer_len_view.stride as usize,
             )?,
             MEMORY_VIEWS_WINDOW_32,
         )?;
         ensure_window_fits(
-            "emu32 synthetic table-view metadata",
             checked_region_bytes(
-                "emu32 synthetic table-view metadata",
                 ctx.table_views_len,
                 self.layout.pointer_len_view.stride as usize,
             )?,
             TABLE_VIEWS_WINDOW_32,
         )?;
         ensure_window_fits(
-            "emu32 synthetic function-view metadata",
             checked_region_bytes(
-                "emu32 synthetic function-view metadata",
                 ctx.function_views_len,
                 self.layout.function_view.stride as usize,
             )?,
             FUNCTION_VIEWS_WINDOW_32,
         )?;
         ensure_window_fits(
-            "emu32 synthetic local-call-info metadata",
             checked_region_bytes(
-                "emu32 synthetic local-call-info metadata",
                 ctx.local_call_infos_len,
                 self.layout.local_call_info.stride as usize,
             )?,
             LOCAL_CALL_INFOS_WINDOW_32,
         )?;
         ensure_window_fits(
-            "emu32 synthetic globals metadata",
-            checked_region_bytes(
-                "emu32 synthetic globals metadata",
-                ctx.globals_view.len,
-                core::mem::size_of::<GlobalInst>(),
-            )?,
+            checked_region_bytes(ctx.globals_view.len, core::mem::size_of::<GlobalInst>())?,
             GLOBALS_WINDOW_32,
         )?;
         ensure_window_fits(
-            "emu32 synthetic type-canon metadata",
-            checked_region_bytes(
-                "emu32 synthetic type-canon metadata",
-                ctx.type_canon_len,
-                core::mem::size_of::<u32>(),
-            )?,
+            checked_region_bytes(ctx.type_canon_len, core::mem::size_of::<u32>())?,
             TYPE_CANON_WINDOW_32,
         )?;
 
         if ctx.memory_views_len > MAX_MEMORY_COUNT_32 {
             return Err(WasmError::internal(
-                "emu32 synthetic address space supports at most memories, found",
+                "emu32 synthetic address space exceeds the supported memory count",
             ));
         }
         for mem_index in 0..ctx.memory_views_len {
             let view = unsafe { *ctx.memory_views_base.add(mem_index) };
-            ensure_window_fits(
-                &alloc::format!("emu32 synthetic memory {} contents", mem_index),
-                view.len,
-                MEMORY_WINDOW_32,
-            )?;
+            ensure_window_fits(view.len, MEMORY_WINDOW_32)?;
         }
 
         if ctx.table_views_len > MAX_TABLE_COUNT_32 {
             return Err(WasmError::internal(
-                "emu32 synthetic address space supports at most tables, found",
+                "emu32 synthetic address space exceeds the supported table count",
             ));
         }
         for table_index in 0..ctx.table_views_len {
             let view = unsafe { *ctx.table_views_base.add(table_index) };
-            let table_bytes = checked_region_bytes(
-                &alloc::format!("emu32 synthetic table {} contents", table_index),
-                view.elements_len,
-                self.layout.ref_handle_stride as usize,
-            )?;
-            ensure_window_fits(
-                &alloc::format!("emu32 synthetic table {} contents", table_index),
-                table_bytes,
-                TABLE_ELEMENTS_WINDOW_32,
-            )?;
+            let table_bytes =
+                checked_region_bytes(view.elements_len, self.layout.ref_handle_stride as usize)?;
+            ensure_window_fits(table_bytes, TABLE_ELEMENTS_WINDOW_32)?;
         }
 
         Ok(())
@@ -902,16 +873,16 @@ impl Target32AddressSpace {
     }
 }
 
-fn checked_region_bytes(_label: &str, count: usize, stride: usize) -> Result<usize, WasmError> {
+fn checked_region_bytes(count: usize, stride: usize) -> Result<usize, WasmError> {
     count
         .checked_mul(stride)
-        .ok_or_else(|| WasmError::internal("size overflowed usize during emu32 validation"))
+        .ok_or_else(|| WasmError::internal("emu32 synthetic region size overflows usize"))
 }
 
-fn ensure_window_fits(_label: &str, bytes: usize, window_bytes: u64) -> Result<(), WasmError> {
+fn ensure_window_fits(bytes: usize, window_bytes: u64) -> Result<(), WasmError> {
     if u64::try_from(bytes).unwrap_or(u64::MAX) > window_bytes {
         return Err(WasmError::internal(
-            "requires bytes, but emu32 reserves only bytes",
+            "emu32 reserved address window is too small for synthetic region",
         ));
     }
     Ok(())

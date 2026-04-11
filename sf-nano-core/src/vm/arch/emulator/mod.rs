@@ -3064,10 +3064,7 @@ mod tests {
         )
         .expect_err("emu32 should reject machine IR with a wrong 32-bit GP/FP bank boundary");
 
-        assert!(err.message().contains(&alloc::format!(
-            "expected first_fp_reg {} for 32-bit GP target MachineIR",
-            backend.first_fp_reg()
-        )));
+        assert!(err.message().contains("mismatched first_fp_reg boundary"));
     }
 
     #[test]

@@ -55,21 +55,21 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 
     for (index, block) in program.blocks.iter().enumerate() {
         validate_block_id(block, index)?;
-        validate_params(&block.params, alloc::format!("block b{index} params"))?;
+        validate_params(&block.params)?;
 
         match &block.terminator {
-            SsaTerminator::Goto(edge) => validate_edge(program, edge, index)?,
+            SsaTerminator::Goto(edge) => validate_edge(program, edge)?,
             SsaTerminator::Branch {
                 then_edge,
                 else_edge,
                 ..
             } => {
-                validate_edge(program, then_edge, index)?;
-                validate_edge(program, else_edge, index)?;
+                validate_edge(program, then_edge)?;
+                validate_edge(program, else_edge)?;
             }
             SsaTerminator::BrTable { entries, .. } => {
                 for edge in entries {
-                    validate_edge(program, edge, index)?;
+                    validate_edge(program, edge)?;
                 }
             }
             SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
@@ -87,41 +87,40 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 #[cfg(any(debug_assertions, test))]
 fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
     let type_count = program.value_types.len();
-    let check = |value: SsaValue, _ctx: &str| -> Result<(), WasmError> {
+    let check = |value: SsaValue| -> Result<(), WasmError> {
         if value.0 as usize >= type_count {
             return Err(WasmError::internal(
-                ": SsaValue() is out of range for value_types table (len=)",
+                "SSA-IR value is out of range for value_types table",
             ));
         }
         Ok(())
     };
 
-    for (block_idx, block) in program.blocks.iter().enumerate() {
-        let bctx = alloc::format!("b{block_idx}");
+    for block in &program.blocks {
         for param in &block.params {
-            check(*param, &alloc::format!("{bctx} param"))?;
+            check(*param)?;
         }
         for inst in &block.ops {
             match &inst.kind {
                 SsaInstKind::Value { args, results, .. } => {
                     for arg in args {
                         if let SsaOperand::Value(value) = arg {
-                            check(*value, &alloc::format!("{bctx} value arg"))?;
+                            check(*value)?;
                         }
                     }
                     for result in results {
-                        check(*result, &alloc::format!("{bctx} value result"))?;
+                        check(*result)?;
                     }
                 }
                 SsaInstKind::LocalGetSlot { dst, .. }
                 | SsaInstKind::LocalGetCache { dst, .. }
                 | SsaInstKind::Fill { dst, .. } => {
-                    check(*dst, &alloc::format!("{bctx} get/fill dst"))?;
+                    check(*dst)?;
                 }
                 SsaInstKind::LocalSetSlot { src, .. }
                 | SsaInstKind::LocalSetCache { src, .. }
                 | SsaInstKind::Spill { src, .. } => {
-                    check(*src, &alloc::format!("{bctx} set/spill src"))?;
+                    check(*src)?;
                 }
                 SsaInstKind::LocalEnsureCache { .. }
                 | SsaInstKind::LocalReserveCache { .. }
@@ -130,20 +129,20 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
             }
         }
         match &block.terminator {
-            SsaTerminator::Goto(edge) => validate_edge_values(edge, &bctx, &check)?,
+            SsaTerminator::Goto(edge) => validate_edge_values(edge, &check)?,
             SsaTerminator::Branch {
                 cond,
                 then_edge,
                 else_edge,
             } => {
-                check(*cond, &alloc::format!("{bctx} branch cond"))?;
-                validate_edge_values(then_edge, &bctx, &check)?;
-                validate_edge_values(else_edge, &bctx, &check)?;
+                check(*cond)?;
+                validate_edge_values(then_edge, &check)?;
+                validate_edge_values(else_edge, &check)?;
             }
             SsaTerminator::BrTable { index, entries } => {
-                check(*index, &alloc::format!("{bctx} br_table index"))?;
+                check(*index)?;
                 for edge in entries {
-                    validate_edge_values(edge, &bctx, &check)?;
+                    validate_edge_values(edge, &check)?;
                 }
             }
             SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
@@ -155,12 +154,11 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
 #[cfg(any(debug_assertions, test))]
 fn validate_edge_values(
     edge: &SsaEdge,
-    bctx: &str,
-    check: &dyn Fn(SsaValue, &str) -> Result<(), WasmError>,
+    check: &dyn Fn(SsaValue) -> Result<(), WasmError>,
 ) -> Result<(), WasmError> {
     for binding in &edge.bindings {
-        check(binding.param, &alloc::format!("{bctx} edge binding param"))?;
-        check(binding.value, &alloc::format!("{bctx} edge binding value"))?;
+        check(binding.param)?;
+        check(binding.value)?;
     }
     Ok(())
 }
@@ -230,7 +228,7 @@ fn validate_cached_slot_value_type(
     };
     let Some(value_ty) = program.value_types.get(value.0 as usize).copied() else {
         return Err(WasmError::internal(
-            "b op : value out of range for value_types",
+            "SSA-IR cached local value is out of range for value_types table",
         ));
     };
     if !cached_slot_value_type_matches(role, value_ty, cached_ty) {
@@ -271,21 +269,17 @@ fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_params(params: &[SsaValue], _label: alloc::string::String) -> Result<(), WasmError> {
+fn validate_params(params: &[SsaValue]) -> Result<(), WasmError> {
     for (index, value) in params.iter().enumerate() {
         if params[..index].contains(value) {
-            return Err(WasmError::internal("contains duplicate param"));
+            return Err(WasmError::internal("SSA-IR block contains duplicate param"));
         }
     }
     Ok(())
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_edge(
-    program: &SsaProgram,
-    edge: &SsaEdge,
-    source_block: usize,
-) -> Result<(), WasmError> {
+fn validate_edge(program: &SsaProgram, edge: &SsaEdge) -> Result<(), WasmError> {
     let Some(target) = program.blocks.get(edge.target.as_usize()) else {
         return Err(WasmError::internal(
             "SSA-IR block has edge to out-of-range target",
@@ -294,16 +288,10 @@ fn validate_edge(
 
     let mut seen_params = collections::Vec::with_capacity(edge.bindings.len());
     for binding in &edge.bindings {
-        validate_binding(
-            program,
-            binding,
-            target,
-            source_block,
-            edge.target.as_usize(),
-        )?;
+        validate_binding(program, binding, target)?;
         if seen_params.contains(&binding.param) {
             return Err(WasmError::internal(
-                "SSA-IR edge b -> b binds param more than once",
+                "SSA-IR edge binds target param more than once",
             ));
         }
         seen_params.push(binding.param);
@@ -311,14 +299,14 @@ fn validate_edge(
 
     if edge.bindings.len() != target.params.len() {
         return Err(WasmError::internal(
-            "SSA-IR edge b -> b has bindings, but target expects params",
+            "SSA-IR edge binding count does not match target params",
         ));
     }
 
     for param in &target.params {
         if !seen_params.contains(param) {
             return Err(WasmError::internal(
-                "SSA-IR edge b -> b does not bind target param",
+                "SSA-IR edge does not bind target param",
             ));
         }
     }
@@ -331,12 +319,10 @@ fn validate_binding(
     program: &SsaProgram,
     binding: &SsaBinding,
     target: &SsaBlock,
-    _source_block: usize,
-    _target_block: usize,
 ) -> Result<(), WasmError> {
     if !target.params.contains(&binding.param) {
         return Err(WasmError::internal(
-            "SSA-IR edge b -> b binds unknown target param",
+            "SSA-IR edge binds unknown target param",
         ));
     }
     if !program.value_types.is_empty() {
@@ -345,7 +331,7 @@ fn validate_binding(
         if let (Some(param_ty), Some(value_ty)) = (param_ty, value_ty) {
             if param_ty != value_ty {
                 return Err(WasmError::internal(
-                    "SSA-IR edge b -> b binds param () from value ()",
+                    "SSA-IR edge binds target param from value with mismatched type",
                 ));
             }
         }

@@ -43,7 +43,7 @@ fn rejects_edge_arity_mismatch() {
     };
 
     let err = program.validate(minimal_config()).unwrap_err();
-    assert!(alloc::format!("{err}").contains("wrong number of args"));
+    assert!(err.message().contains("wrong number of args"));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn rejects_out_of_range_register() {
     };
 
     let err = program.validate(minimal_config()).unwrap_err();
-    assert!(alloc::format!("{err}").contains("exceeds declared register count"));
+    assert!(err.message().contains("exceeds declared register count"));
 }
 
 #[test]
@@ -99,5 +99,5 @@ fn rejects_out_of_range_helper_metadata() {
     };
 
     let err = module.validate().unwrap_err();
-    assert!(alloc::format!("{err}").contains("out-of-range const"));
+    assert!(err.message().contains("out-of-range const"));
 }

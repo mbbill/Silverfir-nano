@@ -320,7 +320,7 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
     .expect_err("zero GP-dynamic native backend must be rejected");
 
     assert!(
-        alloc::format!("{err}").contains("at least one GP dynamic register"),
+        err.message().contains("at least one GP dynamic register"),
         "unexpected error: {err}"
     );
 }
@@ -3053,7 +3053,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     })
     .expect_err("typed i64 store into cached i32 local must be rejected");
 
-    let message = alloc::format!("{err}");
+    let message = err.message();
     assert!(
         message.contains("LocalSetCache src for cached local slot FrameSlot(0)")
             || message.contains("typed SSA-IR store to cached local slot")
