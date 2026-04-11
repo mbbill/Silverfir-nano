@@ -33,10 +33,6 @@ pub(crate) mod arm32;
 #[cfg(sf_arch_x64)]
 pub(crate) mod x86_64;
 
-#[cfg(debug_assertions)]
-#[allow(dead_code)]
-mod example;
-
 /// Process-global emulator/reference-backend target mode.
 ///
 /// `Disabled` means "do not force the emulator backend on a host that has a
