@@ -20,13 +20,13 @@ pub(crate) fn set_ctx_error(ctx: &mut NativeContext, error: WasmError) {
 }
 
 #[inline]
-pub(crate) fn internal_error(message: &str) -> WasmError {
-    WasmError::internal(message.into())
+pub(crate) fn internal_error(message: &'static str) -> WasmError {
+    WasmError::internal(message)
 }
 
 #[inline]
-pub(crate) fn trap_error(message: &str) -> WasmError {
-    WasmError::trap(message.into())
+pub(crate) fn trap_error(message: &'static str) -> WasmError {
+    WasmError::trap(message)
 }
 
 #[inline]

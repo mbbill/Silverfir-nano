@@ -313,25 +313,14 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             // positive in practice), but the bound is checked symmetric.
             const LDR_LIT_BYTE_MAX: isize = (1 << 20) - 4;
             if delta_bytes & 0b11 != 0 {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 deferred call literal at {:#x} is not 4-byte aligned (ldr_lit_64 at {:#x}, delta={:#x})",
-                    literal_offset,
-                    literal.ldr_offset,
-                    delta_bytes,
-                )));
+                return Err(WasmError::internal(
+                    "arm64 deferred call literal is not 4-byte aligned",
+                ));
             }
             if !(-LDR_LIT_BYTE_MAX..=LDR_LIT_BYTE_MAX).contains(&delta_bytes) {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 deferred call literal pool out of `ldr_lit_64` reach: \
-                     ldr at {:#x}, literal at {:#x}, delta={} bytes (limit ±{} bytes); \
-                     function body is too large for the per-function literal-pool layout. \
-                     Mitigation: split the literal pool into per-region pools or fall back to a \
-                     wide `movz/movk` materialization for the affected call site.",
-                    literal.ldr_offset,
-                    literal_offset,
-                    delta_bytes,
-                    LDR_LIT_BYTE_MAX,
-                )));
+                return Err(WasmError::internal(
+                    "arm64 deferred call literal pool is out of range",
+                ));
             }
             let delta_words = (delta_bytes / 4) as i32;
             self.core.text.patch_u32(
@@ -497,19 +486,15 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 .labels
                 .get(fixup.label)
                 .and_then(|v| *v)
-                .ok_or_else(|| {
-                    WasmError::internal("arm64 branch target label is unresolved".into())
-                })?;
+                .ok_or_else(|| WasmError::internal("arm64 branch target label is unresolved"))?;
             let delta_bytes = (target as isize) - (fixup.inst_offset as isize);
             if delta_bytes & 0b11 != 0 {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 branch fixup target {:#x} is not 4-byte aligned (inst at {:#x})",
-                    target,
-                    fixup.inst_offset,
-                )));
+                return Err(WasmError::internal(
+                    "arm64 branch fixup target is not 4-byte aligned (inst at )",
+                ));
             }
             let delta_words = delta_bytes / 4;
-            let (kind_name, in_range) = match fixup.kind {
+            let (_kind_name, in_range) = match fixup.kind {
                 BranchFixupKind::B => (
                     "b",
                     (IMM26_WORD_MIN..=IMM26_WORD_MAX).contains(&delta_words),
@@ -532,16 +517,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 ),
             };
             if !in_range {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 {} fixup at {:#x} → target {:#x} (delta {} bytes) is out of \
-                     pc-relative reach. The current backend has no branch-veneer / island \
-                     pass; the producing function is too large for direct encoding. \
-                     Mitigation: split the function or insert a trampoline near the call site.",
-                    kind_name,
-                    fixup.inst_offset,
-                    target,
-                    delta_bytes,
-                )));
+                return Err(WasmError::internal(
+                    "arm64 branch fixup is out of pc-relative range",
+                ));
             }
             let delta_i32 = delta_words as i32;
             let patched = match fixup.kind {

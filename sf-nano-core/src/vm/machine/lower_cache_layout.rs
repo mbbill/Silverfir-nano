@@ -179,13 +179,7 @@ pub(super) fn compute_block_entry_cache_params(
                 LayoutBank::Gp => gp_layouts[block_index][cached_index],
                 LayoutBank::Fp => fp_layouts[block_index][cached_index],
             }
-            .ok_or_else(|| {
-                WasmError::internal(alloc::format!(
-                    "cache lane layout missing for slot {:?} in block b{}",
-                    slot,
-                    block.id.0,
-                ))
-            })?;
+            .ok_or_else(|| WasmError::internal("cache lane layout missing for slot in block b"))?;
             let regs = regs_for_segment(
                 regfile,
                 slot_meta[cached_index].bank,
@@ -194,11 +188,7 @@ pub(super) fn compute_block_entry_cache_params(
             )?;
             let requirement =
                 block_entry_cache_requirement(&entry_slots, block, slot).ok_or_else(|| {
-                    WasmError::internal(alloc::format!(
-                        "entry cache slot {:?} in block b{} has no entry requirement",
-                        slot,
-                        block.id.0,
-                    ))
+                    WasmError::internal("entry cache slot in block b has no entry requirement")
                 })?;
             entries.push((
                 regs.lo.0,
@@ -658,7 +648,7 @@ fn exact_gp_layout(
         &mut best,
     );
     best.map(|(_, layout)| layout).ok_or_else(|| {
-        WasmError::internal("GP cache lane exact layout search found no feasible assignment".into())
+        WasmError::internal("GP cache lane exact layout search found no feasible assignment")
     })
 }
 
@@ -799,21 +789,22 @@ fn regs_for_segment(
     match (bank, width) {
         (LayoutBank::Fp, 1) => Ok(ValueRegs {
             lo: preferred_fp_dynamic_reg(regfile, start).ok_or_else(|| {
-                WasmError::internal("FP cache lane layout exceeded dynamic register budget".into())
+                WasmError::internal("FP cache lane layout exceeded dynamic register budget")
             })?,
             hi: None,
         }),
         (LayoutBank::Gp, 2) => Ok(ValueRegs {
-            lo: preferred_gp_dynamic_reg(regfile, start).ok_or_else(|| {
-                WasmError::internal("GP cache lane layout exceeded pair budget".into())
-            })?,
-            hi: Some(preferred_gp_dynamic_reg(regfile, start + 1).ok_or_else(|| {
-                WasmError::internal("GP cache lane layout exceeded pair budget".into())
-            })?),
+            lo: preferred_gp_dynamic_reg(regfile, start)
+                .ok_or_else(|| WasmError::internal("GP cache lane layout exceeded pair budget"))?,
+            hi: Some(
+                preferred_gp_dynamic_reg(regfile, start + 1).ok_or_else(|| {
+                    WasmError::internal("GP cache lane layout exceeded pair budget")
+                })?,
+            ),
         }),
         (LayoutBank::Gp, 1) => Ok(ValueRegs {
             lo: preferred_gp_dynamic_reg(regfile, start).ok_or_else(|| {
-                WasmError::internal("GP cache lane layout exceeded dynamic register budget".into())
+                WasmError::internal("GP cache lane layout exceeded dynamic register budget")
             })?,
             hi: None,
         }),

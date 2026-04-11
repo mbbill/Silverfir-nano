@@ -38,10 +38,7 @@ unsafe extern "C" {
 ///
 /// # Safety
 /// `ctx` must point to a valid `NativeContext` for the duration of the call.
-pub(crate) unsafe extern "C" fn arm32_raise_trap(
-    ctx: *mut NativeContext,
-    kind: u32,
-) -> u32 {
+pub(crate) unsafe extern "C" fn arm32_raise_trap(ctx: *mut NativeContext, kind: u32) -> u32 {
     unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
 }
 
@@ -196,7 +193,7 @@ pub(crate) unsafe extern "C" fn arm32_trapping_trunc(
         5 => trunc_f32_to_i64_u(src_bits as u32),
         6 => trunc_f64_to_i64_s(src_bits),
         7 => trunc_f64_to_i64_u(src_bits),
-        _ => Err(WasmError::trap("invalid trunc op".into())),
+        _ => Err(WasmError::trap("invalid trunc op")),
     };
     match result {
         Ok(value) => {
@@ -317,10 +314,10 @@ fn wasm_f64_nearest_bits(bits: u64) -> u64 {
 fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value >= 2147483648.0_f32 || value < -2147483648.0_f32 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i32(value as i32))
 }
@@ -328,10 +325,10 @@ fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value >= 4294967296.0_f32 || value <= -1.0_f32 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(u64::from(value as u32))
 }
@@ -339,10 +336,10 @@ fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value >= 2147483648.0 || value <= -2147483649.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i32(value as i32))
 }
@@ -350,10 +347,10 @@ fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value >= 4294967296.0 || value <= -1.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(u64::from(value as u32))
 }
@@ -361,10 +358,10 @@ fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -9223372036854777856.0 || value >= 9223372036854775808.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i64(value as i64))
 }
@@ -372,10 +369,10 @@ fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 18446744073709551616.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(value as u64)
 }
@@ -383,10 +380,10 @@ fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -9223372036854777856.0 || value >= 9223372036854775808.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i64(value as i64))
 }
@@ -394,10 +391,10 @@ fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f64_to_i64_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 18446744073709551616.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(value as u64)
 }

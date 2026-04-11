@@ -100,9 +100,9 @@ pub(crate) fn eval_root_with_context(
     ctx: &mut NativeContext,
     fp: *mut u64,
 ) -> Result<(), WasmError> {
-    let program = compiled.function(func_id).ok_or_else(|| {
-        WasmError::internal("native entry function is missing machine code".into())
-    })?;
+    let program = compiled
+        .function(func_id)
+        .ok_or_else(|| WasmError::internal("native entry function is missing machine code"))?;
     let address_space = EmulatorAddressSpace::new(compiled, fp, ctx.stack_end);
     address_space.validate_runtime_shape(ctx)?;
     let runtime_base = address_space.runtime_base_value(ctx);
@@ -141,11 +141,7 @@ pub(crate) fn eval(
     let _ = backend; // consumed by function-trace feature
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
-        return Err(WasmError::invalid(alloc::format!(
-            "invalid argument count: got {}, expected {}",
-            args.len(),
-            func_type.params().len()
-        )));
+        return Err(WasmError::invalid("invalid argument count"));
     }
 
     let compiled = code.compiled();
@@ -154,9 +150,7 @@ pub(crate) fn eval(
         .abi()
         .functions
         .get(func_id.0 as usize)
-        .ok_or_else(|| {
-            WasmError::internal("native entry function is missing runtime metadata".into())
-        })?;
+        .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata"))?;
 
     let mut stack = collections::vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
@@ -238,9 +232,7 @@ impl<'a> Emulator<'a> {
                     let edge = entries
                         .get(index)
                         .or_else(|| entries.last())
-                        .ok_or_else(|| {
-                            WasmError::internal("machine jump table has no entries".into())
-                        })?;
+                        .ok_or_else(|| WasmError::internal("machine jump table has no entries"))?;
                     self.jump_to_edge(edge)
                 }
                 MachineTerminator::CallDirect {
@@ -834,9 +826,10 @@ impl<'a> Emulator<'a> {
     }
 
     fn execute_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
-        let metadata = self.compiled.const_ptr(call.metadata).ok_or_else(|| {
-            WasmError::internal("machine external-call metadata is out of range".into())
-        })?;
+        let metadata = self
+            .compiled
+            .const_ptr(call.metadata)
+            .ok_or_else(|| WasmError::internal("machine external-call metadata is out of range"))?;
         let entry = crate::vm::runtime::external::call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeCallStatus::Ok as u32 {
@@ -874,7 +867,7 @@ impl<'a> Emulator<'a> {
             .current_program()?
             .blocks
             .get(edge.target.as_usize())
-            .ok_or_else(|| WasmError::internal("machine edge target is out of range".into()))?
+            .ok_or_else(|| WasmError::internal("machine edge target is out of range"))?
             .params
             .clone();
         // Read every non-reserved arg up front so sequential writes below
@@ -888,10 +881,9 @@ impl<'a> Emulator<'a> {
             match *arg {
                 MachineValue::ReservedReg(reg) => {
                     if reg != param.reg {
-                        return Err(WasmError::internal(alloc::format!(
-                            "emulator received non-identity reserved cache edge move into {} from {}",
-                            param.reg.0, reg.0
-                        )));
+                        return Err(WasmError::internal(
+                            "emulator received non-identity reserved cache edge move into from",
+                        ));
                     }
                 }
                 other => {
@@ -956,7 +948,7 @@ impl<'a> Emulator<'a> {
         let callee_function = self
             .compiled
             .function(callee)
-            .ok_or_else(|| WasmError::internal("machine local callee is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("machine local callee is out of range"))?;
         let callee_runtime = self.runtime_for(callee)?;
         if check_stack_capacity {
             ensure_stack_capacity(
@@ -1091,7 +1083,7 @@ impl<'a> Emulator<'a> {
         Ok(&self
             .compiled
             .function(self.func_id)
-            .ok_or_else(|| WasmError::internal("machine current function is out of range".into()))?
+            .ok_or_else(|| WasmError::internal("machine current function is out of range"))?
             .program)
     }
 
@@ -1099,7 +1091,7 @@ impl<'a> Emulator<'a> {
         self.current_program()?
             .blocks
             .get(self.block_id.as_usize())
-            .ok_or_else(|| WasmError::internal("machine current block is out of range".into()))
+            .ok_or_else(|| WasmError::internal("machine current block is out of range"))
     }
 
     fn runtime_for(&self, func_id: MachineFuncId) -> Result<&MachineFunctionAbi, WasmError> {
@@ -1107,7 +1099,7 @@ impl<'a> Emulator<'a> {
             .abi()
             .functions
             .get(func_id.0 as usize)
-            .ok_or_else(|| WasmError::internal("machine runtime record is out of range".into()))
+            .ok_or_else(|| WasmError::internal("machine runtime record is out of range"))
     }
 
     fn init_reserved_regs(&mut self) -> Result<(), WasmError> {
@@ -1143,14 +1135,14 @@ impl<'a> Emulator<'a> {
         self.regs
             .get(reg.0 as usize)
             .copied()
-            .ok_or_else(|| WasmError::internal("machine register is out of range".into()))
+            .ok_or_else(|| WasmError::internal("machine register is out of range"))
     }
 
     fn write_reg(&mut self, reg: MachineReg, value: u64) -> Result<(), WasmError> {
         let slot = self
             .regs
             .get_mut(reg.0 as usize)
-            .ok_or_else(|| WasmError::internal("machine register is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("machine register is out of range"))?;
         *slot = value;
         Ok(())
     }
@@ -1184,7 +1176,7 @@ impl<'a> Emulator<'a> {
         let slot = self
             .addr_kinds
             .get_mut(reg.0 as usize)
-            .ok_or_else(|| WasmError::internal("machine register is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("machine register is out of range"))?;
         *slot = kind;
         Ok(())
     }
@@ -1192,10 +1184,9 @@ impl<'a> Emulator<'a> {
     fn read_value(&self, value: MachineValue) -> Result<u64, WasmError> {
         match value {
             MachineValue::Reg(reg) => self.read_reg(reg),
-            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                "emulator attempted to read reserved cache register {} as a real value",
-                reg.0
-            ))),
+            MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                "emulator attempted to read reserved cache register as a real value",
+            )),
             MachineValue::Imm64(value) => Ok(value),
         }
     }
@@ -1256,7 +1247,7 @@ impl<'a> Emulator<'a> {
         let in_wasm_region = ptr >= mem_base && ptr < mem_base + mem_size;
         if in_wasm_region {
             if ptr.saturating_add(size) > mem_base + mem_size {
-                return Err(WasmError::trap("out of bounds memory access".into()));
+                return Err(WasmError::trap("out of bounds memory access"));
             }
         }
         Ok(())
@@ -1266,16 +1257,16 @@ impl<'a> Emulator<'a> {
         let mem_base = self.ctx.mem0_base as u64;
         let mem_size = self.ctx.mem0_size;
         if mem_base == 0 || mem_size == 0 {
-            return Err(WasmError::trap("out of bounds memory access".into()));
+            return Err(WasmError::trap("out of bounds memory access"));
         }
         let end = addr
             .checked_add(size as u64)
-            .ok_or_else(|| WasmError::trap("out of bounds memory access".into()))?;
+            .ok_or_else(|| WasmError::trap("out of bounds memory access"))?;
         let mem_end = mem_base
             .checked_add(mem_size)
-            .ok_or_else(|| WasmError::trap("out of bounds memory access".into()))?;
+            .ok_or_else(|| WasmError::trap("out of bounds memory access"))?;
         if addr < mem_base || end > mem_end {
-            return Err(WasmError::trap("out of bounds memory access".into()));
+            return Err(WasmError::trap("out of bounds memory access"));
         }
         Ok(())
     }
@@ -1316,9 +1307,9 @@ impl<'a> Emulator<'a> {
             });
         }
         if matches!(self.address_space, EmulatorAddressSpace::Target32(_)) {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit load uses unmapped address 0x{addr_value:08x}"
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit load uses unmapped address 0x",
+            ));
         }
         let ptr = addr_value as *const u8;
         if base_kind == RegAddrKind::Mem0 {
@@ -1376,9 +1367,9 @@ impl<'a> Emulator<'a> {
             return result;
         }
         if matches!(self.address_space, EmulatorAddressSpace::Target32(_)) {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit store uses unmapped address 0x{addr_value:08x}"
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit store uses unmapped address 0x",
+            ));
         }
         let ptr = addr_value as *mut u8;
         if base_kind == RegAddrKind::Mem0 {
@@ -1476,29 +1467,23 @@ pub(crate) fn ensure_stack_capacity(
     let end =
         (fp as usize).saturating_add(total_frame_slots as usize * core::mem::size_of::<u64>());
     if end > stack_end as usize {
-        return Err(WasmError::exhaustion("stack overflow".into()));
+        return Err(WasmError::exhaustion("stack overflow"));
     }
     Ok(())
 }
 
 fn trap_from_kind(kind: MachineTrapKind) -> WasmError {
     match kind {
-        MachineTrapKind::Unreachable => WasmError::trap("unreachable executed".into()),
-        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access".into()),
-        MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access".into()),
-        MachineTrapKind::InvalidFunctionReference => {
-            WasmError::trap("invalid function reference".into())
-        }
-        MachineTrapKind::IndirectCallTypeMismatch => {
-            WasmError::trap("indirect call type mismatch".into())
-        }
-        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
-        MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::InvalidConversion => {
-            WasmError::trap("invalid conversion to integer".into())
-        }
-        MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
-        MachineTrapKind::HelperFailure => WasmError::trap("native helper failed".into()),
+        MachineTrapKind::Unreachable => WasmError::trap("unreachable executed"),
+        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access"),
+        MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access"),
+        MachineTrapKind::InvalidFunctionReference => WasmError::trap("invalid function reference"),
+        MachineTrapKind::IndirectCallTypeMismatch => WasmError::trap("indirect call type mismatch"),
+        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero"),
+        MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow"),
+        MachineTrapKind::InvalidConversion => WasmError::trap("invalid conversion to integer"),
+        MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow"),
+        MachineTrapKind::HelperFailure => WasmError::trap("native helper failed"),
     }
 }
 
@@ -2108,10 +2093,10 @@ fn wasm_f64_nearest_bits(bits: u64) -> u64 {
 fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -2147483649.0 || value >= 2147483648.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i32(value as i32))
 }
@@ -2119,10 +2104,10 @@ fn trunc_f32_to_i32_s(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 4294967296.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(u64::from(value as u32))
 }
@@ -2130,10 +2115,10 @@ fn trunc_f32_to_i32_u(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -2147483649.0 || value >= 2147483648.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i32(value as i32))
 }
@@ -2141,10 +2126,10 @@ fn trunc_f64_to_i32_s(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 4294967296.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(u64::from(value as u32))
 }
@@ -2152,10 +2137,10 @@ fn trunc_f64_to_i32_u(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -9223372036854777856.0 || value >= 9223372036854775808.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i64(value as i64))
 }
@@ -2163,10 +2148,10 @@ fn trunc_f32_to_i64_s(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
     let value = as_f32(bits as u64) as f64;
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 18446744073709551616.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(value as u64)
 }
@@ -2174,10 +2159,10 @@ fn trunc_f32_to_i64_u(bits: u32) -> Result<u64, WasmError> {
 fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -9223372036854777856.0 || value >= 9223372036854775808.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(from_i64(value as i64))
 }
@@ -2185,10 +2170,10 @@ fn trunc_f64_to_i64_s(bits: u64) -> Result<u64, WasmError> {
 fn trunc_f64_to_i64_u(bits: u64) -> Result<u64, WasmError> {
     let value = as_f64(bits);
     if value.is_nan() {
-        return Err(WasmError::trap("invalid conversion to integer".into()));
+        return Err(WasmError::trap("invalid conversion to integer"));
     }
     if value.is_infinite() || value <= -1.0 || value >= 18446744073709551616.0 {
-        return Err(WasmError::trap("integer overflow".into()));
+        return Err(WasmError::trap("integer overflow"));
     }
     Ok(value as u64)
 }

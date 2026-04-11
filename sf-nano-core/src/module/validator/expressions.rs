@@ -71,7 +71,7 @@ impl ConstExpr {
                         | GLOBAL_GET
                 )
             {
-                return Err(WasmError::invalid("Invalid opcode in passive code".into()));
+                return Err(WasmError::invalid("Invalid opcode in passive code"));
             }
             match op {
                 I32_CONST => {
@@ -108,7 +108,7 @@ impl ConstExpr {
                 GLOBAL_GET => {
                     let global_index = code.read_leb128_u32()? as usize;
                     if module.globals().len() <= global_index {
-                        return Err(WasmError::invalid("unknown global".into()));
+                        return Err(WasmError::invalid("unknown global"));
                     }
                     let global = &module.globals()[global_index];
                     if global.mutable() {
@@ -117,11 +117,11 @@ impl ConstExpr {
                         ));
                     }
                     if ctx.only_imported_globals && !global.is_import() {
-                        return Err(WasmError::invalid("unknown global".into()));
+                        return Err(WasmError::invalid("unknown global"));
                     }
                     if let Some(current_global_idx) = ctx.validating_global_index {
                         if global_index >= current_global_idx {
-                            return Err(WasmError::invalid("unknown global".into()));
+                            return Err(WasmError::invalid("unknown global"));
                         }
                     }
                     stack.push(global.value_type());
@@ -166,10 +166,10 @@ impl ConstExpr {
                     return Ok(stack.pop().unwrap());
                 }
                 _ => {
-                    return Err(WasmError::invalid("Invalid opcode".into()));
+                    return Err(WasmError::invalid("Invalid opcode"));
                 }
             }
         }
-        Err(WasmError::invalid("Unexpected end of input".into()))
+        Err(WasmError::invalid("Unexpected end of input"))
     }
 }

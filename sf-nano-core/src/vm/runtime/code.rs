@@ -25,11 +25,9 @@ struct AlignedConstData {
 impl AlignedConstData {
     fn new(record: &MachineConstData) -> Result<Self, WasmError> {
         if record.align as usize > core::mem::align_of::<u64>() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine const {} requires unsupported alignment {} in the emulator",
-                record.id.0,
-                record.align,
-            )));
+            return Err(WasmError::internal(
+                "machine const requires unsupported alignment in the emulator",
+            ));
         }
 
         let words = record.bytes.len().div_ceil(core::mem::size_of::<u64>());

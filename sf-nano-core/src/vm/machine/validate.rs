@@ -26,18 +26,14 @@ impl MachineProgram {
         let first_fp = config.first_fp_reg();
         let total = config.total_reg_count();
         if first_fp != max_gp_regs {
-            return Err(WasmError::internal(alloc::format!(
-                "expected first_fp_reg {} for 32-bit GP target MachineIR, found {}",
-                max_gp_regs,
-                first_fp,
-            )));
+            return Err(WasmError::internal(
+                "expected first_fp_reg for 32-bit GP target MachineIR, found",
+            ));
         }
         if total < first_fp {
-            return Err(WasmError::internal(alloc::format!(
-                "machine reg_count {} is below 32-bit GP-target fp boundary {}",
-                total,
-                first_fp,
-            )));
+            return Err(WasmError::internal(
+                "machine reg_count is below 32-bit GP-target fp boundary",
+            ));
         }
 
         for block in &self.blocks {
@@ -65,31 +61,23 @@ impl MachineProgram {
         }
 
         if self.entry.as_usize() >= self.blocks.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine entry block {} is out of range for {} blocks",
-                self.entry.as_usize(),
-                self.blocks.len(),
-            )));
+            return Err(WasmError::internal(
+                "machine entry block is out of range for blocks",
+            ));
         }
 
         let reg_count = config.total_reg_count();
         let first_fp = config.first_fp_reg();
         let fp_bank_count = reg_count.saturating_sub(first_fp) as usize;
         if !self.fp_reg_init_widths.is_empty() && self.fp_reg_init_widths.len() != fp_bank_count {
-            return Err(WasmError::internal(alloc::format!(
-                "machine fp_reg_init_widths length {} does not match fp bank size {}",
-                self.fp_reg_init_widths.len(),
-                fp_bank_count,
-            )));
+            return Err(WasmError::internal(
+                "machine fp_reg_init_widths length does not match fp bank size",
+            ));
         }
 
         for (index, block) in self.blocks.iter().enumerate() {
             if block.id.as_usize() != index {
-                return Err(WasmError::internal(alloc::format!(
-                    "machine block {} has mismatched id {}",
-                    index,
-                    block.id.as_usize(),
-                )));
+                return Err(WasmError::internal("machine block has mismatched id"));
             }
             for param in &block.params {
                 self.validate_param(*param, config)?;
@@ -113,18 +101,15 @@ impl MachineProgram {
     fn validate_param(&self, param: MachineBlockParam, config: BackendConfig) -> ValidateResult {
         self.validate_reg(param.reg, config)?;
         if is_fp_reg(param.reg, config) != param.ty.is_fp() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine block param {} has mismatched storage type {:?} for its register bank",
-                param.reg.0,
-                param.ty,
-            )));
+            return Err(WasmError::internal(
+                "machine block param has mismatched storage type for its register bank",
+            ));
         }
         if matches!(param.owner, MachineRegOwner::CachedLocal) && !is_dynamic_reg(param.reg, config)
         {
-            return Err(WasmError::internal(alloc::format!(
-                "cached-local block param {} must use a dynamic register",
-                param.reg.0,
-            )));
+            return Err(WasmError::internal(
+                "cached-local block param must use a dynamic register",
+            ));
         }
         Ok(())
     }
@@ -144,19 +129,17 @@ impl MachineProgram {
                     }
                 ) && !is_dynamic_reg(*dst, config)
                 {
-                    return Err(WasmError::internal(alloc::format!(
-                        "cached-local move destination {} must use a dynamic register",
-                        dst.0,
-                    )));
+                    return Err(WasmError::internal(
+                        "cached-local move destination must use a dynamic register",
+                    ));
                 }
             }
             MachineInstKind::FloatConst { dst, .. } => {
                 self.validate_reg(*dst, config)?;
                 if !is_fp_reg(*dst, config) {
-                    return Err(WasmError::internal(alloc::format!(
-                        "machine FloatConst destination {} must be an FP register",
-                        dst.0,
-                    )));
+                    return Err(WasmError::internal(
+                        "machine FloatConst destination must be an FP register",
+                    ));
                 }
             }
             MachineInstKind::Load { ty, dst, addr, .. } => {
@@ -171,10 +154,9 @@ impl MachineProgram {
                     }
                 ) && !is_dynamic_reg(*dst, config)
                 {
-                    return Err(WasmError::internal(alloc::format!(
-                        "cached-local load destination {} must use a dynamic register",
-                        dst.0,
-                    )));
+                    return Err(WasmError::internal(
+                        "cached-local load destination must use a dynamic register",
+                    ));
                 }
             }
             MachineInstKind::Store { ty, addr, src, .. } => {
@@ -616,13 +598,9 @@ impl MachineProgram {
         self.validate_block_id(edge.target, source_block, "edge target")?;
         let target = &self.blocks[edge.target.as_usize()];
         if edge.args.len() != target.params.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine block {} -> {} supplies {} args, but target expects {}",
-                source_block,
-                edge.target.as_usize(),
-                edge.args.len(),
-                target.params.len(),
-            )));
+            return Err(WasmError::internal(
+                "machine edge supplies the wrong number of args",
+            ));
         }
         for value in &edge.args {
             self.validate_value(*value, config)?;
@@ -634,22 +612,14 @@ impl MachineProgram {
         {
             if let MachineValue::ReservedReg(reg) = arg {
                 if !matches!(param.owner, MachineRegOwner::CachedLocal) {
-                    return Err(WasmError::internal(alloc::format!(
-                        "machine block {} -> {} uses ReservedReg {} for non-cached-local param {}",
-                        source_block,
-                        edge.target.as_usize(),
-                        reg.0,
-                        param.reg.0,
-                    )));
+                    return Err(WasmError::internal(
+                        "machine block -> uses ReservedReg for non-cached-local param",
+                    ));
                 }
                 if *reg != param.reg {
-                    return Err(WasmError::internal(alloc::format!(
-                        "machine block {} -> {} must reserve cached-local param {} in-place, got {}",
-                        source_block,
-                        edge.target.as_usize(),
-                        param.reg.0,
-                        reg.0,
-                    )));
+                    return Err(WasmError::internal(
+                        "machine block -> must reserve cached-local param in-place, got",
+                    ));
                 }
             }
         }
@@ -660,16 +630,11 @@ impl MachineProgram {
     fn validate_block_id(
         &self,
         block: MachineBlockId,
-        source_block: usize,
-        role: &str,
+        _source_block: usize,
+        _role: &str,
     ) -> ValidateResult {
         if block.as_usize() >= self.blocks.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine block {} has out-of-range {} {}",
-                source_block,
-                role,
-                block.as_usize(),
-            )));
+            return Err(WasmError::internal("machine block has out-of-range"));
         }
         Ok(())
     }
@@ -693,18 +658,14 @@ impl MachineProgram {
         let reg_count = config.total_reg_count();
         let first_fp = config.first_fp_reg();
         if reg.0 >= reg_count {
-            return Err(WasmError::internal(alloc::format!(
-                "machine register {} exceeds declared register count {}",
-                reg.0,
-                reg_count,
-            )));
+            return Err(WasmError::internal(
+                "machine register exceeds declared register count",
+            ));
         }
         if first_fp > reg_count {
-            return Err(WasmError::internal(alloc::format!(
-                "machine first_fp_reg {} exceeds declared register count {}",
-                first_fp,
-                reg_count,
-            )));
+            return Err(WasmError::internal(
+                "machine first_fp_reg exceeds declared register count",
+            ));
         }
         Ok(())
     }
@@ -717,11 +678,9 @@ impl MachineProgram {
         config: BackendConfig,
     ) -> ValidateResult {
         if is_fp_reg(reg, config) != ty.is_fp() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine register {} has storage type {:?} in the wrong bank",
-                reg.0,
-                ty,
-            )));
+            return Err(WasmError::internal(
+                "machine register has storage type in the wrong bank",
+            ));
         }
         Ok(())
     }
@@ -732,12 +691,8 @@ impl MachineModule {
         for func in &self.functions {
             func.program
                 .validate_32bit_gp_target(max_gp_regs, self.config)
-                .map_err(|err| {
-                    WasmError::internal(alloc::format!(
-                        "machine function {} is not valid 32-bit GP-target MachineIR: {}",
-                        func.id.0,
-                        err
-                    ))
+                .map_err(|_err| {
+                    WasmError::internal("machine function is not valid 32-bit GP-target MachineIR")
                 })?;
         }
         Ok(())
@@ -747,21 +702,13 @@ impl MachineModule {
     pub(crate) fn validate(&self) -> Result<(), WasmError> {
         for (index, konst) in self.consts.iter().enumerate() {
             if konst.id.0 as usize != index {
-                return Err(WasmError::internal(alloc::format!(
-                    "machine const {} has mismatched id {}",
-                    index,
-                    konst.id.0,
-                )));
+                return Err(WasmError::internal("machine const has mismatched id"));
             }
         }
 
         for (index, func) in self.functions.iter().enumerate() {
             if func.id.0 as usize != index {
-                return Err(WasmError::internal(alloc::format!(
-                    "machine function {} has mismatched id {}",
-                    index,
-                    func.id.0,
-                )));
+                return Err(WasmError::internal("machine function has mismatched id"));
             }
             func.program.validate(self.config)?;
             self.validate_function_refs(func.id, &func.program)?;
@@ -798,17 +745,14 @@ impl MachineModule {
     #[cfg(any(debug_assertions, test))]
     fn validate_const_id(
         &self,
-        func: MachineFuncId,
-        block_idx: usize,
+        _func: MachineFuncId,
+        _block_idx: usize,
         konst: MachineConstId,
     ) -> Result<(), WasmError> {
         if konst.0 as usize >= self.consts.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine function {} block {} has out-of-range const {}",
-                func.0,
-                block_idx,
-                konst.0,
-            )));
+            return Err(WasmError::internal(
+                "machine function block has out-of-range const",
+            ));
         }
         Ok(())
     }
@@ -816,40 +760,35 @@ impl MachineModule {
     #[cfg(any(debug_assertions, test))]
     fn validate_func_id(
         &self,
-        func: MachineFuncId,
-        block_idx: usize,
+        _func: MachineFuncId,
+        _block_idx: usize,
         callee: MachineFuncId,
     ) -> Result<(), WasmError> {
         if callee.0 as usize >= self.functions.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "machine function {} block {} has out-of-range callee {}",
-                func.0,
-                block_idx,
-                callee.0,
-            )));
+            return Err(WasmError::internal(
+                "machine function block has out-of-range callee",
+            ));
         }
         Ok(())
     }
 }
 
 fn validate_32bit_gp_target_param(
-    block_id: MachineBlockId,
-    param_index: usize,
+    _block_id: MachineBlockId,
+    _param_index: usize,
     param: MachineBlockParam,
 ) -> ValidateResult {
     if matches!(param.ty, MachineStorageType::GpI64) {
-        return Err(WasmError::internal(alloc::format!(
-            "block {} param {} still uses GpI64 on a 32-bit GP target",
-            block_id.0,
-            param_index,
-        )));
+        return Err(WasmError::internal(
+            "block param still uses GpI64 on a 32-bit GP target",
+        ));
     }
     Ok(())
 }
 
 fn validate_32bit_gp_target_inst(
-    block_id: MachineBlockId,
-    inst_index: usize,
+    _block_id: MachineBlockId,
+    _inst_index: usize,
     inst: &MachineInstKind,
 ) -> ValidateResult {
     let detail = match inst {
@@ -880,32 +819,24 @@ fn validate_32bit_gp_target_inst(
         _ => None,
     };
 
-    if let Some(detail) = detail {
-        return Err(WasmError::internal(alloc::format!(
-            "block {} op {} {:?} {}",
-            block_id.0,
-            inst_index,
-            inst,
-            detail,
-        )));
+    if detail.is_some() {
+        return Err(WasmError::internal("block op"));
     }
 
     Ok(())
 }
 
 fn validate_32bit_gp_target_term(
-    block_id: MachineBlockId,
+    _block_id: MachineBlockId,
     term: &MachineTerminator,
 ) -> ValidateResult {
     match term {
         MachineTerminator::Branch { cond, .. }
             if branch_cond_requires_32bit_finalization(*cond) =>
         {
-            Err(WasmError::internal(alloc::format!(
-                "block {} terminator {:?} still uses an i64 branch condition",
-                block_id.0,
-                term,
-            )))
+            Err(WasmError::internal(
+                "block terminator still uses an i64 branch condition",
+            ))
         }
         _ => Ok(()),
     }

@@ -9,7 +9,9 @@ use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use super::{EM_AARCH64, EM_NONE};
+#[cfg(sf_arch_arm64)]
+use super::EM_AARCH64;
+use super::EM_NONE;
 
 const CLOCK_MONOTONIC: i32 = 1;
 

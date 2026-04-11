@@ -310,7 +310,7 @@ impl TableSpec {
             value_type,
             limits: limits
                 .with_default_max(default_max)
-                .map_err(|e| crate::wasm_error!(invalid, "table limits: {}", e))?,
+                .map_err(|_| WasmError::invalid("table limits"))?,
         })
     }
 
@@ -418,7 +418,7 @@ impl MemorySpec {
         Ok(MemorySpec {
             limits: limits
                 .with_default_max(default_max)
-                .map_err(|e| crate::wasm_error!(invalid, "memory limits: {}", e))?,
+                .map_err(|_| WasmError::invalid("memory limits"))?,
         })
     }
 }

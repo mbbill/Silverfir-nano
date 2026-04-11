@@ -155,11 +155,9 @@ pub(crate) fn rewrite_function(
         .find(|block| block.id == program.entry)
     {
         if !entry_block.params.is_empty() {
-            return Err(WasmError::internal(alloc::format!(
-                "entry block {} unexpectedly has {} SSA params after middle rewrite",
-                entry_block.id.0,
-                entry_block.params.len()
-            )));
+            return Err(WasmError::internal(
+                "entry block unexpectedly has SSA params after middle rewrite",
+            ));
         }
     }
 
@@ -267,7 +265,7 @@ fn lower_block_range(
     let last_index = semantic_range
         .end
         .checked_sub(1)
-        .ok_or_else(|| WasmError::internal("SSA-IR block cannot be empty".into()))?;
+        .ok_or_else(|| WasmError::internal("SSA-IR block cannot be empty"))?;
 
     for semantic_index in semantic_range.start..last_index {
         if matches!(semantic.ops[semantic_index].kind, SemanticOpKind::End) {
@@ -339,11 +337,9 @@ fn lower_prefix_actions(
     });
     for slot in before_op.drop_cached_locals {
         if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(alloc::format!(
-                "planner dropped uncached local slot {} before semantic op {}",
-                slot.0,
-                semantic_index
-            )));
+            return Err(WasmError::internal(
+                "planner dropped uncached local slot before semantic op",
+            ));
         }
         materialized_cache.remove(&slot);
         state.ops.push(SsaInst {
@@ -363,11 +359,9 @@ fn lower_prefix_actions(
     );
     for &slot in &scratch.pressure_drops {
         if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(alloc::format!(
-                "planner fallback dropped uncached local slot {} before semantic op {}",
-                slot.0,
-                semantic_index
-            )));
+            return Err(WasmError::internal(
+                "planner fallback dropped uncached local slot before semantic op",
+            ));
         }
         materialized_cache.remove(&slot);
         state.ops.push(SsaInst {
@@ -397,11 +391,9 @@ fn realize_transient_contract(
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     if state.height() != target.stack_height {
-        return Err(WasmError::internal(alloc::format!(
-            "planner expected stack height {} before op, but rewrite has {}",
-            target.stack_height,
-            state.height()
-        )));
+        return Err(WasmError::internal(
+            "planner expected stack height before op, but rewrite has",
+        ));
     }
 
     let current_spill_depth = state.spill_depth();
@@ -409,7 +401,7 @@ fn realize_transient_contract(
         let fill_count = (current_spill_depth - target.spill_depth) as usize;
         if target.live_types.len() < fill_count {
             return Err(WasmError::internal(
-                "planner fill contract has fewer types than required".into(),
+                "planner fill contract has fewer types than required",
             ));
         }
         let fill_types: collections::Vec<_> = target.live_types[..fill_count].to_vec().into();
@@ -443,7 +435,7 @@ fn realize_transient_contract(
     if state.spill_depth() != target.spill_depth || state.live_types.as_slice() != target.live_types
     {
         return Err(WasmError::internal(
-            "planner transient contract does not match realized rewrite state".into(),
+            "planner transient contract does not match realized rewrite state",
         ));
     }
     Ok(())
@@ -456,7 +448,7 @@ fn ensure_state_fits_with_cache(
     state: &BlockState,
     resident_cache: &BTreeSet<FrameSlot>,
     local_slot_types: &[ValueType],
-    context: &str,
+    _context: &str,
 ) -> Result<(), WasmError> {
     let effective_live_types = state
         .live_types
@@ -476,13 +468,9 @@ fn ensure_state_fits_with_cache(
     if gp_live + gp_cache > state.gp_live_budget as usize
         || fp_live + fp_cache > state.fp_live_budget as usize
     {
-        return Err(WasmError::internal(alloc::format!(
-            "planner exceeded dynamic bank budget during {context}: gp {} > {} or fp {} > {}",
-            gp_live + gp_cache,
-            state.gp_live_budget,
-            fp_live + fp_cache,
-            state.fp_live_budget,
-        )));
+        return Err(WasmError::internal(
+            "planner exceeded dynamic bank budget during : gp > or fp >",
+        ));
     }
     Ok(())
 }
@@ -528,11 +516,9 @@ fn apply_pressure_fallback_after_op(
     );
     for &slot in &scratch.pressure_drops {
         if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(alloc::format!(
-                "planner fallback dropped uncached local slot {} after semantic op {}",
-                slot.0,
-                semantic_index
-            )));
+            return Err(WasmError::internal(
+                "planner fallback dropped uncached local slot after semantic op",
+            ));
         }
         materialized_cache.remove(&slot);
         state.ops.push(SsaInst {
@@ -567,7 +553,7 @@ fn lower_block_body_op(
     )?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
-            Err(WasmError::internal("unreachable must end a block".into()))
+            Err(WasmError::internal("unreachable must end a block"))
         }
         SemanticOpKind::Primitive(kind) => lower_primitive(
             semantic,
@@ -650,7 +636,7 @@ fn lower_block_body_op(
             Ok(())
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
-        SemanticOpKind::Else { .. } => Err(WasmError::internal("else must end a block".into())),
+        SemanticOpKind::Else { .. } => Err(WasmError::internal("else must end a block")),
         SemanticOpKind::If { .. }
         | SemanticOpKind::Br { .. }
         | SemanticOpKind::BrIf { .. }
@@ -1431,7 +1417,7 @@ fn fallthrough_target(
     let next = semantic_index
         .checked_add(1)
         .filter(|next| *next < semantic_len)
-        .ok_or_else(|| WasmError::invalid("missing fallthrough target".into()))?;
+        .ok_or_else(|| WasmError::invalid("missing fallthrough target"))?;
     Ok(SemanticTarget::new(next))
 }
 
@@ -1525,7 +1511,7 @@ fn next_edge(
     let next = semantic_index
         .checked_add(1)
         .filter(|next| *next < semantic_len)
-        .ok_or_else(|| WasmError::invalid("missing fallthrough target".into()))?;
+        .ok_or_else(|| WasmError::invalid("missing fallthrough target"))?;
     edge_to_target(
         SemanticTarget::new(next),
         state,
@@ -1557,10 +1543,10 @@ fn edge_to_target(
     let target_block = semantic_to_block
         .get(target.index().as_usize())
         .copied()
-        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+        .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
     let target_params = block_params
         .get(target_block.as_usize())
-        .ok_or_else(|| WasmError::invalid("edge target out of range".into()))?;
+        .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
 
     let mapped_height = match mapping {
         EdgeMapping::Identity => state.height(),
@@ -1569,12 +1555,9 @@ fn edge_to_target(
         }
     };
     if mapped_height != target_entry.transient.stack_height {
-        return Err(WasmError::internal(alloc::format!(
-            "edge to semantic op {} computes stack height {}, but target expects {}",
-            target.index().as_usize(),
-            mapped_height,
-            target_entry.transient.stack_height,
-        )));
+        return Err(WasmError::internal(
+            "edge to semantic op computes stack height , but target expects",
+        ));
     }
 
     let bindings = match mapping {
@@ -1636,7 +1619,7 @@ fn bind_values(
     values: &[SsaValue],
 ) -> Result<collections::Vec<SsaBinding>, WasmError> {
     if target_params.len() != values.len() {
-        return Err(WasmError::internal("edge binding mismatch".into()));
+        return Err(WasmError::internal("edge binding mismatch"));
     }
     Ok(target_params
         .iter()

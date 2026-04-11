@@ -956,10 +956,7 @@ impl<'a> DecodeContext<'a> {
             OP(NOP) => self.handle_primitive(PrimitiveOpKind::Nop),
 
             _ => {
-                return Err(WasmError::invalid(alloc::format!(
-                    "unsupported semantic decode opcode: {:?}",
-                    wasm_op
-                )));
+                return Err(WasmError::invalid("unsupported semantic decode opcode"));
             }
         }
 

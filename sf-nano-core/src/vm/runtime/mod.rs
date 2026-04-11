@@ -132,7 +132,7 @@ pub(crate) fn eval(
     args: &[Value],
 ) -> Result<ResultBuffer, WasmError> {
     let engine = active_runtime_engine()
-        .map_err(|err| WasmError::invalid(alloc::format!("runtime backend unavailable: {err}")))?;
+        .map_err(|_err| WasmError::invalid("runtime backend unavailable"))?;
 
     #[cfg(sf_jit)]
     {

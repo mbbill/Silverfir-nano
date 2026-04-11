@@ -162,9 +162,9 @@ fn finish_native_compile(
 
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let active_backend = arch::active_native_backend()
-        .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
+        .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
     let backend = arch::active_backend_config()
-        .map_err(|err| WasmError::invalid(alloc::format!("native backend unavailable: {err}")))?;
+        .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
     let module = store.module();
     let all_compiled = module
         .functions
@@ -185,7 +185,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     // Phase 1: Decode all functions to semantic IR.
     let mut semantics: collections::Vec<Option<SemanticProgram>> =
         collections::Vec::with_capacity(module.functions.len());
-    for (func_idx, func) in module.functions.iter().enumerate() {
+    for (_func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
             semantics.push(None);
             continue;
@@ -208,13 +208,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 spec.func_type().results(),
             ),
         )
-        .map_err(|err| {
-            WasmError::internal(alloc::format!(
-                "native decode failed for function {}: {}",
-                func_idx,
-                err
-            ))
-        })?;
+        .map_err(|_err| WasmError::internal("native decode failed for function"))?;
         semantics.push(Some(semantic));
     }
 
@@ -247,20 +241,12 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             continue;
         };
         let semantic = semantics[func_idx].take().unwrap();
-        let prepared = prepare_function(PrepareInput { config: backend }, &semantic).map_err(
-            |err| {
-                WasmError::internal(alloc::format!(
-                    "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
-                    func_idx,
-                    spec.type_index(),
-                    spec.func_type().params().len(),
-                    spec.func_type().results().len(),
-                    semantic.max_stack_height,
-                    semantic.ops.len(),
-                    err
-                ))
-            },
-        )?;
+        let prepared =
+            prepare_function(PrepareInput { config: backend }, &semantic).map_err(|_err| {
+                WasmError::internal(
+                    "native prepare failed for function type_idx= params= results= max_stack= ops=",
+                )
+            })?;
         groups += 1;
         ssa_ops += prepared
             .ssa

@@ -6,7 +6,6 @@
 
 use crate::collections;
 
-use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 
@@ -66,10 +65,7 @@ impl TryFrom<u8> for WasmSection {
             10 => Ok(WasmSection::Code),
             11 => Ok(WasmSection::Data),
             12 => Ok(WasmSection::DataCount),
-            _ => Err(WasmError::malformed(format!(
-                "Invalid section id: {}",
-                value
-            ))),
+            _ => Err(WasmError::malformed("Invalid section id")),
         }
     }
 }
@@ -92,10 +88,7 @@ impl TryFrom<u8> for ExternalKind {
             1 => Ok(ExternalKind::Table),
             2 => Ok(ExternalKind::Memory),
             3 => Ok(ExternalKind::Global),
-            _ => Err(WasmError::malformed(format!(
-                "Invalid external kind: {}",
-                value
-            ))),
+            _ => Err(WasmError::malformed("Invalid external kind")),
         }
     }
 }
@@ -130,7 +123,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
 
     let magic = payload.read_bytes(4)?;
     if magic != WASM_MAGIC_NUMBER {
-        return Err(WasmError::malformed("Invalid magic number".to_string()));
+        return Err(WasmError::malformed("Invalid magic number"));
     }
 
     let mut previous_section = WasmSection::Custom;
@@ -165,7 +158,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         };
 
         if !valid {
-            return Err(WasmError::malformed("Invalid section order".to_string()));
+            return Err(WasmError::malformed("Invalid section order"));
         }
 
         previous_section = current;
@@ -176,14 +169,13 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         payload
             .read_bytes(4)?
             .try_into()
-            .map_err(|_| WasmError::malformed("Invalid version number".to_string()))?,
+            .map_err(|_| WasmError::malformed("Invalid version number"))?,
     );
 
     if version != 1 {
-        return Err(WasmError::malformed(format!(
-            "Invalid WebAssembly version: {}. Expected version 1.",
-            version
-        )));
+        return Err(WasmError::malformed(
+            "Invalid WebAssembly version: . Expected version 1.",
+        ));
     }
 
     let mut types: collections::Vec<Rc<FunctionType>> = collections::Vec::new();
@@ -251,9 +243,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
             WasmSection::Start => {
                 let index = section_payload.read_leb128_u32()? as usize;
                 if index >= functions.len() {
-                    return Err(WasmError::malformed(
-                        "Invalid start function index".to_string(),
-                    ));
+                    return Err(WasmError::malformed("Invalid start function index"));
                 }
                 start_func_index = Some(index);
             }
@@ -271,7 +261,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
             }
         }
         if !section_payload.is_empty() {
-            return Err(WasmError::malformed("Invalid section length".to_string()));
+            return Err(WasmError::malformed("Invalid section length"));
         }
     }
 
@@ -348,10 +338,7 @@ fn parse_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
             let max = payload.read_leb128_u64()? as usize;
             Ok(Limits::new_64(min, Some(max))?)
         }
-        _ => Err(WasmError::malformed(format!(
-            "malformed table limits flag: 0x{:02x}",
-            tag
-        ))),
+        _ => Err(WasmError::malformed("malformed table limits flag: 0x")),
     }
 }
 
@@ -361,7 +348,7 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
     let mut code: Payload = payload.remaining_slice().into();
     let position = 'outer: loop {
         if code.is_empty() {
-            break Err(WasmError::malformed("Empty constexpr".to_string()));
+            break Err(WasmError::malformed("Empty constexpr"));
         }
         let op: Opcode = code.read_u8()?.try_into()?;
         match op {
@@ -391,10 +378,7 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
                 break 'outer Ok(code.position());
             }
             _ => {
-                break 'outer Err(WasmError::malformed(format!(
-                    "Invalid opcode {:?} in constexpr",
-                    op
-                )));
+                break 'outer Err(WasmError::malformed("Invalid opcode in constexpr"));
             }
         }
     }?;
@@ -418,10 +402,7 @@ fn parse_globaltype(payload: &mut Payload) -> Result<(ValueType, bool), WasmErro
 fn parse_tabletype(payload: &mut Payload) -> Result<(ValueType, Limits), WasmError> {
     let value_type = parse_valtype(payload)?;
     if !value_type.is_ref() {
-        return Err(WasmError::invalid(format!(
-            "Invalid table type: {:?}",
-            value_type
-        )));
+        return Err(WasmError::invalid("Invalid table type"));
     }
     let limits = parse_limits(payload)?;
     Ok((value_type, limits))
@@ -440,10 +421,9 @@ fn parse_type_section(
     for _ in 0..count {
         let tag = payload.read_u8()?;
         if tag != 0x60 {
-            return Err(WasmError::malformed(format!(
-                "Invalid type tag: 0x{:02X} (expected 0x60 for function type)",
-                tag
-            )));
+            return Err(WasmError::malformed(
+                "Invalid type tag: 0x (expected 0x60 for function type)",
+            ));
         }
         let params = parse_resulttype(payload)?;
         let results = parse_resulttype(payload)?;
@@ -473,7 +453,7 @@ fn parse_import_section(
                 let type_index = payload.read_leb128_u32()?;
                 let func_type = types
                     .get(type_index as usize)
-                    .ok_or_else(|| WasmError::invalid("Invalid function type index".to_string()))?;
+                    .ok_or_else(|| WasmError::invalid("Invalid function type index"))?;
                 functions.push(Function::new_import(
                     module_name,
                     field_name,
@@ -517,7 +497,7 @@ fn parse_function_section(
     for index in indices {
         let func_type = types
             .get(index)
-            .ok_or_else(|| WasmError::invalid("Invalid function type index".to_string()))?;
+            .ok_or_else(|| WasmError::invalid("Invalid function type index"))?;
         functions.push(Function::new_local(func_type.clone(), index as u32));
     }
     Ok(())
@@ -575,41 +555,38 @@ fn parse_export_section(
     for _ in 0..count {
         let name = payload.read_length_prefixed_utf8()?.to_string();
         let kind = ExternalKind::try_from(payload.read_u8()?)
-            .map_err(|_| WasmError::malformed("Invalid export kind".to_string()))?;
+            .map_err(|_| WasmError::malformed("Invalid export kind"))?;
         let index = payload.read_leb128_u32()? as usize;
 
         // Validate unique export name
         if export_names.iter().any(|n| n == &name) {
-            return Err(WasmError::invalid(format!(
-                "duplicate export name: {}",
-                name
-            )));
+            return Err(WasmError::invalid("duplicate export name"));
         }
         export_names.push(name.clone());
 
         match kind {
             ExternalKind::Function => {
-                let f = functions.get_mut(index).ok_or_else(|| {
-                    WasmError::invalid("Invalid export function index".to_string())
-                })?;
+                let f = functions
+                    .get_mut(index)
+                    .ok_or_else(|| WasmError::invalid("Invalid export function index"))?;
                 f.add_export_name(name);
             }
             ExternalKind::Table => {
                 let t = tables
                     .get_mut(index)
-                    .ok_or_else(|| WasmError::invalid("Invalid export table index".to_string()))?;
+                    .ok_or_else(|| WasmError::invalid("Invalid export table index"))?;
                 t.add_export_name(name);
             }
             ExternalKind::Memory => {
                 let m = memories
                     .get_mut(index)
-                    .ok_or_else(|| WasmError::invalid("Invalid export memory index".to_string()))?;
+                    .ok_or_else(|| WasmError::invalid("Invalid export memory index"))?;
                 m.add_export_name(name);
             }
             ExternalKind::Global => {
                 let g = globals
                     .get_mut(index)
-                    .ok_or_else(|| WasmError::invalid("Invalid export global index".to_string()))?;
+                    .ok_or_else(|| WasmError::invalid("Invalid export global index"))?;
                 g.add_export_name(name);
             }
         }
@@ -620,10 +597,7 @@ fn parse_export_section(
 fn parse_validate_reftype(payload: &mut Payload) -> Result<ValueType, WasmError> {
     let valtype = parse_valtype(payload)?;
     if !valtype.is_ref() {
-        return Err(WasmError::malformed(format!(
-            "Invalid element kind: {:?}",
-            valtype
-        )));
+        return Err(WasmError::malformed("Invalid element kind"));
     }
     Ok(valtype)
 }
@@ -631,7 +605,7 @@ fn parse_validate_reftype(payload: &mut Payload) -> Result<ValueType, WasmError>
 fn parse_validate_element_kind(payload: &mut Payload) -> Result<(), WasmError> {
     let element_kind = payload.read_u8()?;
     if element_kind != 0x0 {
-        return Err(WasmError::invalid("Invalid element kind".to_string()));
+        return Err(WasmError::invalid("Invalid element kind"));
     }
     Ok(())
 }
@@ -713,7 +687,7 @@ fn parse_element<'a>(payload: &mut Payload<'a>) -> Result<Element, WasmError> {
                 exprs,
             }))
         }
-        _ => Err(WasmError::malformed("Invalid element kind".to_string())),
+        _ => Err(WasmError::malformed("Invalid element kind")),
     }
 }
 
@@ -731,9 +705,9 @@ fn parse_code(
         let count = payload.read_leb128_u32()?;
         total_locals = total_locals
             .checked_add(count)
-            .ok_or_else(|| WasmError::malformed("Too many locals (overflow)".to_string()))?;
+            .ok_or_else(|| WasmError::malformed("Too many locals (overflow)"))?;
         if total_locals > constants::MAX_LOCALS {
-            return Err(WasmError::malformed("Too many locals".to_string()));
+            return Err(WasmError::malformed("Too many locals"));
         }
         let value_type = parse_valtype(payload)?;
         local_groups.push((count, value_type));
@@ -751,7 +725,7 @@ fn parse_code(
     let code = payload.advance_and_split_at(code_size)?;
     // WASM spec: every function body must end with the END (0x0b) opcode
     if code.last() != Some(&0x0b) {
-        return Err(WasmError::malformed("END opcode expected".to_string()));
+        return Err(WasmError::malformed("END opcode expected"));
     }
     Ok((locals, code.into(), code_begin))
 }
@@ -769,13 +743,13 @@ fn parse_code_section(
         code_offset += payload_offset;
         let function_index = index
             .checked_add(imported_count)
-            .ok_or_else(|| WasmError::malformed("Function index overflow".to_string()))?;
-        let function = functions.get_mut(function_index).ok_or_else(|| {
-            WasmError::malformed("Invalid function index in code section".to_string())
-        })?;
-        let spec = function.spec_mut().ok_or_else(|| {
-            WasmError::invalid("Expected local function for code section".to_string())
-        })?;
+            .ok_or_else(|| WasmError::malformed("Function index overflow"))?;
+        let function = functions
+            .get_mut(function_index)
+            .ok_or_else(|| WasmError::malformed("Invalid function index in code section"))?;
+        let spec = function
+            .spec_mut()
+            .ok_or_else(|| WasmError::invalid("Expected local function for code section"))?;
         spec.set_locals(locals);
         spec.set_code(code);
         spec.set_code_offset(code_offset);
@@ -804,7 +778,7 @@ fn parse_data<'a>(payload: &mut Payload<'a>) -> Result<Data, WasmError> {
             let init = payload.advance_and_split_at(bytes)?;
             Ok(Data::new_active(memory_index, offset_expr, init))
         }
-        _ => Err(WasmError::malformed("Invalid data kind".to_string())),
+        _ => Err(WasmError::malformed("Invalid data kind")),
     }
 }
 
@@ -815,7 +789,7 @@ fn parse_data_section(
     let data = parse_vec(payload, parse_data)?;
     if let Some(dc) = data_count {
         if data.len() != dc {
-            return Err(WasmError::malformed("Invalid data count".to_string()));
+            return Err(WasmError::malformed("Invalid data count"));
         }
     }
     Ok(data)

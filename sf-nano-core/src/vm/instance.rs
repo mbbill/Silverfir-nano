@@ -2,7 +2,6 @@
 
 use crate::collections;
 
-use alloc::format;
 use alloc::string::{String, ToString};
 
 use crate::error::WasmError;
@@ -168,10 +167,9 @@ impl Instance {
                                 if actual_type.params() != func_type.params()
                                     || actual_type.results() != func_type.results()
                                 {
-                                    return Err(WasmError::unlinkable(format!(
-                                        "incompatible import type: {}.{}",
-                                        mod_name, name
-                                    )));
+                                    return Err(WasmError::unlinkable(
+                                        "incompatible import type: .",
+                                    ));
                                 }
                             }
                             functions.push(FunctionInst::External {
@@ -180,10 +178,7 @@ impl Instance {
                             });
                         }
                         _ => {
-                            return Err(WasmError::unlinkable(format!(
-                                "missing function import: {}.{}",
-                                mod_name, name
-                            )));
+                            return Err(WasmError::unlinkable("missing function import: ."));
                         }
                     }
                 }
@@ -213,19 +208,15 @@ impl Instance {
                             let declared_min = table.limits().min();
                             let declared_max = table.limits().max();
                             if *initial_size < declared_min {
-                                return Err(WasmError::unlinkable(format!(
-                                    "incompatible import type: {}.{}",
-                                    mod_name, name
-                                )));
+                                return Err(WasmError::unlinkable("incompatible import type: ."));
                             }
                             if let Some(d_max) = declared_max {
                                 match max_size {
                                     Some(a_max) if *a_max <= d_max => {}
                                     _ => {
-                                        return Err(WasmError::unlinkable(format!(
-                                            "incompatible import type: {}.{}",
-                                            mod_name, name
-                                        )));
+                                        return Err(WasmError::unlinkable(
+                                            "incompatible import type: .",
+                                        ));
                                     }
                                 }
                             }
@@ -233,10 +224,7 @@ impl Instance {
                             tables.push(TableInst::new(import_limits, table.value_type()));
                         }
                         _ => {
-                            return Err(WasmError::unlinkable(format!(
-                                "missing table import: {}.{}",
-                                mod_name, name
-                            )));
+                            return Err(WasmError::unlinkable("missing table import: ."));
                         }
                     }
                 }
@@ -273,19 +261,15 @@ impl Instance {
                             let declared_min = mem.limits().min();
                             let declared_max = mem.limits().max();
                             if *initial_pages < declared_min {
-                                return Err(WasmError::unlinkable(format!(
-                                    "incompatible import type: {}.{}",
-                                    mod_name, name
-                                )));
+                                return Err(WasmError::unlinkable("incompatible import type: ."));
                             }
                             if let Some(d_max) = declared_max {
                                 match max_pages {
                                     Some(a_max) if *a_max <= d_max => {}
                                     _ => {
-                                        return Err(WasmError::unlinkable(format!(
-                                            "incompatible import type: {}.{}",
-                                            mod_name, name
-                                        )));
+                                        return Err(WasmError::unlinkable(
+                                            "incompatible import type: .",
+                                        ));
                                     }
                                 }
                             }
@@ -300,10 +284,7 @@ impl Instance {
                             }
                         }
                         _ => {
-                            return Err(WasmError::unlinkable(format!(
-                                "missing memory import: {}.{}",
-                                mod_name, name
-                            )));
+                            return Err(WasmError::unlinkable("missing memory import: ."));
                         }
                     }
                 }
@@ -337,24 +318,15 @@ impl Instance {
                         }) => {
                             let val_type = val.value_type();
                             if val_type != *value_type {
-                                return Err(WasmError::unlinkable(format!(
-                                    "incompatible import type: {}.{}",
-                                    mod_name, name
-                                )));
+                                return Err(WasmError::unlinkable("incompatible import type: ."));
                             }
                             if *imp_mutable != *mutable {
-                                return Err(WasmError::unlinkable(format!(
-                                    "incompatible import type: {}.{}",
-                                    mod_name, name
-                                )));
+                                return Err(WasmError::unlinkable("incompatible import type: ."));
                             }
                             globals.push(GlobalInst::new(*val, *mutable, *value_type));
                         }
                         _ => {
-                            return Err(WasmError::unlinkable(format!(
-                                "missing global import: {}.{}",
-                                mod_name, name
-                            )));
+                            return Err(WasmError::unlinkable("missing global import: ."));
                         }
                     }
                 }
@@ -395,16 +367,14 @@ impl Instance {
                     init,
                 } => {
                     if *table_index >= store.module().tables.len() {
-                        return Err(WasmError::unlinkable("unknown table".to_string()));
+                        return Err(WasmError::unlinkable("unknown table"));
                     }
                     let offset = eval_offset(offset_expr, store.module())?;
                     let refs = materialize_element_init(init, store.module())?;
 
                     let table = store.table_mut(*table_index);
                     if offset + refs.len() > table.elements.len() {
-                        return Err(WasmError::unlinkable(
-                            "out of bounds table access".to_string(),
-                        ));
+                        return Err(WasmError::unlinkable("out of bounds table access"));
                     }
                     table.elements[offset..offset + refs.len()].copy_from_slice(&refs);
                     store.module_mut().elements[i].drop_segment();
@@ -430,9 +400,7 @@ impl Instance {
                     let mem = store.memory_mut(*memory_index);
                     let mem_len = mem.memory_len();
                     if offset + init.len() > mem_len {
-                        return Err(WasmError::unlinkable(
-                            "out of bounds memory access".to_string(),
-                        ));
+                        return Err(WasmError::unlinkable("out of bounds memory access"));
                     }
                     let dst = unsafe {
                         core::slice::from_raw_parts_mut(mem.memory_ptr().add(offset), init.len())
@@ -461,7 +429,7 @@ impl Instance {
             .exports
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
-            .ok_or_else(|| WasmError::invalid(format!("exported function not found: {}", name)))?;
+            .ok_or_else(|| WasmError::invalid("exported function not found"))?;
         let idx = *idx;
 
         let func_ptr = &self.store.module().functions[idx] as *const FunctionInst;
@@ -506,10 +474,10 @@ impl Instance {
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
             .map(|(_, _, idx)| *idx)
-            .ok_or_else(|| WasmError::invalid(format!("global not found: {}", name)))?;
+            .ok_or_else(|| WasmError::invalid("global not found"))?;
         let global = self.store.global_mut(idx);
         if !global.mutable {
-            return Err(WasmError::invalid("cannot set immutable global".into()));
+            return Err(WasmError::invalid("cannot set immutable global"));
         }
         global.set_value(value);
         Ok(())
@@ -558,19 +526,19 @@ fn eval_offset(
     match value {
         Value::I32(v) => {
             if v < 0 {
-                Err(WasmError::unlinkable("offset is negative".into()))
+                Err(WasmError::unlinkable("offset is negative"))
             } else {
                 Ok(v as usize)
             }
         }
         Value::I64(v) => {
             if v < 0 {
-                Err(WasmError::unlinkable("offset is negative".into()))
+                Err(WasmError::unlinkable("offset is negative"))
             } else {
                 Ok(v as usize)
             }
         }
-        _ => Err(WasmError::invalid("offset must be i32 or i64".into())),
+        _ => Err(WasmError::invalid("offset must be i32 or i64")),
     }
 }
 

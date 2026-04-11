@@ -164,7 +164,7 @@ unsafe extern "C" fn x86_64_trapping_trunc_win(
         5 => trunc_f32_to_i64_u(src_bits as u32),
         6 => trunc_f64_to_i64_s(src_bits),
         7 => trunc_f64_to_i64_u(src_bits),
-        _ => Err(WasmError::trap("invalid trunc op".into())),
+        _ => Err(WasmError::trap("invalid trunc op")),
     };
     match result {
         Ok(value) => {

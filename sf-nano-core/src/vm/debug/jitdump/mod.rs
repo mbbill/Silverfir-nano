@@ -49,7 +49,7 @@ use windows::{elf_machine_arch, monotonic_timestamp_nanos, open_tracking_file};
 
 #[cfg(any(sf_os_linux, sf_os_windows))]
 pub(super) const EM_NONE: u32 = 0;
-#[cfg(any(sf_os_linux, sf_os_macos))]
+#[cfg(any(sf_os_macos, all(sf_os_linux, sf_arch_arm64)))]
 pub(super) const EM_AARCH64: u32 = 183;
 
 // ── Public entry point ──────────────────────────────────────────────────────

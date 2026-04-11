@@ -44,13 +44,13 @@ impl GuardPageMemory {
             ));
         }
 
-        let base = os::reserve_guarded(GUARD_RESERVATION)
-            .map_err(|msg| WasmError::internal(msg.into()))?;
+        let base =
+            os::reserve_guarded(GUARD_RESERVATION).map_err(|msg| WasmError::internal(msg))?;
 
         if initial_bytes > 0 {
             if let Err(msg) = os::commit_guarded(base, 0, initial_bytes) {
                 os::release_guarded(base, GUARD_RESERVATION);
-                return Err(WasmError::internal(msg.into()));
+                return Err(WasmError::internal(msg));
             }
         }
 
@@ -67,7 +67,7 @@ impl GuardPageMemory {
         let new_bytes = self
             .committed
             .checked_add(delta_pages * WASM_PAGE_SIZE)
-            .ok_or_else(|| WasmError::internal("guard-page memory: grow overflow".into()))?;
+            .ok_or_else(|| WasmError::internal("guard-page memory: grow overflow"))?;
         if new_bytes > GUARD_RESERVATION {
             return Err(WasmError::internal(
                 "guard-page memory: grow exceeds reservation".into(),
@@ -76,7 +76,7 @@ impl GuardPageMemory {
 
         if new_bytes > self.committed {
             os::commit_guarded(self.base, self.committed, new_bytes - self.committed)
-                .map_err(|msg| WasmError::internal(msg.into()))?;
+                .map_err(|msg| WasmError::internal(msg))?;
         }
         self.committed = new_bytes;
         Ok(old_pages)

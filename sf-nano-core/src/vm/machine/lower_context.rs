@@ -292,7 +292,7 @@ impl<'a> BlockLowerContext<'a> {
         addr.offset = addr
             .offset
             .checked_add(byte_offset)
-            .ok_or_else(|| WasmError::internal("frame byte offset overflow".into()))?;
+            .ok_or_else(|| WasmError::internal("frame byte offset overflow"))?;
         Ok(addr)
     }
 
@@ -318,9 +318,9 @@ impl<'a> BlockLowerContext<'a> {
         &self,
         func: MachineFuncId,
     ) -> Result<&MachineFunctionAbi, WasmError> {
-        self.all_runtime.get(func.0 as usize).ok_or_else(|| {
-            WasmError::internal("machine runtime metadata missing for callee".into())
-        })
+        self.all_runtime
+            .get(func.0 as usize)
+            .ok_or_else(|| WasmError::internal("machine runtime metadata missing for callee"))
     }
 
     // -----------------------------------------------------------------------
@@ -343,7 +343,7 @@ impl<'a> BlockLowerContext<'a> {
         if self.values.is_empty() {
             Ok(())
         } else {
-            Err(WasmError::internal(message.into()))
+            Err(WasmError::internal(message))
         }
     }
 
@@ -423,10 +423,6 @@ impl<'a> BlockLowerContext<'a> {
         self.block
     }
 
-    pub(super) fn block_id(&self) -> u32 {
-        self.block.id.0
-    }
-
     pub(super) fn cached_locals(&self) -> &[CachedLocal] {
         &self.cached_locals
     }
@@ -453,14 +449,14 @@ impl<'a> BlockLowerContext<'a> {
             } else {
                 self.allocate_cache_binding(index)?
             };
-            let slot = self.cache_bindings.get_mut(index).ok_or_else(|| {
-                WasmError::internal("cached local binding is out of range".into())
-            })?;
+            let slot = self
+                .cache_bindings
+                .get_mut(index)
+                .ok_or_else(|| WasmError::internal("cached local binding is out of range"))?;
             *slot = Some(preferred);
         }
-        self.bound_cached_local(index).ok_or_else(|| {
-            WasmError::internal("cached local binding missing after assignment".into())
-        })
+        self.bound_cached_local(index)
+            .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
     }
 
     pub(super) fn bind_cached_local_to_regs(
@@ -472,11 +468,10 @@ impl<'a> BlockLowerContext<'a> {
         let slot = self
             .cache_bindings
             .get_mut(index)
-            .ok_or_else(|| WasmError::internal("cached local binding is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("cached local binding is out of range"))?;
         *slot = Some(CachedLocalBinding { reg, hi_reg });
-        self.bound_cached_local(index).ok_or_else(|| {
-            WasmError::internal("cached local binding missing after assignment".into())
-        })
+        self.bound_cached_local(index)
+            .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
     }
 
     pub(super) fn is_cache_live(&self, index: usize) -> bool {
@@ -575,9 +570,10 @@ impl<'a> BlockLowerContext<'a> {
         value: Option<SsaValue>,
         ty: Option<MachineStorageType>,
     ) -> Result<(), WasmError> {
-        let slot = self.linear_value_state.get_mut(index).ok_or_else(|| {
-            WasmError::internal("linear-value register index is out of range".into())
-        })?;
+        let slot = self
+            .linear_value_state
+            .get_mut(index)
+            .ok_or_else(|| WasmError::internal("linear-value register index is out of range"))?;
         *slot = LinearValueState { value, ty };
         Ok(())
     }
@@ -627,7 +623,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<Option<BoundCachedLocal>, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_some() {
             return self.bound_cached_local(index).map(Some).ok_or_else(|| {
-                WasmError::internal("cached local binding missing after assignment".into())
+                WasmError::internal("cached local binding missing after assignment")
             });
         }
         if self.remaining_use_count(value) != 1 {
@@ -792,9 +788,10 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn allocate_cache_binding(&self, index: usize) -> Result<CachedLocalBinding, WasmError> {
-        let cached = self.cached_locals.get(index).copied().ok_or_else(|| {
-            WasmError::internal("cached local binding request is out of range".into())
-        })?;
+        let cached =
+            self.cached_locals.get(index).copied().ok_or_else(|| {
+                WasmError::internal("cached local binding request is out of range")
+            })?;
 
         if cached.ty.is_fp() {
             for fp_index in 0..self.regfile.fp_dynamic_count() {
@@ -806,13 +803,7 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 return Ok(CachedLocalBinding { reg, hi_reg: None });
             }
-            return Err(WasmError::internal(alloc::format!(
-                "no free FP cache register available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
-                cached.slot,
-                self.block.id.0,
-                self.values.len(),
-                self.cache_bindings.iter().flatten().count(),
-            )));
+            return Err(WasmError::internal("no free FP cache register available for cached local in block b (live_values=, bound_caches=)"));
         }
 
         if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
@@ -839,13 +830,7 @@ impl<'a> BlockLowerContext<'a> {
                     hi_reg: Some(hi),
                 });
             }
-            return Err(WasmError::internal(alloc::format!(
-                "no free GP cache register pair available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
-                cached.slot,
-                self.block.id.0,
-                self.values.len(),
-                self.cache_bindings.iter().flatten().count(),
-            )));
+            return Err(WasmError::internal("no free GP cache register pair available for cached local in block b (live_values=, bound_caches=)"));
         }
 
         for gp_index in 0..self.regfile.gp_allocatable_count() {
@@ -858,13 +843,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             return Ok(CachedLocalBinding { reg, hi_reg: None });
         }
-        Err(WasmError::internal(alloc::format!(
-            "no free GP cache register available for cached local {:?} in block b{} (live_values={}, bound_caches={})",
-            cached.slot,
-            self.block.id.0,
-            self.values.len(),
-            self.cache_bindings.iter().flatten().count(),
-        )))
+        Err(WasmError::internal("no free GP cache register available for cached local in block b (live_values=, bound_caches=)"))
     }
 
     fn dynamic_reg_unavailable(&self, reg: MachineReg) -> bool {
@@ -918,11 +897,7 @@ impl<'a> BlockLowerContext<'a> {
                 return Ok(None);
             }
             let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
-                return Err(WasmError::internal(alloc::format!(
-                    "prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b{} for value {}",
-                    self.block.id.0,
-                    value.0,
-                )));
+                return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);

@@ -129,11 +129,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.lower_b(else_label);
                     }
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm64 branch condition cannot read reserved cache register {}",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm64 branch condition cannot read reserved cache register",
+                    ));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -211,10 +210,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     MachineCompareKind::Eq => enc::Cond::Eq,
                     MachineCompareKind::Ne => enc::Cond::Ne,
                     _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "TestBits branch: unsupported compare kind {:?}",
-                            kind
-                        )))
+                        return Err(WasmError::internal(
+                            "TestBits branch: unsupported compare kind",
+                        ))
                     }
                 };
                 if else_fallthrough {
@@ -258,11 +256,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     let reg = self.map_gp_reg(reg)?;
                     self.lower_cbnz(reg, trap_label);
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm64 trap-if cannot read reserved cache register {}",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm64 trap-if cannot read reserved cache register",
+                    ));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -286,10 +283,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     MachineCompareKind::Eq => enc::Cond::Eq,
                     MachineCompareKind::Ne => enc::Cond::Ne,
                     _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "TestBits branch_if: unsupported compare kind {:?}",
-                            kind
-                        )))
+                        return Err(WasmError::internal(
+                            "TestBits branch_if: unsupported compare kind",
+                        ))
                     }
                 };
                 self.lower_b_cond(cond, trap_label);
@@ -564,9 +560,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             .core
             .compiled
             .const_ptr(MachineConstId(const_idx as u32))
-            .ok_or_else(|| {
-                WasmError::internal("arm64 external-call metadata is out of range".into())
-            })?;
+            .ok_or_else(|| WasmError::internal("arm64 external-call metadata is out of range"))?;
 
         // External calls are inline runtime calls, not CFG terminators. Pass the
         // current context, the active Wasm frame pointer, and the constant-pool

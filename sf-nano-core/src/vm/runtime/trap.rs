@@ -27,7 +27,7 @@ pub(crate) unsafe extern "C" fn raise_trap(ctx: *mut NativeContext, kind: u64) -
         6 => trap_error(MachineTrapKind::IntegerOverflow),
         7 => trap_error(MachineTrapKind::InvalidConversion),
         8 => trap_error(MachineTrapKind::StackOverflow),
-        _ => WasmError::trap("native call failed".into()),
+        _ => WasmError::trap("native call failed"),
     };
     set_ctx_error(ctx, error);
     NativeCallStatus::Error as u32

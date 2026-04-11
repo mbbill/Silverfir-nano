@@ -262,9 +262,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
                 .labels
                 .get(fixup.label)
                 .and_then(|value| *value)
-                .ok_or_else(|| {
-                    WasmError::internal("x86_64 branch target label is unresolved".into())
-                })?;
+                .ok_or_else(|| WasmError::internal("x86_64 branch target label is unresolved"))?;
             enc::patch_rel32(&mut self.core.text, fixup.rel32_offset, target);
         }
         Ok(())
@@ -447,10 +445,7 @@ impl<'a> X86_64Backend<'a> {
     pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<u32, WasmError> {
         let index = self.core.fp_reg_index(reg)?;
         fp_machine_reg(index).ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "x86_64 backend has no physical FP mapping for machine reg {}",
-                reg.0
-            ))
+            WasmError::invalid("x86_64 backend has no physical FP mapping for machine reg")
         })
     }
 
@@ -489,10 +484,9 @@ impl<'a> X86_64Backend<'a> {
                 self.materialize_u64(scratch, value);
                 Ok(scratch)
             }
-            MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                "x86_64 cannot materialize reserved cache register {}",
-                reg.0
-            ))),
+            MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                "x86_64 cannot materialize reserved cache register",
+            )),
         }
     }
 
@@ -557,13 +551,16 @@ impl<'a> X86_64Backend<'a> {
                     if self.core.is_fp_reg(src_reg) {
                         let src_fp = self.map_fp_reg(src_reg)? as u8;
                         match src_float_width.ok_or_else(|| {
-                            WasmError::invalid(alloc::format!(
-                                "x86_64 edge move is missing float-width metadata for machine reg {}",
-                                src_reg.0
-                            ))
+                            WasmError::invalid(
+                                "x86_64 edge move is missing float-width metadata for machine reg",
+                            )
                         })? {
-                            MachineFloatWidth::F32 => enc::movd_r32_xmm(&mut self.core.text, dst_gp, src_fp),
-                            MachineFloatWidth::F64 => enc::movq_r64_xmm(&mut self.core.text, dst_gp, src_fp),
+                            MachineFloatWidth::F32 => {
+                                enc::movd_r32_xmm(&mut self.core.text, dst_gp, src_fp)
+                            }
+                            MachineFloatWidth::F64 => {
+                                enc::movq_r64_xmm(&mut self.core.text, dst_gp, src_fp)
+                            }
                         };
                     } else {
                         let src_gp = self.map_gp_reg(src_reg)?;
@@ -571,12 +568,10 @@ impl<'a> X86_64Backend<'a> {
                     }
                 }
             }
-            ParallelSource::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "x86_64 received non-identity reserved cache edge move into {} from {}",
-                    dst.reg.0,
-                    reg.0
-                )));
+            ParallelSource::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "x86_64 received non-identity reserved cache edge move into from",
+                ));
             }
             ParallelSource::Imm(value) => {
                 if let Some(width) = dst.ty.float_width() {

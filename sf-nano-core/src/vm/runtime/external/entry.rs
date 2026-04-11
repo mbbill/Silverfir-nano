@@ -50,7 +50,7 @@ unsafe fn frame_write(frame: *mut u64, slot: u16, value: u64) {
 fn require_region_slots(
     region: ExternalCallFrameRegion,
     expected: u16,
-    label: &str,
+    label: &'static str,
 ) -> Result<(), WasmError> {
     if region.slots != expected {
         return Err(internal_error(label));
@@ -59,7 +59,11 @@ fn require_region_slots(
 }
 
 #[inline]
-fn region_slot(region: ExternalCallFrameRegion, index: u16, label: &str) -> Result<u16, WasmError> {
+fn region_slot(
+    region: ExternalCallFrameRegion,
+    index: u16,
+    label: &'static str,
+) -> Result<u16, WasmError> {
     if index >= region.slots {
         return Err(internal_error(label));
     }
@@ -74,7 +78,7 @@ unsafe fn region_read(
     frame: *mut u64,
     region: ExternalCallFrameRegion,
     index: u16,
-    label: &str,
+    label: &'static str,
 ) -> Result<u64, WasmError> {
     Ok(unsafe { frame_read(frame, region_slot(region, index, label)?) })
 }
@@ -85,7 +89,7 @@ unsafe fn region_write(
     region: ExternalCallFrameRegion,
     index: u16,
     value: u64,
-    label: &str,
+    label: &'static str,
 ) -> Result<(), WasmError> {
     unsafe {
         frame_write(frame, region_slot(region, index, label)?, value);

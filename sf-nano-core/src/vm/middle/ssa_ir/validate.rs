@@ -28,39 +28,29 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     }
 
     if program.entry.as_usize() >= program.blocks.len() {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR entry block {} is out of range for {} blocks",
-            program.entry.as_usize(),
-            program.blocks.len(),
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR entry block is out of range for blocks",
+        ));
     }
 
     if program.local_slot_types.len() != program.local_slot_info.len() {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR local slot facts contain {} types but {} info entries",
-            program.local_slot_types.len(),
-            program.local_slot_info.len(),
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR local slot facts contain types but info entries",
+        ));
     }
 
     if !program.block_entry_cached_slots.is_empty()
         && program.blocks.len() != program.block_entry_cached_slots.len()
     {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR has {} blocks but {} block-entry cache rows",
-            program.blocks.len(),
-            program.block_entry_cached_slots.len(),
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR has blocks but block-entry cache rows",
+        ));
     }
 
     if !program.block_cfg_origins.is_empty()
         && program.blocks.len() != program.block_cfg_origins.len()
     {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR has {} blocks but {} CFG-origin rows",
-            program.blocks.len(),
-            program.block_cfg_origins.len(),
-        )));
+        return Err(WasmError::internal("SSA-IR has blocks but CFG-origin rows"));
     }
 
     for (index, block) in program.blocks.iter().enumerate() {
@@ -97,12 +87,11 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 #[cfg(any(debug_assertions, test))]
 fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
     let type_count = program.value_types.len();
-    let check = |value: SsaValue, ctx: &str| -> Result<(), WasmError> {
+    let check = |value: SsaValue, _ctx: &str| -> Result<(), WasmError> {
         if value.0 as usize >= type_count {
-            return Err(WasmError::internal(alloc::format!(
-                "{ctx}: SsaValue({}) is out of range for value_types table (len={type_count})",
-                value.0,
-            )));
+            return Err(WasmError::internal(
+                ": SsaValue() is out of range for value_types table (len=)",
+            ));
         }
         Ok(())
     };
@@ -232,26 +221,22 @@ fn validate_cached_slot_value_type(
     cached_slot_types: &BTreeMap<FrameSlot, ValueType>,
     slot: FrameSlot,
     value: SsaValue,
-    block_idx: usize,
-    op_idx: usize,
+    _block_idx: usize,
+    _op_idx: usize,
     role: &str,
 ) -> Result<(), WasmError> {
     let Some(cached_ty) = cached_slot_types.get(&slot).copied() else {
         return Ok(());
     };
     let Some(value_ty) = program.value_types.get(value.0 as usize).copied() else {
-        return Err(WasmError::internal(alloc::format!(
-            "b{block_idx} op {op_idx} {role}: value {:?} out of range for value_types",
-            value,
-        )));
+        return Err(WasmError::internal(
+            "b op : value out of range for value_types",
+        ));
     };
     if !cached_slot_value_type_matches(role, value_ty, cached_ty) {
-        return Err(WasmError::internal(alloc::format!(
-            "b{block_idx} op {op_idx} {role} for cached local slot {:?} uses {:?}, but cache metadata says {:?}",
-            slot,
-            value_ty,
-            cached_ty,
-        )));
+        return Err(WasmError::internal(
+            "cached local slot uses incompatible value type",
+        ));
     }
     Ok(())
 }
@@ -280,23 +265,16 @@ pub(crate) fn validate_program(_program: &SsaProgram) -> Result<(), WasmError> {
 #[cfg(any(debug_assertions, test))]
 fn validate_block_id(block: &SsaBlock, index: usize) -> Result<(), WasmError> {
     if block.id.as_usize() != index {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR block {} has mismatched id {}",
-            index,
-            block.id.as_usize(),
-        )));
+        return Err(WasmError::internal("SSA-IR block has mismatched id"));
     }
     Ok(())
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_params(params: &[SsaValue], label: alloc::string::String) -> Result<(), WasmError> {
+fn validate_params(params: &[SsaValue], _label: alloc::string::String) -> Result<(), WasmError> {
     for (index, value) in params.iter().enumerate() {
         if params[..index].contains(value) {
-            return Err(WasmError::internal(alloc::format!(
-                "{label} contains duplicate param {:?}",
-                value,
-            )));
+            return Err(WasmError::internal("contains duplicate param"));
         }
     }
     Ok(())
@@ -309,11 +287,9 @@ fn validate_edge(
     source_block: usize,
 ) -> Result<(), WasmError> {
     let Some(target) = program.blocks.get(edge.target.as_usize()) else {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR block {} has edge to out-of-range target {}",
-            source_block,
-            edge.target.as_usize(),
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR block has edge to out-of-range target",
+        ));
     };
 
     let mut seen_params = collections::Vec::with_capacity(edge.bindings.len());
@@ -326,34 +302,24 @@ fn validate_edge(
             edge.target.as_usize(),
         )?;
         if seen_params.contains(&binding.param) {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR edge b{} -> b{} binds param {:?} more than once",
-                source_block,
-                edge.target.as_usize(),
-                binding.param,
-            )));
+            return Err(WasmError::internal(
+                "SSA-IR edge b -> b binds param more than once",
+            ));
         }
         seen_params.push(binding.param);
     }
 
     if edge.bindings.len() != target.params.len() {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR edge b{} -> b{} has {} bindings, but target expects {} params",
-            source_block,
-            edge.target.as_usize(),
-            edge.bindings.len(),
-            target.params.len(),
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR edge b -> b has bindings, but target expects params",
+        ));
     }
 
     for param in &target.params {
         if !seen_params.contains(param) {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR edge b{} -> b{} does not bind target param {:?}",
-                source_block,
-                edge.target.as_usize(),
-                param,
-            )));
+            return Err(WasmError::internal(
+                "SSA-IR edge b -> b does not bind target param",
+            ));
         }
     }
 
@@ -365,31 +331,22 @@ fn validate_binding(
     program: &SsaProgram,
     binding: &SsaBinding,
     target: &SsaBlock,
-    source_block: usize,
-    target_block: usize,
+    _source_block: usize,
+    _target_block: usize,
 ) -> Result<(), WasmError> {
     if !target.params.contains(&binding.param) {
-        return Err(WasmError::internal(alloc::format!(
-            "SSA-IR edge b{} -> b{} binds unknown target param {:?}",
-            source_block,
-            target_block,
-            binding.param,
-        )));
+        return Err(WasmError::internal(
+            "SSA-IR edge b -> b binds unknown target param",
+        ));
     }
     if !program.value_types.is_empty() {
         let param_ty = program.value_types.get(binding.param.0 as usize).copied();
         let value_ty = program.value_types.get(binding.value.0 as usize).copied();
         if let (Some(param_ty), Some(value_ty)) = (param_ty, value_ty) {
             if param_ty != value_ty {
-                return Err(WasmError::internal(alloc::format!(
-                    "SSA-IR edge b{} -> b{} binds param {:?} ({:?}) from value {:?} ({:?})",
-                    source_block,
-                    target_block,
-                    binding.param,
-                    param_ty,
-                    binding.value,
-                    value_ty,
-                )));
+                return Err(WasmError::internal(
+                    "SSA-IR edge b -> b binds param () from value ()",
+                ));
             }
         }
     }

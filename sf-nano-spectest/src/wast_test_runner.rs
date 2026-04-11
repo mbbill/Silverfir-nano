@@ -249,7 +249,7 @@ fn forward_call(
         let slots = cell.borrow();
         match slots.get(slot).and_then(|s| s.as_ref()) {
             Some(s) => Ok((s.instance_name.clone(), s.export_name.clone())),
-            None => Err(WasmError::internal("forwarding slot empty".into())),
+            None => Err(WasmError::internal("forwarding slot empty")),
         }
     })?;
     FORWARDING_INSTANCES.with(|cell| {
@@ -266,10 +266,7 @@ fn forward_call(
                 }
                 Ok(())
             }
-            None => Err(WasmError::internal(format!(
-                "forwarding instance '{}' not found",
-                inst_name
-            ))),
+            None => Err(WasmError::internal("forwarding instance not found")),
         }
     })
 }

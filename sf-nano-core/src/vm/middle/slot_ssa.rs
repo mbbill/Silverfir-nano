@@ -98,7 +98,7 @@ pub(crate) fn lower_slot_only_ssa(
     let mut blocks = collections::Vec::with_capacity(cfg.blocks.len());
     for block in &cfg.blocks {
         let Some(last_index) = block.range.end.checked_sub(1) else {
-            return Err(WasmError::internal("cfg block cannot be empty".into()));
+            return Err(WasmError::internal("cfg block cannot be empty"));
         };
         let mut body = collections::Vec::new();
         for semantic_index in block.range.start..last_index {
@@ -182,7 +182,7 @@ fn lower_terminator_kind(
         let target = semantic_index
             .checked_add(1)
             .filter(|next| *next < semantic.ops.len())
-            .ok_or_else(|| WasmError::invalid("missing fallthrough target".into()))?;
+            .ok_or_else(|| WasmError::invalid("missing fallthrough target"))?;
         Ok::<_, WasmError>(cfg.semantic_to_block[target])
     };
 
@@ -219,5 +219,5 @@ fn target_block(cfg: &SemanticCfg, target: SemanticTarget) -> Result<CfgBlockId,
     cfg.semantic_to_block
         .get(target.index().as_usize())
         .copied()
-        .ok_or_else(|| WasmError::invalid("semantic target out of range".into()))
+        .ok_or_else(|| WasmError::invalid("semantic target out of range"))
 }

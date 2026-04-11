@@ -49,7 +49,7 @@ impl ModuleBuilder {
     /// Registers an export name, ensuring uniqueness across all entity types.
     pub fn register_export_name(&mut self, name: &str) -> Result<(), WasmError> {
         if self.export_names.iter().any(|n| n == name) {
-            return Err(WasmError::invalid("duplicate export name".into()));
+            return Err(WasmError::invalid("duplicate export name"));
         }
         self.export_names.push(name.to_string());
         Ok(())
@@ -79,7 +79,7 @@ impl ModuleBuilder {
     pub fn get_function_mut(&mut self, index: usize) -> Result<&mut Function, WasmError> {
         self.functions
             .get_mut(index)
-            .ok_or_else(|| WasmError::invalid("index out of range".into()))
+            .ok_or_else(|| WasmError::invalid("index out of range"))
     }
 
     pub fn get_imported_function_count(&self) -> usize {
@@ -93,7 +93,7 @@ impl ModuleBuilder {
     pub fn get_memory_mut(&mut self, index: usize) -> Result<&mut Memory, WasmError> {
         self.memories
             .get_mut(index)
-            .ok_or_else(|| WasmError::invalid("index out of range".into()))
+            .ok_or_else(|| WasmError::invalid("index out of range"))
     }
 
     pub fn append_table(&mut self, table: Table) {
@@ -103,7 +103,7 @@ impl ModuleBuilder {
     pub fn get_table_mut(&mut self, index: usize) -> Result<&mut Table, WasmError> {
         self.tables
             .get_mut(index)
-            .ok_or_else(|| WasmError::invalid("index out of range".into()))
+            .ok_or_else(|| WasmError::invalid("index out of range"))
     }
 
     pub fn append_global(&mut self, global: Global) {
@@ -113,7 +113,7 @@ impl ModuleBuilder {
     pub fn get_global_mut(&mut self, index: usize) -> Result<&mut Global, WasmError> {
         self.globals
             .get_mut(index)
-            .ok_or_else(|| WasmError::invalid("index out of range".into()))
+            .ok_or_else(|| WasmError::invalid("index out of range"))
     }
 
     pub fn set_start_function(&mut self, index: usize) -> Result<(), WasmError> {

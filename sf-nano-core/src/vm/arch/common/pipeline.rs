@@ -90,7 +90,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
             .program
             .blocks
             .get(block_id.as_usize())
-            .ok_or_else(|| WasmError::internal("block layout references missing block".into()))?;
+            .ok_or_else(|| WasmError::internal("block layout references missing block"))?;
         let label = b.core().block_label(block.id)?;
         b.core_mut().bind_label(label);
         #[cfg(sf_has_debug_regions)]
@@ -198,7 +198,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         .labels
         .get(b.core().body_local_error_label)
         .and_then(|offset| *offset)
-        .ok_or_else(|| WasmError::internal("body_local_error label is unresolved".into()))?;
+        .ok_or_else(|| WasmError::internal("body_local_error label is unresolved"))?;
 
     b.into_core().finish_artifact(
         internal_entry_offset,

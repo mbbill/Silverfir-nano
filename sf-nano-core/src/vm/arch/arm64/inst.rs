@@ -46,28 +46,19 @@ use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
 /// Map a MachineReg to a physical GP register, rejecting FP regs.
 pub(super) fn map_gp(config: BackendConfig, reg: MachineReg) -> Result<Arm64Reg, WasmError> {
     if is_fp_reg(reg, config) {
-        return Err(WasmError::invalid(alloc::format!(
-            "expected GP register, got FP machine reg {}",
-            reg.0
-        )));
+        return Err(WasmError::invalid(
+            "expected GP register, got FP machine reg",
+        ));
     }
     abi::map_reg(reg)
 }
 
 /// Map a MachineReg to a physical FP register.
 fn map_fp(config: BackendConfig, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
-    let index = fp_reg_index(reg, config).ok_or_else(|| {
-        WasmError::invalid(alloc::format!(
-            "expected FP register, got machine reg {}",
-            reg.0
-        ))
-    })?;
-    abi::fp_machine_reg(index).ok_or_else(|| {
-        WasmError::invalid(alloc::format!(
-            "arm64 has no FP mapping for machine reg {}",
-            reg.0
-        ))
-    })
+    let index = fp_reg_index(reg, config)
+        .ok_or_else(|| WasmError::invalid("expected FP register, got machine reg"))?;
+    abi::fp_machine_reg(index)
+        .ok_or_else(|| WasmError::invalid("arm64 has no FP mapping for machine reg"))
 }
 
 /// Prepare a MachineValue as a GP register.
@@ -87,12 +78,10 @@ pub(super) fn prepare_gp<'p>(
             let scratch = pool.scoped_alloc();
             let src_fp = map_fp(config, reg)?;
             let index = fp_reg_index(reg, config).unwrap();
-            let width = fp_widths.get(index).and_then(|w| *w).ok_or_else(|| {
-                WasmError::invalid(alloc::format!(
-                    "missing float-width for machine reg {}",
-                    reg.0
-                ))
-            })?;
+            let width = fp_widths
+                .get(index)
+                .and_then(|w| *w)
+                .ok_or_else(|| WasmError::invalid("missing float-width for machine reg"))?;
             text.emit_u32(match width {
                 MachineFloatWidth::F32 => enc::fmov_gp_from_s(*scratch, src_fp),
                 MachineFloatWidth::F64 => enc::fmov_gp_from_d(*scratch, src_fp),
@@ -100,10 +89,9 @@ pub(super) fn prepare_gp<'p>(
             Ok(PreparedGp::Scratch(scratch))
         }
         MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_gp(config, reg)?)),
-        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "arm64 prepare_gp cannot consume reserved cache register {} as a real value",
-            reg.0
-        ))),
+        MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+            "arm64 prepare_gp cannot consume reserved cache register as a real value",
+        )),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             materialize_u64_into(text, *scratch, v);
@@ -175,12 +163,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<Arm64FpReg, WasmError> {
         let index = self.core.fp_reg_index(reg)?;
-        fp_machine_reg(index).ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "arm64 has no physical FP mapping for machine reg {}",
-                reg.0
-            ))
-        })
+        fp_machine_reg(index)
+            .ok_or_else(|| WasmError::invalid("arm64 has no physical FP mapping for machine reg"))
     }
 
     // ── Constant materialization ─────────────────────────────────────────
@@ -283,11 +267,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
     ) -> Result<(), WasmError> {
         let src_gp = match src {
             MachineValue::Reg(r) => PreparedGp::Mapped(map_gp(self.core.compiled.backend(), r)?),
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 lower_tst_values cannot consume reserved cache register {} as a source",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm64 lower_tst_values cannot consume reserved cache register as a source",
+                ));
             }
             MachineValue::Imm64(imm) => prepare_gp(
                 self.core.compiled.backend(),
@@ -339,11 +322,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 lower_tst_values cannot consume reserved cache register {} as a mask",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm64 lower_tst_values cannot consume reserved cache register as a mask",
+                ));
             }
         }
         Ok(())
@@ -585,10 +567,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     if self.core.is_fp_reg(src_reg) {
                         let src_fp = self.map_fp_reg(src_reg)?;
                         match src_float_width.ok_or_else(|| {
-                            WasmError::invalid(alloc::format!(
-                            "arm64 edge move is missing float-width metadata for machine reg {}",
-                            src_reg.0
-                        ))
+                            WasmError::invalid(
+                                "arm64 edge move is missing float-width metadata for machine reg",
+                            )
                         })? {
                             MachineFloatWidth::F32 => {
                                 self.core.text.emit_u32(enc::fmov_gp_from_s(dst_gp, src_fp))
@@ -603,12 +584,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
             }
-            ParallelSource::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 received non-identity reserved cache edge move into {} from {}",
-                    dst.reg.0,
-                    reg.0
-                )));
+            ParallelSource::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm64 received non-identity reserved cache edge move into from",
+                ));
             }
             ParallelSource::Imm(value) => {
                 if let Some(width) = dst.ty.float_width() {
@@ -658,12 +637,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     let src_fp = self.map_fp_reg(src_reg)?;
                     let src_width = self.core.fp_reg_width(src_reg)?;
                     if src_width != width {
-                        return Err(WasmError::invalid(alloc::format!(
-                        "arm64 typed float move width mismatch: dst expects {:?}, src {} is {:?}",
-                        width,
-                        src_reg.0,
-                        src_width,
-                    )));
+                        return Err(WasmError::invalid(
+                            "arm64 typed float move width mismatch: dst expects , src is",
+                        ));
                     }
                     if dst_fp != src_fp {
                         self.core.text.emit_u32(match width {
@@ -683,11 +659,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm64 lower_move cannot read reserved cache register {} as an FP source",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm64 lower_move cannot read reserved cache register as an FP source",
+                    ));
                 }
                 MachineValue::Imm64(value) => {
                     let scratch = *self.gp_scratch.scoped_alloc();
@@ -722,11 +697,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm64 lower_move cannot read reserved cache register {} as a GP source",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm64 lower_move cannot read reserved cache register as a GP source",
+                    ));
                 }
                 MachineValue::Imm64(value) => {
                     self.materialize_u64(dst_gp, value);
@@ -743,10 +717,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
         bits: u64,
     ) -> Result<(), WasmError> {
         if !self.core.is_fp_reg(dst) {
-            return Err(WasmError::invalid(alloc::format!(
-                "arm64 FloatConst destination {} must be an FP register",
-                dst.0
-            )));
+            return Err(WasmError::invalid(
+                "arm64 FloatConst destination must be an FP register",
+            ));
         }
         let dst_fp = self.map_fp_reg(dst)?;
         let imm = match width {
@@ -2385,12 +2358,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => {
                 enc::eor_reg_shifted_64(dst, lhs, rhs, st, amt)
             }
-            _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "IntBinaryShifted: unsupported op {:?}",
-                    op
-                )))
-            }
+            _ => return Err(WasmError::internal("IntBinaryShifted: unsupported op")),
         };
         self.core.text.emit_u32(inst);
         Ok(())
@@ -2452,11 +2420,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm64 TestBits cannot consume reserved cache register {} as a mask",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm64 TestBits cannot consume reserved cache register as a mask",
+                ));
             }
         }
 
@@ -2464,12 +2431,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let cond = match kind {
             MachineCompareKind::Eq => enc::Cond::Eq,
             MachineCompareKind::Ne => enc::Cond::Ne,
-            _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "TestBits: unsupported compare kind {:?}",
-                    kind
-                )))
-            }
+            _ => return Err(WasmError::internal("TestBits: unsupported compare kind")),
         };
         match width {
             MachineIntWidth::I32 => {
@@ -2532,10 +2494,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                    "arm64 select cannot consume reserved cache register {} as a condition",
-                    reg.0
-                ))),
+                MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                    "arm64 select cannot consume reserved cache register as a condition",
+                )),
             }
         } else {
             let dst = self.map_gp_reg(dst)?;
@@ -2559,11 +2520,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         .text
                         .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm64 select cannot consume reserved cache register {} as a condition",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm64 select cannot consume reserved cache register as a condition",
+                    ));
                 }
             }
             let true_reg = prepare_gp(

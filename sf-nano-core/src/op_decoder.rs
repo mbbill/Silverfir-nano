@@ -1,5 +1,4 @@
 use crate::collections;
-use alloc::string::ToString;
 
 use core::cell::{Cell, RefCell};
 use core::fmt;
@@ -221,7 +220,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         }
         let mut payload = self.payload.borrow_mut();
         if payload.is_empty() {
-            return Err(WasmError::malformed("Unexpected end of code".into()));
+            return Err(WasmError::malformed("Unexpected end of code"));
         }
         let op_offset = payload.position();
         let op: Opcode = payload.read_u8()?.try_into()?;
@@ -321,9 +320,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let raw_byte = payload.peek_u8()?;
                 let memidx = payload.read_leb128_u32()?;
                 if raw_byte != 0x00 {
-                    return Err(crate::error::WasmError::malformed(
-                        "zero byte expected".to_string(),
-                    ));
+                    return Err(crate::error::WasmError::malformed("zero byte expected"));
                 }
                 let wasm_op = OP(op);
                 let imm = Immediate::MemoryIndex(memidx);
@@ -471,10 +468,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 });
             }
             RETURN_CALL | RETURN_CALL_INDIRECT => {
-                return Err(WasmError::invalid(alloc::format!(
-                    "Opcode {} not yet supported in decoder",
-                    op
-                )));
+                return Err(WasmError::invalid("Opcode not yet supported in decoder"));
             }
             SELECT_T => {
                 let len = payload.read_leb128_u32()?;
@@ -505,9 +499,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     (align_flag - 64, memidx)
                 };
                 if align >= 32 {
-                    return Err(crate::error::WasmError::malformed(
-                        "malformed memop flags".to_string(),
-                    ));
+                    return Err(crate::error::WasmError::malformed("malformed memop flags"));
                 }
                 let offset = payload.read_leb128_u32()? as u64;
                 let wasm_op = OP(op);

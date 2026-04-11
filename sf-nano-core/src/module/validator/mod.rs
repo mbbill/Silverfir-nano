@@ -36,10 +36,7 @@ impl<'a> Validator<'a> {
 
     pub fn validate(&mut self) -> Result<(), WasmError> {
         if self.module.version() != 1 {
-            return Err(WasmError::malformed(alloc::format!(
-                "unknown binary version: {}",
-                self.module.version(),
-            )));
+            return Err(WasmError::malformed("unknown binary version"));
         }
 
         // Phase 1: Validate type references in entities
@@ -47,18 +44,18 @@ impl<'a> Validator<'a> {
 
         // Phase 1b: WASM 2.0 limits — at most one memory
         if self.module.memories().len() > 1 {
-            return Err(WasmError::invalid("multiple memories".into()));
+            return Err(WasmError::invalid("multiple memories"));
         }
 
         // Phase 1c: Validate start function
         if let Some(start_idx) = self.module.start_function_index() {
             if start_idx >= self.module.functions().len() {
-                return Err(WasmError::invalid("unknown function".into()));
+                return Err(WasmError::invalid("unknown function"));
             }
             let func = &self.module.functions()[start_idx];
             let ft = &self.module.types()[func.type_index() as usize];
             if !ft.params().is_empty() || !ft.results().is_empty() {
-                return Err(WasmError::invalid("start function".into()));
+                return Err(WasmError::invalid("start function"));
             }
         }
 
@@ -68,26 +65,18 @@ impl<'a> Validator<'a> {
             .iter()
             .enumerate()
             .filter(|(_, f)| !f.is_import())
-            .try_for_each(|(func_idx, f)| {
+            .try_for_each(|(_func_idx, f)| {
                 let spec = f.spec().ok_or_else(|| {
-                    WasmError::invalid(alloc::format!(
-                        "Function {} validation failed: not a local function",
-                        func_idx
-                    ))
+                    WasmError::invalid("Function validation failed: not a local function")
                 })?;
                 let code = spec.code();
-                let mut validator = FunctionValidator::new(self.module, spec).map_err(|e| {
-                    WasmError::invalid(alloc::format!(
-                        "Function {} validator setup failed: {}",
-                        func_idx,
-                        e
-                    ))
-                })?;
+                let mut validator = FunctionValidator::new(self.module, spec)
+                    .map_err(|_e| WasmError::invalid("Function validator setup failed"))?;
                 let mut decoder = op_decoder::Decoder::new(code);
                 decoder.add_handler(&mut validator);
-                decoder.decode_function().map_err(|e| {
-                    WasmError::invalid(alloc::format!("Function {} decode failed: {}", func_idx, e))
-                })?;
+                decoder
+                    .decode_function()
+                    .map_err(|_e| WasmError::invalid("Function decode failed"))?;
                 Ok::<_, WasmError>(())
             })?;
 
@@ -117,19 +106,16 @@ impl<'a> Validator<'a> {
             .enumerate()
             .filter(|&(_, g)| !g.is_import())
             .try_for_each(|(global_idx, g)| {
-                let global_spec = g.spec().ok_or_else(|| {
-                    WasmError::invalid(alloc::format!(
-                        "Global {} is not a local global",
-                        global_idx
-                    ))
-                })?;
+                let global_spec = g
+                    .spec()
+                    .ok_or_else(|| WasmError::invalid("Global is not a local global"))?;
                 let ctx = ValidationContext::global(global_idx);
                 let expr_type = global_spec
                     .init_expr()
                     .validate_in_context(self.module, &ctx)?;
                 let global_type = global_spec.value_type();
                 if !is_type_compatible(expr_type, global_type) {
-                    return Err(WasmError::invalid("type mismatch".into()));
+                    return Err(WasmError::invalid("type mismatch"));
                 }
                 Ok(())
             })?;
@@ -145,11 +131,9 @@ impl<'a> Validator<'a> {
                 for expr in exprs {
                     let expr_type = expr.validate_in_context(self.module, &ctx)?;
                     if !is_type_compatible(expr_type, *value_type) {
-                        return Err(WasmError::invalid(alloc::format!(
-                            "element init expression must return {:?}, got {:?}",
-                            value_type,
-                            expr_type
-                        )));
+                        return Err(WasmError::invalid(
+                            "element init expression must return , got",
+                        ));
                     }
                 }
             }
@@ -171,11 +155,9 @@ impl<'a> Validator<'a> {
                         ValueType::I32
                     };
                     if offset_type != expected_type {
-                        return Err(WasmError::invalid(alloc::format!(
-                            "element offset expression must return {} for {}",
-                            expected_type,
-                            if is_table64 { "table64" } else { "table" }
-                        )));
+                        return Err(WasmError::invalid(
+                            "element offset expression must return for",
+                        ));
                     }
                 } else if offset_type != ValueType::I32 {
                     return Err(WasmError::invalid(
@@ -189,7 +171,7 @@ impl<'a> Validator<'a> {
                         let table = &self.module.tables()[*table_index];
                         let table_elem_type = table.value_type();
                         if !is_type_compatible(*value_type, table_elem_type) {
-                            return Err(WasmError::invalid("type mismatch".into()));
+                            return Err(WasmError::invalid("type mismatch"));
                         }
                     }
                 }
@@ -211,7 +193,7 @@ impl<'a> Validator<'a> {
             let offset_type = offset_expr.validate_in_context(self.module, &ctx)?;
 
             if *memory_index >= self.module.memories().len() {
-                return Err(WasmError::invalid("unknown memory".into()));
+                return Err(WasmError::invalid("unknown memory"));
             }
 
             let mem = &self.module.memories()[*memory_index];
@@ -225,11 +207,7 @@ impl<'a> Validator<'a> {
             if offset_type == expected_type {
                 Ok(())
             } else {
-                Err(WasmError::invalid(alloc::format!(
-                    "data offset expression must return {} for {}",
-                    expected_type,
-                    if is_mem64 { "memory64" } else { "memory" }
-                )))
+                Err(WasmError::invalid("data offset expression must return for"))
             }
         })?;
 
@@ -246,7 +224,7 @@ impl<'a> Validator<'a> {
         for export_names in items {
             for name in export_names {
                 if !name_pool.insert(name.clone()) {
-                    return Err(WasmError::invalid("export path not unique".into()));
+                    return Err(WasmError::invalid("export path not unique"));
                 }
             }
         }
@@ -258,29 +236,24 @@ impl<'a> Validator<'a> {
         let type_count = self.module.types().len();
 
         // Validate function type indices
-        for (idx, func) in self.module.functions().iter().enumerate() {
+        for (_idx, func) in self.module.functions().iter().enumerate() {
             let ti = func.type_index() as usize;
             if ti >= type_count {
-                return Err(WasmError::invalid(alloc::format!(
-                    "Function {}: type index {} out of bounds ({})",
-                    idx,
-                    ti,
-                    type_count
-                )));
+                return Err(WasmError::invalid("Function : type index out of bounds ()"));
             }
         }
 
         // Validate that table value types reference valid type indices
-        for (idx, table) in self.module.tables().iter().enumerate() {
+        for (_idx, table) in self.module.tables().iter().enumerate() {
             validate_valtype_ref(&table.value_type(), type_count)
-                .map_err(|e| WasmError::invalid(alloc::format!("Table {}: {}", idx, e)))?;
+                .map_err(|_e| WasmError::invalid("Table"))?;
         }
 
         // Validate element segment value types
-        for (idx, element) in self.module.elements().iter().enumerate() {
+        for (_idx, element) in self.module.elements().iter().enumerate() {
             if let ElementInit::InitExprs { value_type, .. } = element.get_init() {
                 validate_valtype_ref(value_type, type_count)
-                    .map_err(|e| WasmError::invalid(alloc::format!("Element {}: {}", idx, e)))?;
+                    .map_err(|_e| WasmError::invalid("Element"))?;
             }
         }
 
@@ -322,11 +295,7 @@ fn validate_valtype_ref(vt: &ValueType, type_count: usize) -> Result<(), WasmErr
     if let ValueType::Ref(rt) = vt {
         if let crate::value_type::HeapType::Concrete(idx) = rt.heap_type {
             if (idx as usize) >= type_count {
-                return Err(WasmError::invalid(alloc::format!(
-                    "type index {} out of bounds ({})",
-                    idx,
-                    type_count
-                )));
+                return Err(WasmError::invalid("type index out of bounds ()"));
             }
         }
     }

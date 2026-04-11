@@ -270,10 +270,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(MachineReg, MachineReg), WasmError> {
         let (lo, hi) = self.use_value_regs(value)?;
         hi.map(|hi| (lo, hi)).ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "SSA-IR i64 value {:?} does not have a paired machine-register mapping",
-                value
-            ))
+            WasmError::internal("SSA-IR i64 value does not have a paired machine-register mapping")
         })
     }
 
@@ -418,20 +415,13 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn value_reg(&self, value: SsaValue) -> Result<MachineReg, WasmError> {
-        self.try_value_reg(value).ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "no machine register assigned for SSA-IR value {:?}",
-                value
-            ))
-        })
+        self.try_value_reg(value)
+            .ok_or_else(|| WasmError::internal("no machine register assigned for SSA-IR value"))
     }
 
     fn value_regs(&self, value: SsaValue) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         self.try_value_regs(value).ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "no machine register pair assigned for SSA-IR value {:?}",
-                value
-            ))
+            WasmError::internal("no machine register pair assigned for SSA-IR value")
         })
     }
 
@@ -444,12 +434,7 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(reg);
         }
         let Some(reg) = self.first_free_linear_value_reg(ty) else {
-            return Err(WasmError::internal(alloc::format!(
-                "prepared SSA-IR exceeded {} dynamic register budget during native lowering in block b{} for value {}",
-                if ty.is_fp() { "FP" } else { "GP" },
-                self.block_id(),
-                value.0,
-            )));
+            return Err(WasmError::internal("prepared SSA-IR exceeded dynamic register budget during native lowering in block b for value"));
         };
         self.push_value_location(value, reg, None);
         self.set_linear_value_reg(reg, Some(value), Some(ty))?;
@@ -464,18 +449,11 @@ impl<'a> BlockLowerContext<'a> {
             return Ok((lo, hi));
         }
         if self.try_value_reg(value).is_some() {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR value {:?} already has a scalar machine-register mapping; cannot also allocate a pair",
-                value
-            )));
+            return Err(WasmError::internal("SSA-IR value already has a scalar machine-register mapping; cannot also allocate a pair"));
         }
 
         let Some((lo, hi)) = self.first_free_gp_linear_value_pair() else {
-            return Err(WasmError::internal(alloc::format!(
-                "prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b{} for value {}",
-                self.block_id(),
-                value.0,
-            )));
+            return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
         };
         self.push_value_location(value, lo, Some(hi));
         // Pair-aware 32-bit lowering treats both halves as GP-word registers.
@@ -635,13 +613,11 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn reserved_gp_dynamic(
         &self,
         index: usize,
-        purpose: &'static str,
+        _purpose: &'static str,
     ) -> Result<MachineReg, WasmError> {
-        self.regfile().ordered_gp_dynamic(index).ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "native lowering requires GP dynamic register {index} for {purpose}"
-            ))
-        })
+        self.regfile()
+            .ordered_gp_dynamic(index)
+            .ok_or_else(|| WasmError::internal("native lowering requires GP dynamic register for"))
     }
 
     pub(super) fn borrow_free_gp_dynamic_regs(
@@ -661,9 +637,9 @@ impl<'a> BlockLowerContext<'a> {
                 }
             }
         }
-        Err(WasmError::internal(alloc::format!(
-            "native lowering requires {count} free GP dynamic registers"
-        )))
+        Err(WasmError::internal(
+            "native lowering requires free GP dynamic registers",
+        ))
     }
 
     /// Try to fold a dead constant-producing instruction directly into an

@@ -225,12 +225,9 @@ impl<'a> X86_64Backend<'a> {
                     let src_fp = self.map_fp_reg(src_reg)? as u8;
                     let src_width = self.core.fp_reg_width(src_reg)?;
                     if src_width != width {
-                        return Err(WasmError::invalid(alloc::format!(
-                            "x86_64 typed float move width mismatch: dst expects {:?}, src {} is {:?}",
-                            width,
-                            src_reg.0,
-                            src_width,
-                        )));
+                        return Err(WasmError::invalid(
+                            "x86_64 typed float move width mismatch: dst expects , src is",
+                        ));
                     }
                     if dst_fp != src_fp {
                         match width {
@@ -272,10 +269,9 @@ impl<'a> X86_64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                    "x86_64 Move cannot consume reserved cache register {}",
-                    reg.0
-                ))),
+                MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                    "x86_64 Move cannot consume reserved cache register",
+                )),
             }
         } else {
             let dst_gp = self.map_gp_reg(dst)?;
@@ -303,10 +299,9 @@ impl<'a> X86_64Backend<'a> {
                     self.materialize_u64(dst_gp, value);
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                    "x86_64 Move cannot consume reserved cache register {}",
-                    reg.0
-                ))),
+                MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                    "x86_64 Move cannot consume reserved cache register",
+                )),
             }
         }
     }
@@ -318,10 +313,9 @@ impl<'a> X86_64Backend<'a> {
         bits: u64,
     ) -> Result<(), WasmError> {
         if !self.core.is_fp_reg(dst) {
-            return Err(WasmError::invalid(alloc::format!(
-                "x86_64 FloatConst destination {} must be an FP register",
-                dst.0
-            )));
+            return Err(WasmError::invalid(
+                "x86_64 FloatConst destination must be an FP register",
+            ));
         }
         let dst_fp = self.map_fp_reg(dst)? as u8;
         let imm = match width {
@@ -1068,11 +1062,10 @@ impl<'a> X86_64Backend<'a> {
                     MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src_gp, mask_gp),
                 }
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "x86_64 TestBits cannot read reserved cache register {}",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "x86_64 TestBits cannot read reserved cache register",
+                ));
             }
         }
         Ok(())
@@ -1198,12 +1191,7 @@ impl<'a> X86_64Backend<'a> {
             (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => {
                 enc::xor_rr_32(&mut self.core.text, dst, *scratch)
             }
-            _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "IntBinaryShifted: unsupported op {:?}",
-                    op
-                )))
-            }
+            _ => return Err(WasmError::internal("IntBinaryShifted: unsupported op")),
         }
         Ok(())
     }
@@ -1248,23 +1236,17 @@ impl<'a> X86_64Backend<'a> {
                     MachineIntWidth::I32 => enc::test_rr_32(&mut self.core.text, src, mask_gp),
                 }
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "x86_64 TestBits mask cannot be reserved cache register {}",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "x86_64 TestBits mask cannot be reserved cache register",
+                ));
             }
         }
         // TST sets Z flag: Eq → ZF=1 (test was zero), Ne → ZF=0 (test was nonzero).
         let cc = match kind {
             MachineCompareKind::Eq => Cc::E,
             MachineCompareKind::Ne => Cc::NE,
-            _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "TestBits: unsupported compare kind {:?}",
-                    kind
-                )))
-            }
+            _ => return Err(WasmError::internal("TestBits: unsupported compare kind")),
         };
         enc::setcc(&mut self.core.text, cc, dst);
         enc::movzx_r32_r8(&mut self.core.text, dst, dst);
@@ -1328,10 +1310,9 @@ impl<'a> X86_64Backend<'a> {
                     self.core.set_fp_reg_width(dst, width)?;
                     Ok(())
                 }
-                MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-                    "x86_64 Select condition cannot be reserved cache register {}",
-                    reg.0
-                ))),
+                MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+                    "x86_64 Select condition cannot be reserved cache register",
+                )),
             }
         } else {
             if let MachineValue::Imm64(value) = cond {

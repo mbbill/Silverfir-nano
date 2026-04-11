@@ -7,8 +7,6 @@
 
 use crate::collections;
 
-use alloc::format;
-
 use crate::{error::WasmError, utils::leb128};
 use core::fmt;
 
@@ -111,7 +109,7 @@ impl HeapType {
         let type_idx = payload.read_leb128_i32().map_err(WasmError::from)?;
 
         if type_idx < 0 {
-            return Err(WasmError::invalid("Type index cannot be negative".into()));
+            return Err(WasmError::invalid("Type index cannot be negative"));
         }
 
         Ok(HeapType::Concrete(type_idx as u32))
@@ -558,10 +556,7 @@ impl ValueType {
                 if let Ok(aht) = AbstractHeapType::try_from(first_byte) {
                     Ok(ValueType::Ref(RefType::nullable_abstract(aht)))
                 } else {
-                    Err(WasmError::invalid(format!(
-                        "Invalid value type byte: 0x{:02x} at position {}. Expected number type (0x7C-0x7F), vector type (0x7B), ref prefix (0x63/0x64), or abstract heap type (0x6F/0x70)",
-                        first_byte, payload.position() - 1
-                    )))
+                    Err(WasmError::invalid("Invalid value type byte: 0x at position . Expected number type (0x7C-0x7F), vector type (0x7B), ref prefix (0x63/0x64), or abstract heap type (0x6F/0x70)"))
                 }
             }
         }

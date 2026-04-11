@@ -75,7 +75,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             P::Select if matches!(result_ty, Some(Ty::GpI64)) => {
                 if args.len() != 3 {
-                    return Err(WasmError::internal("select expects three arguments".into()));
+                    return Err(WasmError::internal("select expects three arguments"));
                 }
                 let (true_lo, true_hi) = self.use_i64_operand_pair(&args[0])?;
                 let (false_lo, false_hi) = self.use_i64_operand_pair(&args[1])?;
@@ -111,7 +111,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (dst_lo, dst_hi) =
                     self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_binary(primitive)
-                    .ok_or_else(|| WasmError::internal("missing i64 binary lowering".into()))?
+                    .ok_or_else(|| WasmError::internal("missing i64 binary lowering"))?
                     .1;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairBinary {
@@ -158,7 +158,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (dst_lo, dst_hi) =
                     self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_binary(primitive)
-                    .ok_or_else(|| WasmError::internal("missing i64 shift lowering".into()))?
+                    .ok_or_else(|| WasmError::internal("missing i64 shift lowering"))?
                     .1;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairShift {
@@ -188,7 +188,7 @@ impl<'a> BlockLowerContext<'a> {
                 let dead = dead_input_values(&[a, b]);
                 let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let (_, kind, sign) = machine_int_compare(primitive)
-                    .ok_or_else(|| WasmError::internal("missing i64 compare lowering".into()))?;
+                    .ok_or_else(|| WasmError::internal("missing i64 compare lowering"))?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairCompare {
                         kind,
@@ -232,7 +232,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (dst_lo, dst_hi) =
                     self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_int_unary(primitive)
-                    .ok_or_else(|| WasmError::internal("missing i64 unary lowering".into()))?
+                    .ok_or_else(|| WasmError::internal("missing i64 unary lowering"))?
                     .1;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Int64PairUnary {
@@ -341,7 +341,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (dst_lo, dst_hi) =
                     self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 let op = machine_convert(primitive)
-                    .ok_or_else(|| WasmError::internal("missing i64 trunc lowering".into()))?;
+                    .ok_or_else(|| WasmError::internal("missing i64 trunc lowering"))?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::ConvertFloatToI64Pair {
                         op,

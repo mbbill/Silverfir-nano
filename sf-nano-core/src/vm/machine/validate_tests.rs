@@ -43,7 +43,7 @@ fn rejects_edge_arity_mismatch() {
     };
 
     let err = program.validate(minimal_config()).unwrap_err();
-    assert!(alloc::format!("{err}").contains("supplies 0 args"));
+    assert!(alloc::format!("{err}").contains("wrong number of args"));
 }
 
 #[test]
@@ -99,5 +99,5 @@ fn rejects_out_of_range_helper_metadata() {
     };
 
     let err = module.validate().unwrap_err();
-    assert!(alloc::format!("{err}").contains("out-of-range const 1"));
+    assert!(alloc::format!("{err}").contains("out-of-range const"));
 }

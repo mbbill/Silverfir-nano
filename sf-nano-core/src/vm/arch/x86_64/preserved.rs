@@ -78,11 +78,10 @@ impl<'a> X86_64Backend<'a> {
                 // zero-extended u32 even if the producer left stale high bits.
                 enc::mov_rr_32(&mut self.core.text, *scratch, src);
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "x86_64 cannot materialize reserved cache register {}",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "x86_64 cannot materialize reserved cache register",
+                ));
             }
         }
         enc::store_64(

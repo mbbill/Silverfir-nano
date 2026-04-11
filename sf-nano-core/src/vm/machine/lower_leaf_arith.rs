@@ -309,7 +309,7 @@ impl<'a> BlockLowerContext<'a> {
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
         if args.len() != 3 {
-            return Err(WasmError::internal("select expects three arguments".into()));
+            return Err(WasmError::internal("select expects three arguments"));
         }
         let on_true = self.use_operand(args[0])?;
         let on_false = self.use_operand(args[1])?;

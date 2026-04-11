@@ -32,11 +32,7 @@ pub(crate) fn eval(
     let _ = backend;
     let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
-        return Err(WasmError::invalid(alloc::format!(
-            "invalid argument count: got {}, expected {}",
-            args.len(),
-            func_type.params().len()
-        )));
+        return Err(WasmError::invalid("invalid argument count"));
     }
 
     let compiled = code.compiled();
@@ -45,12 +41,10 @@ pub(crate) fn eval(
         .abi()
         .functions
         .get(func_id.0 as usize)
-        .ok_or_else(|| {
-            WasmError::internal("native entry function is missing runtime metadata".into())
-        })?;
+        .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata"))?;
     let entry = code
         .native_entry()
-        .ok_or_else(|| WasmError::internal("native entry is missing finalized code".into()))?;
+        .ok_or_else(|| WasmError::internal("native entry is missing finalized code"))?;
 
     let mut stack = collections::vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
@@ -94,7 +88,7 @@ pub(crate) fn eval(
 
     #[cfg(sf_has_guard_pages)]
     if ctx.trap_kind != 0 {
-        let error = WasmError::trap("out of bounds memory access".into());
+        let error = WasmError::trap("out of bounds memory access");
         #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);
@@ -102,7 +96,7 @@ pub(crate) fn eval(
 
     if status != 0 {
         let error = ctx.error.take().unwrap_or_else(|| {
-            WasmError::internal("native root entry failed without setting an error".into())
+            WasmError::internal("native root entry failed without setting an error")
         });
         #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
@@ -133,7 +127,7 @@ pub(crate) fn ensure_stack_capacity(
     let end =
         (fp as usize).saturating_add(total_frame_slots as usize * core::mem::size_of::<u64>());
     if end > stack_end as usize {
-        return Err(WasmError::exhaustion("stack overflow".into()));
+        return Err(WasmError::exhaustion("stack overflow"));
     }
     Ok(())
 }

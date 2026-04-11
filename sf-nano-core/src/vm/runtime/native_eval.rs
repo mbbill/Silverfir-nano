@@ -21,11 +21,7 @@ pub(super) fn eval(
             callback,
         } => {
             if args.len() != func_type.params().len() {
-                return Err(WasmError::invalid(alloc::format!(
-                    "invalid argument count: got {}, expected {}",
-                    args.len(),
-                    func_type.params().len()
-                )));
+                return Err(WasmError::invalid("invalid argument count"));
             }
             let mut returns = collections::vec![Value::default(); func_type.results().len()];
             let mem_slice = if store.module().memories.is_empty() {
@@ -43,12 +39,10 @@ pub(super) fn eval(
             Ok(out)
         }
         FunctionInst::Local { spec, .. } => {
-            let active_backend = arch::active_native_backend().map_err(|err| {
-                WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
-            })?;
-            let active_config = arch::active_backend_config().map_err(|err| {
-                WasmError::invalid(alloc::format!("native backend unavailable: {err}"))
-            })?;
+            let active_backend = arch::active_native_backend()
+                .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
+            let active_config = arch::active_backend_config()
+                .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
             let needs_compile = spec
                 .get_native_code()
                 .map(|code| {
@@ -60,7 +54,7 @@ pub(super) fn eval(
                 build::ensure_module_compiled(store)?;
             }
             let code = spec.get_native_code().ok_or_else(|| {
-                WasmError::internal("native runtime is missing compiled machine code".into())
+                WasmError::internal("native runtime is missing compiled machine code")
             })?;
             arch::dispatch_eval(active_backend, spec, code, store, args)
         }

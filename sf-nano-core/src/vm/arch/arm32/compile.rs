@@ -78,7 +78,7 @@ pub(crate) fn compile_module(
     let base_ptr = {
         let executable = module
             .native_code_buffer()
-            .map_err(|err| WasmError::internal(err.into()))?;
+            .map_err(|err| WasmError::internal(err))?;
         executable.as_ptr()
     };
 
@@ -95,9 +95,10 @@ pub(crate) fn compile_module(
         collections::Vec::with_capacity(compiled.abi().functions.len() * ARM32_FUNCTION_INFO_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = Arm32FunctionInfo {
-            entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
-                WasmError::internal("arm32 function entry is out of range".into())
-            })? as u32,
+            entry: *internal_entry_addrs
+                .get(func_idx)
+                .ok_or_else(|| WasmError::internal("arm32 function entry is out of range"))?
+                as u32,
             total_frame_bytes: u32::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u32::from(runtime.frame_prefix_slots),
         };
@@ -118,9 +119,8 @@ pub(crate) fn compile_module(
         for patch in &artifact.direct_call_patches {
             let callee_addr = *internal_entry_addrs
                 .get(patch.callee.0 as usize)
-                .ok_or_else(|| {
-                    WasmError::internal("arm32 direct callee address is out of range".into())
-                })? as u32;
+                .ok_or_else(|| WasmError::internal("arm32 direct callee address is out of range"))?
+                as u32;
             patch_movw_movt(&mut artifact.text, patch.literal_offset, callee_addr);
         }
     }
@@ -128,7 +128,7 @@ pub(crate) fn compile_module(
     // Pass 3: write everything to the shared CodeBuffer
     let mut executable = module
         .native_code_buffer()
-        .map_err(|err| WasmError::internal(err.into()))?;
+        .map_err(|err| WasmError::internal(err))?;
     executable.begin_write();
     executable.reset();
 

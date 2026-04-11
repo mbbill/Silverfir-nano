@@ -173,11 +173,10 @@ impl<'a> Arm32Backend<'a> {
                             self.core.text.emit_u32(enc::cmp_reg(lhs_hw, *s));
                         }
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 branch IntCompare cannot read reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 branch IntCompare cannot read reserved cache register as rhs",
+                        ));
                     }
                 }
                 drop(lhs_gp);
@@ -208,11 +207,10 @@ impl<'a> Arm32Backend<'a> {
                         drop(s);
                         hw
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 branch TestBits cannot read reserved cache register {} as src",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 branch TestBits cannot read reserved cache register as src",
+                        ));
                     }
                 };
                 match mask {
@@ -229,21 +227,19 @@ impl<'a> Arm32Backend<'a> {
                             self.core.text.emit_u32(enc::tst_reg(src_hw, tmp));
                         }
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 branch TestBits cannot read reserved cache register {} as mask",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 branch TestBits cannot read reserved cache register as mask",
+                        ));
                     }
                 }
                 Ok(match kind {
                     MachineCompareKind::Eq => Cond::Eq,
                     MachineCompareKind::Ne => Cond::Ne,
                     _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "TestBits branch: unsupported compare kind {:?}",
-                            kind
-                        )));
+                        return Err(WasmError::internal(
+                            "TestBits branch: unsupported compare kind",
+                        ));
                     }
                 })
             }

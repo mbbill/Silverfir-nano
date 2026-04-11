@@ -169,12 +169,7 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<X86Reg, WasmError> {
     let config = compile_backend_config();
     gp_dynamic_index(reg, config)
         .and_then(|index| REG_PLAN.gp_dynamic.get(index).copied())
-        .ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "x86_64 has no GP mapping for machine reg {}",
-                reg.0
-            ))
-        })
+        .ok_or_else(|| WasmError::invalid("x86_64 has no GP mapping for machine reg"))
 }
 
 #[inline]

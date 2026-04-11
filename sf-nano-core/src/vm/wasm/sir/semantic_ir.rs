@@ -134,16 +134,15 @@ impl SemanticProgram {
     pub(crate) fn validate(&self) -> Result<(), WasmError> {
         let len = self.ops.len();
 
-        for (index, op) in self.ops.iter().enumerate() {
+        for (_index, op) in self.ops.iter().enumerate() {
             match &op.kind {
                 SemanticOpKind::LocalGet { idx }
                 | SemanticOpKind::LocalSet { idx }
                 | SemanticOpKind::LocalTee { idx } => {
                     if *idx >= self.local_count {
-                        return Err(WasmError::internal(alloc::format!(
-                            "semantic op {index} uses out-of-range local {idx} (local_count={})",
-                            self.local_count,
-                        )));
+                        return Err(WasmError::internal(
+                            "semantic op uses out-of-range local (local_count=)",
+                        ));
                     }
                 }
                 SemanticOpKind::If { else_target, .. } => {
@@ -166,22 +165,19 @@ impl SemanticProgram {
                     }
                 }
                 SemanticOpKind::ReturnVoid if self.results != 0 => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "semantic return_void at op {index} does not match function result arity {}",
-                        self.results,
-                    )));
+                    return Err(WasmError::internal(
+                        "semantic return_void at op does not match function result arity",
+                    ));
                 }
                 SemanticOpKind::ReturnOne if self.results != 1 => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "semantic return_one at op {index} does not match function result arity {}",
-                        self.results,
-                    )));
+                    return Err(WasmError::internal(
+                        "semantic return_one at op does not match function result arity",
+                    ));
                 }
                 SemanticOpKind::Return { arity } if *arity != self.results => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "semantic return at op {index} has arity {arity}, expected {}",
-                        self.results,
-                    )));
+                    return Err(WasmError::internal(
+                        "semantic return at op has arity , expected",
+                    ));
                 }
                 _ => {}
             }
@@ -189,43 +185,33 @@ impl SemanticProgram {
 
         // Validate local_types length when present.
         if !self.local_types.is_empty() && self.local_types.len() != self.local_count as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "semantic local_types length {} does not match local_count {}",
-                self.local_types.len(),
-                self.local_count,
-            )));
+            return Err(WasmError::internal(
+                "semantic local_types length does not match local_count",
+            ));
         }
         if !self.result_types.is_empty() && self.result_types.len() != self.results as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "semantic result_types length {} does not match result arity {}",
-                self.result_types.len(),
-                self.results,
-            )));
+            return Err(WasmError::internal(
+                "semantic result_types length does not match result arity",
+            ));
         }
 
         // Validate op_result_types indices are in range and match arity.
         for (op_idx, result_types) in &self.op_result_types {
             if *op_idx >= len {
-                return Err(WasmError::internal(alloc::format!(
-                    "op_result_types entry for op index {} is out of range (ops len={})",
-                    op_idx,
-                    len,
-                )));
+                return Err(WasmError::internal(
+                    "op_result_types entry for op index is out of range (ops len=)",
+                ));
             }
             if let Some(op) = self.ops.get(*op_idx) {
                 let Some(expected_results) = semantic_op_result_arity(&op.kind) else {
-                    return Err(WasmError::internal(alloc::format!(
-                        "op_result_types entry at op {} attached to a non-producing op",
-                        op_idx,
-                    )));
+                    return Err(WasmError::internal(
+                        "op_result_types entry at op attached to a non-producing op",
+                    ));
                 };
                 if result_types.len() != expected_results {
-                    return Err(WasmError::internal(alloc::format!(
-                        "op_result_types at op {} has {} types but op expects {} results",
-                        op_idx,
-                        result_types.len(),
-                        expected_results,
-                    )));
+                    return Err(WasmError::internal(
+                        "op_result_types at op has types but op expects results",
+                    ));
                 }
             }
         }
@@ -248,17 +234,14 @@ impl From<PrimitiveOpKind> for SemanticOpKind {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_target(target: SemanticTarget, len: usize, label: &str) -> Result<(), WasmError> {
+fn validate_target(target: SemanticTarget, len: usize, _label: &str) -> Result<(), WasmError> {
     if target.is_pending() {
-        return Err(WasmError::internal(alloc::format!(
-            "{label} is still pending at semantic validation time",
-        )));
+        return Err(WasmError::internal(
+            "is still pending at semantic validation time",
+        ));
     }
     if target.index().as_usize() >= len {
-        return Err(WasmError::internal(alloc::format!(
-            "{label} {idx} is out of range for semantic length {len}",
-            idx = target.index().as_usize(),
-        )));
+        return Err(WasmError::internal("is out of range for semantic length"));
     }
     Ok(())
 }

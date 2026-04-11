@@ -29,7 +29,10 @@ use crate::{
 };
 
 use super::{
-    abi::{self, emit_shared_epilogue, emit_shared_prologue, map_fixed_reg, map_reg, C_ARG0, C_ARG1, C_RET0},
+    abi::{
+        self, emit_shared_epilogue, emit_shared_prologue, map_fixed_reg, map_reg, C_ARG0, C_ARG1,
+        C_RET0,
+    },
     arm32_raise_trap,
     enc::{self, Cond},
     inst::{emit_load_u32_into, emit_patchable_addr_into},
@@ -262,7 +265,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
                 .labels
                 .get(fixup.target)
                 .and_then(|v| *v)
-                .ok_or_else(|| WasmError::internal("arm32 branch label unresolved".into()))?;
+                .ok_or_else(|| WasmError::internal("arm32 branch label unresolved"))?;
             let delta = target_offset as i32 - fixup.offset as i32;
             let inst = match fixup.kind {
                 BranchFixupKind::B => enc::b(delta),
@@ -352,17 +355,10 @@ impl<'a> Arm32Backend<'a> {
         let fp_idx =
             crate::vm::machine::machine_ir::fp_reg_index(reg, self.core.compiled.backend())
                 .ok_or_else(|| {
-                    WasmError::invalid(alloc::format!(
-                        "arm32: expected FP register, got GP machine reg {}",
-                        reg.0
-                    ))
+                    WasmError::invalid("arm32: expected FP register, got GP machine reg")
                 })?;
-        abi::fp_machine_reg(fp_idx).ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "arm32: FP machine reg index {} out of range",
-                fp_idx
-            ))
-        })
+        abi::fp_machine_reg(fp_idx)
+            .ok_or_else(|| WasmError::invalid("arm32: FP machine reg index out of range"))
     }
 
     // ── Branch emission ──────────────────────────────────────────────────
@@ -666,11 +662,8 @@ impl<'a> Arm32Backend<'a> {
                 }
             }
             MachineValue::Imm64(value) => self.emit_load_u32(dst, *value as u32),
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 emit_move_gp_value cannot consume reserved cache register {} as a real value",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 emit_move_gp_value cannot consume reserved cache register as a real value"));
             }
         }
         Ok(())
@@ -691,11 +684,8 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Imm64(v) => {
                 self.emit_load_u32(dst, *v as u32);
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 materialize_gp_into cannot consume reserved cache register {} as a real value",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 materialize_gp_into cannot consume reserved cache register as a real value"));
             }
         }
         Ok(())
@@ -711,21 +701,15 @@ impl<'a> Arm32Backend<'a> {
         let src_lo_reg = match src_lo {
             MachineValue::Reg(r) => Some(map_reg(*r)?),
             MachineValue::Imm64(_) => None,
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as lo half",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register as lo half"));
             }
         };
         let src_hi_reg = match src_hi {
             MachineValue::Reg(r) => Some(map_reg(*r)?),
             MachineValue::Imm64(_) => None,
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register {} as hi half",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 emit_pair_args_to_r0_r1 cannot consume reserved cache register as hi half"));
             }
         };
         if matches!(src_lo_reg, Some(Arm32Reg::R1)) && matches!(src_hi_reg, Some(Arm32Reg::R0)) {
@@ -874,11 +858,8 @@ impl<'a> Arm32Backend<'a> {
                     }
                 }
                 MachineValue::Imm64(v) => emit_load_u32_into(&mut self.core.text, *s, *v as u32),
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 emit_values_to_regs_via_stack cannot consume reserved cache register {} as a real value",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal("arm32 emit_values_to_regs_via_stack cannot consume reserved cache register as a real value"));
                 }
             }
             self.core.text.emit_u32(enc::push(push_mask));
@@ -962,12 +943,10 @@ impl<'a> Arm32Backend<'a> {
                     self.core.text.emit_u32(enc::vmov_d(dd, sd));
                 }
             }
-            ParallelSource::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 received non-identity reserved cache edge move into {} from {}",
-                    dst.reg.0,
-                    reg.0
-                )));
+            ParallelSource::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 received non-identity reserved cache edge move into from",
+                ));
             }
             ParallelSource::Reg { reg, .. } => {
                 // GP → FP. Use a JIT GP scratch (R12/R14) for the
@@ -976,9 +955,7 @@ impl<'a> Arm32Backend<'a> {
                 let src_gp = map_reg(reg)?;
                 let zero_s = self.gp_scratch.scoped_alloc();
                 emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                self.core
-                    .text
-                    .emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
+                self.core.text.emit_u32(enc::vmov_d_rr(dd, src_gp, *zero_s));
             }
             ParallelSource::Imm(value) => {
                 let lo = value as u32;
@@ -987,17 +964,13 @@ impl<'a> Arm32Backend<'a> {
                 let hi_s = self.gp_scratch.scoped_alloc();
                 emit_load_u32_into(&mut self.core.text, *lo_s, lo);
                 emit_load_u32_into(&mut self.core.text, *hi_s, hi);
-                self.core
-                    .text
-                    .emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
+                self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo_s, *hi_s));
             }
             ParallelSource::GpTemp(id) => {
                 let temp = self.gp_scratch.reg(id);
                 let zero_s = self.gp_scratch.scoped_alloc();
                 emit_load_u32_into(&mut self.core.text, *zero_s, 0);
-                self.core
-                    .text
-                    .emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
+                self.core.text.emit_u32(enc::vmov_d_rr(dd, temp, *zero_s));
             }
             ParallelSource::FpTemp(id, width) => {
                 let _ = width;
@@ -1027,12 +1000,10 @@ impl<'a> Arm32Backend<'a> {
                     .text
                     .emit_u32(enc::vmov_rr_d(dst_gp, *hi_scratch, sd));
             }
-            ParallelSource::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 received non-identity reserved cache edge move into {} from {}",
-                    dst.reg.0,
-                    reg.0
-                )));
+            ParallelSource::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 received non-identity reserved cache edge move into from",
+                ));
             }
             ParallelSource::Reg { reg, .. } => {
                 let src_gp = map_reg(reg)?;

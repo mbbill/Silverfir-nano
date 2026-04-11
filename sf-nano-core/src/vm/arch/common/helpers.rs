@@ -26,22 +26,16 @@ pub(crate) fn trap_kind_index(kind: MachineTrapKind) -> usize {
 
 pub(crate) fn trap_error(kind: MachineTrapKind) -> WasmError {
     match kind {
-        MachineTrapKind::Unreachable => WasmError::trap("unreachable executed".into()),
-        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access".into()),
-        MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access".into()),
-        MachineTrapKind::InvalidFunctionReference => {
-            WasmError::trap("invalid function reference".into())
-        }
-        MachineTrapKind::IndirectCallTypeMismatch => {
-            WasmError::trap("indirect call type mismatch".into())
-        }
-        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero".into()),
-        MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow".into()),
-        MachineTrapKind::InvalidConversion => {
-            WasmError::trap("invalid conversion to integer".into())
-        }
-        MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow".into()),
-        MachineTrapKind::HelperFailure => WasmError::trap("native call failed".into()),
+        MachineTrapKind::Unreachable => WasmError::trap("unreachable executed"),
+        MachineTrapKind::MemoryOutOfBounds => WasmError::trap("out of bounds memory access"),
+        MachineTrapKind::TableOutOfBounds => WasmError::trap("out of bounds table access"),
+        MachineTrapKind::InvalidFunctionReference => WasmError::trap("invalid function reference"),
+        MachineTrapKind::IndirectCallTypeMismatch => WasmError::trap("indirect call type mismatch"),
+        MachineTrapKind::IntegerDivideByZero => WasmError::trap("integer divide by zero"),
+        MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow"),
+        MachineTrapKind::InvalidConversion => WasmError::trap("invalid conversion to integer"),
+        MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow"),
+        MachineTrapKind::HelperFailure => WasmError::trap("native call failed"),
     }
 }
 

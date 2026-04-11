@@ -1,79 +1,30 @@
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::String;
 use core::fmt;
 
-use crate::utils::{limits::LimitsError, payload::PayloadError};
+use crate::utils::{
+    leb128::ReadError as Leb128ReadError, limits::LimitsError, payload::PayloadError,
+};
 
-/// Macro for creating WasmError with lazy formatting to minimize stack usage.
-#[macro_export]
-macro_rules! wasm_error {
-    (malformed, $($arg:tt)*) => {
-        $crate::error::WasmError::malformed_fmt(|| alloc::format!($($arg)*))
-    };
-    (invalid, $($arg:tt)*) => {
-        $crate::error::WasmError::invalid_fmt(|| alloc::format!($($arg)*))
-    };
-    (unlinkable, $($arg:tt)*) => {
-        $crate::error::WasmError::unlinkable_fmt(|| alloc::format!($($arg)*))
-    };
-    (exhaustion, $($arg:tt)*) => {
-        $crate::error::WasmError::exhaustion_fmt(|| alloc::format!($($arg)*))
-    };
-    (trap, $($arg:tt)*) => {
-        $crate::error::WasmError::trap_fmt(|| alloc::format!($($arg)*))
-    };
-    (exit, $($arg:tt)*) => {
-        $crate::error::WasmError::exit_fmt(|| alloc::format!($($arg)*))
-    };
-    (internal, $($arg:tt)*) => {
-        $crate::error::WasmError::internal_fmt(|| alloc::format!($($arg)*))
-    };
-}
-
-#[derive(Debug)]
-enum WasmErrorInner {
-    Malformed { message: String },
-    Invalid { message: String },
-    Unlinkable { message: String },
-    Exhaustion { message: String },
-    Trap { message: String },
-    Exit { code: i32 },
-    Internal { message: String },
-}
-
-/// Public error type - a thin pointer wrapper (8 bytes) for efficient stack usage.
-#[derive(Debug)]
-pub struct WasmError {
-    inner: Box<WasmErrorInner>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WasmError {
+    Malformed(&'static str),
+    Invalid(&'static str),
+    Unlinkable(&'static str),
+    Exhaustion(&'static str),
+    Trap(&'static str),
+    Exit(i32),
+    Internal(&'static str),
 }
 
 impl fmt::Display for WasmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.inner {
-            WasmErrorInner::Malformed { message, .. } => write!(f, "Malformed: {}", message),
-            WasmErrorInner::Invalid { message, .. } => write!(f, "Invalid: {}", message),
-            WasmErrorInner::Unlinkable { message, .. } => write!(f, "Unlinkable: {}", message),
-            WasmErrorInner::Exhaustion { message, .. } => write!(f, "Exhaustion: {}", message),
-            WasmErrorInner::Trap { message, .. } => write!(f, "Trap: {}", message),
-            WasmErrorInner::Exit { code, .. } => {
-                write!(f, "Exit: Process exited with code {}", code)
-            }
-            WasmErrorInner::Internal { message, .. } => write!(f, "Internal error: {}", message),
-        }
-    }
-}
-
-impl Clone for WasmError {
-    fn clone(&self) -> Self {
-        match &*self.inner {
-            WasmErrorInner::Malformed { message, .. } => Self::malformed(message.clone()),
-            WasmErrorInner::Invalid { message, .. } => Self::invalid(message.clone()),
-            WasmErrorInner::Unlinkable { message, .. } => Self::unlinkable(message.clone()),
-            WasmErrorInner::Exhaustion { message, .. } => Self::exhaustion(message.clone()),
-            WasmErrorInner::Trap { message, .. } => Self::trap(message.clone()),
-            WasmErrorInner::Exit { code, .. } => Self::exit_with_code(*code),
-            WasmErrorInner::Internal { message, .. } => Self::internal(message.clone()),
+        match self {
+            WasmError::Malformed(message) => write!(f, "Malformed: {}", message),
+            WasmError::Invalid(message) => write!(f, "Invalid: {}", message),
+            WasmError::Unlinkable(message) => write!(f, "Unlinkable: {}", message),
+            WasmError::Exhaustion(message) => write!(f, "Exhaustion: {}", message),
+            WasmError::Trap(message) => write!(f, "Trap: {}", message),
+            WasmError::Exit(code) => write!(f, "Exit: Process exited with code {}", code),
+            WasmError::Internal(message) => write!(f, "Internal error: {}", message),
         }
     }
 }
@@ -81,155 +32,89 @@ impl Clone for WasmError {
 impl WasmError {
     #[cold]
     #[inline(never)]
-    pub fn malformed(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Malformed { message }),
+    pub const fn malformed(message: &'static str) -> Self {
+        Self::Malformed(message)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn invalid(message: &'static str) -> Self {
+        Self::Invalid(message)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn unlinkable(message: &'static str) -> Self {
+        Self::Unlinkable(message)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn exhaustion(message: &'static str) -> Self {
+        Self::Exhaustion(message)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn trap(message: &'static str) -> Self {
+        Self::Trap(message)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn exit_with_code(code: i32) -> Self {
+        Self::Exit(code)
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub const fn internal(message: &'static str) -> Self {
+        Self::Internal(message)
+    }
+
+    pub const fn is_malformed(&self) -> bool {
+        matches!(self, WasmError::Malformed(_))
+    }
+
+    pub const fn is_trap(&self) -> bool {
+        matches!(self, WasmError::Trap(_))
+    }
+
+    pub const fn is_unlinkable(&self) -> bool {
+        matches!(self, WasmError::Unlinkable(_))
+    }
+
+    pub const fn is_exit(&self) -> bool {
+        matches!(self, WasmError::Exit(_))
+    }
+
+    pub const fn message(&self) -> &'static str {
+        match self {
+            WasmError::Malformed(message)
+            | WasmError::Invalid(message)
+            | WasmError::Unlinkable(message)
+            | WasmError::Exhaustion(message)
+            | WasmError::Trap(message)
+            | WasmError::Internal(message) => message,
+            WasmError::Exit(_) => "Process exited with code",
         }
     }
 
-    #[cold]
-    #[inline(never)]
-    pub fn malformed_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::malformed(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn invalid(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Invalid { message }),
+    pub const fn class(&self) -> &'static str {
+        match self {
+            WasmError::Malformed(_) => "malformed",
+            WasmError::Invalid(_) => "invalid",
+            WasmError::Unlinkable(_) => "unlinkable",
+            WasmError::Exhaustion(_) => "exhaustion",
+            WasmError::Trap(_) => "trap",
+            WasmError::Exit(_) => "exit",
+            WasmError::Internal(_) => "internal",
         }
     }
 
-    #[cold]
-    #[inline(never)]
-    pub fn invalid_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::invalid(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn unlinkable(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Unlinkable { message }),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn unlinkable_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::unlinkable(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn exhaustion(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Exhaustion { message }),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn exhaustion_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::exhaustion(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn trap(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Trap { message }),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn trap_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::trap(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn exit_with_code(code: i32) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Exit { code }),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn exit(message: String) -> Self {
-        let code = message
-            .strip_prefix("Process exited with code ")
-            .and_then(|s| s.trim().parse::<i32>().ok())
-            .unwrap_or(1);
-        Self::exit_with_code(code)
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn exit_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::exit(f())
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn internal(message: String) -> Self {
-        Self {
-            inner: Box::new(WasmErrorInner::Internal { message }),
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub fn internal_fmt(f: impl FnOnce() -> String) -> Self {
-        Self::internal(f())
-    }
-
-    pub fn is_malformed(&self) -> bool {
-        matches!(&*self.inner, WasmErrorInner::Malformed { .. })
-    }
-
-    pub fn is_trap(&self) -> bool {
-        matches!(&*self.inner, WasmErrorInner::Trap { .. })
-    }
-
-    pub fn is_unlinkable(&self) -> bool {
-        matches!(&*self.inner, WasmErrorInner::Unlinkable { .. })
-    }
-
-    pub fn is_exit(&self) -> bool {
-        matches!(&*self.inner, WasmErrorInner::Exit { .. })
-    }
-
-    pub fn message(&self) -> String {
-        match &*self.inner {
-            WasmErrorInner::Malformed { message, .. }
-            | WasmErrorInner::Invalid { message, .. }
-            | WasmErrorInner::Unlinkable { message, .. }
-            | WasmErrorInner::Exhaustion { message, .. }
-            | WasmErrorInner::Trap { message, .. }
-            | WasmErrorInner::Internal { message, .. } => message.clone(),
-            WasmErrorInner::Exit { code, .. } => format!("Process exited with code {}", code),
-        }
-    }
-
-    pub fn class(&self) -> &'static str {
-        match &*self.inner {
-            WasmErrorInner::Malformed { .. } => "malformed",
-            WasmErrorInner::Invalid { .. } => "invalid",
-            WasmErrorInner::Unlinkable { .. } => "unlinkable",
-            WasmErrorInner::Exhaustion { .. } => "exhaustion",
-            WasmErrorInner::Trap { .. } => "trap",
-            WasmErrorInner::Exit { .. } => "exit",
-            WasmErrorInner::Internal { .. } => "internal",
-        }
-    }
-
-    pub fn exit_code(&self) -> Option<i32> {
-        match &*self.inner {
-            WasmErrorInner::Exit { code, .. } => Some(*code),
+    pub const fn exit_code(&self) -> Option<i32> {
+        match self {
+            WasmError::Exit(code) => Some(*code),
             _ => None,
         }
     }
@@ -237,12 +122,35 @@ impl WasmError {
 
 impl From<PayloadError> for WasmError {
     fn from(error: PayloadError) -> Self {
-        WasmError::malformed(format!("{}", error))
+        match error {
+            PayloadError::UnexpectedEndOfInput(_) => {
+                WasmError::malformed("unexpected end of input")
+            }
+            PayloadError::InvalidData(_) => WasmError::malformed("invalid payload data"),
+            PayloadError::InvalidLEB128(leb) => match leb {
+                Leb128ReadError::InsufficientData => {
+                    WasmError::malformed("unexpected end of input")
+                }
+                Leb128ReadError::ValueTooLong => WasmError::malformed("invalid LEB128 value"),
+                Leb128ReadError::UnusedBitsSet => WasmError::malformed("invalid LEB128 value"),
+            },
+            PayloadError::RewindOutOfBounds(_) => {
+                WasmError::internal("payload rewind out of bounds")
+            }
+        }
     }
 }
 
 impl From<LimitsError> for WasmError {
     fn from(error: LimitsError) -> Self {
-        WasmError::invalid(format!("Limits error: {}", error))
+        match error {
+            LimitsError::MinLargerThanMax => WasmError::invalid("min larger than max"),
+            LimitsError::MaxLargerThanDefaultMax => {
+                WasmError::invalid("max larger than default max")
+            }
+            LimitsError::MinLargerThanDefaultMax => {
+                WasmError::invalid("min larger than default max")
+            }
+        }
     }
 }

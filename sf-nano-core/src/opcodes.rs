@@ -1,5 +1,4 @@
 use crate::error::WasmError;
-use alloc::format;
 use core::fmt;
 
 macro_rules! define_opcodes {
@@ -22,7 +21,7 @@ macro_rules! define_opcodes {
             fn try_from(value: $type) -> Result<Self, Self::Error> {
                 match value {
                     $($value => Ok($enum_name::$name),)*
-                    _ => Err(WasmError::malformed(format!("invalid opcode: {:#x}", value))),
+                    _ => Err(WasmError::malformed("invalid opcode")),
                 }
             }
         }

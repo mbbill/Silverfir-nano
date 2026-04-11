@@ -54,10 +54,9 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 
     fn on_decode_end(&mut self) -> Result<(), WasmError> {
         if !self.context.control_frames.is_empty() {
-            return Err(WasmError::invalid(alloc::format!(
-                "function parsing ended with {} unclosed control frames",
-                self.context.control_frames.len()
-            )));
+            return Err(WasmError::invalid(
+                "function parsing ended with unclosed control frames",
+            ));
         }
 
         let func_type = self.function.func_type();
@@ -65,20 +64,14 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
         let expected_results = func_type.results();
 
         if actual_results.len() != expected_results.len() {
-            return Err(WasmError::invalid(alloc::format!(
-                "function return arity mismatch, expected: {} values, actual: {} values",
-                expected_results.len(),
-                actual_results.len()
-            )));
+            return Err(WasmError::invalid("function return arity mismatch"));
         }
 
         for (actual, expected) in actual_results.iter().zip(expected_results.iter()) {
             if !actual.is_compatible_with(expected) {
-                return Err(WasmError::invalid(alloc::format!(
-                    "function return type mismatch, expected: {:?}, actual: {:?}",
-                    expected,
-                    actual
-                )));
+                return Err(WasmError::invalid(
+                    "function return type mismatch, expected: , actual",
+                ));
             }
         }
 
@@ -114,7 +107,7 @@ impl<'a> FunctionValidator<'a> {
                 .types()
                 .get(type_index as u32)
                 .cloned()
-                .ok_or_else(|| WasmError::malformed("block type index out of range".into())),
+                .ok_or_else(|| WasmError::malformed("block type index out of range")),
         }
     }
 
@@ -124,7 +117,7 @@ impl<'a> FunctionValidator<'a> {
             .context
             .all_locals
             .get(local_index as usize)
-            .ok_or_else(|| WasmError::invalid("local index out of range".into()))?;
+            .ok_or_else(|| WasmError::invalid("local index out of range"))?;
         Ok(*local_type)
     }
 
@@ -134,7 +127,7 @@ impl<'a> FunctionValidator<'a> {
             .module
             .globals()
             .get(global_index)
-            .ok_or_else(|| WasmError::invalid("global index out of range".into()))?;
+            .ok_or_else(|| WasmError::invalid("global index out of range"))?;
         Ok(global.value_type())
     }
 
@@ -144,7 +137,7 @@ impl<'a> FunctionValidator<'a> {
             .module
             .tables()
             .get(table_index)
-            .ok_or_else(|| WasmError::invalid("table index out of range".into()))?;
+            .ok_or_else(|| WasmError::invalid("table index out of range"))?;
         Ok(table.value_type())
     }
 
@@ -154,7 +147,7 @@ impl<'a> FunctionValidator<'a> {
             .module
             .tables()
             .get(table_index)
-            .ok_or_else(|| WasmError::invalid("table index out of range".into()))?;
+            .ok_or_else(|| WasmError::invalid("table index out of range"))?;
         let is_table64 = table.spec().limits().is64;
         Ok(if is_table64 {
             ValueType::I64
@@ -178,18 +171,18 @@ impl<'a> FunctionValidator<'a> {
             unreachable!()
         };
         if align > 63 {
-            return Err(WasmError::invalid("invalid mem load alignment".into()));
+            return Err(WasmError::invalid("invalid mem load alignment"));
         }
         if 2usize.pow(align) > core::mem::size_of::<T>() {
-            return Err(WasmError::invalid("invalid mem load alignment".into()));
+            return Err(WasmError::invalid("invalid mem load alignment"));
         }
         if memidx as usize >= self.module.memories().len() {
-            return Err(WasmError::invalid("unknown memory".into()));
+            return Err(WasmError::invalid("unknown memory"));
         }
         let mem = &self.module.memories()[memidx as usize];
         let is_mem64 = mem.spec().limits().is64;
         if !is_mem64 && offset > u32::MAX as u64 {
-            return Err(WasmError::invalid("offset out of range".into()));
+            return Err(WasmError::invalid("offset out of range"));
         }
         let index_type = if is_mem64 { I64 } else { I32 };
         self.context.pop_val(Some(index_type))?;
@@ -211,18 +204,18 @@ impl<'a> FunctionValidator<'a> {
             unreachable!()
         };
         if align > 63 {
-            return Err(WasmError::invalid("invalid mem store alignment".into()));
+            return Err(WasmError::invalid("invalid mem store alignment"));
         }
         if 2usize.pow(align) > core::mem::size_of::<T>() {
-            return Err(WasmError::invalid("invalid mem store alignment".into()));
+            return Err(WasmError::invalid("invalid mem store alignment"));
         }
         if memidx as usize >= self.module.memories().len() {
-            return Err(WasmError::invalid("unknown memory".into()));
+            return Err(WasmError::invalid("unknown memory"));
         }
         let mem = &self.module.memories()[memidx as usize];
         let is_mem64 = mem.spec().limits().is64;
         if !is_mem64 && offset > u32::MAX as u64 {
-            return Err(WasmError::invalid("offset out of range".into()));
+            return Err(WasmError::invalid("offset out of range"));
         }
         let index_type = if is_mem64 { I64 } else { I32 };
         self.context.pop_val(Some(val_type))?;
@@ -266,7 +259,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ELSE => {
                 if self.context.frame_at(0)?.frame_type() != FrameType::If {
-                    return Err(WasmError::invalid("invalid else".into()));
+                    return Err(WasmError::invalid("invalid else"));
                 }
                 let if_frame = self.context.pop_ctrl()?;
                 self.context
@@ -309,7 +302,7 @@ impl<'a> FunctionValidator<'a> {
                     let label_types = self.context.frame_at(label)?.label_types();
                     let arity = label_types.len();
                     if arity != default_arity {
-                        return Err(WasmError::invalid("invalid br_table arity".into()));
+                        return Err(WasmError::invalid("invalid br_table arity"));
                     }
                     let popped = self.context.pop_vals(&label_types)?;
                     self.context.push_vals(&popped)
@@ -330,7 +323,7 @@ impl<'a> FunctionValidator<'a> {
                     .module
                     .functions()
                     .get(function_index as usize)
-                    .ok_or_else(|| WasmError::invalid("function index out of range".into()))?;
+                    .ok_or_else(|| WasmError::invalid("function index out of range"))?;
                 let function_type = function.func_type();
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_vals(function_type.results())
@@ -343,7 +336,7 @@ impl<'a> FunctionValidator<'a> {
                     .module
                     .tables()
                     .get(tableidx as usize)
-                    .ok_or_else(|| WasmError::invalid("invalid table index".into()))?;
+                    .ok_or_else(|| WasmError::invalid("invalid table index"))?;
                 let is_table64 = table.spec().limits().is64;
                 let idx_type = if is_table64 { I64 } else { I32 };
                 self.context.pop_val(Some(idx_type))?;
@@ -352,21 +345,17 @@ impl<'a> FunctionValidator<'a> {
                     .types()
                     .get(typeidx)
                     .cloned()
-                    .ok_or_else(|| WasmError::invalid("invalid function type index".into()))?;
+                    .ok_or_else(|| WasmError::invalid("invalid function type index"))?;
                 let table_type = table.value_type();
                 if !table_type.is_funcref() {
-                    return Err(WasmError::invalid(alloc::format!(
-                        "call_indirect requires funcref table, got {:?}",
-                        table_type
-                    )));
+                    return Err(WasmError::invalid(
+                        "call_indirect requires funcref table, got",
+                    ));
                 }
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_vals(function_type.results())
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT => Err(WasmError::invalid(alloc::format!(
-                "Opcode {} not implemented",
-                op
-            ))),
+            RETURN_CALL | RETURN_CALL_INDIRECT => Err(WasmError::invalid("Opcode not implemented")),
             DROP => {
                 self.context.pop_val(None)?;
                 Ok(())
@@ -382,11 +371,7 @@ impl<'a> FunctionValidator<'a> {
                     ));
                 }
                 if !t1.is_compatible_with(&t2) && t1 != Unknown && t2 != Unknown {
-                    return Err(WasmError::invalid(alloc::format!(
-                        "SELECT type mismatch: {:?} vs {:?}",
-                        t1,
-                        t2
-                    )));
+                    return Err(WasmError::invalid("SELECT type mismatch: vs"));
                 }
                 if t1 == Unknown {
                     self.context.push_val(t2)
@@ -397,7 +382,7 @@ impl<'a> FunctionValidator<'a> {
             SELECT_T => {
                 let select_types = extract_imm!(imm, Immediate::SelectTypes);
                 if select_types.len() != 1 {
-                    return Err(WasmError::invalid("invalid select types size".into()));
+                    return Err(WasmError::invalid("invalid select types size"));
                 }
                 let select_type = select_types[0];
                 self.context.pop_val(Some(I32))?;
@@ -409,10 +394,10 @@ impl<'a> FunctionValidator<'a> {
                 let local_index = extract_imm!(imm, Immediate::LocalIndex);
                 let local_type = self.get_local_type(&imm)?;
                 if local_index as usize >= self.context.locals_init.len() {
-                    return Err(WasmError::invalid("local index out of range".into()));
+                    return Err(WasmError::invalid("local index out of range"));
                 }
                 if !self.context.locals_init[local_index as usize] {
-                    return Err(WasmError::invalid("uninitialized local".into()));
+                    return Err(WasmError::invalid("uninitialized local"));
                 }
                 self.context.push_val(local_type)
             }
@@ -440,9 +425,9 @@ impl<'a> FunctionValidator<'a> {
                     .module
                     .globals()
                     .get(global_index)
-                    .ok_or_else(|| WasmError::invalid("global not found".into()))?;
+                    .ok_or_else(|| WasmError::invalid("global not found"))?;
                 if !global.mutable() {
-                    return Err(WasmError::invalid("Global is immutable".into()));
+                    return Err(WasmError::invalid("Global is immutable"));
                 }
                 let global_type = self.get_global_type(&imm)?;
                 self.context.pop_val(Some(global_type))?;
@@ -482,7 +467,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_SIZE => {
                 let memidx = extract_imm!(imm, Immediate::MemoryIndex) as usize;
                 if memidx >= self.module.memories().len() {
-                    return Err(WasmError::invalid("unknown memory".into()));
+                    return Err(WasmError::invalid("unknown memory"));
                 }
                 let mem = &self.module.memories()[memidx];
                 let is_mem64 = mem.spec().limits().is64;
@@ -492,7 +477,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_GROW => {
                 let memidx = extract_imm!(imm, Immediate::MemoryIndex) as usize;
                 if memidx >= self.module.memories().len() {
-                    return Err(WasmError::invalid("unknown memory".into()));
+                    return Err(WasmError::invalid("unknown memory"));
                 }
                 let mem = &self.module.memories()[memidx];
                 let is_mem64 = mem.spec().limits().is64;
@@ -503,7 +488,7 @@ impl<'a> FunctionValidator<'a> {
             REF_NULL => {
                 let ref_type = extract_imm!(imm, Immediate::RefType);
                 if !ref_type.is_ref() {
-                    return Err(WasmError::invalid("invalid ref type".into()));
+                    return Err(WasmError::invalid("invalid ref type"));
                 }
                 self.context.push_val(ref_type)
             }
@@ -515,7 +500,7 @@ impl<'a> FunctionValidator<'a> {
             REF_FUNC => {
                 let function_index = extract_imm!(imm, Immediate::FunctionIndex);
                 if function_index as usize >= self.module.functions().len() {
-                    return Err(WasmError::invalid("function index out of range".into()));
+                    return Err(WasmError::invalid("function index out of range"));
                 }
 
                 // Check if the function is declared in any element section
@@ -540,7 +525,7 @@ impl<'a> FunctionValidator<'a> {
                 }
 
                 if !is_declared {
-                    return Err(WasmError::invalid("undeclared function reference".into()));
+                    return Err(WasmError::invalid("undeclared function reference"));
                 }
 
                 let type_idx = self.module.functions()[function_index as usize].type_index();
@@ -727,10 +712,10 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_INIT => {
                 let (dataidx, memidx) = match imm {
                     Immediate::MemoryInitArgs { dataidx, memidx } => (dataidx, memidx),
-                    _ => return Err(WasmError::invalid("invalid memory init arguments".into())),
+                    _ => return Err(WasmError::invalid("invalid memory init arguments")),
                 };
                 if dataidx as usize >= self.module.data().len() {
-                    return Err(WasmError::invalid("invalid memory init data index".into()));
+                    return Err(WasmError::invalid("invalid memory init data index"));
                 }
                 if memidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -753,7 +738,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_COPY => {
                 let (dstidx, srcidx) = match imm {
                     Immediate::MemoryCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
-                    _ => return Err(WasmError::invalid("invalid memory copy arguments".into())),
+                    _ => return Err(WasmError::invalid("invalid memory copy arguments")),
                 };
                 if dstidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -778,7 +763,7 @@ impl<'a> FunctionValidator<'a> {
             MEMORY_FILL => {
                 let memidx = match imm {
                     Immediate::MemoryIndex(memidx) => memidx,
-                    _ => return Err(WasmError::invalid("invalid memory fill arguments".into())),
+                    _ => return Err(WasmError::invalid("invalid memory fill arguments")),
                 };
                 if memidx as usize >= self.module.memories().len() {
                     return Err(WasmError::invalid(
@@ -795,7 +780,7 @@ impl<'a> FunctionValidator<'a> {
             }
             DATA_DROP => {
                 if self.module.data().is_empty() {
-                    return Err(WasmError::invalid("unknown data segment".into()));
+                    return Err(WasmError::invalid("unknown data segment"));
                 }
                 if self.module.data_count().is_none() {
                     return Err(WasmError::malformed(
@@ -804,17 +789,17 @@ impl<'a> FunctionValidator<'a> {
                 }
                 let dataidx = match imm {
                     Immediate::DataIndex(dataidx) => dataidx,
-                    _ => return Err(WasmError::invalid("invalid data index".into())),
+                    _ => return Err(WasmError::invalid("invalid data index")),
                 };
                 if dataidx as usize >= self.module.data().len() {
-                    return Err(WasmError::invalid("invalid data index".into()));
+                    return Err(WasmError::invalid("invalid data index"));
                 }
                 Ok(())
             }
             TABLE_INIT => {
                 let (elemidx, tableidx) = match imm {
                     Immediate::TableInitArgs { elemidx, tableidx } => (elemidx, tableidx),
-                    _ => return Err(WasmError::invalid("invalid table init arguments".into())),
+                    _ => return Err(WasmError::invalid("invalid table init arguments")),
                 };
                 if elemidx as usize >= self.module.elements().len() {
                     return Err(WasmError::invalid(
@@ -822,7 +807,7 @@ impl<'a> FunctionValidator<'a> {
                     ));
                 }
                 if tableidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table init table index".into()));
+                    return Err(WasmError::invalid("invalid table init table index"));
                 }
                 // Check element-table type compatibility
                 let elem = &self.module.elements()[elemidx as usize];
@@ -830,7 +815,7 @@ impl<'a> FunctionValidator<'a> {
                 let elem_type = elem.value_type();
                 let table_type = table.value_type();
                 if !elem_type.is_compatible_with(&table_type) {
-                    return Err(WasmError::invalid("type mismatch".into()));
+                    return Err(WasmError::invalid("type mismatch"));
                 }
                 let table = &self.module.tables()[tableidx as usize];
                 let is_table64 = table.spec().limits().is64;
@@ -843,30 +828,30 @@ impl<'a> FunctionValidator<'a> {
             ELEM_DROP => {
                 let elemidx = match imm {
                     Immediate::ElementIndex(elemidx) => elemidx,
-                    _ => return Err(WasmError::invalid("invalid element index".into())),
+                    _ => return Err(WasmError::invalid("invalid element index")),
                 };
                 if elemidx as usize >= self.module.elements().len() {
-                    return Err(WasmError::invalid("invalid element index".into()));
+                    return Err(WasmError::invalid("invalid element index"));
                 }
                 Ok(())
             }
             TABLE_COPY => {
                 let (dstidx, srcidx) = match imm {
                     Immediate::TableCopyArgs { dstidx, srcidx } => (dstidx, srcidx),
-                    _ => return Err(WasmError::invalid("invalid table copy arguments".into())),
+                    _ => return Err(WasmError::invalid("invalid table copy arguments")),
                 };
                 if dstidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table copy dst index".into()));
+                    return Err(WasmError::invalid("invalid table copy dst index"));
                 }
                 if srcidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table copy src index".into()));
+                    return Err(WasmError::invalid("invalid table copy src index"));
                 }
                 let dst_table = &self.module.tables()[dstidx as usize];
                 let src_table = &self.module.tables()[srcidx as usize];
                 let dst_type = dst_table.value_type();
                 let src_type = src_table.value_type();
                 if src_type != dst_type && !src_type.is_compatible_with(&dst_type) {
-                    return Err(WasmError::invalid("table copy type mismatch".into()));
+                    return Err(WasmError::invalid("table copy type mismatch"));
                 }
 
                 let dst_is_64 = dst_table.spec().limits().is64;
@@ -882,10 +867,10 @@ impl<'a> FunctionValidator<'a> {
             TABLE_GROW => {
                 let tableidx = match imm {
                     Immediate::TableIndex(tableidx) => tableidx,
-                    _ => return Err(WasmError::invalid("invalid table index".into())),
+                    _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table index".into()));
+                    return Err(WasmError::invalid("invalid table index"));
                 }
                 let table = &self.module.tables()[tableidx as usize];
                 let table_type = table.value_type();
@@ -898,10 +883,10 @@ impl<'a> FunctionValidator<'a> {
             TABLE_SIZE => {
                 let tableidx = match imm {
                     Immediate::TableIndex(tableidx) => tableidx,
-                    _ => return Err(WasmError::invalid("invalid table index".into())),
+                    _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table index".into()));
+                    return Err(WasmError::invalid("invalid table index"));
                 }
                 let table = &self.module.tables()[tableidx as usize];
                 let is_table64 = table.spec().limits().is64;
@@ -911,10 +896,10 @@ impl<'a> FunctionValidator<'a> {
             TABLE_FILL => {
                 let tableidx = match imm {
                     Immediate::TableIndex(tableidx) => tableidx,
-                    _ => return Err(WasmError::invalid("invalid table index".into())),
+                    _ => return Err(WasmError::invalid("invalid table index")),
                 };
                 if tableidx as usize >= self.module.tables().len() {
-                    return Err(WasmError::invalid("invalid table index".into()));
+                    return Err(WasmError::invalid("invalid table index"));
                 }
                 let table = &self.module.tables()[tableidx as usize];
                 let table_type = table.value_type();
@@ -923,11 +908,9 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_val(Some(idx_type))?; // n (size)
                 let ref_val = self.context.pop_ref_type()?; // value
                 if !ref_val.is_compatible_with(&table_type) {
-                    return Err(WasmError::invalid(alloc::format!(
-                        "table fill type mismatch: expected {:?}, got {:?}",
-                        table_type,
-                        ref_val
-                    )));
+                    return Err(WasmError::invalid(
+                        "table fill type mismatch: expected , got",
+                    ));
                 }
                 self.context.pop_val(Some(idx_type))?; // dest
                 Ok(())
@@ -1058,20 +1041,16 @@ impl Context {
             return Ok(Unknown);
         }
         if current_frame.height() >= self.val_stack.len() {
-            return Err(WasmError::invalid("stack underflow".into()));
+            return Err(WasmError::invalid("stack underflow"));
         }
         if self.val_stack.is_empty() {
-            return Err(WasmError::invalid("cannot pop from an empty stack".into()));
+            return Err(WasmError::invalid("cannot pop from an empty stack"));
         }
         let actual = self.val_stack.pop().unwrap();
 
         if let Some(expected_type) = expected {
             if !actual.is_compatible_with(&expected_type) {
-                return Err(WasmError::invalid(alloc::format!(
-                    "type mismatch: expected {:?}, got {:?}",
-                    expected_type,
-                    actual
-                )));
+                return Err(WasmError::invalid("type mismatch: expected , got"));
             }
         }
 
@@ -1094,10 +1073,7 @@ impl Context {
     fn pop_ref_type(&mut self) -> Result<ValueType, WasmError> {
         let val = self.pop_val(None)?;
         if !val.is_ref() && val != ValueType::Unknown {
-            return Err(WasmError::invalid(alloc::format!(
-                "expected reference type, got {:?}",
-                val
-            )));
+            return Err(WasmError::invalid("expected reference type, got"));
         }
         Ok(val)
     }
@@ -1131,7 +1107,7 @@ impl Context {
         self.pop_vals(function_type.results())?;
         let frame = self.control_frames.pop().unwrap();
         if frame.height() != self.val_stack.len() {
-            return Err(WasmError::invalid("invalid stack height".into()));
+            return Err(WasmError::invalid("invalid stack height"));
         }
         self.reset_locals(frame.inits_height);
         Ok(frame)
@@ -1139,11 +1115,11 @@ impl Context {
 
     fn mark_unreachable(&mut self) -> Result<(), WasmError> {
         if self.control_frames.is_empty() {
-            return Err(WasmError::invalid("control frame stack is empty".into()));
+            return Err(WasmError::invalid("control frame stack is empty"));
         }
         let current_frame = self.control_frames.last_mut().unwrap();
         if self.val_stack.len() < current_frame.height() {
-            return Err(WasmError::invalid("invalid stack height".into()));
+            return Err(WasmError::invalid("invalid stack height"));
         }
         self.val_stack.truncate(current_frame.height());
         current_frame.unreachable = true;
@@ -1153,14 +1129,14 @@ impl Context {
     fn frame_at(&self, label_index: u32) -> Result<&ControlFrame, WasmError> {
         let labels = self.control_frames.len();
         if label_index as usize >= labels {
-            return Err(WasmError::invalid("invalid frame index".into()));
+            return Err(WasmError::invalid("invalid frame index"));
         }
         Ok(&self.control_frames[labels - label_index as usize - 1])
     }
 
     fn frame_last(&self) -> Result<&ControlFrame, WasmError> {
         if self.control_frames.is_empty() {
-            return Err(WasmError::invalid("control frame stack is empty".into()));
+            return Err(WasmError::invalid("control frame stack is empty"));
         }
         Ok(&self.control_frames[0])
     }

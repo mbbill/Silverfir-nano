@@ -87,7 +87,7 @@ pub(crate) fn write_module_dump(
             code_slices,
             debug_regions_by_func,
         )
-        .map_err(|err| WasmError::internal(format!("failed to write native dump: {err}")))
+        .map_err(|_err| WasmError::internal("failed to write native dump"))
     }
 
     #[cfg(not(any(sf_has_std, test)))]

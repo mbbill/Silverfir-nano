@@ -27,7 +27,7 @@ impl<'a> BlockLowerContext<'a> {
                 continue;
             }
             let cached = self.bound_cached_local(index).ok_or_else(|| {
-                WasmError::internal("cached local binding missing during cache save".into())
+                WasmError::internal("cached local binding missing during cache save")
             })?;
             if matches!(cached.ty, MachineStorageType::GpI64) {
                 let ops = self.i64_ops();
@@ -52,9 +52,9 @@ impl<'a> BlockLowerContext<'a> {
         if !self.is_cache_live(index) {
             return Ok(());
         }
-        let cached = self.bound_cached_local(index).ok_or_else(|| {
-            WasmError::internal("cached local binding missing during cache drop".into())
-        })?;
+        let cached = self
+            .bound_cached_local(index)
+            .ok_or_else(|| WasmError::internal("cached local binding missing during cache drop"))?;
         self.materialize_cache_aliases(cached.reg, &[])?;
         if let Some(hi_reg) = cached.hi_reg {
             self.materialize_cache_aliases(hi_reg, &[])?;
@@ -108,9 +108,9 @@ impl<'a> BlockLowerContext<'a> {
                         src: MachineValue::Imm64(0),
                     },
                 });
-                let hi_offset = base_offset.checked_add(4).ok_or_else(|| {
-                    WasmError::internal("frame slot zero-init offset overflow".into())
-                })?;
+                let hi_offset = base_offset
+                    .checked_add(4)
+                    .ok_or_else(|| WasmError::internal("frame slot zero-init offset overflow"))?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,

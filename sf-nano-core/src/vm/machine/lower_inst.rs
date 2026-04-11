@@ -210,11 +210,10 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_leaf(op, args, results)?;
                 self.release_dead_values()?;
             }
-            SsaInstKind::Call(call) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "call op {:?} must be lowered through its specialized path",
-                    call
-                )));
+            SsaInstKind::Call(_call) => {
+                return Err(WasmError::internal(
+                    "call op must be lowered through its specialized path",
+                ));
             }
         }
         Ok(())
@@ -222,7 +221,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn ensure_cached_local_loaded(
         &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
+        _slot: crate::vm::middle::frame::FrameSlot,
         cached_index: usize,
         ty: MachineStorageType,
     ) -> Result<(), WasmError> {
@@ -231,10 +230,9 @@ impl<'a> BlockLowerContext<'a> {
         }
         let cached = self.ensure_bound_cached_local(cached_index)?;
         if cached.ty != ty {
-            return Err(WasmError::internal(alloc::format!(
-                "typed SSA-IR cache load from local slot {:?} expects {:?}, but cached local is {:?}",
-                slot, ty, cached.ty,
-            )));
+            return Err(WasmError::internal(
+                "typed SSA-IR cache load from local slot expects , but cached local is",
+            ));
         }
         if matches!(cached.ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
@@ -290,25 +288,16 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
         let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(alloc::format!(
-                "LocalGetCache on non-cached local slot {:?}",
-                slot,
-            )));
+            return Err(WasmError::internal(
+                "LocalGetCache on non-cached local slot",
+            ));
         };
         self.ensure_cached_local_loaded(slot, cached_index, ty)
-            .map_err(|err| {
-                WasmError::internal(alloc::format!(
-                    "LocalGetCache(slot={:?}, dst={:?}) in block b{} failed: {}",
-                    slot,
-                    dst,
-                    self.block_id(),
-                    err.message(),
-                ))
-            })?;
+            .map_err(|_err| WasmError::internal("LocalGetCache(slot=, dst=) in block b failed"))?;
         let cached = self.ensure_bound_cached_local(cached_index)?;
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal("cached i64 local is missing a high-half register".into())
+                WasmError::internal("cached i64 local is missing a high-half register")
             })?;
             let (dst_lo, dst_hi) = self.alloc_i64_value_pair(dst)?;
             self.emit_machine_inst(MachineInst {
@@ -342,24 +331,16 @@ impl<'a> BlockLowerContext<'a> {
         slot: crate::vm::middle::frame::FrameSlot,
     ) -> Result<(), WasmError> {
         let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(alloc::format!(
-                "LocalEnsureCache on non-cached local slot {:?}",
-                slot,
-            )));
+            return Err(WasmError::internal(
+                "LocalEnsureCache on non-cached local slot",
+            ));
         };
         let ty = self
             .bound_cached_local(cached_index)
             .map(|cached| cached.ty)
             .unwrap_or_else(|| self.cached_locals()[cached_index].ty);
         self.ensure_cached_local_loaded(slot, cached_index, ty)
-            .map_err(|err| {
-                WasmError::internal(alloc::format!(
-                    "LocalEnsureCache(slot={:?}) in block b{} failed: {}",
-                    slot,
-                    self.block_id(),
-                    err.message(),
-                ))
-            })
+            .map_err(|_err| WasmError::internal("LocalEnsureCache(slot=) in block b failed"))
     }
 
     fn lower_local_reserve_cache(
@@ -367,20 +348,12 @@ impl<'a> BlockLowerContext<'a> {
         slot: crate::vm::middle::frame::FrameSlot,
     ) -> Result<(), WasmError> {
         let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(alloc::format!(
-                "LocalReserveCache on non-cached local slot {:?}",
-                slot,
-            )));
+            return Err(WasmError::internal(
+                "LocalReserveCache on non-cached local slot",
+            ));
         };
         self.ensure_bound_cached_local(cached_index)
-            .map_err(|err| {
-                WasmError::internal(alloc::format!(
-                    "LocalReserveCache(slot={:?}) in block b{} failed: {}",
-                    slot,
-                    self.block_id(),
-                    err.message(),
-                ))
-            })?;
+            .map_err(|_err| WasmError::internal("LocalReserveCache(slot=) in block b failed"))?;
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, false);
         self.set_cache_dirty(cached_index, false);
@@ -422,30 +395,24 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), src);
         let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(alloc::format!(
-                "LocalSetCache on non-cached local slot {:?}",
-                slot,
-            )));
+            return Err(WasmError::internal(
+                "LocalSetCache on non-cached local slot",
+            ));
         };
         let cached = self
             .try_bind_cached_local_from_dying_value(cached_index, src, ty)?
             .unwrap_or(
-                self.ensure_bound_cached_local(cached_index).map_err(|err| {
-                    WasmError::internal(alloc::format!(
-                        "LocalSetCache(slot={:?}, src={:?}, remaining_uses={}) in block b{} failed: {}",
-                        slot,
-                        src,
-                        self.remaining_use_count(src),
-                        self.block_id(),
-                        err.message(),
-                    ))
-                })?,
+                self.ensure_bound_cached_local(cached_index)
+                    .map_err(|_err| {
+                        WasmError::internal(
+                            "LocalSetCache(slot=, src=, remaining_uses=) in block b failed",
+                        )
+                    })?,
             );
         if cached.ty != ty {
-            return Err(WasmError::internal(alloc::format!(
-                "typed SSA-IR store to cached local slot {:?} uses {:?} value {:?}, but cached local is {:?}",
-                slot, ty, src, cached.ty,
-            )));
+            return Err(WasmError::internal(
+                "typed SSA-IR store to cached local slot uses value , but cached local is",
+            ));
         }
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, true);
@@ -453,7 +420,7 @@ impl<'a> BlockLowerContext<'a> {
 
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
-                WasmError::internal("cached i64 local is missing a high-half register".into())
+                WasmError::internal("cached i64 local is missing a high-half register")
             })?;
             let (src_lo, src_hi) = self.use_i64_value_pair(src)?;
             self.emit_machine_inst(MachineInst {
@@ -663,10 +630,9 @@ impl<'a> BlockLowerContext<'a> {
                     return self.lower_convert(args, results, op);
                 }
 
-                Err(WasmError::internal(alloc::format!(
-                    "primitive {:?} is not lowered to MachineIR yet",
-                    primitive
-                )))
+                Err(WasmError::internal(
+                    "primitive is not lowered to MachineIR yet",
+                ))
             }
         }
     }
@@ -678,7 +644,7 @@ impl<'a> BlockLowerContext<'a> {
             .blocks
             .get(edge.target.as_usize())
             .ok_or_else(|| {
-                WasmError::internal("edge target is out of range during native lowering".into())
+                WasmError::internal("edge target is out of range during native lowering")
             })?;
         let mut args = collections::Vec::with_capacity(target.params.len());
         for target_param in &target.params {
@@ -700,30 +666,15 @@ impl<'a> BlockLowerContext<'a> {
         }
         for entry in self.block_entry_cache_params(target.id.0).iter().copied() {
             let cached = self.bound_cached_local(entry.cached_index).ok_or_else(|| {
-                let slot = self.cached_locals()[entry.cached_index].slot;
-                WasmError::internal(alloc::format!(
-                    "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} has no binding",
-                    edge.target.as_u32(),
-                    slot,
-                    self.block_id(),
-                ))
+                let _slot = self.cached_locals()[entry.cached_index].slot;
+                WasmError::internal("edge to b expects cached local slot to stay resident, but source block b has no binding")
             })?;
-            let slot = cached.slot;
+            let _slot = cached.slot;
             if !self.is_cache_live(entry.cached_index) {
-                return Err(WasmError::internal(alloc::format!(
-                    "edge to b{} expects cached local slot {:?} to stay resident, but source block b{} marked it dead",
-                    edge.target.as_u32(),
-                    slot,
-                    self.block_id(),
-                )));
+                return Err(WasmError::internal("edge to b expects cached local slot to stay resident, but source block b marked it dead"));
             }
             if entry.needs_value && !self.cache_has_value(entry.cached_index) {
-                return Err(WasmError::internal(alloc::format!(
-                    "edge to b{} expects cached local slot {:?} to carry a real value, but source block b{} only reserved the lane",
-                    edge.target.as_u32(),
-                    slot,
-                    self.block_id(),
-                )));
+                return Err(WasmError::internal("edge to b expects cached local slot to carry a real value, but source block b only reserved the lane"));
             }
             args.push(if entry.needs_value {
                 MachineValue::Reg(cached.reg)
@@ -750,10 +701,7 @@ impl<'a> BlockLowerContext<'a> {
         value: SsaValue,
     ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         self.try_value_regs(value).ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "no machine register pair assigned for SSA-IR value {:?}",
-                value
-            ))
+            WasmError::internal("no machine register pair assigned for SSA-IR value")
         })
     }
 }

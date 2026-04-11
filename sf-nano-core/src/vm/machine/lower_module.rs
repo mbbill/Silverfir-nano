@@ -694,12 +694,9 @@ fn lower_function(
     }
 
     let mut blocks = collections::Vec::with_capacity(original_block_count + extra_blocks.len());
-    for (index, block) in original_blocks.into_iter().enumerate() {
+    for (_index, block) in original_blocks.into_iter().enumerate() {
         blocks.push(block.ok_or_else(|| {
-            WasmError::internal(alloc::format!(
-                "machine lowering did not produce original block {}",
-                index
-            ))
+            WasmError::internal("machine lowering did not produce original block")
         })?);
     }
     blocks.extend(extra_blocks);
@@ -741,7 +738,7 @@ pub(super) fn slot_offset_bytes(
 ) -> Result<i32, WasmError> {
     let bytes = i32::from(slot.0)
         .checked_mul(8)
-        .ok_or_else(|| WasmError::internal("frame slot byte offset overflow".into()))?;
+        .ok_or_else(|| WasmError::internal("frame slot byte offset overflow"))?;
     Ok(bytes)
 }
 
@@ -876,24 +873,24 @@ pub(super) fn target_param_regs(
         if ty.is_fp() {
             regs.push(ValueRegs {
                 lo: preferred_fp_dynamic_reg(regfile, fp_index).ok_or_else(|| {
-                    WasmError::internal("target params exceed FP dynamic register budget".into())
+                    WasmError::internal("target params exceed FP dynamic register budget")
                 })?,
                 hi: None,
             });
             fp_index += 1;
         } else if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
             let lo = preferred_gp_dynamic_reg(regfile, gp_index).ok_or_else(|| {
-                WasmError::internal("target params exceed GP dynamic register budget".into())
+                WasmError::internal("target params exceed GP dynamic register budget")
             })?;
             let hi = preferred_gp_dynamic_reg(regfile, gp_index + 1).ok_or_else(|| {
-                WasmError::internal("target i64 params exceed GP dynamic pair budget".into())
+                WasmError::internal("target i64 params exceed GP dynamic pair budget")
             })?;
             regs.push(ValueRegs { lo, hi: Some(hi) });
             gp_index += 2;
         } else {
             regs.push(ValueRegs {
                 lo: preferred_gp_dynamic_reg(regfile, gp_index).ok_or_else(|| {
-                    WasmError::internal("target params exceed GP dynamic register budget".into())
+                    WasmError::internal("target params exceed GP dynamic register budget")
                 })?,
                 hi: None,
             });
@@ -1523,9 +1520,9 @@ fn indexed_const_addr(
     let scaled = (index as u64)
         .checked_mul(stride as u64)
         .and_then(|value| value.checked_add(field_offset as u64))
-        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
+        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow"))?;
     let offset = i32::try_from(scaled)
-        .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))?;
+        .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32"))?;
     Ok(MachineAddr { base, offset })
 }
 

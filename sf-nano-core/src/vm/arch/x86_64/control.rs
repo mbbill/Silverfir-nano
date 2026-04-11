@@ -135,11 +135,10 @@ impl<'a> X86_64Backend<'a> {
                         self.emit_jmp(else_label);
                     }
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "x86_64 branch condition cannot read reserved cache register {}",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "x86_64 branch condition cannot read reserved cache register",
+                    ));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -175,10 +174,9 @@ impl<'a> X86_64Backend<'a> {
                     MachineCompareKind::Eq => Cc::E,
                     MachineCompareKind::Ne => Cc::NE,
                     _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "TestBits branch: unsupported compare kind {:?}",
-                            kind
-                        )))
+                        return Err(WasmError::internal(
+                            "TestBits branch: unsupported compare kind",
+                        ))
                     }
                 };
                 if else_fallthrough {
@@ -214,11 +212,10 @@ impl<'a> X86_64Backend<'a> {
                     enc::test_rr_32(&mut self.core.text, reg, reg);
                     self.emit_jcc(Cc::NE, trap_label);
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "x86_64 trap-if cannot read reserved cache register {}",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "x86_64 trap-if cannot read reserved cache register",
+                    ));
                 }
             },
             MachineBranchCond::IntCompare {
@@ -242,10 +239,9 @@ impl<'a> X86_64Backend<'a> {
                     MachineCompareKind::Eq => Cc::E,
                     MachineCompareKind::Ne => Cc::NE,
                     _ => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "TestBits branch_if: unsupported compare kind {:?}",
-                            kind
-                        )))
+                        return Err(WasmError::internal(
+                            "TestBits branch_if: unsupported compare kind",
+                        ))
                     }
                 };
                 self.emit_jcc(cc, trap_label);
@@ -434,9 +430,7 @@ impl<'a> X86_64Backend<'a> {
             .core
             .compiled
             .const_ptr(MachineConstId(const_idx as u32))
-            .ok_or_else(|| {
-                WasmError::internal("x86_64 external-call metadata is out of range".into())
-            })?;
+            .ok_or_else(|| WasmError::internal("x86_64 external-call metadata is out of range"))?;
         // External calls are inline runtime calls. Pass the current context,
         // the active Wasm frame pointer, and the const-pool metadata record.
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
@@ -488,11 +482,10 @@ impl<'a> X86_64Backend<'a> {
                 let index_reg = self.map_gp_reg(reg)?;
                 enc::mov_rr_32(&mut self.core.text, *index_scratch, index_reg);
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "x86_64 jump table cannot read reserved cache register {}",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "x86_64 jump table cannot read reserved cache register",
+                ));
             }
         }
 

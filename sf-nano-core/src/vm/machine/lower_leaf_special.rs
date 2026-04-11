@@ -1616,9 +1616,9 @@ impl<'a> BlockLowerContext<'a> {
         let scaled = (index as u64)
             .checked_mul(stride as u64)
             .and_then(|value| value.checked_add(field_offset as u64))
-            .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
+            .ok_or_else(|| WasmError::internal("runtime view byte offset overflow"))?;
         let offset = i32::try_from(scaled)
-            .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))?;
+            .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32"))?;
         Ok(MachineAddr { base, offset })
     }
 }
@@ -1833,7 +1833,7 @@ pub(super) fn addr_with_byte_offset(
     addr.offset = addr
         .offset
         .checked_add(byte_offset)
-        .ok_or_else(|| WasmError::internal("machine address byte offset overflow".into()))?;
+        .ok_or_else(|| WasmError::internal("machine address byte offset overflow"))?;
     Ok(addr)
 }
 
@@ -2027,7 +2027,6 @@ fn indexed_field_offset(index: u32, stride: usize, field_offset: u32) -> Result<
     let scaled = (index as u64)
         .checked_mul(stride as u64)
         .and_then(|value| value.checked_add(field_offset as u64))
-        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow".into()))?;
-    i32::try_from(scaled)
-        .map_err(|_| WasmError::internal("runtime view byte offset exceeds i32".into()))
+        .ok_or_else(|| WasmError::internal("runtime view byte offset overflow"))?;
+    i32::try_from(scaled).map_err(|_| WasmError::internal("runtime view byte offset exceeds i32"))
 }

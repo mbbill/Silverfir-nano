@@ -58,7 +58,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
             Opcode::GLOBAL_GET => {
                 let global_idx = code.read_leb128_u32()? as usize;
                 if global_idx >= module.globals.len() {
-                    return Err(WasmError::invalid("global.get: index out of range".into()));
+                    return Err(WasmError::invalid("global.get: index out of range"));
                 }
                 stack.push(module.globals[global_idx].value());
             }
@@ -67,7 +67,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I32(a), Value::I32(b)) => stack.push(Value::I32(a.wrapping_add(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i32.add".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i32.add")),
                 }
             }
             Opcode::I32_SUB => {
@@ -75,7 +75,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I32(a), Value::I32(b)) => stack.push(Value::I32(a.wrapping_sub(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i32.sub".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i32.sub")),
                 }
             }
             Opcode::I32_MUL => {
@@ -83,7 +83,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I32(a), Value::I32(b)) => stack.push(Value::I32(a.wrapping_mul(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i32.mul".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i32.mul")),
                 }
             }
             Opcode::I64_ADD => {
@@ -91,7 +91,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I64(a), Value::I64(b)) => stack.push(Value::I64(a.wrapping_add(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i64.add".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i64.add")),
                 }
             }
             Opcode::I64_SUB => {
@@ -99,7 +99,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I64(a), Value::I64(b)) => stack.push(Value::I64(a.wrapping_sub(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i64.sub".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i64.sub")),
                 }
             }
             Opcode::I64_MUL => {
@@ -107,13 +107,13 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 let l = stack.pop().unwrap();
                 match (l, r) {
                     (Value::I64(a), Value::I64(b)) => stack.push(Value::I64(a.wrapping_mul(b))),
-                    _ => return Err(WasmError::invalid("type mismatch in i64.mul".into())),
+                    _ => return Err(WasmError::invalid("type mismatch in i64.mul")),
                 }
             }
             Opcode::END => {
                 return stack
                     .pop()
-                    .ok_or_else(|| WasmError::invalid("empty const expr".into()));
+                    .ok_or_else(|| WasmError::invalid("empty const expr"));
             }
             _ => {
                 return Err(WasmError::invalid(

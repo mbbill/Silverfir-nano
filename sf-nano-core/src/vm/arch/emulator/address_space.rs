@@ -226,11 +226,9 @@ impl Target32AddressSpace {
         )?;
 
         if ctx.memory_views_len > MAX_MEMORY_COUNT_32 {
-            return Err(WasmError::internal(alloc::format!(
-                "emu32 synthetic address space supports at most {} memories, found {}",
-                MAX_MEMORY_COUNT_32,
-                ctx.memory_views_len,
-            )));
+            return Err(WasmError::internal(
+                "emu32 synthetic address space supports at most memories, found",
+            ));
         }
         for mem_index in 0..ctx.memory_views_len {
             let view = unsafe { *ctx.memory_views_base.add(mem_index) };
@@ -242,11 +240,9 @@ impl Target32AddressSpace {
         }
 
         if ctx.table_views_len > MAX_TABLE_COUNT_32 {
-            return Err(WasmError::internal(alloc::format!(
-                "emu32 synthetic address space supports at most {} tables, found {}",
-                MAX_TABLE_COUNT_32,
-                ctx.table_views_len,
-            )));
+            return Err(WasmError::internal(
+                "emu32 synthetic address space supports at most tables, found",
+            ));
         }
         for table_index in 0..ctx.table_views_len {
             let view = unsafe { *ctx.table_views_base.add(table_index) };
@@ -574,10 +570,9 @@ impl Target32AddressSpace {
         if offset == ctx_layout.current_module_offset {
             return Ok(ctx.current_module as u64);
         }
-        Err(WasmError::internal(alloc::format!(
-            "synthetic 32-bit runtime context load uses unsupported offset {}",
-            offset
-        )))
+        Err(WasmError::internal(
+            "synthetic 32-bit runtime context load uses unsupported offset",
+        ))
     }
 
     fn load_memory_view(
@@ -597,10 +592,9 @@ impl Target32AddressSpace {
         } else if entry.field_offset == self.layout.pointer_len_view.len_offset {
             self.read_scalar(width, view.len as u64)
         } else {
-            Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit memory view load uses unsupported field offset {}",
-                entry.field_offset
-            )))
+            Err(WasmError::internal(
+                "synthetic 32-bit memory view load uses unsupported field offset",
+            ))
         }
     }
 
@@ -613,11 +607,9 @@ impl Target32AddressSpace {
         let stride = core::mem::size_of::<GlobalInst>() as u64;
         let index = (offset / stride) as usize;
         if index >= ctx.globals_view.len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit global load is out of range: entry {} >= {}",
-                index,
-                ctx.globals_view.len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit global load is out of range: entry >=",
+            ));
         }
         let field_offset = (offset % stride) as u32;
         let global = unsafe { &*ctx.globals_view.base.add(index) };
@@ -628,10 +620,9 @@ impl Target32AddressSpace {
                 .saturating_sub(global_offset::RAW)
                 > core::mem::size_of::<u64>() as u32
         {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit global load uses unsupported field offset {}",
-                field_offset
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit global load uses unsupported field offset",
+            ));
         }
         let bit_shift = (field_offset - global_offset::RAW) * 8;
         let raw = global.raw() >> bit_shift;
@@ -655,10 +646,9 @@ impl Target32AddressSpace {
         } else if entry.field_offset == self.layout.pointer_len_view.len_offset {
             self.read_scalar(width, view.elements_len as u64)
         } else {
-            Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit table view load uses unsupported field offset {}",
-                entry.field_offset
-            )))
+            Err(WasmError::internal(
+                "synthetic 32-bit table view load uses unsupported field offset",
+            ))
         }
     }
 
@@ -671,11 +661,9 @@ impl Target32AddressSpace {
         let stride = u64::from(self.layout.function_view.stride);
         let index = (offset / stride) as usize;
         if index >= ctx.function_views_len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit function view load is out of range: entry {} >= {}",
-                index,
-                ctx.function_views_len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit function view load is out of range: entry >=",
+            ));
         }
         let field_offset = (offset % stride) as u32;
         let view = unsafe { *ctx.function_views_base.add(index) };
@@ -686,10 +674,9 @@ impl Target32AddressSpace {
         } else if field_offset == self.layout.function_view.local_target_offset {
             u64::from(view.local_target)
         } else {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit function view load uses unsupported field offset {}",
-                field_offset
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit function view load uses unsupported field offset",
+            ));
         };
         self.read_scalar(width, value)
     }
@@ -703,11 +690,9 @@ impl Target32AddressSpace {
         let stride = u64::from(self.layout.local_call_info.stride);
         let index = (offset / stride) as usize;
         if index >= ctx.local_call_infos_len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit local call info load is out of range: entry {} >= {}",
-                index,
-                ctx.local_call_infos_len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit local call info load is out of range: entry >=",
+            ));
         }
         let field_offset = (offset % stride) as usize;
         let ptr = ctx
@@ -732,17 +717,14 @@ impl Target32AddressSpace {
     ) -> Result<u64, WasmError> {
         let index = (offset / core::mem::size_of::<u32>() as u64) as usize;
         if index >= ctx.type_canon_len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit type canon load is out of range: entry {} >= {}",
-                index,
-                ctx.type_canon_len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit type canon load is out of range: entry >=",
+            ));
         }
         if offset % core::mem::size_of::<u32>() as u64 != 0 {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit type canon load uses unsupported byte offset {}",
-                offset
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit type canon load uses unsupported byte offset",
+            ));
         }
         let value = unsafe { u64::from(*ctx.type_canon_base.add(index)) };
         self.read_scalar(width, value)
@@ -758,7 +740,7 @@ impl Target32AddressSpace {
         let view = unsafe { *ctx.memory_views_base.add(mem_index) };
         let size = width.bytes() as usize;
         if offset as usize + size > view.len {
-            return Err(WasmError::trap("out of bounds memory access".into()));
+            return Err(WasmError::trap("out of bounds memory access"));
         }
         let ptr = unsafe { view.base.add(offset as usize) };
         Ok(unsafe {
@@ -782,7 +764,7 @@ impl Target32AddressSpace {
         let view = unsafe { *ctx.memory_views_base.add(mem_index) };
         let size = width.bytes() as usize;
         if offset as usize + size > view.len {
-            return Err(WasmError::trap("out of bounds memory access".into()));
+            return Err(WasmError::trap("out of bounds memory access"));
         }
         let ptr = unsafe { view.base.add(offset as usize) };
         unsafe {
@@ -806,11 +788,9 @@ impl Target32AddressSpace {
         let stride = core::mem::size_of::<GlobalInst>() as u64;
         let index = (offset / stride) as usize;
         if index >= ctx.globals_view.len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit global store is out of range: entry {} >= {}",
-                index,
-                ctx.globals_view.len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit global store is out of range: entry >=",
+            ));
         }
         let field_offset = (offset % stride) as u32;
         let global = unsafe { &mut *ctx.globals_view.base.add(index) };
@@ -821,10 +801,9 @@ impl Target32AddressSpace {
                 .saturating_sub(global_offset::RAW)
                 > core::mem::size_of::<u64>() as u32
         {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit global store uses unsupported field offset {}",
-                field_offset
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit global store uses unsupported field offset",
+            ));
         }
         let raw = match width {
             MachineMemWidth::U8 => u64::from(value as u8),
@@ -876,16 +855,14 @@ impl Target32AddressSpace {
         self,
         len: usize,
         offset: u64,
-        label: &'static str,
+        _label: &'static str,
     ) -> Result<PointerLenEntry, WasmError> {
         let stride = u64::from(self.layout.pointer_len_view.stride);
         let index = (offset / stride) as usize;
         if index >= len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit {label} load is out of range: entry {} >= {}",
-                index,
-                len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit load is out of range: entry >=",
+            ));
         }
         Ok(PointerLenEntry {
             index,
@@ -903,17 +880,14 @@ impl Target32AddressSpace {
         let stride = u64::from(self.layout.ref_handle_stride);
         let entry = (offset / stride) as usize;
         if entry >= view.elements_len {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit table element access is out of range: entry {} >= {}",
-                entry,
-                view.elements_len
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit table element access is out of range: entry >=",
+            ));
         }
         if offset % stride != 0 {
-            return Err(WasmError::internal(alloc::format!(
-                "synthetic 32-bit table element access uses unsupported byte offset {}",
-                offset
-            )));
+            return Err(WasmError::internal(
+                "synthetic 32-bit table element access uses unsupported byte offset",
+            ));
         }
         Ok(entry)
     }
@@ -928,21 +902,17 @@ impl Target32AddressSpace {
     }
 }
 
-fn checked_region_bytes(label: &str, count: usize, stride: usize) -> Result<usize, WasmError> {
-    count.checked_mul(stride).ok_or_else(|| {
-        WasmError::internal(alloc::format!(
-            "{label} size overflowed usize during emu32 validation"
-        ))
-    })
+fn checked_region_bytes(_label: &str, count: usize, stride: usize) -> Result<usize, WasmError> {
+    count
+        .checked_mul(stride)
+        .ok_or_else(|| WasmError::internal("size overflowed usize during emu32 validation"))
 }
 
-fn ensure_window_fits(label: &str, bytes: usize, window_bytes: u64) -> Result<(), WasmError> {
+fn ensure_window_fits(_label: &str, bytes: usize, window_bytes: u64) -> Result<(), WasmError> {
     if u64::try_from(bytes).unwrap_or(u64::MAX) > window_bytes {
-        return Err(WasmError::internal(alloc::format!(
-            "{label} requires {} bytes, but emu32 reserves only {} bytes",
-            bytes,
-            window_bytes,
-        )));
+        return Err(WasmError::internal(
+            "requires bytes, but emu32 reserves only bytes",
+        ));
     }
     Ok(())
 }

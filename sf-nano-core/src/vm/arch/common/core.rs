@@ -1,5 +1,3 @@
-use alloc::{format, string::String};
-
 use crate::collections;
 
 use crate::{
@@ -170,7 +168,7 @@ impl<'a> CompilerCore<'a> {
             .get(target.0 as usize)
             .copied()
             .filter(|label| *label != usize::MAX)
-            .ok_or_else(|| WasmError::internal("block label is out of range".into()))
+            .ok_or_else(|| WasmError::internal("block label is out of range"))
     }
 
     // ── Trap label management ────────────────────────────────────────────
@@ -196,12 +194,7 @@ impl<'a> CompilerCore<'a> {
             .abi()
             .functions
             .get(func_id.0 as usize)
-            .ok_or_else(|| {
-                WasmError::internal(format!(
-                    "runtime metadata missing for machine function {}",
-                    func_id.0
-                ))
-            })
+            .ok_or_else(|| WasmError::internal("runtime metadata missing for machine function"))
     }
 
     // ── FP register tracking ─────────────────────────────────────────────
@@ -213,9 +206,8 @@ impl<'a> CompilerCore<'a> {
 
     /// Return the FP bank index for a machine register.
     pub(crate) fn fp_reg_index(&self, reg: MachineReg) -> Result<usize, WasmError> {
-        fp_reg_index(reg, self.compiled.backend()).ok_or_else(|| {
-            WasmError::invalid(format!("expected FP register, got machine reg {}", reg.0))
-        })
+        fp_reg_index(reg, self.compiled.backend())
+            .ok_or_else(|| WasmError::invalid("expected FP register, got machine reg"))
     }
 
     pub(crate) fn set_fp_reg_width(
@@ -224,9 +216,10 @@ impl<'a> CompilerCore<'a> {
         width: MachineFloatWidth,
     ) -> Result<(), WasmError> {
         let index = self.fp_reg_index(reg)?;
-        let slot = self.fp_reg_widths.get_mut(index).ok_or_else(|| {
-            WasmError::invalid(format!("no tracked FP slot for machine reg {}", reg.0))
-        })?;
+        let slot = self
+            .fp_reg_widths
+            .get_mut(index)
+            .ok_or_else(|| WasmError::invalid("no tracked FP slot for machine reg"))?;
         *slot = Some(width);
         Ok(())
     }
@@ -237,12 +230,7 @@ impl<'a> CompilerCore<'a> {
             .get(index)
             .and_then(|width| *width)
             .ok_or_else(|| {
-                WasmError::invalid(format!(
-                    "missing float-width tracking for machine reg {} in function {} at {}",
-                    reg.0,
-                    self.function.id.0,
-                    self.current_location(),
-                ))
+                WasmError::invalid("missing float-width tracking for machine reg in function at")
             })
     }
 
@@ -256,21 +244,6 @@ impl<'a> CompilerCore<'a> {
             }
         }
         Ok(())
-    }
-
-    // ── Location tracking ────────────────────────────────────────────────
-
-    pub(crate) fn current_location(&self) -> String {
-        if let Some(target) = self.current_edge_target {
-            return format!("edge stub to b{}", target.0);
-        }
-        if let Some(block) = self.current_block {
-            if let Some(op_index) = self.current_op_index {
-                return format!("b{} op{}", block.0, op_index);
-            }
-            return format!("b{} terminator", block.0);
-        }
-        format!("unknown location")
     }
 
     // ── Block layout ─────────────────────────────────────────────────────
@@ -396,7 +369,7 @@ impl<'a> CompilerCore<'a> {
             .program
             .blocks
             .get(target.as_usize())
-            .ok_or_else(|| WasmError::internal("edge target block is out of range".into()))?;
+            .ok_or_else(|| WasmError::internal("edge target block is out of range"))?;
         let label = self.new_label();
         let arg_float_widths = args
             .iter()
@@ -422,7 +395,7 @@ impl<'a> CompilerCore<'a> {
     /// Validate that a MachineFunction's register counts are within the
     /// backend's capacity. Called at the start of compile_function.
     pub(crate) fn validate_function(
-        arch_name: &str,
+        _arch_name: &str,
         function: &MachineFunction,
         config: BackendConfig,
         max_total_regs: usize,
@@ -431,25 +404,19 @@ impl<'a> CompilerCore<'a> {
         let reg_count = config.total_reg_count();
         let first_fp = config.first_fp_reg();
         if reg_count as usize > max_total_regs {
-            return Err(WasmError::invalid(format!(
-                "{} backend supports at most {} machine regs, got {} in function {}",
-                arch_name, max_total_regs, reg_count, function.id.0
-            )));
+            return Err(WasmError::invalid(
+                "backend supports at most machine regs, got in function",
+            ));
         }
         if first_fp < MACHINE_FIXED_REG_COUNT || first_fp > reg_count {
-            return Err(WasmError::invalid(format!(
-                "{} backend received invalid first_fp_reg {} for function {}",
-                arch_name, first_fp, function.id.0,
-            )));
+            return Err(WasmError::invalid(
+                "backend received invalid first_fp_reg for function",
+            ));
         }
         if (reg_count - first_fp) as usize > max_fp_regs {
-            return Err(WasmError::invalid(format!(
-                "{} backend supports at most {} FP machine regs, got {} in function {}",
-                arch_name,
-                max_fp_regs,
-                reg_count - first_fp,
-                function.id.0,
-            )));
+            return Err(WasmError::invalid(
+                "backend supports at most FP machine regs, got in function",
+            ));
         }
         if function
             .program
@@ -459,10 +426,9 @@ impl<'a> CompilerCore<'a> {
             .map(|block| !block.params.is_empty())
             .unwrap_or(false)
         {
-            return Err(WasmError::invalid(format!(
-                "{} backend does not support entry block params yet",
-                arch_name
-            )));
+            return Err(WasmError::invalid(
+                "backend does not support entry block params yet",
+            ));
         }
         Ok(())
     }
@@ -483,9 +449,7 @@ impl<'a> CompilerCore<'a> {
                 .labels
                 .get(patch.target_label)
                 .and_then(|offset| *offset)
-                .ok_or_else(|| {
-                    WasmError::internal("local continuation label is unresolved".into())
-                })?;
+                .ok_or_else(|| WasmError::internal("local continuation label is unresolved"))?;
             local_ptr_patches.push(LocalPtrPatch {
                 literal_offset: patch.literal_offset,
                 target_offset,

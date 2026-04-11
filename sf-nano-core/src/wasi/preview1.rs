@@ -132,14 +132,14 @@ const FILETYPE_REGULAR_FILE: u8 = 4;
 fn as_i32(v: &Value) -> Result<i32, WasmError> {
     match v {
         Value::I32(n) => Ok(*n),
-        _ => Err(WasmError::trap("expected i32 argument".into())),
+        _ => Err(WasmError::trap("expected i32 argument")),
     }
 }
 
 fn as_i64(v: &Value) -> Result<i64, WasmError> {
     match v {
         Value::I64(n) => Ok(*n),
-        _ => Err(WasmError::trap("expected i64 argument".into())),
+        _ => Err(WasmError::trap("expected i64 argument")),
     }
 }
 
@@ -147,9 +147,9 @@ fn read_mem(mem: &[u8], ptr: u32, len: u32) -> Result<&[u8], WasmError> {
     let start = ptr as usize;
     let end = start
         .checked_add(len as usize)
-        .ok_or_else(|| WasmError::trap("memory access out of bounds".into()))?;
+        .ok_or_else(|| WasmError::trap("memory access out of bounds"))?;
     if end > mem.len() {
-        return Err(WasmError::trap("memory access out of bounds".into()));
+        return Err(WasmError::trap("memory access out of bounds"));
     }
     Ok(&mem[start..end])
 }
@@ -158,9 +158,9 @@ fn write_mem(mem: &mut [u8], ptr: u32, data: &[u8]) -> Result<(), WasmError> {
     let start = ptr as usize;
     let end = start
         .checked_add(data.len())
-        .ok_or_else(|| WasmError::trap("memory access out of bounds".into()))?;
+        .ok_or_else(|| WasmError::trap("memory access out of bounds"))?;
     if end > mem.len() {
-        return Err(WasmError::trap("memory access out of bounds".into()));
+        return Err(WasmError::trap("memory access out of bounds"));
     }
     mem[start..end].copy_from_slice(data);
     Ok(())
@@ -190,7 +190,7 @@ fn read_u32_le(mem: &[u8], ptr: u32) -> Result<u32, WasmError> {
 fn get_mem<'a>(caller: &'a mut Caller) -> Result<&'a mut [u8], WasmError> {
     caller
         .memory_mut()
-        .ok_or_else(|| WasmError::trap("no linear memory available".into()))
+        .ok_or_else(|| WasmError::trap("no linear memory available"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,7 +1029,7 @@ pub(crate) fn random_get(
     let start = buf_ptr as usize;
     let end = start + buf_len as usize;
     if end > mem.len() {
-        return Err(WasmError::trap("memory access out of bounds".into()));
+        return Err(WasmError::trap("memory access out of bounds"));
     }
 
     for byte in &mut mem[start..end] {

@@ -149,7 +149,11 @@ pub(super) fn new_gp_scratch_pool() -> ScratchPool<Arm32Reg, 2> {
 }
 
 pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
-    ScratchPool::new([REG_PLAN.fp_scratch[0], REG_PLAN.fp_scratch[1], REG_PLAN.fp_scratch[2]])
+    ScratchPool::new([
+        REG_PLAN.fp_scratch[0],
+        REG_PLAN.fp_scratch[1],
+        REG_PLAN.fp_scratch[2],
+    ])
 }
 
 // ── Derived config ───────────────────────────────────────────────────────────
@@ -227,10 +231,7 @@ pub(super) fn map_reg(reg: MachineReg) -> Result<Arm32Reg, WasmError> {
     gp_dynamic_index(reg, config)
         .and_then(|index| REG_PLAN.gp_dynamic.get(index).copied())
         .ok_or_else(|| {
-            WasmError::invalid(alloc::format!(
-                "arm32 MachineIR backend has no physical mapping for machine reg {}",
-                reg.0
-            ))
+            WasmError::invalid("arm32 MachineIR backend has no physical mapping for machine reg")
         })
 }
 

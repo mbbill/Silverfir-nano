@@ -1,5 +1,3 @@
-use alloc::format;
-
 use crate::collections;
 
 use crate::{
@@ -65,7 +63,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     let base_ptr = {
         let executable = module
             .native_code_buffer()
-            .map_err(|err| WasmError::internal(err.into()))?;
+            .map_err(|err| WasmError::internal(err))?;
         executable.as_ptr()
     };
     for (i, base_offset) in base_offsets.iter().enumerate() {
@@ -83,9 +81,8 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
         for patch in &artifact.direct_call_patches {
             let callee_addr = *internal_entry_addrs
                 .get(patch.callee.0 as usize)
-                .ok_or_else(|| {
-                    WasmError::internal("direct callee address is out of range".into())
-                })? as u64;
+                .ok_or_else(|| WasmError::internal("direct callee address is out of range"))?
+                as u64;
             artifact.text.patch_u64(patch.literal_offset, callee_addr);
         }
     }
@@ -96,7 +93,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
         let info = NativeFunctionInfo64 {
             entry: *internal_entry_addrs
                 .get(func_idx)
-                .ok_or_else(|| WasmError::internal("function entry is out of range".into()))?
+                .ok_or_else(|| WasmError::internal("function entry is out of range"))?
                 as u64,
             total_frame_bytes: u64::from(runtime.total_frame_slots) * 8,
             frame_prefix_slots: u64::from(runtime.frame_prefix_slots),
@@ -108,7 +105,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
 
     let mut executable = module
         .native_code_buffer()
-        .map_err(|err| WasmError::internal(err.into()))?;
+        .map_err(|err| WasmError::internal(err))?;
     executable.begin_write();
     executable.reset();
 
@@ -156,7 +153,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
                     let code_bytes =
                         unsafe { core::slice::from_raw_parts(region_start, region.len) };
                     let symbol =
-                        format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
+                        alloc::format!("jit::{}::func{}::{}", module_name, func_idx, region.label);
                     crate::vm::debug::jitdump::record_function(region_start, code_bytes, &symbol);
                 }
             }
@@ -187,10 +184,9 @@ pub(crate) fn validate_gp_reg<'a, A: ArchBackend<'a>>(
     reg: MachineReg,
 ) -> Result<MachineReg, WasmError> {
     if backend.core().is_fp_reg(reg) {
-        return Err(WasmError::invalid(format!(
-            "expected GP register, got FP machine reg {}",
-            reg.0
-        )));
+        return Err(WasmError::invalid(
+            "expected GP register, got FP machine reg",
+        ));
     }
     Ok(reg)
 }

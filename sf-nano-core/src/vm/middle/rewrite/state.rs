@@ -110,13 +110,7 @@ impl BlockState {
             return Ok(collections::Vec::new());
         }
         if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "transient underflow: requested {} values from live window {} (stack_height={}, spill_depth={})",
-                count,
-                self.live.len(),
-                self.stack_height,
-                self.spill_depth,
-            )));
+            return Err(WasmError::internal("transient underflow: requested values from live window (stack_height=, spill_depth=)"));
         }
         Ok(self.live[self.live.len() - count..].to_vec().into())
     }
@@ -125,7 +119,7 @@ impl BlockState {
         let value = self
             .live
             .pop()
-            .ok_or_else(|| WasmError::internal("transient underflow".into()))?;
+            .ok_or_else(|| WasmError::internal("transient underflow"))?;
         self.live_types.pop();
         self.live_aliases.pop();
         self.stack_height = self.stack_height.saturating_sub(1);
@@ -135,11 +129,9 @@ impl BlockState {
 
     pub(super) fn consume_top(&mut self, count: usize) -> Result<(), WasmError> {
         if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "transient underflow: tried to consume {} values from live window {}",
-                count,
-                self.live.len(),
-            )));
+            return Err(WasmError::internal(
+                "transient underflow: tried to consume values from live window",
+            ));
         }
         let new_len = self.live.len().saturating_sub(count);
         self.live.truncate(new_len);
@@ -180,11 +172,9 @@ impl BlockState {
     ) -> Result<collections::Vec<SsaValue>, WasmError> {
         let count = count as usize;
         if count > self.live.len() {
-            return Err(WasmError::internal(alloc::format!(
-                "spill requested {} values from live window {}",
-                count,
-                self.live.len(),
-            )));
+            return Err(WasmError::internal(
+                "spill requested values from live window",
+            ));
         }
         let spilled = self.live.drain(..count).collect::<collections::Vec<_>>();
         self.live_types.drain(..count);
@@ -227,7 +217,7 @@ impl BlockState {
         &self.live_aliases
     }
 
-    fn ensure_live_fit(&self, context: &str) -> Result<(), WasmError> {
+    fn ensure_live_fit(&self, _context: &str) -> Result<(), WasmError> {
         let effective_live_types = self
             .live_types
             .iter()
@@ -237,10 +227,9 @@ impl BlockState {
         let (gp_live, fp_live) =
             count_live_bank_budget_units(&effective_live_types, self.gp_unit_bytes);
         if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {
-            return Err(WasmError::internal(alloc::format!(
-                "SSA-IR exceeds configured dynamic bank budget during {context}: gp {} > {} or fp {} > {}",
-                gp_live, self.gp_live_budget, fp_live, self.fp_live_budget
-            )));
+            return Err(WasmError::internal(
+                "SSA-IR exceeds configured dynamic bank budget during : gp > or fp >",
+            ));
         }
         Ok(())
     }

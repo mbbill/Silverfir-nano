@@ -66,10 +66,9 @@ pub(super) fn prepare_gp<'p>(
 ) -> Result<PreparedGp<'p>, WasmError> {
     match value {
         MachineValue::Reg(reg) => Ok(PreparedGp::Mapped(map_reg(reg)?)),
-        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "arm32 prepare_gp cannot consume reserved cache register {} as a real value",
-            reg.0
-        ))),
+        MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+            "arm32 prepare_gp cannot consume reserved cache register as a real value",
+        )),
         MachineValue::Imm64(v) => {
             let scratch = pool.scoped_alloc();
             emit_load_u32_into(text, *scratch, v as u32);
@@ -106,10 +105,9 @@ fn prepare_pair_bitop_rhs(
             emit_load_u32_into(text, *scratch, v as u32);
             Ok(OwnedPreparedGp::Scratch(scratch))
         }
-        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "arm32 pair bitop rhs cannot consume reserved cache register {} as a real value",
-            reg.0
-        ))),
+        MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+            "arm32 pair bitop rhs cannot consume reserved cache register as a real value",
+        )),
     }
 }
 
@@ -135,23 +133,15 @@ pub(super) fn prepare_fp<'p>(
                 super::abi::compile_backend_config(),
             )
             .ok_or_else(|| {
-                WasmError::invalid(alloc::format!(
-                    "arm32 prepare_fp: expected FP register, got machine reg {}",
-                    reg.0
-                ))
+                WasmError::invalid("arm32 prepare_fp: expected FP register, got machine reg")
             })?;
-            let d = fp_machine_reg(fp_idx).ok_or_else(|| {
-                WasmError::invalid(alloc::format!(
-                    "arm32 prepare_fp: FP index {} out of range",
-                    fp_idx
-                ))
-            })?;
+            let d = fp_machine_reg(fp_idx)
+                .ok_or_else(|| WasmError::invalid("arm32 prepare_fp: FP index out of range"))?;
             Ok(PreparedFp::Mapped(d))
         }
-        MachineValue::ReservedReg(reg) => Err(WasmError::internal(alloc::format!(
-            "arm32 prepare_fp cannot consume reserved cache register {} as a real value",
-            reg.0
-        ))),
+        MachineValue::ReservedReg(_reg) => Err(WasmError::internal(
+            "arm32 prepare_fp cannot consume reserved cache register as a real value",
+        )),
         MachineValue::Imm64(bits) => {
             let fp_scratch = fp_pool.scoped_alloc();
             match width {
@@ -322,11 +312,10 @@ impl<'a> Arm32Backend<'a> {
                 let dst_is_fp = self.is_fp_machine_reg(*dst);
                 let src_is_fp = match src {
                     MachineValue::Reg(r) => self.is_fp_machine_reg(*r),
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 Move cannot consume reserved cache register {} as source",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 Move cannot consume reserved cache register as source",
+                        ));
                     }
                     MachineValue::Imm64(_) => false,
                 };
@@ -358,11 +347,8 @@ impl<'a> Arm32Backend<'a> {
                             emit_load_u32_into(&mut self.core.text, *zero_s, 0);
                             self.core.text.emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
                         }
-                        MachineValue::ReservedReg(reg) => {
-                            return Err(WasmError::internal(alloc::format!(
-                                "arm32 Move GP->FP cannot consume reserved cache register {} as source",
-                                reg.0
-                            )));
+                        MachineValue::ReservedReg(_reg) => {
+                            return Err(WasmError::internal("arm32 Move GP->FP cannot consume reserved cache register as source"));
                         }
                         MachineValue::Imm64(imm) => {
                             // Materialize both halves into JIT GP
@@ -405,11 +391,8 @@ impl<'a> Arm32Backend<'a> {
                                 self.core.text.emit_u32(enc::mov_reg(dst_hw, src_hw));
                             }
                         }
-                        MachineValue::ReservedReg(reg) => {
-                            return Err(WasmError::internal(alloc::format!(
-                                "arm32 Move GP->GP cannot consume reserved cache register {} as source",
-                                reg.0
-                            )));
+                        MachineValue::ReservedReg(_reg) => {
+                            return Err(WasmError::internal("arm32 Move GP->GP cannot consume reserved cache register as source"));
                         }
                         MachineValue::Imm64(imm) => {
                             self.emit_load_u32(dst_hw, *imm as u32);
@@ -931,10 +914,7 @@ impl<'a> Arm32Backend<'a> {
                     self.core.text.emit_u32(enc::vmov_s_r(dd * 2, *s));
                 }
                 _ => {
-                    return Err(WasmError::invalid(alloc::format!(
-                        "arm32: unsupported FP load width {:?}",
-                        width
-                    )));
+                    return Err(WasmError::invalid("arm32: unsupported FP load width"));
                 }
             }
             let tracked = if width == MachineMemWidth::U32 {
@@ -1036,10 +1016,7 @@ impl<'a> Arm32Backend<'a> {
                             );
                         }
                         _ => {
-                            return Err(WasmError::invalid(alloc::format!(
-                                "arm32: unsupported FP store width {:?}",
-                                width
-                            )));
+                            return Err(WasmError::invalid("arm32: unsupported FP store width"));
                         }
                     }
                 }
@@ -1080,23 +1057,18 @@ impl<'a> Arm32Backend<'a> {
                         );
                     }
                     _ => {
-                        return Err(WasmError::invalid(alloc::format!(
-                            "arm32: unsupported FP store width {:?}",
-                            width
-                        )));
+                        return Err(WasmError::invalid("arm32: unsupported FP store width"));
                     }
                 },
-                MachineValue::Reg(r) => {
-                    return Err(WasmError::invalid(alloc::format!(
-                        "arm32: FP store expects an FP register source, got GP machine reg {}",
-                        r.0
-                    )));
+                MachineValue::Reg(_r) => {
+                    return Err(WasmError::invalid(
+                        "arm32: FP store expects an FP register source, got GP machine reg",
+                    ));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 FP store cannot consume reserved cache register {} as source value",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 FP store cannot consume reserved cache register as source value",
+                    ));
                 }
             }
             return Ok(());
@@ -1158,7 +1130,6 @@ impl<'a> Arm32Backend<'a> {
 
     // ─── Integer ALU ────────────────────────────────────────────────────────────
 
-
     fn compile_int_binary(
         &mut self,
         _width: MachineIntWidth,
@@ -1171,11 +1142,10 @@ impl<'a> Arm32Backend<'a> {
 
         let lhs_hw = match lhs {
             MachineValue::Reg(r) => OwnedPreparedGp::Mapped(map_reg(*r)?),
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 compile_int_binary cannot consume reserved cache register {} as lhs",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 compile_int_binary cannot consume reserved cache register as lhs",
+                ));
             }
             MachineValue::Imm64(v) => {
                 // Materialize into a scratch if rhs is a register that could
@@ -1212,11 +1182,10 @@ impl<'a> Arm32Backend<'a> {
                         .text
                         .emit_u32(enc::add_reg(dst_hw, lhs_hw, map_reg(*r)?));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 int Add cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 int Add cannot consume reserved cache register as rhs",
+                    ));
                 }
             },
             MachineIntBinaryOp::Sub => match rhs {
@@ -1236,11 +1205,10 @@ impl<'a> Arm32Backend<'a> {
                         .text
                         .emit_u32(enc::sub_reg(dst_hw, lhs_hw, map_reg(*r)?));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 int Sub cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 int Sub cannot consume reserved cache register as rhs",
+                    ));
                 }
             },
             MachineIntBinaryOp::Mul => {
@@ -1265,11 +1233,10 @@ impl<'a> Arm32Backend<'a> {
                         self.core.text.emit_u32(enc::and_reg(dst_hw, lhs_hw, *s));
                     }
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 int And cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 int And cannot consume reserved cache register as rhs",
+                    ));
                 }
             },
             MachineIntBinaryOp::Or => match rhs {
@@ -1289,11 +1256,10 @@ impl<'a> Arm32Backend<'a> {
                         self.core.text.emit_u32(enc::orr_reg(dst_hw, lhs_hw, *s));
                     }
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 int Or cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 int Or cannot consume reserved cache register as rhs",
+                    ));
                 }
             },
             MachineIntBinaryOp::Xor => match rhs {
@@ -1313,11 +1279,10 @@ impl<'a> Arm32Backend<'a> {
                         self.core.text.emit_u32(enc::eor_reg(dst_hw, lhs_hw, *s));
                     }
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 int Xor cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 int Xor cannot consume reserved cache register as rhs",
+                    ));
                 }
             },
             MachineIntBinaryOp::Shl => {
@@ -1328,11 +1293,10 @@ impl<'a> Arm32Backend<'a> {
                         return Ok(());
                     }
                     MachineValue::Reg(r) => map_reg(*r)?,
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 int Shl cannot consume reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 int Shl cannot consume reserved cache register as rhs",
+                        ));
                     }
                 };
                 // Mask shift amount to 5 bits (wasm i32 semantics)
@@ -1350,11 +1314,10 @@ impl<'a> Arm32Backend<'a> {
                         return Ok(());
                     }
                     MachineValue::Reg(r) => map_reg(*r)?,
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 int ShrU cannot consume reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 int ShrU cannot consume reserved cache register as rhs",
+                        ));
                     }
                 };
                 {
@@ -1371,11 +1334,10 @@ impl<'a> Arm32Backend<'a> {
                         return Ok(());
                     }
                     MachineValue::Reg(r) => map_reg(*r)?,
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 int ShrS cannot consume reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 int ShrS cannot consume reserved cache register as rhs",
+                        ));
                     }
                 };
                 {
@@ -1393,11 +1355,10 @@ impl<'a> Arm32Backend<'a> {
                         return Ok(());
                     }
                     MachineValue::Reg(r) => map_reg(*r)?,
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 int Rotl cannot consume reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 int Rotl cannot consume reserved cache register as rhs",
+                        ));
                     }
                 };
                 {
@@ -1415,11 +1376,10 @@ impl<'a> Arm32Backend<'a> {
                         return Ok(());
                     }
                     MachineValue::Reg(r) => map_reg(*r)?,
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 int Rotr cannot consume reserved cache register {} as rhs",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 int Rotr cannot consume reserved cache register as rhs",
+                        ));
                     }
                 };
                 {
@@ -1439,9 +1399,7 @@ impl<'a> Arm32Backend<'a> {
                     .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
                 self.emit_branch(BranchFixupKind::B, trap);
                 self.core.bind_label(ok);
-                self.core
-                    .text
-                    .emit_u32(enc::udiv(dst_hw, lhs_hw, *rhs_gp));
+                self.core.text.emit_u32(enc::udiv(dst_hw, lhs_hw, *rhs_gp));
             }
             MachineIntBinaryOp::DivS => {
                 let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
@@ -1471,9 +1429,7 @@ impl<'a> Arm32Backend<'a> {
                 self.emit_branch(BranchFixupKind::B, trap_ov);
                 self.core.bind_label(not_min);
                 self.core.bind_label(not_neg1);
-                self.core
-                    .text
-                    .emit_u32(enc::sdiv(dst_hw, lhs_hw, *rhs_gp));
+                self.core.text.emit_u32(enc::sdiv(dst_hw, lhs_hw, *rhs_gp));
             }
             MachineIntBinaryOp::RemU => {
                 let rhs_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs)?.detach();
@@ -1513,9 +1469,7 @@ impl<'a> Arm32Backend<'a> {
                 let not_neg1 = self.core.new_label();
                 let done = self.core.new_label();
                 self.emit_branch(BranchFixupKind::BCond(Cond::Ne), not_neg1);
-                self.core
-                    .text
-                    .emit_u32(enc::mov_imm(dst_hw, 0, 0));
+                self.core.text.emit_u32(enc::mov_imm(dst_hw, 0, 0));
                 self.emit_branch(BranchFixupKind::B, done);
                 self.core.bind_label(not_neg1);
                 // SDIV quotient, lhs, rhs; MLS dst, quotient, rhs, lhs
@@ -1545,11 +1499,10 @@ impl<'a> Arm32Backend<'a> {
         let dst_hw = map_reg(dst)?;
         let src_hw = match src {
             MachineValue::Reg(r) => map_reg(*r)?,
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 compile_int_unary cannot consume reserved cache register {} as src",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 compile_int_unary cannot consume reserved cache register as src",
+                ));
             }
             MachineValue::Imm64(v) => {
                 self.emit_load_u32(dst_hw, *v as u32);
@@ -1699,10 +1652,7 @@ impl<'a> Arm32Backend<'a> {
                     .emit_u32(emit(dst_hi_hw, dst_hi_hw, *rhs_hi_gp));
                 Ok(())
             }
-            other => Err(WasmError::invalid(alloc::format!(
-                "arm32: unsupported i64 pair binary op {:?}",
-                other
-            ))),
+            _other => Err(WasmError::invalid("arm32: unsupported i64 pair binary op")),
         }
     }
 
@@ -1882,11 +1832,8 @@ impl<'a> Arm32Backend<'a> {
             MachineIntBinaryOp::ShrU => arm32_i64_shr_u as usize,
             MachineIntBinaryOp::Rotl => arm32_i64_rotl as usize,
             MachineIntBinaryOp::Rotr => arm32_i64_rotr as usize,
-            other => {
-                return Err(WasmError::invalid(alloc::format!(
-                    "arm32: unsupported i64 pair shift op {:?}",
-                    other
-                )));
+            _other => {
+                return Err(WasmError::invalid("arm32: unsupported i64 pair shift op"));
             }
         });
         self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
@@ -2232,11 +2179,8 @@ impl<'a> Arm32Backend<'a> {
                     .text
                     .emit_u32(enc::vmov_rr_d(dst_lo_hw, dst_hi_hw, dm));
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 reinterpret_f64_to_i64_pair cannot consume reserved cache register {} as src",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 reinterpret_f64_to_i64_pair cannot consume reserved cache register as src"));
             }
             MachineValue::Imm64(bits) => {
                 self.emit_move_gp_value(
@@ -2843,11 +2787,10 @@ impl<'a> Arm32Backend<'a> {
                             self.core.text.emit_u32(enc::mov_reg(dst_hw, src_hw));
                         }
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 I32WrapI64 cannot consume reserved cache register {} as src",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 I32WrapI64 cannot consume reserved cache register as src",
+                        ));
                     }
                     MachineValue::Imm64(v) => self.emit_load_u32(dst_hw, *v as u32),
                 }
@@ -2861,11 +2804,10 @@ impl<'a> Arm32Backend<'a> {
                             self.core.text.emit_u32(enc::mov_reg(dst_hw, src_hw));
                         }
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 I64ExtendI32 cannot consume reserved cache register {} as src",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 I64ExtendI32 cannot consume reserved cache register as src",
+                        ));
                     }
                     MachineValue::Imm64(v) => self.emit_load_u32(dst_hw, *v as u32),
                 }
@@ -3102,11 +3044,10 @@ impl<'a> Arm32Backend<'a> {
                         emit_load_u32_into(&mut self.core.text, *zero_s, 0);
                         self.core.text.emit_u32(enc::vmov_d_rr(dd, src_hw, *zero_s));
                     }
-                    MachineValue::ReservedReg(reg) => {
-                        return Err(WasmError::internal(alloc::format!(
-                            "arm32 F64ReinterpretI64 cannot consume reserved cache register {} as src",
-                            reg.0
-                        )));
+                    MachineValue::ReservedReg(_reg) => {
+                        return Err(WasmError::internal(
+                            "arm32 F64ReinterpretI64 cannot consume reserved cache register as src",
+                        ));
                     }
                     MachineValue::Imm64(v) => {
                         let lo_s = self.gp_scratch.scoped_alloc();
@@ -3119,10 +3060,9 @@ impl<'a> Arm32Backend<'a> {
             }
             // GP-only ops are handled above; this arm should be unreachable.
             _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 compile_convert_fp: unexpected GP-only convert op {:?}",
-                    op
-                )));
+                return Err(WasmError::internal(
+                    "arm32 compile_convert_fp: unexpected GP-only convert op",
+                ));
             }
         }
         Ok(())
@@ -3165,11 +3105,10 @@ impl<'a> Arm32Backend<'a> {
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
                     self.core.text.emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 FP select cannot consume reserved cache register {} as false_val",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 FP select cannot consume reserved cache register as false_val",
+                    ));
                 }
                 MachineValue::Imm64(v) => {
                     let lo_s = self.gp_scratch.scoped_alloc();
@@ -3196,11 +3135,10 @@ impl<'a> Arm32Backend<'a> {
                     emit_load_u32_into(&mut self.core.text, *zero_s, 0);
                     self.core.text.emit_u32(enc::vmov_d_rr(dd, src, *zero_s));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 FP select cannot consume reserved cache register {} as true_val",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 FP select cannot consume reserved cache register as true_val",
+                    ));
                 }
                 MachineValue::Imm64(v) => {
                     let lo_s = self.gp_scratch.scoped_alloc();
@@ -3265,11 +3203,10 @@ impl<'a> Arm32Backend<'a> {
                     self.core.text.emit_u32(enc::mov_reg(dst_hw, src));
                 }
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 emit_gp_select_value cannot consume reserved cache register {} as value",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 emit_gp_select_value cannot consume reserved cache register as value",
+                ));
             }
             MachineValue::Imm64(v) => {
                 self.emit_load_u32(dst_hw, *v as u32);
@@ -3301,11 +3238,8 @@ impl<'a> Arm32Backend<'a> {
                     .text
                     .emit_u32(enc::mov_reg_cond(cond, dst_hw, src));
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 emit_gp_select_value_cond cannot consume reserved cache register {} as value",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal("arm32 emit_gp_select_value_cond cannot consume reserved cache register as value"));
             }
             MachineValue::Imm64(v) => {
                 let s = self.gp_scratch.scoped_alloc();
@@ -3335,11 +3269,10 @@ impl<'a> Arm32Backend<'a> {
                 MachineValue::Reg(r) => {
                     self.core.text.emit_u32(enc::cmp_reg(lhs_hw, map_reg(*r)?));
                 }
-                MachineValue::ReservedReg(reg) => {
-                    return Err(WasmError::internal(alloc::format!(
-                        "arm32 compile_int_compare cannot consume reserved cache register {} as rhs",
-                        reg.0
-                    )));
+                MachineValue::ReservedReg(_reg) => {
+                    return Err(WasmError::internal(
+                        "arm32 compile_int_compare cannot consume reserved cache register as rhs",
+                    ));
                 }
                 MachineValue::Imm64(v) => {
                     if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
@@ -3434,10 +3367,7 @@ impl<'a> Arm32Backend<'a> {
                 enc::eor_reg_shifted(dst_hw, lhs_hw, rhs_hw, shift_type, amt)
             }
             _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "IntBinaryShifted: unsupported op {:?}",
-                    op
-                )));
+                return Err(WasmError::internal("IntBinaryShifted: unsupported op"));
             }
         };
         self.core.text.emit_u32(inst);
@@ -3462,11 +3392,10 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Reg(r) => {
                 self.core.text.emit_u32(enc::tst_reg(src_hw, map_reg(*r)?));
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 compile_test_bits cannot consume reserved cache register {} as mask",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 compile_test_bits cannot consume reserved cache register as mask",
+                ));
             }
             MachineValue::Imm64(v) => {
                 if let Some((imm8, rot)) = enc::encode_arm_imm(*v as u32) {
@@ -3485,10 +3414,7 @@ impl<'a> Arm32Backend<'a> {
             MachineCompareKind::Eq => Cond::Eq,
             MachineCompareKind::Ne => Cond::Ne,
             _ => {
-                return Err(WasmError::internal(alloc::format!(
-                    "TestBits: unsupported compare kind {:?}",
-                    kind
-                )));
+                return Err(WasmError::internal("TestBits: unsupported compare kind"));
             }
         };
         emit_load_u32_into(&mut self.core.text, dst_hw, 0);
@@ -3521,9 +3447,10 @@ impl<'a> Arm32Backend<'a> {
     // ─── CallExternal ───────────────────────────────────────────────────────
 
     fn compile_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
-        let metadata = self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
-            WasmError::internal("arm32: external-call metadata is out of range".into())
-        })?;
+        let metadata =
+            self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
+                WasmError::internal("arm32: external-call metadata is out of range")
+            })?;
 
         let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;
 
@@ -3547,13 +3474,9 @@ impl<'a> Arm32Backend<'a> {
         // it in C_RET0 for the post-call error check.
         {
             let s = self.gp_scratch.scoped_alloc().detach();
-            self.core
-                .text
-                .emit_u32(enc::mov_reg(*s, C_RET0));
+            self.core.text.emit_u32(enc::mov_reg(*s, C_RET0));
             self.restore_caller_saved_gp_regs(&[]);
-            self.core
-                .text
-                .emit_u32(enc::mov_reg(C_RET0, *s));
+            self.core.text.emit_u32(enc::mov_reg(C_RET0, *s));
         }
 
         // Check return value: if non-zero, return error

@@ -74,11 +74,10 @@ impl<'a> Arm32Backend<'a> {
                     .text
                     .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8 + 4) as i32));
             }
-            MachineValue::ReservedReg(reg) => {
-                return Err(WasmError::internal(alloc::format!(
-                    "arm32 preserved-helper cannot consume reserved cache register {} as a real value",
-                    reg.0
-                )));
+            MachineValue::ReservedReg(_reg) => {
+                return Err(WasmError::internal(
+                    "arm32 preserved-helper cannot consume reserved cache register as a real value",
+                ));
             }
         }
         Ok(())
@@ -127,14 +126,11 @@ impl<'a> Arm32Backend<'a> {
         // Step 4: set up the C calling convention. C_ARG0 = ctx, C_ARG1 = op_code,
         // C_ARG2 = io_ptr (= sp). `emit_host_call` below will save/restore D3-D7
         // around the BLX via the per-function helper_scratch.
-        self.core.text.emit_u32(enc::mov_reg(
-            C_ARG0,
-            map_fixed_reg(MACHINE_CTX_REG),
-        ));
-        self.emit_load_u32(C_ARG1, op_code);
         self.core
             .text
-            .emit_u32(enc::mov_reg(C_ARG2, Arm32Reg::SP));
+            .emit_u32(enc::mov_reg(C_ARG0, map_fixed_reg(MACHINE_CTX_REG)));
+        self.emit_load_u32(C_ARG1, op_code);
+        self.core.text.emit_u32(enc::mov_reg(C_ARG2, Arm32Reg::SP));
 
         // Step 5: dispatch the helper.
         self.emit_host_call(preserved_entry as usize);
@@ -147,9 +143,7 @@ impl<'a> Arm32Backend<'a> {
         // skips R0 so the helper's status code propagates back to the C
         // caller via the body-local error tail.
         let status_s = self.gp_scratch.scoped_alloc().detach();
-        self.core
-            .text
-            .emit_u32(enc::mov_reg(*status_s, C_RET0));
+        self.core.text.emit_u32(enc::mov_reg(*status_s, C_RET0));
 
         // Step 7: read the result (if any) into a second GP scratch.
         let result_s = if result_dst.is_some() {
@@ -178,9 +172,7 @@ impl<'a> Arm32Backend<'a> {
         // the error path uses a bare `add sp, #24` so R0 retains the helper's
         // status code while it propagates to `body_local_error_label`.
         let error_path = self.core.new_label();
-        self.core
-            .text
-            .emit_u32(enc::cmp_imm(*status_s, 0, 0));
+        self.core.text.emit_u32(enc::cmp_imm(*status_s, 0, 0));
         self.emit_branch(BranchFixupKind::BCond(enc::Cond::Ne), error_path);
 
         // Success tail.
@@ -188,9 +180,7 @@ impl<'a> Arm32Backend<'a> {
         if let Some(dst) = result_dst {
             let dst_hw = map_reg(dst)?;
             if let Some(ref rs) = result_s {
-                self.core
-                    .text
-                    .emit_u32(enc::mov_reg(dst_hw, **rs));
+                self.core.text.emit_u32(enc::mov_reg(dst_hw, **rs));
             }
         }
         let after = self.core.new_label();

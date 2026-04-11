@@ -98,7 +98,7 @@ impl I64Lowering for Gp32Lowering {
         cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
-            WasmError::internal("cached i64 local is missing a high-half register".into())
+            WasmError::internal("cached i64 local is missing a high-half register")
         })?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -129,7 +129,7 @@ impl I64Lowering for Gp32Lowering {
         cached: &BoundCachedLocal,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
-            WasmError::internal("cached i64 local is missing a high-half register".into())
+            WasmError::internal("cached i64 local is missing a high-half register")
         })?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
