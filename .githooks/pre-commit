@@ -59,7 +59,7 @@ done
 for file in "${staged_rust_files[@]}"; do
     manifest_dir="$(find_manifest_dir "$file")"
     edition="$(edition_for_manifest_dir "$manifest_dir")"
-    rustfmt --edition "$edition" "$file"
+    rustfmt --edition "$edition" --config skip_children=true "$file"
 done
 
 git add -- "${staged_rust_files[@]}"
