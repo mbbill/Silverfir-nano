@@ -12,6 +12,8 @@ use crate::{
     },
 };
 
+use crate::collections;
+
 use super::{
     lower_const_pool::ConstPoolBuilder, lower_context::BlockLowerContext,
     lower_module::slot_offset_bytes,
@@ -183,12 +185,12 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn build_external_call_ops(
         &self,
         metadata: MachineConstId,
-    ) -> alloc::vec::Vec<MachineInst> {
+    ) -> collections::Vec<MachineInst> {
         // The external-call instruction itself is the foreign-call boundary.
         // The reloads that follow repair machine-visible runtime state that may
         // have changed while the host callback executed, most importantly the
         // cached mem0 base/size pair after a possible memory growth.
-        alloc::vec![
+        collections::vec![
             MachineInst {
                 kind: MachineInstKind::CallExternal(MachineCallExternal { metadata }),
             },

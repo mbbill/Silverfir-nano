@@ -3,7 +3,7 @@
 //! This is identical across all architectures since the entry signature
 //! and call convention are the same.
 
-use alloc::vec;
+use crate::collections;
 
 use crate::{
     constants::MAX_STACK_SIZE,
@@ -52,7 +52,7 @@ pub(crate) fn eval(
         .native_entry()
         .ok_or_else(|| WasmError::internal("native entry is missing finalized code".into()))?;
 
-    let mut stack = vec![0u64; MAX_STACK_SLOTS];
+    let mut stack = collections::vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
     let stack_end = unsafe { stack_base.add(MAX_STACK_SLOTS) };
 

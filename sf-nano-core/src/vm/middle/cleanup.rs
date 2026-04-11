@@ -12,8 +12,7 @@
 //! These are structural cleanups only. They must preserve the prepared SSA
 //! semantics exactly; they are not heuristic optimizations.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use super::ssa_ir::{
     ir::{
@@ -86,8 +85,8 @@ struct ValueSubstitution {
 fn simplify_cache_only_runs(program: &mut SsaProgram) {
     for block in &mut program.blocks {
         let old_ops = core::mem::take(&mut block.ops);
-        let mut new_ops = Vec::with_capacity(old_ops.len());
-        let mut cache_run = Vec::new();
+        let mut new_ops = collections::Vec::with_capacity(old_ops.len());
+        let mut cache_run = collections::Vec::new();
         for inst in old_ops {
             if !is_cache_only_op(&inst.kind) {
                 flush_cache_run(&mut new_ops, &mut cache_run);
@@ -103,18 +102,21 @@ fn simplify_cache_only_runs(program: &mut SsaProgram) {
 }
 
 #[cfg(test)]
-fn simplify_cache_run(run: &[SsaInst]) -> Vec<SsaInst> {
-    let mut by_slot = Vec::<(u16, CacheRunState)>::new();
+fn simplify_cache_run(run: &[SsaInst]) -> collections::Vec<SsaInst> {
+    let mut by_slot = collections::Vec::<(u16, CacheRunState)>::new();
     for inst in run {
         accumulate_cache_run_state(&mut by_slot, &inst.kind);
     }
 
-    let mut out = Vec::with_capacity(by_slot.len().saturating_mul(2));
+    let mut out = collections::Vec::with_capacity(by_slot.len().saturating_mul(2));
     flush_cache_run(&mut out, &mut by_slot);
     out
 }
 
-fn accumulate_cache_run_state(by_slot: &mut Vec<(u16, CacheRunState)>, kind: &SsaInstKind) {
+fn accumulate_cache_run_state(
+    by_slot: &mut collections::Vec<(u16, CacheRunState)>,
+    kind: &SsaInstKind,
+) {
     let slot = cache_run_slot(kind).expect("cache-only run should only contain cache ops");
     match by_slot
         .iter_mut()
@@ -129,7 +131,10 @@ fn accumulate_cache_run_state(by_slot: &mut Vec<(u16, CacheRunState)>, kind: &Ss
     }
 }
 
-fn flush_cache_run(out: &mut Vec<SsaInst>, by_slot: &mut Vec<(u16, CacheRunState)>) {
+fn flush_cache_run(
+    out: &mut collections::Vec<SsaInst>,
+    by_slot: &mut collections::Vec<(u16, CacheRunState)>,
+) {
     if by_slot.is_empty() {
         return;
     }
@@ -212,7 +217,7 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
             continue;
         }
 
-        let mut composed = Vec::with_capacity(incoming.len());
+        let mut composed = collections::Vec::with_capacity(incoming.len());
         {
             let block = &program.blocks[block_index];
             let params = &block.params;
@@ -268,8 +273,8 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             &mut program.blocks[succ_index],
             SsaBlock {
                 id: SsaTarget(u32::MAX),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: SsaTerminator::TrapUnreachable,
             },
         );
@@ -278,7 +283,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             .ops
             .into_iter()
             .map(|inst| substitute_inst(inst, &subst))
-            .collect::<Vec<_>>();
+            .collect::<collections::Vec<_>>();
         let merged_terminator = substitute_terminator(succ.terminator, &subst);
 
         program.blocks[pred_index].ops.extend(merged_ops);
@@ -296,8 +301,8 @@ fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
         return false;
     }
 
-    let mut reachable = vec![false; program.blocks.len()];
-    let mut stack = vec![program.entry.as_usize()];
+    let mut reachable = collections::vec![false; program.blocks.len()];
+    let mut stack = collections::vec![program.entry.as_usize()];
     while let Some(block_index) = stack.pop() {
         if block_index >= program.blocks.len() || reachable[block_index] {
             continue;
@@ -312,7 +317,7 @@ fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
         .iter()
         .enumerate()
         .filter_map(|(index, keep)| (!*keep).then_some(index))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     if removed.is_empty() {
         return false;
     }
@@ -320,8 +325,8 @@ fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
     true
 }
 
-fn predecessor_counts(program: &SsaProgram) -> Vec<usize> {
-    let mut counts = vec![0usize; program.blocks.len()];
+fn predecessor_counts(program: &SsaProgram) -> collections::Vec<usize> {
+    let mut counts = collections::vec![0usize; program.blocks.len()];
     for block in &program.blocks {
         visit_outgoing_edges(&block.terminator, |edge| {
             if let Some(count) = counts.get_mut(edge.target.as_usize()) {
@@ -332,8 +337,11 @@ fn predecessor_counts(program: &SsaProgram) -> Vec<usize> {
     counts
 }
 
-fn incoming_edge_locations(program: &SsaProgram, target_index: usize) -> Vec<EdgeLocation> {
-    let mut incoming = Vec::new();
+fn incoming_edge_locations(
+    program: &SsaProgram,
+    target_index: usize,
+) -> collections::Vec<EdgeLocation> {
+    let mut incoming = collections::Vec::new();
     for (block_index, block) in program.blocks.iter().enumerate() {
         match &block.terminator {
             SsaTerminator::Goto(edge) => {
@@ -370,7 +378,7 @@ fn incoming_edge_locations(program: &SsaProgram, target_index: usize) -> Vec<Edg
 }
 
 fn compose_edge(in_edge: &SsaEdge, params: &[SsaValue], out_edge: &SsaEdge) -> Option<SsaEdge> {
-    let mut bindings = Vec::with_capacity(out_edge.bindings.len());
+    let mut bindings = collections::Vec::with_capacity(out_edge.bindings.len());
     for binding in &out_edge.bindings {
         let value = if params.contains(&binding.value) {
             find_binding_value(&in_edge.bindings, binding.value)?
@@ -392,8 +400,8 @@ fn compose_edge(in_edge: &SsaEdge, params: &[SsaValue], out_edge: &SsaEdge) -> O
 fn binding_substitution(
     params: &[SsaValue],
     bindings: &[SsaBinding],
-) -> Option<Vec<ValueSubstitution>> {
-    let mut subst = Vec::with_capacity(params.len());
+) -> Option<collections::Vec<ValueSubstitution>> {
+    let mut subst = collections::Vec::with_capacity(params.len());
     for &param in params {
         subst.push(ValueSubstitution {
             from: param,
@@ -498,7 +506,7 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     }
 
     let block_len = program.blocks.len();
-    let mut removed_mask = vec![false; block_len];
+    let mut removed_mask = collections::vec![false; block_len];
     for &index in removed {
         debug_assert!(index < block_len, "removed block index out of range");
         if let Some(slot) = removed_mask.get_mut(index) {
@@ -506,7 +514,7 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
         }
     }
 
-    let mut mapping = vec![SsaTarget::default(); block_len];
+    let mut mapping = collections::vec![SsaTarget::default(); block_len];
     let mut next = 0u32;
     for (old_index, is_removed) in removed_mask.iter().copied().enumerate() {
         if is_removed {
@@ -522,15 +530,16 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     let old_origins = if keep_origins {
         core::mem::take(&mut program.block_cfg_origins)
     } else {
-        Vec::new()
+        collections::Vec::new()
     };
     let kept_blocks = block_len.saturating_sub(removed.len());
-    let mut new_blocks = Vec::with_capacity(kept_blocks);
-    let mut new_entries = Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
+    let mut new_blocks = collections::Vec::with_capacity(kept_blocks);
+    let mut new_entries =
+        collections::Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
     let mut new_origins = if keep_origins {
-        Vec::with_capacity(old_origins.len().saturating_sub(removed.len()))
+        collections::Vec::with_capacity(old_origins.len().saturating_sub(removed.len()))
     } else {
-        Vec::new()
+        collections::Vec::new()
     };
 
     if keep_origins {
@@ -618,7 +627,7 @@ fn merge_block_origins_into_target(program: &mut SsaProgram, from: usize, to: us
     merge_origin_lists(from_origins, to_origins);
 }
 
-fn merge_block_origins(dst: usize, src: usize, origins: &mut [Vec<u32>]) {
+fn merge_block_origins(dst: usize, src: usize, origins: &mut [collections::Vec<u32>]) {
     if origins.is_empty() || dst == src || dst >= origins.len() || src >= origins.len() {
         return;
     }
@@ -633,7 +642,7 @@ fn merge_block_origins(dst: usize, src: usize, origins: &mut [Vec<u32>]) {
     merge_origin_lists(src_origins, dst_origins);
 }
 
-fn merge_origin_lists(src: &[u32], dst: &mut Vec<u32>) {
+fn merge_origin_lists(src: &[u32], dst: &mut collections::Vec<u32>) {
     for &origin in src {
         if !dst.contains(&origin) {
             dst.push(origin);
@@ -776,15 +785,15 @@ mod tests {
         SsaInst {
             kind: SsaInstKind::Value {
                 op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
-                args: Vec::new(),
-                results: alloc::vec![SsaValue(result)],
+                args: collections::Vec::new(),
+                results: collections::vec![SsaValue(result)],
             },
         }
     }
 
     #[test]
     fn simplify_cache_run_keeps_required_drop_then_materialization() {
-        let run = alloc::vec![
+        let run = collections::vec![
             SsaInst {
                 kind: SsaInstKind::LocalReserveCache { slot: FrameSlot(0) },
             },
@@ -800,8 +809,11 @@ mod tests {
         ];
         let simplified = simplify_cache_run(&run);
         assert_eq!(
-            simplified.iter().map(|inst| &inst.kind).collect::<Vec<_>>(),
-            alloc::vec![
+            simplified
+                .iter()
+                .map(|inst| &inst.kind)
+                .collect::<collections::Vec<_>>(),
+            collections::vec![
                 &SsaInstKind::LocalDropCache { slot: FrameSlot(0) },
                 &SsaInstKind::LocalEnsureCache { slot: FrameSlot(0) },
             ]
@@ -812,14 +824,14 @@ mod tests {
     fn threads_empty_goto_block_and_composes_bindings() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            blocks: alloc::vec![
+            blocks: collections::vec![
                 SsaBlock {
                     id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(1),
-                        bindings: alloc::vec![SsaBinding {
+                        bindings: collections::vec![SsaBinding {
                             param: SsaValue(10),
                             value: SsaValue(0),
                         }],
@@ -827,11 +839,11 @@ mod tests {
                 },
                 SsaBlock {
                     id: SsaTarget(1),
-                    params: alloc::vec![SsaValue(10)],
-                    ops: Vec::new(),
+                    params: collections::vec![SsaValue(10)],
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
-                        bindings: alloc::vec![SsaBinding {
+                        bindings: collections::vec![SsaBinding {
                             param: SsaValue(20),
                             value: SsaValue(10),
                         }],
@@ -839,17 +851,21 @@ mod tests {
                 },
                 SsaBlock {
                     id: SsaTarget(2),
-                    params: alloc::vec![SsaValue(20)],
-                    ops: Vec::new(),
+                    params: collections::vec![SsaValue(20)],
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: Vec::new(),
-            local_slot_info: Vec::new(),
-            block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
-            block_cfg_origins: alloc::vec![],
-            value_types: alloc::vec![crate::value_type::ValueType::I32; 32],
-            value_sink_local: alloc::vec![None; 32],
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::vec![
+                collections::Vec::new(),
+                collections::Vec::new(),
+                collections::Vec::new()
+            ],
+            block_cfg_origins: collections::vec![],
+            value_types: collections::vec![crate::value_type::ValueType::I32; 32],
+            value_sink_local: collections::vec![None; 32],
         };
 
         assert!(thread_one_empty_goto_block(&mut program));
@@ -861,7 +877,7 @@ mod tests {
         assert_eq!(edge.target, SsaTarget(1));
         assert_eq!(
             edge.bindings,
-            alloc::vec![SsaBinding {
+            collections::vec![SsaBinding {
                 param: SsaValue(20),
                 value: SsaValue(0),
             }]
@@ -873,14 +889,14 @@ mod tests {
     fn merges_goto_successor_with_param_substitution() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            blocks: alloc::vec![
+            blocks: collections::vec![
                 SsaBlock {
                     id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: alloc::vec![value_inst(0)],
+                    params: collections::Vec::new(),
+                    ops: collections::vec![value_inst(0)],
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(1),
-                        bindings: alloc::vec![SsaBinding {
+                        bindings: collections::vec![SsaBinding {
                             param: SsaValue(10),
                             value: SsaValue(0),
                         }],
@@ -888,8 +904,8 @@ mod tests {
                 },
                 SsaBlock {
                     id: SsaTarget(1),
-                    params: alloc::vec![SsaValue(10)],
-                    ops: alloc::vec![SsaInst {
+                    params: collections::vec![SsaValue(10)],
+                    ops: collections::vec![SsaInst {
                         kind: SsaInstKind::LocalSetCache {
                             slot: FrameSlot(0),
                             src: SsaValue(10),
@@ -898,12 +914,15 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: alloc::vec![crate::value_type::ValueType::I32],
-            local_slot_info: alloc::vec![Default::default()],
-            block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new()],
-            block_cfg_origins: alloc::vec![],
-            value_types: alloc::vec![crate::value_type::ValueType::I32; 16],
-            value_sink_local: alloc::vec![None; 16],
+            local_slot_types: collections::vec![crate::value_type::ValueType::I32],
+            local_slot_info: collections::vec![Default::default()],
+            block_entry_cached_slots: collections::vec![
+                collections::Vec::new(),
+                collections::Vec::new()
+            ],
+            block_cfg_origins: collections::vec![],
+            value_types: collections::vec![crate::value_type::ValueType::I32; 16],
+            value_sink_local: collections::vec![None; 16],
         };
 
         assert!(merge_one_goto_successor(&mut program));
@@ -927,35 +946,39 @@ mod tests {
     fn remove_unreachable_blocks_prunes_dead_chain() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            blocks: alloc::vec![
+            blocks: collections::vec![
                 SsaBlock {
                     id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
                 SsaBlock {
                     id: SsaTarget(1),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
-                        bindings: Vec::new(),
+                        bindings: collections::Vec::new(),
                     }),
                 },
                 SsaBlock {
                     id: SsaTarget(2),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: Vec::new(),
-            local_slot_info: Vec::new(),
-            block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new(), Vec::new()],
-            block_cfg_origins: alloc::vec![],
-            value_types: Vec::new(),
-            value_sink_local: Vec::new(),
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::vec![
+                collections::Vec::new(),
+                collections::Vec::new(),
+                collections::Vec::new()
+            ],
+            block_cfg_origins: collections::vec![],
+            value_types: collections::Vec::new(),
+            value_sink_local: collections::Vec::new(),
         };
 
         assert!(remove_unreachable_blocks(&mut program));
@@ -967,29 +990,32 @@ mod tests {
     fn does_not_merge_unreachable_predecessor_into_entry() {
         let mut program = SsaProgram {
             entry: SsaTarget(1),
-            blocks: alloc::vec![
+            blocks: collections::vec![
                 SsaBlock {
                     id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: alloc::vec![value_inst(0)],
+                    params: collections::Vec::new(),
+                    ops: collections::vec![value_inst(0)],
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(1),
-                        bindings: Vec::new(),
+                        bindings: collections::Vec::new(),
                     }),
                 },
                 SsaBlock {
                     id: SsaTarget(1),
-                    params: Vec::new(),
-                    ops: alloc::vec![value_inst(1)],
+                    params: collections::Vec::new(),
+                    ops: collections::vec![value_inst(1)],
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: Vec::new(),
-            local_slot_info: Vec::new(),
-            block_entry_cached_slots: alloc::vec![Vec::new(), Vec::new()],
-            block_cfg_origins: alloc::vec![],
-            value_types: alloc::vec![crate::value_type::ValueType::I32; 2],
-            value_sink_local: alloc::vec![None; 2],
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::vec![
+                collections::Vec::new(),
+                collections::Vec::new()
+            ],
+            block_cfg_origins: collections::vec![],
+            value_types: collections::vec![crate::value_type::ValueType::I32; 2],
+            value_sink_local: collections::vec![None; 2],
         };
 
         assert!(!merge_one_goto_successor(&mut program));
@@ -1008,54 +1034,54 @@ mod tests {
     fn remove_single_block_reindexes_targets_and_entry() {
         let mut program = SsaProgram {
             entry: SsaTarget(2),
-            blocks: alloc::vec![
+            blocks: collections::vec![
                 SsaBlock {
                     id: SsaTarget(0),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
-                        bindings: Vec::new(),
+                        bindings: collections::Vec::new(),
                     }),
                 },
                 SsaBlock {
                     id: SsaTarget(1),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
                 SsaBlock {
                     id: SsaTarget(2),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(3),
-                        bindings: Vec::new(),
+                        bindings: collections::Vec::new(),
                     }),
                 },
                 SsaBlock {
                     id: SsaTarget(3),
-                    params: Vec::new(),
-                    ops: Vec::new(),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: Vec::new(),
-            local_slot_info: Vec::new(),
-            block_entry_cached_slots: alloc::vec![
-                alloc::vec![FrameSlot(0)],
-                alloc::vec![FrameSlot(1)],
-                alloc::vec![FrameSlot(2)],
-                alloc::vec![FrameSlot(3)],
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::vec![
+                collections::vec![FrameSlot(0)],
+                collections::vec![FrameSlot(1)],
+                collections::vec![FrameSlot(2)],
+                collections::vec![FrameSlot(3)],
             ],
-            block_cfg_origins: alloc::vec![
-                alloc::vec![10],
-                alloc::vec![11],
-                alloc::vec![12],
-                alloc::vec![13],
+            block_cfg_origins: collections::vec![
+                collections::vec![10],
+                collections::vec![11],
+                collections::vec![12],
+                collections::vec![13],
             ],
-            value_types: Vec::new(),
-            value_sink_local: Vec::new(),
+            value_types: collections::Vec::new(),
+            value_sink_local: collections::Vec::new(),
         };
 
         remove_blocks(&mut program, &[1]);
@@ -1067,8 +1093,8 @@ mod tests {
                 .blocks
                 .iter()
                 .map(|block| block.id)
-                .collect::<Vec<_>>(),
-            alloc::vec![SsaTarget(0), SsaTarget(1), SsaTarget(2)]
+                .collect::<collections::Vec<_>>(),
+            collections::vec![SsaTarget(0), SsaTarget(1), SsaTarget(2)]
         );
         assert_eq!(
             match &program.blocks[0].terminator {
@@ -1086,15 +1112,19 @@ mod tests {
         );
         assert_eq!(
             program.block_entry_cached_slots,
-            alloc::vec![
-                alloc::vec![FrameSlot(0)],
-                alloc::vec![FrameSlot(2)],
-                alloc::vec![FrameSlot(3)],
+            collections::vec![
+                collections::vec![FrameSlot(0)],
+                collections::vec![FrameSlot(2)],
+                collections::vec![FrameSlot(3)],
             ]
         );
         assert_eq!(
             program.block_cfg_origins,
-            alloc::vec![alloc::vec![10], alloc::vec![12], alloc::vec![13],]
+            collections::vec![
+                collections::vec![10],
+                collections::vec![12],
+                collections::vec![13],
+            ]
         );
         validate_program(&program).unwrap();
     }

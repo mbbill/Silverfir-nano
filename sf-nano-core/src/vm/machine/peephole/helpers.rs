@@ -1,6 +1,6 @@
 //! Shared helper functions for peephole optimization passes.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
@@ -444,10 +444,16 @@ pub(super) fn addrs_overlap(
 
 // --- Tracker invalidation ---
 
-pub(super) fn kill_tracked_stores_by_reg(tracked: &mut Vec<super::TrackedStore>, reg: MachineReg) {
+pub(super) fn kill_tracked_stores_by_reg(
+    tracked: &mut collections::Vec<super::TrackedStore>,
+    reg: MachineReg,
+) {
     tracked.retain(|entry| entry.addr.base != reg && !value_is_reg(&entry.src, reg));
 }
 
-pub(super) fn kill_tracked_loads_by_reg(tracked: &mut Vec<super::TrackedLoad>, reg: MachineReg) {
+pub(super) fn kill_tracked_loads_by_reg(
+    tracked: &mut collections::Vec<super::TrackedLoad>,
+    reg: MachineReg,
+) {
     tracked.retain(|entry| entry.addr.base != reg && entry.reg != reg);
 }

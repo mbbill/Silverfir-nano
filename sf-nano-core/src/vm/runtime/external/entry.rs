@@ -1,4 +1,6 @@
-use alloc::{rc::Rc, vec, vec::Vec};
+use alloc::rc::Rc;
+
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -147,7 +149,7 @@ fn call_external_by_index(
         "external-call result span does not match function arity",
     )?;
 
-    let args: Vec<Value> = func_type
+    let args: collections::Vec<Value> = func_type
         .params()
         .iter()
         .enumerate()
@@ -161,7 +163,7 @@ fn call_external_by_index(
             .map(|raw| raw_to_value(raw, *ty))
         })
         .collect::<Result<_, _>>()?;
-    let mut ret_vals = vec![Value::default(); func_type.results().len()];
+    let mut ret_vals = collections::vec![Value::default(); func_type.results().len()];
 
     let mem_slice = {
         let store = ctx
@@ -206,7 +208,7 @@ fn call_external_by_index(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String, vec};
+    use alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::*;
     use crate::{
@@ -251,8 +253,8 @@ mod tests {
         }
 
         let func_type = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
         let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
         module.functions.push(FunctionInst::External {
@@ -304,8 +306,8 @@ mod tests {
         }
 
         let func_type = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
         let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
         module.functions.push(FunctionInst::External {

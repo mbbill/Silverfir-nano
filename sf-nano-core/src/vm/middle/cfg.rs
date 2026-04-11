@@ -1,6 +1,6 @@
 //! Explicit CFG formation from semantic Wasm IR.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::wasm::{
     common::SemanticTarget,
@@ -47,7 +47,7 @@ pub(crate) enum CfgTerminator {
     },
     BrTable {
         op_index: usize,
-        edges: Vec<CfgEdge>,
+        edges: collections::Vec<CfgEdge>,
     },
     Return {
         op_index: usize,
@@ -70,8 +70,8 @@ pub(crate) struct CfgBlockFlags {
 pub(crate) struct CfgBlock {
     pub id: CfgBlockId,
     pub range: core::ops::Range<usize>,
-    pub preds: Vec<CfgPredecessor>,
-    pub succs: Vec<CfgEdge>,
+    pub preds: collections::Vec<CfgPredecessor>,
+    pub succs: collections::Vec<CfgEdge>,
     pub terminator: CfgTerminator,
     pub flags: CfgBlockFlags,
 }
@@ -80,8 +80,8 @@ pub(crate) struct CfgBlock {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SemanticCfg {
     pub entry: CfgBlockId,
-    pub blocks: Vec<CfgBlock>,
-    pub semantic_to_block: Vec<CfgBlockId>,
+    pub blocks: collections::Vec<CfgBlock>,
+    pub semantic_to_block: collections::Vec<CfgBlockId>,
 }
 
 pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
@@ -91,7 +91,7 @@ pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
 
     let ranges = retain_reachable_blocks(semantic, build_block_ranges(semantic));
     let semantic_to_block = build_semantic_to_block_map(semantic.ops.len(), &ranges);
-    let mut blocks = Vec::with_capacity(ranges.len());
+    let mut blocks = collections::Vec::with_capacity(ranges.len());
 
     for (block_index, range) in ranges.iter().cloned().enumerate() {
         let block_id = CfgBlockId(block_index as u32);
@@ -106,7 +106,7 @@ pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
         blocks.push(CfgBlock {
             id: block_id,
             range,
-            preds: Vec::new(),
+            preds: collections::Vec::new(),
             succs,
             terminator,
             flags: CfgBlockFlags {
@@ -126,9 +126,9 @@ pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
     }
 }
 
-fn build_block_ranges(semantic: &SemanticProgram) -> Vec<core::ops::Range<usize>> {
+fn build_block_ranges(semantic: &SemanticProgram) -> collections::Vec<core::ops::Range<usize>> {
     let len = semantic.ops.len();
-    let mut leaders = alloc::vec![false; len + 1];
+    let mut leaders = collections::vec![false; len + 1];
     leaders[0] = true;
     leaders[len] = true;
 
@@ -151,7 +151,7 @@ fn build_block_ranges(semantic: &SemanticProgram) -> Vec<core::ops::Range<usize>
         .iter()
         .enumerate()
         .filter_map(|(index, is_leader)| is_leader.then_some(index))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     starts
         .windows(2)
@@ -165,15 +165,15 @@ fn build_block_ranges(semantic: &SemanticProgram) -> Vec<core::ops::Range<usize>
 
 fn retain_reachable_blocks(
     semantic: &SemanticProgram,
-    block_ranges: Vec<core::ops::Range<usize>>,
-) -> Vec<core::ops::Range<usize>> {
+    block_ranges: collections::Vec<core::ops::Range<usize>>,
+) -> collections::Vec<core::ops::Range<usize>> {
     if block_ranges.is_empty() {
         return block_ranges;
     }
 
     let semantic_to_block = build_semantic_to_block_map(semantic.ops.len(), &block_ranges);
-    let mut visited = alloc::vec![false; block_ranges.len()];
-    let mut pending = alloc::vec![0usize];
+    let mut visited = collections::vec![false; block_ranges.len()];
+    let mut pending = collections::vec![0usize];
 
     while let Some(block_index) = pending.pop() {
         if visited.get(block_index).copied().unwrap_or(false) {
@@ -204,8 +204,8 @@ fn retain_reachable_blocks(
 fn build_semantic_to_block_map(
     semantic_len: usize,
     block_ranges: &[core::ops::Range<usize>],
-) -> Vec<CfgBlockId> {
-    let mut map = alloc::vec![CfgBlockId::default(); semantic_len];
+) -> collections::Vec<CfgBlockId> {
+    let mut map = collections::vec![CfgBlockId::default(); semantic_len];
     for (block_index, range) in block_ranges.iter().enumerate() {
         for semantic_index in range.clone() {
             map[semantic_index] = CfgBlockId(block_index as u32);
@@ -220,7 +220,7 @@ fn build_terminator(
     op: &SemanticOp,
     semantic: &SemanticProgram,
     semantic_to_block: &[CfgBlockId],
-) -> (CfgTerminator, Vec<CfgEdge>) {
+) -> (CfgTerminator, collections::Vec<CfgEdge>) {
     let len = semantic.ops.len();
     let fallthrough = || {
         if op_index + 1 < len {
@@ -235,15 +235,19 @@ fn build_terminator(
     };
 
     match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
-            (CfgTerminator::TrapUnreachable { op_index }, Vec::new())
-        }
+        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => (
+            CfgTerminator::TrapUnreachable { op_index },
+            collections::Vec::new(),
+        ),
         SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
-            (CfgTerminator::Return { op_index }, Vec::new())
+            (CfgTerminator::Return { op_index }, collections::Vec::new())
         }
         SemanticOpKind::Br { target, .. } => {
             let edge = map_edge(source, *target, semantic_to_block);
-            (CfgTerminator::Goto { op_index, edge }, alloc::vec![edge])
+            (
+                CfgTerminator::Goto { op_index, edge },
+                collections::vec![edge],
+            )
         }
         SemanticOpKind::BrIf { target, .. } => {
             let then_edge = map_edge(source, *target, semantic_to_block);
@@ -254,14 +258,14 @@ fn build_terminator(
                     then_edge,
                     else_edge,
                 },
-                dedup_edges(alloc::vec![then_edge, else_edge]),
+                dedup_edges(collections::vec![then_edge, else_edge]),
             )
         }
         SemanticOpKind::BrTable { entries } => {
             let edges = entries
                 .iter()
                 .map(|entry| map_edge(source, entry.target, semantic_to_block))
-                .collect::<Vec<_>>();
+                .collect::<collections::Vec<_>>();
             (
                 CfgTerminator::BrTable {
                     op_index,
@@ -280,19 +284,25 @@ fn build_terminator(
                     then_edge,
                     else_edge,
                 },
-                dedup_edges(alloc::vec![then_edge, else_edge]),
+                dedup_edges(collections::vec![then_edge, else_edge]),
             )
         }
         SemanticOpKind::Else { end_target } => {
             let edge = map_edge(source, *end_target, semantic_to_block);
-            (CfgTerminator::Goto { op_index, edge }, alloc::vec![edge])
+            (
+                CfgTerminator::Goto { op_index, edge },
+                collections::vec![edge],
+            )
         }
         _ => {
             let edge = fallthrough().unwrap_or(CfgEdge {
                 target: source,
                 is_backedge: false,
             });
-            (CfgTerminator::Goto { op_index, edge }, alloc::vec![edge])
+            (
+                CfgTerminator::Goto { op_index, edge },
+                collections::vec![edge],
+            )
         }
     }
 }
@@ -309,8 +319,8 @@ fn map_edge(
     }
 }
 
-fn dedup_edges(edges: Vec<CfgEdge>) -> Vec<CfgEdge> {
-    let mut out: Vec<CfgEdge> = Vec::with_capacity(edges.len());
+fn dedup_edges(edges: collections::Vec<CfgEdge>) -> collections::Vec<CfgEdge> {
+    let mut out: collections::Vec<CfgEdge> = collections::Vec::with_capacity(edges.len());
     for edge in edges {
         if !out.iter().any(|existing| existing.target == edge.target) {
             out.push(edge);
@@ -431,7 +441,7 @@ mod tests {
     fn builds_cfg_for_loop_and_marks_backedge_header() {
         let semantic = SemanticProgram {
             local_count: 3,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::Block {
                         params: 0,

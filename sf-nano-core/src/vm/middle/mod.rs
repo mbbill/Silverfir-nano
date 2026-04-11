@@ -21,7 +21,7 @@ mod slot_ssa;
 #[cfg(test)]
 mod tests;
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -82,12 +82,12 @@ pub(crate) fn prepare_function(
 fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
     SsaProgram {
         entry: SsaTarget(0),
-        blocks: Vec::new(),
+        blocks: collections::Vec::new(),
         local_slot_types: semantic.local_types.clone(),
-        local_slot_info: alloc::vec![Default::default(); semantic.local_count as usize],
-        block_entry_cached_slots: Vec::new(),
-        block_cfg_origins: Vec::new(),
-        value_types: Vec::new(),
-        value_sink_local: Vec::new(),
+        local_slot_info: collections::vec![Default::default(); semantic.local_count as usize],
+        block_entry_cached_slots: collections::Vec::new(),
+        block_cfg_origins: collections::Vec::new(),
+        value_types: collections::Vec::new(),
+        value_sink_local: collections::Vec::new(),
     }
 }

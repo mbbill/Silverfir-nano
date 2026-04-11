@@ -12,8 +12,7 @@
 //! This keeps immediates explicit in SSA so the backend can use native
 //! immediates directly instead of materializing them as transient registers.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     value_type::ValueType,
@@ -46,8 +45,8 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
         return;
     }
 
-    let mut known_const: Vec<Option<u64>> = vec![None; max_val];
-    let mut used_in_terminator = vec![false; max_val];
+    let mut known_const: collections::Vec<Option<u64>> = collections::vec![None; max_val];
+    let mut used_in_terminator = collections::vec![false; max_val];
 
     for inst in &block.ops {
         if let SsaInstKind::Value { op, args, results } = &inst.kind {
@@ -78,7 +77,7 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
                     }
                     SsaOperand::Const(bits) => Some(*bits),
                 })
-                .collect::<Vec<_>>();
+                .collect::<collections::Vec<_>>();
             if const_args.len() == args.len() {
                 if let Some((result_bits, const_primitive)) = try_eval(op.primitive(), &const_args)
                 {
@@ -110,7 +109,7 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
         }
     }
 
-    let mut still_used = vec![false; max_val];
+    let mut still_used = collections::vec![false; max_val];
     for inst in &block.ops {
         match &inst.kind {
             SsaInstKind::Value { args, .. } => {
@@ -948,7 +947,7 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use crate::collections;
 
     use super::fold_constants_into_operands;
     use crate::vm::{
@@ -964,24 +963,24 @@ mod tests {
     fn folds_single_use_const_into_value_operand() {
         let mut block = SsaBlock {
             id: SsaTarget(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
-                        args: Vec::new(),
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::Vec::new(),
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(1)),
                             SsaOperand::Value(SsaValue(0))
                         ],
-                        results: alloc::vec![SsaValue(2)],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
             ],
@@ -1008,23 +1007,23 @@ mod tests {
     fn keeps_const_producer_when_value_is_used_by_terminator() {
         let mut block = SsaBlock {
             id: SsaTarget(0),
-            params: Vec::new(),
-            ops: alloc::vec![SsaInst {
+            params: collections::Vec::new(),
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Value {
                     op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
-                    args: Vec::new(),
-                    results: alloc::vec![SsaValue(0)],
+                    args: collections::Vec::new(),
+                    results: collections::vec![SsaValue(0)],
                 },
             }],
             terminator: SsaTerminator::Branch {
                 cond: SsaValue(0),
                 then_edge: SsaEdge {
                     target: SsaTarget(1),
-                    bindings: Vec::new(),
+                    bindings: collections::Vec::new(),
                 },
                 else_edge: SsaEdge {
                     target: SsaTarget(2),
-                    bindings: Vec::new(),
+                    bindings: collections::Vec::new(),
                 },
             },
         };
@@ -1044,7 +1043,7 @@ mod tests {
                 ref results,
             } if matches!(op.primitive(), PrimitiveOpKind::I32Const { value: 1 })
                 && args.is_empty()
-                && results == &alloc::vec![SsaValue(0)]
+                && results == &collections::vec![SsaValue(0)]
         ));
     }
 }

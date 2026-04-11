@@ -290,7 +290,6 @@ name = "sf-nano-cli"
 version = "0.1.0"
 dependencies = [
  "sf-nano-core",
- "sf-nano-memtrace",
 ]
 
 [[package]]
@@ -298,14 +297,7 @@ name = "sf-nano-core"
 version = "0.1.0"
 dependencies = [
  "paste",
- "sf-nano-memtrace",
-]
-
-[[package]]
-name = "sf-nano-memtrace"
-version = "0.1.0"
-dependencies = [
- "libc",
+ "sf-nano-tracked-vec",
 ]
 
 [[package]]
@@ -319,6 +311,10 @@ dependencies = [
  "wast 239.0.0",
  "wat",
 ]
+
+[[package]]
+name = "sf-nano-tracked-vec"
+version = "0.1.0"
 
 [[package]]
 name = "sf-nano-wasitest"

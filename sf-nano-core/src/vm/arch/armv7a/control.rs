@@ -1,5 +1,7 @@
 //! Terminator and branch-condition compilation for the ARMv7-A backend.
 
+use crate::collections;
+
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
@@ -108,7 +110,7 @@ impl<'a> Arm32Backend<'a> {
                 }
 
                 // Emit edge stubs and collect their labels
-                let mut edge_label_ids = alloc::vec::Vec::with_capacity(entries.len());
+                let mut edge_label_ids = collections::Vec::with_capacity(entries.len());
                 for entry in entries {
                     let label = self.core.emit_edge(entry.target, &entry.args)?;
                     edge_label_ids.push(label);

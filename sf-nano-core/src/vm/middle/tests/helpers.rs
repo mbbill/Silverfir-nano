@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+
+use crate::collections;
 
 use crate::value_type::ValueType;
 use crate::vm::{
@@ -68,21 +69,21 @@ pub(super) fn i32_program(
     local_count: u16,
     max_stack_height: u16,
     results: u16,
-    ops: Vec<SemanticOp>,
+    ops: collections::Vec<SemanticOp>,
 ) -> SemanticProgram {
     typed_program(
-        alloc::vec![ValueType::I32; local_count as usize],
-        alloc::vec![ValueType::I32; results as usize],
+        collections::vec![ValueType::I32; local_count as usize],
+        collections::vec![ValueType::I32; results as usize],
         max_stack_height,
         ops,
     )
 }
 
 pub(super) fn typed_program(
-    local_types: Vec<ValueType>,
-    result_types: Vec<ValueType>,
+    local_types: collections::Vec<ValueType>,
+    result_types: collections::Vec<ValueType>,
     max_stack_height: u16,
-    ops: Vec<SemanticOp>,
+    ops: collections::Vec<SemanticOp>,
 ) -> SemanticProgram {
     SemanticProgram {
         params: 0,
@@ -161,7 +162,7 @@ pub(super) fn plan_program(
     }
 }
 
-pub(super) fn all_inst_kinds(program: &SsaProgram) -> Vec<&SsaInstKind> {
+pub(super) fn all_inst_kinds(program: &SsaProgram) -> collections::Vec<&SsaInstKind> {
     program
         .blocks
         .iter()
@@ -196,7 +197,7 @@ pub(super) fn count_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> usize
 pub(super) fn incoming_cache_repair_blocks(
     program: &SsaProgram,
     target_block: usize,
-) -> Vec<&SsaBlock> {
+) -> collections::Vec<&SsaBlock> {
     program
         .blocks
         .iter()

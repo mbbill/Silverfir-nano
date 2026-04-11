@@ -1,4 +1,6 @@
-use alloc::{format, vec::Vec};
+use alloc::format;
+
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -27,7 +29,7 @@ pub(crate) struct EmittedFunction64 {
     #[cfg(sf_has_guard_pages)]
     pub body_local_error_offset: usize,
     #[cfg(sf_has_debug_regions)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 /// 64-bit backends that use the shared module linker.
@@ -44,13 +46,13 @@ const NATIVE_FUNCTION_INFO64_SIZE: usize = core::mem::size_of::<NativeFunctionIn
 pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     module: &ModuleInst,
     compiled: &'a CompiledNativeModule,
-) -> Result<Vec<Option<A::CompiledEntry>>, WasmError> {
-    let mut artifacts = Vec::with_capacity(compiled.module().functions.len());
+) -> Result<collections::Vec<Option<A::CompiledEntry>>, WasmError> {
+    let mut artifacts = collections::Vec::with_capacity(compiled.module().functions.len());
     for function in &compiled.module().functions {
         artifacts.push(compile_function::<A>(compiled, function)?);
     }
 
-    let mut base_offsets = Vec::with_capacity(artifacts.len());
+    let mut base_offsets = collections::Vec::with_capacity(artifacts.len());
     let mut running_offset = 0usize;
     for artifact in &artifacts {
         running_offset = page_align_function(running_offset, artifact.text.len());
@@ -59,7 +61,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     }
     let function_info_table_offset = running_offset;
 
-    let mut internal_entry_addrs = Vec::with_capacity(artifacts.len());
+    let mut internal_entry_addrs = collections::Vec::with_capacity(artifacts.len());
     let base_ptr = {
         let executable = module
             .native_code_buffer()
@@ -88,7 +90,8 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
         }
     }
 
-    let mut function_info_bytes = Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO64_SIZE);
+    let mut function_info_bytes =
+        collections::Vec::with_capacity(artifacts.len() * NATIVE_FUNCTION_INFO64_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = NativeFunctionInfo64 {
             entry: *internal_entry_addrs
@@ -110,7 +113,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     executable.reset();
 
     let written_start = executable.len();
-    let mut emitted = Vec::with_capacity(artifacts.len());
+    let mut emitted = collections::Vec::with_capacity(artifacts.len());
     for (func_idx, artifact) in artifacts.into_iter().enumerate() {
         let current = executable.len() - written_start;
         let expected = base_offsets[func_idx];
@@ -137,7 +140,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     compiled
         .publish_local_call_infos(unsafe { executable.as_ptr().add(function_info_table_offset) });
 
-    let mut entries = Vec::with_capacity(emitted.len());
+    let mut entries = collections::Vec::with_capacity(emitted.len());
     for ef in &emitted {
         entries.push(Some(A::make_entry(&executable, ef)));
     }
@@ -162,7 +165,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
 
     #[cfg(sf_has_guard_pages)]
     {
-        let ranges: Vec<_> = emitted
+        let ranges: collections::Vec<_> = emitted
             .iter()
             .enumerate()
             .map(|(func_idx, ef)| {
@@ -221,9 +224,8 @@ pub(crate) fn is_fallthrough_edge(
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
     use super::is_fallthrough_edge;
+    use crate::collections;
     use crate::vm::machine::machine_ir::{
         MachineBlock, MachineBlockId, MachineBlockParam, MachineReg, MachineRegOwner,
         MachineTerminator, MachineValue,
@@ -232,8 +234,8 @@ mod tests {
     fn block(id: u32, params: &[MachineBlockParam]) -> MachineBlock {
         MachineBlock {
             id: MachineBlockId(id),
-            params: params.to_vec(),
-            ops: Vec::new(),
+            params: params.to_vec().into(),
+            ops: collections::Vec::new(),
             terminator: MachineTerminator::Return,
         }
     }

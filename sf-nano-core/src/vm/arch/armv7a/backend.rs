@@ -3,7 +3,7 @@
 //! This is the bridge between the common pipeline and the ARM32-specific
 //! instruction lowering. All lowering logic lives in `inst.rs` and `control.rs`.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 #[cfg(sf_has_debug_regions)]
 use crate::vm::arch::common::types::DebugRegion;
@@ -65,7 +65,7 @@ pub(crate) struct CompiledArm32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     #[cfg(sf_has_debug_regions)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 // ── Arm32Backend ─────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ pub(crate) struct CompiledArm32Entry {
 #[derive(Debug)]
 pub(crate) struct Arm32Backend<'a> {
     pub core: CompilerCore<'a>,
-    fixups: Vec<BranchFixup>,
+    fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm32Reg, 2>,
     pub(super) fp_scratch: ScratchPool<u32, 3>,
 }
@@ -93,7 +93,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, Self::max_fp_regs()),
-            fixups: Vec::new(),
+            fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
         }

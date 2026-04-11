@@ -1,13 +1,12 @@
 //! Shared execution-value stack used by active runtimes.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::raw_value::RawValue;
 
 #[derive(Debug)]
 pub(crate) struct ResultBuffer {
-    buffer: Vec<RawValue>,
+    buffer: collections::Vec<RawValue>,
     sp: usize,
 }
 
@@ -18,14 +17,14 @@ impl ResultBuffer {
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(capacity),
+            buffer: collections::Vec::with_capacity(capacity),
             sp: 0,
         }
     }
 
     pub(crate) fn with_exact_capacity(total_capacity: usize) -> Self {
         Self {
-            buffer: vec![0; total_capacity],
+            buffer: collections::vec![0; total_capacity],
             sp: 0,
         }
     }

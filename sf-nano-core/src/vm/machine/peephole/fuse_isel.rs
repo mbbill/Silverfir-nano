@@ -28,7 +28,7 @@
 //! indirections that expose the adjacent ShrU+And / shift+binop pairs.
 //! Running before copy propagation finds almost no matches.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
@@ -60,7 +60,7 @@ fn can_eliminate_reg(
 pub(super) fn fuse_isel(block: &mut MachineBlock, config: BackendConfig) {
     let ops = &block.ops;
     let term = &block.terminator;
-    let mut out: Vec<MachineInst> = Vec::with_capacity(ops.len());
+    let mut out: collections::Vec<MachineInst> = collections::Vec::with_capacity(ops.len());
     let mut i = 0;
 
     while i < ops.len() {

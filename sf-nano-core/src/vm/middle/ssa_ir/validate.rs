@@ -1,6 +1,8 @@
 //! Structural validation for prepared SSA-IR.
 
 #[cfg(any(debug_assertions, test))]
+use crate::collections;
+
 use alloc::collections::BTreeMap;
 
 use crate::error::WasmError;
@@ -313,7 +315,7 @@ fn validate_edge(
         )));
     };
 
-    let mut seen_params = alloc::vec::Vec::with_capacity(edge.bindings.len());
+    let mut seen_params = collections::Vec::with_capacity(edge.bindings.len());
     for binding in &edge.bindings {
         validate_binding(
             program,

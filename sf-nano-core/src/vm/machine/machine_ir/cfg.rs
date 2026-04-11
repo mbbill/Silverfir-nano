@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
-
 use super::inst::MachineInst;
+use crate::collections;
+
 use super::types::{
     MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFuncId, MachineIntWidth,
     MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
@@ -56,7 +56,7 @@ impl MachineBlockParam {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineEdge {
     pub target: MachineBlockId,
-    pub args: Vec<MachineValue>,
+    pub args: collections::Vec<MachineValue>,
 }
 
 /// One explicit branch condition.
@@ -90,7 +90,7 @@ pub(crate) enum MachineTerminator {
     },
     JumpTable {
         index: MachineValue,
-        entries: Vec<MachineEdge>,
+        entries: collections::Vec<MachineEdge>,
     },
     /// Direct local call to a compile-time-known local callee.
     ///
@@ -214,7 +214,7 @@ pub(crate) struct MachineBlock {
     /// Block parameters are generic registers plus explicit semantic owners.
     /// Incoming values are supplied by the predecessor edge, the root public
     /// shim, or a local-call boundary.
-    pub params: Vec<MachineBlockParam>,
-    pub ops: Vec<MachineInst>,
+    pub params: collections::Vec<MachineBlockParam>,
+    pub ops: collections::Vec<MachineInst>,
     pub terminator: MachineTerminator,
 }

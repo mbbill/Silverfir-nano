@@ -1,5 +1,6 @@
 use alloc::string::String;
-use alloc::vec::Vec;
+
+use crate::collections;
 
 use entities::{Data, Element, Function, Global, Memory, Table};
 
@@ -18,12 +19,12 @@ pub struct Module {
     name: String,
     binary_version: u32,
     types: type_context::TypeContext,
-    functions: Vec<Function>,
-    tables: Vec<Table>,
-    memories: Vec<Memory>,
-    globals: Vec<Global>,
-    elements: Vec<Element>,
-    data: Vec<Data>,
+    functions: collections::Vec<Function>,
+    tables: collections::Vec<Table>,
+    memories: collections::Vec<Memory>,
+    globals: collections::Vec<Global>,
+    elements: collections::Vec<Element>,
+    data: collections::Vec<Data>,
     start_func_index: Option<usize>,
     data_count: Option<usize>,
 }
@@ -82,12 +83,12 @@ impl Module {
         self,
     ) -> (
         type_context::TypeContext,
-        Vec<Function>,
-        Vec<Table>,
-        Vec<Memory>,
-        Vec<Global>,
-        Vec<Element>,
-        Vec<Data>,
+        collections::Vec<Function>,
+        collections::Vec<Table>,
+        collections::Vec<Memory>,
+        collections::Vec<Global>,
+        collections::Vec<Element>,
+        collections::Vec<Data>,
         Option<usize>,
     ) {
         (

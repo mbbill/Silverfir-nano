@@ -1,4 +1,6 @@
-use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use alloc::{boxed::Box, rc::Rc};
+
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -31,7 +33,7 @@ impl AlignedConstData {
         }
 
         let words = record.bytes.len().div_ceil(core::mem::size_of::<u64>());
-        let mut storage = alloc::vec![0u64; words.max(1)].into_boxed_slice();
+        let mut storage = collections::vec![0u64; words.max(1)].into_boxed_slice();
         unsafe {
             core::ptr::copy_nonoverlapping(
                 record.bytes.as_ptr(),
@@ -54,7 +56,7 @@ pub(crate) struct CompiledNativeModule {
     backend: BackendConfig,
     module: Option<MachineModule>,
     abi: Option<MachineModuleAbi>,
-    aligned_consts: Vec<AlignedConstData>,
+    aligned_consts: collections::Vec<AlignedConstData>,
     dispatch_metadata: NativeDispatchMetadata,
 }
 
@@ -68,7 +70,7 @@ impl CompiledNativeModule {
         if backend.is_32bit_gp_target() {
             module.validate_32bit_gp_target(backend.first_fp_reg())?;
         }
-        let mut aligned_consts = Vec::with_capacity(module.consts.len());
+        let mut aligned_consts = collections::Vec::with_capacity(module.consts.len());
         for konst in &module.consts {
             aligned_consts.push(AlignedConstData::new(konst)?);
         }

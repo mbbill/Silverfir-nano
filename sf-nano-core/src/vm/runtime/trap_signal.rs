@@ -28,9 +28,8 @@
 //!
 //! This module is gated on `#[cfg(sf_has_guard_pages)]`.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::os::signal::install_platform_handler;
 

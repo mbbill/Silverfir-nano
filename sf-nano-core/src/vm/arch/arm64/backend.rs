@@ -4,7 +4,7 @@
 //! instruction emission. It contains only type definitions and trait glue —
 //! all emission logic lives in `inst.rs` and `control.rs` as inherent methods.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -79,7 +79,7 @@ pub(crate) struct CompiledArm64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     #[cfg(sf_ir_dump)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 // ── Arm64Backend ─────────────────────────────────────────────────────────────
@@ -107,13 +107,13 @@ pub(super) struct PendingCallLiteral {
 #[derive(Debug)]
 pub(crate) struct Arm64Backend<'a> {
     pub core: CompilerCore<'a>,
-    pub(super) fixups: Vec<BranchFixup>,
+    pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
     pub(super) fp_scratch: ScratchPool<Arm64FpReg, 2>,
     /// Deferred per-call patchable literals. Flushed by
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
-    pub(super) pending_call_literals: Vec<PendingCallLiteral>,
+    pub(super) pending_call_literals: collections::Vec<PendingCallLiteral>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -131,10 +131,10 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
-            fixups: Vec::new(),
+            fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
-            pending_call_literals: Vec::new(),
+            pending_call_literals: collections::Vec::new(),
         }
     }
 

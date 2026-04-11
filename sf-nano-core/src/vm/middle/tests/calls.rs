@@ -1,4 +1,6 @@
+use crate::collections;
 use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+
 use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
 use super::helpers::{
@@ -14,7 +16,7 @@ fn entry_block_does_not_preload_local_used_only_after_call_barrier() {
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             op(SemanticOpKind::CallDirect {
                 callee: 0,
                 params: 0,
@@ -53,7 +55,7 @@ fn call_barrier_rebuilds_local_access_after_flush() {
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             op(SemanticOpKind::Primitive(
                 crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const { value: 7 },
             )),
@@ -94,7 +96,7 @@ fn hot_repeated_local_can_stay_public_across_call() {
         1,
         4,
         1,
-        alloc::vec![
+        collections::vec![
             op(SemanticOpKind::Primitive(
                 crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const { value: 7 },
             )),

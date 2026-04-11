@@ -5,9 +5,9 @@
 //! - Vector types (v128)
 //! - Reference types (funcref, externref)
 
+use crate::collections;
+
 use alloc::format;
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::{error::WasmError, utils::leb128};
 use core::fmt;
@@ -118,9 +118,9 @@ impl HeapType {
     }
 
     /// Encode this heap type to binary format
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> collections::Vec<u8> {
         match self {
-            HeapType::Abstract(aht) => vec![*aht as u8],
+            HeapType::Abstract(aht) => collections::vec![*aht as u8],
             HeapType::Concrete(idx) => leb128::write_leb128_i32(*idx as i32),
         }
     }
@@ -568,24 +568,24 @@ impl ValueType {
     }
 
     /// Encode this value type to binary format
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> collections::Vec<u8> {
         match self {
-            ValueType::I32 => vec![0x7F],
-            ValueType::I64 => vec![0x7E],
-            ValueType::F32 => vec![0x7D],
-            ValueType::F64 => vec![0x7C],
-            ValueType::V128 => vec![0x7B],
+            ValueType::I32 => collections::vec![0x7F],
+            ValueType::I64 => collections::vec![0x7E],
+            ValueType::F32 => collections::vec![0x7D],
+            ValueType::F64 => collections::vec![0x7C],
+            ValueType::V128 => collections::vec![0x7B],
 
             ValueType::Ref(rt) => {
                 // Check if we can use short form (nullable abstract heap type)
                 if rt.nullable {
                     if let HeapType::Abstract(aht) = rt.heap_type {
-                        return vec![aht as u8];
+                        return collections::vec![aht as u8];
                     }
                 }
 
                 // General form required
-                let mut bytes = vec![if rt.nullable { 0x63 } else { 0x64 }];
+                let mut bytes = collections::vec![if rt.nullable { 0x63 } else { 0x64 }];
                 bytes.extend(rt.heap_type.encode());
                 bytes
             }

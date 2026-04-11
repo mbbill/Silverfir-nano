@@ -1,6 +1,8 @@
 //! WebAssembly 2.0 Runtime Instances (no_std, single-module).
 
-use alloc::{rc::Rc, string::String, vec::Vec};
+use crate::collections;
+
+use alloc::{rc::Rc, string::String};
 #[cfg(sf_jit)]
 use core::cell::RefCell;
 
@@ -81,7 +83,7 @@ impl FunctionInst {
 
 #[derive(Debug, Clone)]
 pub struct TableInst {
-    pub elements: Vec<RefHandle>,
+    pub elements: collections::Vec<RefHandle>,
     pub limits: Limits,
     pub value_type: ValueType,
 }
@@ -90,7 +92,7 @@ impl TableInst {
     pub fn new(limits: Limits, value_type: ValueType) -> Self {
         let initial_size = limits.min();
         TableInst {
-            elements: alloc::vec![RefHandle::null(); initial_size],
+            elements: collections::vec![RefHandle::null(); initial_size],
             limits,
             value_type,
         }
@@ -104,7 +106,7 @@ impl TableInst {
 
 #[derive(Debug)]
 pub struct MemInst {
-    pub data: Vec<u8>,
+    pub data: collections::Vec<u8>,
     pub limits: Limits,
     #[cfg(sf_has_guard_pages)]
     guard: Option<crate::vm::runtime::guard_pages::GuardPageMemory>,
@@ -125,7 +127,7 @@ impl MemInst {
     pub fn new(limits: Limits) -> Self {
         let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
         MemInst {
-            data: alloc::vec![0u8; initial_bytes],
+            data: collections::vec![0u8; initial_bytes],
             limits,
             #[cfg(sf_has_guard_pages)]
             guard: None,
@@ -137,7 +139,7 @@ impl MemInst {
     pub fn new_guarded(limits: Limits) -> Result<Self, crate::error::WasmError> {
         let guard = crate::vm::runtime::guard_pages::GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
-            data: Vec::new(),
+            data: collections::Vec::new(),
             limits,
             guard: Some(guard),
         })
@@ -235,13 +237,13 @@ pub(crate) mod global_offset {
 
 #[derive(Debug, Clone)]
 pub struct ElementInst {
-    pub refs: Vec<RefHandle>,
+    pub refs: collections::Vec<RefHandle>,
     pub value_type: ValueType,
     pub dropped: bool,
 }
 
 impl ElementInst {
-    pub fn new(refs: Vec<RefHandle>, value_type: ValueType) -> Self {
+    pub fn new(refs: collections::Vec<RefHandle>, value_type: ValueType) -> Self {
         ElementInst {
             refs,
             value_type,
@@ -263,12 +265,12 @@ impl ElementInst {
 
 #[derive(Debug, Clone)]
 pub struct DataInst {
-    pub bytes: Vec<u8>,
+    pub bytes: collections::Vec<u8>,
     pub dropped: bool,
 }
 
 impl DataInst {
-    pub fn new(bytes: Vec<u8>) -> Self {
+    pub fn new(bytes: collections::Vec<u8>) -> Self {
         DataInst {
             bytes,
             dropped: false,
@@ -291,12 +293,12 @@ impl DataInst {
 pub struct ModuleInst {
     pub name: String,
     pub types: TypeContext,
-    pub functions: Vec<FunctionInst>,
-    pub tables: Vec<TableInst>,
-    pub memories: Vec<MemInst>,
-    pub globals: Vec<GlobalInst>,
-    pub elements: Vec<ElementInst>,
-    pub data: Vec<DataInst>,
+    pub functions: collections::Vec<FunctionInst>,
+    pub tables: collections::Vec<TableInst>,
+    pub memories: collections::Vec<MemInst>,
+    pub globals: collections::Vec<GlobalInst>,
+    pub elements: collections::Vec<ElementInst>,
+    pub data: collections::Vec<DataInst>,
     #[cfg(sf_jit)]
     native_buf: RefCell<Option<CodeBuffer>>,
 }
@@ -306,12 +308,12 @@ impl ModuleInst {
         ModuleInst {
             name,
             types,
-            functions: Vec::new(),
-            tables: Vec::new(),
-            memories: Vec::new(),
-            globals: Vec::new(),
-            elements: Vec::new(),
-            data: Vec::new(),
+            functions: collections::Vec::new(),
+            tables: collections::Vec::new(),
+            memories: collections::Vec::new(),
+            globals: collections::Vec::new(),
+            elements: collections::Vec::new(),
+            data: collections::Vec::new(),
             #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }
@@ -345,12 +347,12 @@ impl Default for ModuleInst {
         Self {
             name: String::new(),
             types: TypeContext::empty(),
-            functions: Vec::new(),
-            tables: Vec::new(),
-            memories: Vec::new(),
-            globals: Vec::new(),
-            elements: Vec::new(),
-            data: Vec::new(),
+            functions: collections::Vec::new(),
+            tables: collections::Vec::new(),
+            memories: collections::Vec::new(),
+            globals: collections::Vec::new(),
+            elements: collections::Vec::new(),
+            data: collections::Vec::new(),
             #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }

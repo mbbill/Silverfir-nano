@@ -237,9 +237,9 @@ fn current_additional_spill_delta(plan: &FunctionPlan, semantic_index: usize) ->
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeSet;
-    use alloc::vec::Vec;
 
     use super::*;
+    use crate::collections;
     use crate::vm::middle::joint_plan::facts::{
         BlockEntryStackRegion, BlockLocalRegion, BlockPlan, EntryState, OpInfo, OpPlan,
     };
@@ -250,44 +250,44 @@ mod tests {
             gp_unit_bytes: 8,
             gp_dynamic_budget: 1,
             fp_dynamic_budget: 1,
-            local_slot_types: alloc::vec![ValueType::I32],
-            op_plans: alloc::vec![OpPlan {
+            local_slot_types: collections::vec![ValueType::I32],
+            op_plans: collections::vec![OpPlan {
                 before: EntryState {
                     stack_height: 1,
                     spill_depth: 0,
-                    stack_types: alloc::vec![ValueType::I32],
-                    live_types: alloc::vec![ValueType::I32],
+                    stack_types: collections::vec![ValueType::I32],
+                    live_types: collections::vec![ValueType::I32],
                 },
                 after: EntryState {
                     stack_height: 1,
                     spill_depth: 0,
-                    stack_types: alloc::vec![ValueType::I32],
-                    live_types: alloc::vec![ValueType::I32],
+                    stack_types: collections::vec![ValueType::I32],
+                    live_types: collections::vec![ValueType::I32],
                 },
             }],
-            entry_states: alloc::vec![EntryState {
+            entry_states: collections::vec![EntryState {
                 stack_height: 1,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I32],
-                live_types: alloc::vec![ValueType::I32],
+                stack_types: collections::vec![ValueType::I32],
+                live_types: collections::vec![ValueType::I32],
             }],
-            op_info: alloc::vec![OpInfo {
+            op_info: collections::vec![OpInfo {
                 block_index: 0,
                 block_offset: 0,
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: alloc::vec![BlockLocalRegion::default()],
-            block_stack_regions: alloc::vec![BlockEntryStackRegion::default()],
-            block_transient_regions: alloc::vec![
+            block_regions: collections::vec![BlockLocalRegion::default()],
+            block_stack_regions: collections::vec![BlockEntryStackRegion::default()],
+            block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
             ],
-            blocks: alloc::vec![BlockPlan {
+            blocks: collections::vec![BlockPlan {
                 entry: EntryState {
                     stack_height: 1,
                     spill_depth: 1,
-                    stack_types: alloc::vec![ValueType::I32],
-                    live_types: Vec::new(),
+                    stack_types: collections::vec![ValueType::I32],
+                    live_types: collections::Vec::new(),
                 },
                 ..Default::default()
             }],

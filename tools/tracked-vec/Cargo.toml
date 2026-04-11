@@ -1,0 +1,15 @@
+[package]
+name = "sf-nano-tracked-vec"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bill Ming <mbbill@gmail.com>"]
+description = "Feature-gated tracked Vec facade for Silverfir-nano"
+license = "MIT/Apache-2.0"
+
+[lib]
+name = "sf_nano_tracked_vec"
+path = "src/lib.rs"
+
+[features]
+default = []
+tracking = []

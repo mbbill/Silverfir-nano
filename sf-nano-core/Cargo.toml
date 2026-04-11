@@ -10,7 +10,7 @@ categories = ["wasm", "no-std"]
 
 [dependencies]
 paste = "1.0"
-sf-nano-memtrace = { path = "../tools/memtrace", optional = true }
+sf-nano-tracked-vec = { path = "../tools/tracked-vec" }
 
 [features]
 default = ["jit", "guard-pages"]
@@ -22,4 +22,4 @@ call-trace = ["jit"]
 guard-pages = ["jit"]
 ir-dump = ["jit"]
 jitdump = ["jit"]
-memtrace = ["dep:sf-nano-memtrace"]
+tracked-vec = ["sf-nano-tracked-vec/tracking"]

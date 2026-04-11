@@ -1,4 +1,6 @@
+use crate::collections;
 use crate::vm::middle::ssa_ir::ir::SsaTerminator;
+
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use super::helpers::{i32_program, op, prepare_i32_program, prim, target};
@@ -9,7 +11,7 @@ fn synthetic_entry_repair_block_is_merged_into_entry_block() {
         1,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
             prim(PrimitiveOpKind::I32Add),
@@ -32,7 +34,7 @@ fn prepared_ssa_contains_no_empty_identity_goto_blocks_after_cleanup() {
         1,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::If {
                 params: 0,

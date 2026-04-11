@@ -18,7 +18,7 @@
 //! ```
 //! -> `IndexedLoad/Store { base, index, extend=None, offset=0 }`
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineConvertOp, MachineIndexExtend, MachineInst, MachineInstKind,
@@ -30,7 +30,7 @@ use super::helpers::reg_live_after;
 pub(super) fn fuse_indexed_memory(block: &mut MachineBlock) {
     let ops = &block.ops;
     let term = &block.terminator;
-    let mut out: Vec<MachineInst> = Vec::with_capacity(ops.len());
+    let mut out: collections::Vec<MachineInst> = collections::Vec::with_capacity(ops.len());
     let mut i = 0;
 
     while i < ops.len() {

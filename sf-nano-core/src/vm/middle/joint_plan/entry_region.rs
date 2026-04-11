@@ -9,7 +9,7 @@
 //! but block-open uses the same scoring shape for both so the boundary policy
 //! stays coherent.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::{
     middle::{
@@ -47,12 +47,15 @@ pub(crate) fn analyze_block_entry_regions(
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     entry_states: &[EntryState],
-) -> (Vec<BlockLocalRegion>, Vec<BlockEntryStackRegion>) {
-    let mut local_regions = Vec::with_capacity(cfg.blocks.len());
-    let mut stack_regions = Vec::with_capacity(cfg.blocks.len());
+) -> (
+    collections::Vec<BlockLocalRegion>,
+    collections::Vec<BlockEntryStackRegion>,
+) {
+    let mut local_regions = collections::Vec::with_capacity(cfg.blocks.len());
+    let mut stack_regions = collections::Vec::with_capacity(cfg.blocks.len());
 
     for block in &cfg.blocks {
-        let mut locals = alloc::vec![None::<BlockLocalInfo>; semantic.local_count as usize];
+        let mut locals = collections::vec![None::<BlockLocalInfo>; semantic.local_count as usize];
         for (block_offset, semantic_index) in block.range.clone().enumerate() {
             let Some((local_idx, access_kind)) =
                 classify_local_access(&semantic.ops[semantic_index].kind)
@@ -84,7 +87,7 @@ pub(crate) fn analyze_block_entry_regions(
             record_local_access(info, access_kind, block_offset as u16, true);
         }
 
-        let mut ranked = Vec::new();
+        let mut ranked = collections::Vec::new();
         for info in locals.iter_mut().flatten() {
             info.hot_score = score_local(info);
             info.entry_hot_score = score_entry_local(info);
@@ -179,15 +182,16 @@ pub(crate) fn analyze_block_transient_regions(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
     entry_states: &[EntryState],
-) -> Vec<BlockTransientRegion> {
-    let mut regions = Vec::with_capacity(cfg.blocks.len());
+) -> collections::Vec<BlockTransientRegion> {
+    let mut regions = collections::Vec::with_capacity(cfg.blocks.len());
 
     for block in &cfg.blocks {
         let entry = &entry_states[block.range.start];
         let mut stack = (0..entry.stack_height)
             .map(BlockSymbol::Entry)
-            .collect::<Vec<_>>();
-        let mut infos = alloc::vec![TransientSymbolInfo::default(); entry.stack_height as usize];
+            .collect::<collections::Vec<_>>();
+        let mut infos =
+            collections::vec![TransientSymbolInfo::default(); entry.stack_height as usize];
         let mut next_symbol = entry.stack_height;
 
         for (block_offset, semantic_index) in block.range.clone().enumerate() {
@@ -231,11 +235,11 @@ fn analyze_entry_stack_region(
             touch_count: 0,
             hot_score: 0,
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     let mut stack = (0..entry.stack_height)
         .map(EntrySymbol::Entry)
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     for (block_offset, semantic_index) in semantic_range.enumerate() {
         let kind = &semantic.ops[semantic_index].kind;
@@ -312,7 +316,7 @@ fn classify_local_access(kind: &SemanticOpKind) -> Option<(u16, FirstAccessKind)
 }
 
 fn record_stack_touches(
-    stack: &mut Vec<EntrySymbol>,
+    stack: &mut collections::Vec<EntrySymbol>,
     pop_count: usize,
     block_offset: u16,
     values: &mut [BlockStackValueInfo],
@@ -325,7 +329,7 @@ fn record_stack_touches(
 }
 
 #[inline]
-fn pop_one_symbol(stack: &mut Vec<EntrySymbol>) -> Option<EntrySymbol> {
+fn pop_one_symbol(stack: &mut collections::Vec<EntrySymbol>) -> Option<EntrySymbol> {
     stack.pop()
 }
 
@@ -390,8 +394,8 @@ fn score_stack_value(info: &BlockStackValueInfo) -> i32 {
 fn apply_transient_analysis_effect(
     kind: &SemanticOpKind,
     block_offset: u16,
-    stack: &mut Vec<BlockSymbol>,
-    infos: &mut Vec<TransientSymbolInfo>,
+    stack: &mut collections::Vec<BlockSymbol>,
+    infos: &mut collections::Vec<TransientSymbolInfo>,
     next_symbol: &mut u16,
 ) {
     match kind {
@@ -461,7 +465,7 @@ fn apply_transient_analysis_effect(
 }
 
 fn record_transient_touches(
-    stack: &mut Vec<BlockSymbol>,
+    stack: &mut collections::Vec<BlockSymbol>,
     pop_count: usize,
     block_offset: u16,
     infos: &mut [TransientSymbolInfo],
@@ -486,8 +490,8 @@ fn touch_transient_top(
 }
 
 fn push_fresh_transient_symbols(
-    stack: &mut Vec<BlockSymbol>,
-    infos: &mut Vec<TransientSymbolInfo>,
+    stack: &mut collections::Vec<BlockSymbol>,
+    infos: &mut collections::Vec<TransientSymbolInfo>,
     next_symbol: &mut u16,
     count: usize,
 ) {
@@ -542,7 +546,7 @@ mod tests {
     #[test]
     fn stack_region_tracks_only_values_touched_before_first_barrier() {
         let semantic = SemanticProgram {
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalGet { idx: 0 },
                 },
@@ -562,8 +566,8 @@ mod tests {
         let entry = EntryState {
             stack_height: 2,
             spill_depth: 0,
-            stack_types: alloc::vec![ValueType::I32, ValueType::I32],
-            live_types: alloc::vec![ValueType::I32, ValueType::I32],
+            stack_types: collections::vec![ValueType::I32, ValueType::I32],
+            live_types: collections::vec![ValueType::I32, ValueType::I32],
         };
 
         let region = analyze_entry_stack_region(0..semantic.ops.len(), &semantic, &entry);
@@ -576,7 +580,7 @@ mod tests {
     #[test]
     fn local_tee_keeps_the_same_entry_symbol_live() {
         let semantic = SemanticProgram {
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalTee { idx: 0 },
                 },
@@ -589,8 +593,8 @@ mod tests {
         let entry = EntryState {
             stack_height: 1,
             spill_depth: 0,
-            stack_types: alloc::vec![ValueType::I32],
-            live_types: alloc::vec![ValueType::I32],
+            stack_types: collections::vec![ValueType::I32],
+            live_types: collections::vec![ValueType::I32],
         };
 
         let region = analyze_entry_stack_region(0..semantic.ops.len(), &semantic, &entry);
@@ -600,7 +604,7 @@ mod tests {
     #[test]
     fn stack_region_does_not_treat_pure_drop_as_hot_use() {
         let semantic = SemanticProgram {
-            ops: alloc::vec![SemanticOp {
+            ops: collections::vec![SemanticOp {
                 kind: SemanticOpKind::Primitive(PrimitiveOpKind::Drop),
             }],
             ..Default::default()
@@ -608,8 +612,8 @@ mod tests {
         let entry = EntryState {
             stack_height: 1,
             spill_depth: 0,
-            stack_types: alloc::vec![ValueType::I32],
-            live_types: alloc::vec![ValueType::I32],
+            stack_types: collections::vec![ValueType::I32],
+            live_types: collections::vec![ValueType::I32],
         };
 
         let region = analyze_entry_stack_region(0..semantic.ops.len(), &semantic, &entry);
@@ -621,7 +625,7 @@ mod tests {
     #[test]
     fn transient_region_tracks_entry_and_temp_symbol_uses_across_block() {
         let semantic = SemanticProgram {
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalGet { idx: 0 },
                 },
@@ -636,15 +640,15 @@ mod tests {
                 },
             ],
             local_count: 1,
-            local_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![ValueType::I32],
             ..Default::default()
         };
         let cfg = crate::vm::middle::cfg::build_semantic_cfg(&semantic);
-        let entry_states = alloc::vec![EntryState {
+        let entry_states = collections::vec![EntryState {
             stack_height: 1,
             spill_depth: 0,
-            stack_types: alloc::vec![ValueType::I32],
-            live_types: alloc::vec![ValueType::I32],
+            stack_types: collections::vec![ValueType::I32],
+            live_types: collections::vec![ValueType::I32],
         }];
 
         let regions = analyze_block_transient_regions(&semantic, &cfg, &entry_states);

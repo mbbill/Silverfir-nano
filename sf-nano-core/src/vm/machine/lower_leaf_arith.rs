@@ -1,6 +1,6 @@
 //! Arithmetic, compare, convert, and select lowering.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -71,7 +71,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -100,7 +100,7 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -131,7 +131,7 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -166,7 +166,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let lhs = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -197,7 +197,7 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -228,7 +228,7 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -257,7 +257,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -285,7 +285,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: Vec<SsaValue> = args
+        let dead: collections::Vec<SsaValue> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),
@@ -314,7 +314,7 @@ impl<'a> BlockLowerContext<'a> {
         let on_true = self.use_operand(args[0])?;
         let on_false = self.use_operand(args[1])?;
         let cond = self.use_operand(args[2])?;
-        let dead_inputs: Vec<_> = args
+        let dead_inputs: collections::Vec<_> = args
             .iter()
             .filter_map(|a| match a {
                 SsaOperand::Value(v) => Some(*v),

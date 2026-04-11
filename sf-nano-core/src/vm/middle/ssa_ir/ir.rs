@@ -6,7 +6,7 @@
 //! - explicit slot traffic publishes and reloads transient values through
 //!   operand slots so the backend never needs general register allocation
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::value_type::ValueType;
 
@@ -57,13 +57,13 @@ pub(crate) struct LocalSlotInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
-    pub blocks: Vec<SsaBlock>,
-    pub local_slot_types: Vec<ValueType>,
-    pub local_slot_info: Vec<LocalSlotInfo>,
-    pub block_entry_cached_slots: Vec<Vec<FrameSlot>>,
-    pub block_cfg_origins: Vec<Vec<u32>>,
-    pub value_types: Vec<ValueType>,
-    pub value_sink_local: Vec<Option<FrameSlot>>,
+    pub blocks: collections::Vec<SsaBlock>,
+    pub local_slot_types: collections::Vec<ValueType>,
+    pub local_slot_info: collections::Vec<LocalSlotInfo>,
+    pub block_entry_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    pub block_cfg_origins: collections::Vec<collections::Vec<u32>>,
+    pub value_types: collections::Vec<ValueType>,
+    pub value_sink_local: collections::Vec<Option<FrameSlot>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,8 +163,8 @@ pub(crate) fn block_entry_cache_requirement(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SsaBlock {
     pub id: SsaTarget,
-    pub params: Vec<SsaValue>,
-    pub ops: Vec<SsaInst>,
+    pub params: collections::Vec<SsaValue>,
+    pub ops: collections::Vec<SsaInst>,
     pub terminator: SsaTerminator,
 }
 
@@ -179,7 +179,7 @@ pub(crate) struct SsaBinding {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SsaEdge {
     pub target: SsaTarget,
-    pub bindings: Vec<SsaBinding>,
+    pub bindings: collections::Vec<SsaBinding>,
 }
 
 /// One SSA operation inside a block body.
@@ -193,8 +193,8 @@ pub(crate) struct SsaInst {
 pub(crate) enum SsaInstKind {
     Value {
         op: SsaLeafOp,
-        args: Vec<SsaOperand>,
-        results: Vec<SsaValue>,
+        args: collections::Vec<SsaOperand>,
+        results: collections::Vec<SsaValue>,
     },
     Fill {
         slot: FrameSlot,
@@ -260,7 +260,7 @@ pub(crate) enum SsaTerminator {
     },
     BrTable {
         index: SsaValue,
-        entries: Vec<SsaEdge>,
+        entries: collections::Vec<SsaEdge>,
     },
     Return {
         results: Option<FrameSpan>,

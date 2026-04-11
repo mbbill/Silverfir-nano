@@ -4,7 +4,7 @@
 //! instruction lowering. It contains only type definitions and trait glue —
 //! all lowering logic lives in `inst.rs` and `control.rs`.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -72,7 +72,7 @@ pub(crate) struct CompiledExampleEntry {
 #[derive(Debug)]
 pub(crate) struct ExampleBackend<'a> {
     pub core: CompilerCore<'a>,
-    pub(super) fixups: Vec<BranchFixup>,
+    pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<GpReg, 2>,
     pub(super) fp_scratch: ScratchPool<FpReg, 3>,
 }
@@ -92,7 +92,7 @@ impl<'a> ArchBackend<'a> for ExampleBackend<'a> {
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, Self::max_fp_regs()),
-            fixups: Vec::new(),
+            fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
         }

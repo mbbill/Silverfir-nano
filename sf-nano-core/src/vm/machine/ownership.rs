@@ -10,8 +10,7 @@
 //! params and then replaying instruction defs. Late peepholes use it to guard
 //! optimizations that are only sound for linear values.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::{
     backend::BackendConfig,
@@ -22,13 +21,13 @@ use crate::vm::{
 
 /// One mutable ownership tracker for the current block scan.
 pub(super) struct DynamicOwnershipTracker {
-    owners: Vec<Option<MachineRegOwner>>,
+    owners: collections::Vec<Option<MachineRegOwner>>,
 }
 
 impl DynamicOwnershipTracker {
     pub(super) fn new(reg_count: usize) -> Self {
         Self {
-            owners: vec![None; reg_count],
+            owners: collections::vec![None; reg_count],
         }
     }
 

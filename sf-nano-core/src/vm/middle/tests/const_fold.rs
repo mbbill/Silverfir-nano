@@ -1,4 +1,6 @@
+use crate::collections;
 use crate::vm::middle::ssa_ir::ir::{SsaInstKind, SsaOperand};
+
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::helpers::{i32_program, op, prepare_i32_program, prim};
@@ -9,7 +11,7 @@ fn prepared_ssa_absorbs_single_use_const_into_arithmetic_operand() {
         1,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             prim(PrimitiveOpKind::I32Add),
@@ -46,7 +48,7 @@ fn prepared_ssa_folds_fully_constant_expression_to_single_const() {
         0,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
             prim(PrimitiveOpKind::I32Add),

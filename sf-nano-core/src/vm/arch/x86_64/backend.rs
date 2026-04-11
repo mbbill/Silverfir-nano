@@ -4,7 +4,7 @@
 //! instruction emission. It contains only type definitions and trait glue —
 //! all emission logic lives in `inst.rs` and `control.rs` as inherent methods.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -67,7 +67,7 @@ pub(crate) struct CompiledX86_64Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     #[cfg(sf_ir_dump)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 // ── X86_64Backend ────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ pub(crate) struct CompiledX86_64Entry {
 #[derive(Debug)]
 pub(crate) struct X86_64Backend<'a> {
     pub core: CompilerCore<'a>,
-    pub(super) fixups: Vec<BranchFixup>,
+    pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: GpScratchPool,
     pub(super) fp_scratch: ScratchPool<u32, 2>,
 }
@@ -95,7 +95,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
-            fixups: Vec::new(),
+            fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),
         }

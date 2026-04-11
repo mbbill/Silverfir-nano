@@ -1,4 +1,6 @@
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, string::String};
+
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -32,14 +34,14 @@ pub(crate) struct CompilerCore<'a> {
     pub compiled: &'a CompiledNativeModule,
     pub function: &'a MachineFunction,
     pub text: TextEmitter,
-    pub labels: Vec<Option<usize>>,
-    pub block_labels: Vec<usize>,
-    pub edge_stubs: Vec<EdgeStub>,
-    pub resolved_ptr_patches: Vec<LocalPtrPatch>,
-    pub local_ptr_patches: Vec<PendingLocalPtrPatch>,
-    pub direct_call_patches: Vec<DirectCallPatch>,
-    pub deferred_traps: Vec<(usize, MachineTrapKind)>,
-    pub fp_reg_widths: Vec<Option<MachineFloatWidth>>,
+    pub labels: collections::Vec<Option<usize>>,
+    pub block_labels: collections::Vec<usize>,
+    pub edge_stubs: collections::Vec<EdgeStub>,
+    pub resolved_ptr_patches: collections::Vec<LocalPtrPatch>,
+    pub local_ptr_patches: collections::Vec<PendingLocalPtrPatch>,
+    pub direct_call_patches: collections::Vec<DirectCallPatch>,
+    pub deferred_traps: collections::Vec<(usize, MachineTrapKind)>,
+    pub fp_reg_widths: collections::Vec<Option<MachineFloatWidth>>,
     pub current_block: Option<MachineBlockId>,
     pub current_op_index: Option<usize>,
     pub current_edge_target: Option<MachineBlockId>,
@@ -83,8 +85,8 @@ impl<'a> CompilerCore<'a> {
             .max()
             .unwrap_or(0)
             + 1;
-        let mut labels = Vec::new();
-        let mut block_labels = vec![usize::MAX; block_cap];
+        let mut labels = collections::Vec::new();
+        let mut block_labels = collections::vec![usize::MAX; block_cap];
         for block in &function.program.blocks {
             let label = labels.len();
             labels.push(None);
@@ -108,11 +110,11 @@ impl<'a> CompilerCore<'a> {
             text: TextEmitter::new(),
             labels,
             block_labels,
-            edge_stubs: Vec::new(),
-            resolved_ptr_patches: Vec::new(),
-            local_ptr_patches: Vec::new(),
-            direct_call_patches: Vec::new(),
-            deferred_traps: Vec::new(),
+            edge_stubs: collections::Vec::new(),
+            resolved_ptr_patches: collections::Vec::new(),
+            local_ptr_patches: collections::Vec::new(),
+            direct_call_patches: collections::Vec::new(),
+            deferred_traps: collections::Vec::new(),
             fp_reg_widths,
             current_block: None,
             current_op_index: None,
@@ -128,8 +130,8 @@ impl<'a> CompilerCore<'a> {
         function: &MachineFunction,
         _config: BackendConfig,
         fp_capacity: usize,
-    ) -> Vec<Option<MachineFloatWidth>> {
-        let mut widths = vec![None; fp_capacity];
+    ) -> collections::Vec<Option<MachineFloatWidth>> {
+        let mut widths = collections::vec![None; fp_capacity];
         if function.program.fp_reg_init_widths.is_empty() {
             // Unified dynamic FP banks no longer let us infer ownership or
             // width defaults from register number. Until the lowering path
@@ -273,10 +275,10 @@ impl<'a> CompilerCore<'a> {
 
     // ── Block layout ─────────────────────────────────────────────────────
 
-    pub(crate) fn block_layout(&self) -> Vec<MachineBlockId> {
-        let mut order = Vec::with_capacity(self.function.program.blocks.len());
-        let mut seen = vec![false; self.function.program.blocks.len()];
-        let mut worklist = vec![self.function.program.entry];
+    pub(crate) fn block_layout(&self) -> collections::Vec<MachineBlockId> {
+        let mut order = collections::Vec::with_capacity(self.function.program.blocks.len());
+        let mut seen = collections::vec![false; self.function.program.blocks.len()];
+        let mut worklist = collections::vec![self.function.program.entry];
 
         while let Some(start) = worklist.pop() {
             self.extend_block_trace(start, &mut seen, &mut order, &mut worklist);
@@ -299,8 +301,8 @@ impl<'a> CompilerCore<'a> {
         &self,
         start: MachineBlockId,
         seen: &mut [bool],
-        order: &mut Vec<MachineBlockId>,
-        worklist: &mut Vec<MachineBlockId>,
+        order: &mut collections::Vec<MachineBlockId>,
+        worklist: &mut collections::Vec<MachineBlockId>,
     ) {
         let mut current = Some(start);
         while let Some(block_id) = current {
@@ -404,12 +406,12 @@ impl<'a> CompilerCore<'a> {
                     Ok(None)
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<collections::Vec<_>, _>>()?;
         self.edge_stubs.push(EdgeStub {
             label,
             target,
             params: block.params.clone(),
-            args: args.to_vec(),
+            args: args.to_vec().into(),
             arg_float_widths,
         });
         Ok(label)
@@ -472,7 +474,7 @@ impl<'a> CompilerCore<'a> {
         self,
         internal_entry_offset: usize,
         #[cfg(sf_has_guard_pages)] body_local_error_offset: usize,
-        #[cfg(sf_has_debug_regions)] debug_regions: Vec<DebugRegion>,
+        #[cfg(sf_has_debug_regions)] debug_regions: collections::Vec<DebugRegion>,
     ) -> Result<FunctionArtifact, WasmError> {
         let mut local_ptr_patches = self.resolved_ptr_patches;
         local_ptr_patches.reserve(self.local_ptr_patches.len());

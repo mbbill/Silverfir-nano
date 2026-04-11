@@ -5,10 +5,11 @@
 //! - public cached-local residency is solved separately on a region tree
 //! - block boundaries see one fixed public set, not a tentative per-block seed
 
+use crate::collections;
+
 use alloc::collections::BTreeMap;
 #[cfg(test)]
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
@@ -112,8 +113,8 @@ fn build_op_info(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
-) -> Vec<OpInfo> {
-    let mut out = alloc::vec![OpInfo::default(); semantic.ops.len()];
+) -> collections::Vec<OpInfo> {
+    let mut out = collections::vec![OpInfo::default(); semantic.ops.len()];
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         for (block_offset, semantic_index) in block.range.clone().enumerate() {
             let local_op = match semantic.ops[semantic_index].kind {
@@ -140,14 +141,14 @@ fn build_op_info(
 /// ranking passes can reason about entry-stack values and transient symbols
 /// using the full semantic stack shape, before any spill/cache decisions are
 /// introduced.
-fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> Vec<EntryState> {
+fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> collections::Vec<EntryState> {
     let mut state = PrepareState::new(
         semantic.results,
         semantic.local_types.clone(),
         semantic.result_types.clone(),
         0,
     );
-    let mut entries = Vec::with_capacity(semantic.ops.len());
+    let mut entries = collections::Vec::with_capacity(semantic.ops.len());
 
     for (op_index, op) in semantic.ops.iter().enumerate() {
         entries.push(snapshot_entry_state(
@@ -164,7 +165,7 @@ fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> Vec<EntryState> 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TentativeBlockEntry {
     transient: EntryState,
-    cached_locals: Vec<FrameSlot>,
+    cached_locals: collections::Vec<FrameSlot>,
 }
 
 /// Snapshot the planner-visible stack boundary from the current prepare state.
@@ -193,7 +194,7 @@ fn simulate_block_exit_cached_locals(
     plan: &FunctionPlan,
     _op_force_drop_all_caches: &[bool],
     entry_cached_locals: &[FrameSlot],
-) -> Vec<FrameSlot> {
+) -> collections::Vec<FrameSlot> {
     let mut resident = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
     for semantic_index in block.range.clone() {
         let before = before_op_decision(
@@ -258,7 +259,7 @@ fn choose_tentative_block_entry(
     let base_entry = &plan.entry_states[block_start_index];
     let region = &plan.block_regions[block_index];
     let successor_bonus = direct_successor_carry_bonus(cfg, block_index, plan);
-    let mut scored_locals = Vec::<(FrameSlot, i32, bool, bool)>::new();
+    let mut scored_locals = collections::Vec::<(FrameSlot, i32, bool, bool)>::new();
     let mut seen = BTreeSet::new();
 
     for &slot in &region.ranked_slots {
@@ -328,7 +329,7 @@ fn choose_tentative_block_entry(
     let mut fp_used;
     (gp_used, fp_used) = count_live_bank_budget_units(&base_entry.live_types, plan.gp_unit_bytes);
 
-    let mut chosen = Vec::new();
+    let mut chosen = collections::Vec::new();
     for (slot, score, carried_slot, _) in &scored_locals {
         if *score <= 0 && !*carried_slot {
             continue;
@@ -372,8 +373,8 @@ fn direct_successor_carry_bonus(
     cfg: &SemanticCfg,
     block_index: usize,
     plan: &FunctionPlan,
-) -> Vec<i32> {
-    let mut bonus = alloc::vec![0; plan.local_slot_types.len()];
+) -> collections::Vec<i32> {
+    let mut bonus = collections::vec![0; plan.local_slot_types.len()];
     let Some(block) = cfg.blocks.get(block_index) else {
         return bonus;
     };
@@ -408,8 +409,8 @@ struct ControlFrame {
     params: u16,
     results: u16,
     entered_unreachable: bool,
-    param_types: Vec<ValueType>,
-    result_types: Vec<ValueType>,
+    param_types: collections::Vec<ValueType>,
+    result_types: collections::Vec<ValueType>,
 }
 
 #[derive(Clone, Debug)]
@@ -417,18 +418,18 @@ struct PrepareState {
     height: u16,
     spill_depth: u16,
     unreachable: bool,
-    control: Vec<ControlFrame>,
-    type_stack: Vec<ValueType>,
+    control: collections::Vec<ControlFrame>,
+    type_stack: collections::Vec<ValueType>,
     /// Block-local transient symbol stack, from bottom to top.
     ///
     /// This resets at every CFG block entry. Symbol ids are block-local facts
     /// only; they exist so the builder can compare "spill the bottom live
     /// transient" against "drop the weakest cached local" using one ranking
     /// model.
-    block_symbols: Vec<u16>,
+    block_symbols: collections::Vec<u16>,
     next_block_symbol: u16,
-    local_types: Vec<ValueType>,
-    resident_cache: Vec<bool>,
+    local_types: collections::Vec<ValueType>,
+    resident_cache: collections::Vec<bool>,
     resident_gp_units: usize,
     resident_fp_units: usize,
 }
@@ -436,28 +437,28 @@ struct PrepareState {
 impl PrepareState {
     fn new(
         results: u16,
-        local_types: Vec<ValueType>,
-        result_types: Vec<ValueType>,
+        local_types: collections::Vec<ValueType>,
+        result_types: collections::Vec<ValueType>,
         cache_slots: usize,
     ) -> Self {
         Self {
             height: 0,
             spill_depth: 0,
             unreachable: false,
-            control: alloc::vec![ControlFrame {
+            control: collections::vec![ControlFrame {
                 kind: ControlFrameKind::Function,
                 start_height: 0,
                 params: 0,
                 results,
                 entered_unreachable: false,
-                param_types: Vec::new(),
+                param_types: collections::Vec::new(),
                 result_types: normalized_result_types(results, Some(result_types.as_slice())),
             }],
-            type_stack: Vec::new(),
-            block_symbols: Vec::new(),
+            type_stack: collections::Vec::new(),
+            block_symbols: collections::Vec::new(),
             next_block_symbol: 0,
             local_types,
-            resident_cache: alloc::vec![false; cache_slots],
+            resident_cache: collections::vec![false; cache_slots],
             resident_gp_units: 0,
             resident_fp_units: 0,
         }
@@ -481,14 +482,14 @@ impl PrepareState {
             .unwrap_or(ValueType::I64)
     }
 
-    fn types_at(&self, start: u16, count: u16) -> Vec<ValueType> {
+    fn types_at(&self, start: u16, count: u16) -> collections::Vec<ValueType> {
         if count == 0 {
-            return Vec::new();
+            return collections::Vec::new();
         }
         let start = start as usize;
         let end = start + count as usize;
         if end <= self.type_stack.len() {
-            self.type_stack[start..end].to_vec()
+            self.type_stack[start..end].to_vec().into()
         } else {
             (0..count as usize)
                 .map(|i| {
@@ -528,8 +529,8 @@ struct CacheCandidate {
 
 #[derive(Clone, Debug)]
 struct CachePlan {
-    candidates: Vec<CacheCandidate>,
-    local_to_candidate: Vec<Option<usize>>,
+    candidates: collections::Vec<CacheCandidate>,
+    local_to_candidate: collections::Vec<Option<usize>>,
 }
 
 /// Local builder-side ordering for admission and eviction.
@@ -560,7 +561,7 @@ fn prepare_semantic_ops(
     op_info: &[OpInfo],
     block_regions: &[super::facts::BlockLocalRegion],
     block_transient_regions: &[super::facts::BlockTransientRegion],
-) -> Result<(Vec<OpPlan>, Vec<EntryState>), WasmError> {
+) -> Result<(collections::Vec<OpPlan>, collections::Vec<EntryState>), WasmError> {
     let cache_plan = build_cache_plan(semantic, frame, gp_unit_bytes);
     let mut state = PrepareState::new(
         semantic.results,
@@ -568,8 +569,8 @@ fn prepare_semantic_ops(
         semantic.result_types.clone(),
         cache_plan.candidates.len(),
     );
-    let mut entry_states = Vec::with_capacity(semantic.ops.len());
-    let mut ops = Vec::with_capacity(semantic.ops.len());
+    let mut entry_states = collections::Vec::with_capacity(semantic.ops.len());
+    let mut ops = collections::Vec::with_capacity(semantic.ops.len());
 
     for (op_index, semantic_op) in semantic.ops.iter().enumerate() {
         if op_info
@@ -621,9 +622,9 @@ fn plan_prefix(
     op_info: &[OpInfo],
     block_regions: &[super::facts::BlockLocalRegion],
     block_transient_regions: &[super::facts::BlockTransientRegion],
-    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
 ) {
-    let mut prefix = Vec::new();
+    let mut prefix = collections::Vec::new();
 
     match &op.kind {
         SemanticOpKind::Primitive(kind) => {
@@ -786,14 +787,14 @@ fn build_cache_plan(
     _gp_unit_bytes: u8,
 ) -> CachePlan {
     CachePlan {
-        candidates: Vec::new(),
-        local_to_candidate: alloc::vec![None; semantic.local_count as usize],
+        candidates: collections::Vec::new(),
+        local_to_candidate: collections::vec![None; semantic.local_count as usize],
     }
 }
 
 fn plan_local_access(
     local_idx: u16,
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     cache_plan: &CachePlan,
     frame: FrameLayoutPlan,
@@ -907,7 +908,7 @@ fn plan_local_access(
 }
 
 fn ensure_capacity(
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     cache_plan: &CachePlan,
     frame: FrameLayoutPlan,
@@ -1187,7 +1188,7 @@ fn transient_keep_key(
 }
 
 fn emit_drop_cache(
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     cache_plan: &CachePlan,
     index: usize,
@@ -1208,7 +1209,11 @@ fn emit_drop_cache(
     }
 }
 
-fn drop_all_caches(prefix: &mut Vec<PrepAction>, state: &mut PrepareState, cache_plan: &CachePlan) {
+fn drop_all_caches(
+    prefix: &mut collections::Vec<PrepAction>,
+    state: &mut PrepareState,
+    cache_plan: &CachePlan,
+) {
     for index in 0..cache_plan.candidates.len() {
         emit_drop_cache(prefix, state, cache_plan, index);
     }
@@ -1276,7 +1281,7 @@ fn apply_block_symbolic_effect(op: &SemanticOp, state: &mut PrepareState) {
 fn apply_semantic_effect(
     op: &SemanticOp,
     op_index: usize,
-    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
     state: &mut PrepareState,
 ) {
     match &op.kind {
@@ -1332,7 +1337,7 @@ fn apply_semantic_effect(
                 state.height.saturating_sub(*params)
             };
             let param_types = if state.unreachable {
-                Vec::new()
+                collections::Vec::new()
             } else {
                 state.types_at(sh, *params)
             };
@@ -1361,7 +1366,7 @@ fn apply_semantic_effect(
                 state.height.saturating_sub(*params)
             };
             let param_types = if entered_unreachable {
-                Vec::new()
+                collections::Vec::new()
             } else {
                 state.types_at(sh, *params)
             };
@@ -1477,10 +1482,10 @@ fn apply_semantic_effect(
 }
 
 fn push_result_types(
-    type_stack: &mut Vec<ValueType>,
+    type_stack: &mut collections::Vec<ValueType>,
     results: u16,
     op_index: usize,
-    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
 ) {
     if let Some(types) = op_result_types.get(&op_index) {
         type_stack.extend_from_slice(types);
@@ -1491,24 +1496,32 @@ fn push_result_types(
     }
 }
 
-fn normalized_result_types(results: u16, result_types: Option<&[ValueType]>) -> Vec<ValueType> {
+fn normalized_result_types(
+    results: u16,
+    result_types: Option<&[ValueType]>,
+) -> collections::Vec<ValueType> {
     if results == 0 {
-        return Vec::new();
+        return collections::Vec::new();
     }
     if let Some(types) = result_types {
         if types.len() == results as usize {
-            return types.to_vec();
+            return types.to_vec().into();
         }
     }
-    alloc::vec![ValueType::I64; results as usize]
+    collections::vec![ValueType::I64; results as usize]
 }
 
 fn control_result_types(
     results: u16,
     op_index: usize,
-    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
-) -> Vec<ValueType> {
-    normalized_result_types(results, op_result_types.get(&op_index).map(Vec::as_slice))
+    op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
+) -> collections::Vec<ValueType> {
+    normalized_result_types(
+        results,
+        op_result_types
+            .get(&op_index)
+            .map(collections::Vec::as_slice),
+    )
 }
 
 fn apply_stack_effect_typed(state: &mut PrepareState, pop: u16, push: u16, result_ty: ValueType) {
@@ -1527,7 +1540,7 @@ fn apply_stack_effect_typed(state: &mut PrepareState, pop: u16, push: u16, resul
 fn primitive_result_type(
     kind: &PrimitiveOpKind,
     op_index: usize,
-    op_result_types: &BTreeMap<usize, Vec<ValueType>>,
+    op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
 ) -> Option<ValueType> {
     primitive_op::result_type(kind).or_else(|| {
         op_result_types
@@ -1537,7 +1550,7 @@ fn primitive_result_type(
 }
 
 fn fill_for_operands(
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     frame: FrameLayoutPlan,
     operand_count: u16,
@@ -1546,7 +1559,7 @@ fn fill_for_operands(
 }
 
 fn fill_for_operands_inner(
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     frame: FrameLayoutPlan,
     operand_count: u16,
@@ -1569,7 +1582,11 @@ fn fill_for_operands_inner(
     state.spill_depth -= fill_count;
 }
 
-fn spill_all(prefix: &mut Vec<PrepAction>, state: &mut PrepareState, frame: FrameLayoutPlan) {
+fn spill_all(
+    prefix: &mut collections::Vec<PrepAction>,
+    state: &mut PrepareState,
+    frame: FrameLayoutPlan,
+) {
     if state.unreachable || state.spill_depth >= state.height {
         return;
     }
@@ -1582,7 +1599,7 @@ fn spill_all(prefix: &mut Vec<PrepAction>, state: &mut PrepareState, frame: Fram
 }
 
 fn spill_all_except_top(
-    prefix: &mut Vec<PrepAction>,
+    prefix: &mut collections::Vec<PrepAction>,
     state: &mut PrepareState,
     frame: FrameLayoutPlan,
     keep_top: u16,
@@ -1614,18 +1631,18 @@ mod tests {
     fn test_cfg() -> SemanticCfg {
         SemanticCfg {
             entry: CfgBlockId(0),
-            blocks: alloc::vec![CfgBlock {
+            blocks: collections::vec![CfgBlock {
                 id: CfgBlockId(0),
                 range: 0..1,
-                preds: Vec::new(),
-                succs: Vec::new(),
+                preds: collections::Vec::new(),
+                succs: collections::Vec::new(),
                 terminator: CfgTerminator::Return { op_index: 0 },
                 flags: CfgBlockFlags {
                     is_entry: true,
                     ..CfgBlockFlags::default()
                 },
             }],
-            semantic_to_block: alloc::vec![CfgBlockId(0)],
+            semantic_to_block: collections::vec![CfgBlockId(0)],
         }
     }
 
@@ -1634,23 +1651,23 @@ mod tests {
             gp_unit_bytes: 8,
             gp_dynamic_budget: 2,
             fp_dynamic_budget: 2,
-            local_slot_types: alloc::vec![ValueType::I32],
-            op_plans: alloc::vec![OpPlan::default()],
-            entry_states: alloc::vec![EntryState {
+            local_slot_types: collections::vec![ValueType::I32],
+            op_plans: collections::vec![OpPlan::default()],
+            entry_states: collections::vec![EntryState {
                 stack_height: 2,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I32, ValueType::I32],
-                live_types: alloc::vec![ValueType::I32, ValueType::I32],
+                stack_types: collections::vec![ValueType::I32, ValueType::I32],
+                live_types: collections::vec![ValueType::I32, ValueType::I32],
             }],
-            op_info: alloc::vec![OpInfo {
+            op_info: collections::vec![OpInfo {
                 block_index: 0,
                 block_offset: 0,
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: alloc::vec![BlockLocalRegion {
-                ranked_slots: alloc::vec![FrameSlot(0)],
-                locals: alloc::vec![Some(BlockLocalInfo {
+            block_regions: collections::vec![BlockLocalRegion {
+                ranked_slots: collections::vec![FrameSlot(0)],
+                locals: collections::vec![Some(BlockLocalInfo {
                     slot: FrameSlot(0),
                     entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
                     entry_first_read_distance: Some(0),
@@ -1663,13 +1680,13 @@ mod tests {
                     first_write_distance: None,
                     read_count: 2,
                     write_count: 0,
-                    access_offsets: alloc::vec![0, 1],
+                    access_offsets: collections::vec![0, 1],
                     hot_score: 400,
                 })],
             }],
-            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+            block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 2,
-                values: alloc::vec![
+                values: collections::vec![
                     BlockStackValueInfo {
                         stack_index: 0,
                         ty: ValueType::I32,
@@ -1688,10 +1705,10 @@ mod tests {
                     },
                 ],
             }],
-            block_transient_regions: alloc::vec![
+            block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
             ],
-            blocks: alloc::vec![BlockPlan::default()],
+            blocks: collections::vec![BlockPlan::default()],
         }
     }
 
@@ -1704,9 +1721,9 @@ mod tests {
         assert_eq!(tentative.transient.spill_depth, 0);
         assert_eq!(
             tentative.transient.live_types,
-            alloc::vec![ValueType::I32, ValueType::I32]
+            collections::vec![ValueType::I32, ValueType::I32]
         );
-        assert_eq!(tentative.cached_locals, alloc::vec![FrameSlot(0)]);
+        assert_eq!(tentative.cached_locals, collections::vec![FrameSlot(0)]);
     }
 
     #[test]
@@ -1727,23 +1744,23 @@ mod tests {
             gp_unit_bytes: 4,
             gp_dynamic_budget: 2,
             fp_dynamic_budget: 0,
-            local_slot_types: alloc::vec![ValueType::I64, ValueType::I32],
-            op_plans: alloc::vec![OpPlan::default()],
-            entry_states: alloc::vec![EntryState {
+            local_slot_types: collections::vec![ValueType::I64, ValueType::I32],
+            op_plans: collections::vec![OpPlan::default()],
+            entry_states: collections::vec![EntryState {
                 stack_height: 1,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I32],
-                live_types: alloc::vec![ValueType::I32],
+                stack_types: collections::vec![ValueType::I32],
+                live_types: collections::vec![ValueType::I32],
             }],
-            op_info: alloc::vec![OpInfo {
+            op_info: collections::vec![OpInfo {
                 block_index: 0,
                 block_offset: 0,
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: alloc::vec![BlockLocalRegion {
-                ranked_slots: alloc::vec![FrameSlot(0), FrameSlot(1)],
-                locals: alloc::vec![
+            block_regions: collections::vec![BlockLocalRegion {
+                ranked_slots: collections::vec![FrameSlot(0), FrameSlot(1)],
+                locals: collections::vec![
                     Some(BlockLocalInfo {
                         slot: FrameSlot(0),
                         entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
@@ -1757,7 +1774,7 @@ mod tests {
                         first_write_distance: None,
                         read_count: 1,
                         write_count: 0,
-                        access_offsets: alloc::vec![0],
+                        access_offsets: collections::vec![0],
                         hot_score: 800,
                     }),
                     Some(BlockLocalInfo {
@@ -1773,14 +1790,14 @@ mod tests {
                         first_write_distance: None,
                         read_count: 1,
                         write_count: 0,
-                        access_offsets: alloc::vec![0],
+                        access_offsets: collections::vec![0],
                         hot_score: 500,
                     }),
                 ],
             }],
-            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+            block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 1,
-                values: alloc::vec![BlockStackValueInfo {
+                values: collections::vec![BlockStackValueInfo {
                     stack_index: 0,
                     ty: ValueType::I32,
                     touched_before_barrier: true,
@@ -1789,10 +1806,10 @@ mod tests {
                     hot_score: 300,
                 }],
             }],
-            block_transient_regions: alloc::vec![
+            block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
             ],
-            blocks: alloc::vec![BlockPlan::default()],
+            blocks: collections::vec![BlockPlan::default()],
         };
 
         let cfg = test_cfg();
@@ -1801,7 +1818,7 @@ mod tests {
             tentative.transient.spill_depth, 0,
             "the equal-score/equal-ensure tie should keep the hot stack value and prefer the cheaper i32 cache"
         );
-        assert_eq!(tentative.cached_locals, alloc::vec![FrameSlot(1)]);
+        assert_eq!(tentative.cached_locals, collections::vec![FrameSlot(1)]);
     }
 
     #[test]
@@ -1822,23 +1839,23 @@ mod tests {
             gp_unit_bytes: 8,
             gp_dynamic_budget: 1,
             fp_dynamic_budget: 0,
-            local_slot_types: alloc::vec![ValueType::I32],
-            op_plans: alloc::vec![OpPlan::default()],
-            entry_states: alloc::vec![EntryState {
+            local_slot_types: collections::vec![ValueType::I32],
+            op_plans: collections::vec![OpPlan::default()],
+            entry_states: collections::vec![EntryState {
                 stack_height: 1,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I32],
-                live_types: alloc::vec![ValueType::I32],
+                stack_types: collections::vec![ValueType::I32],
+                live_types: collections::vec![ValueType::I32],
             }],
-            op_info: alloc::vec![OpInfo {
+            op_info: collections::vec![OpInfo {
                 block_index: 0,
                 block_offset: 0,
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: alloc::vec![BlockLocalRegion {
-                ranked_slots: alloc::vec![FrameSlot(0)],
-                locals: alloc::vec![Some(BlockLocalInfo {
+            block_regions: collections::vec![BlockLocalRegion {
+                ranked_slots: collections::vec![FrameSlot(0)],
+                locals: collections::vec![Some(BlockLocalInfo {
                     slot: FrameSlot(0),
                     entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
                     entry_first_read_distance: Some(0),
@@ -1851,13 +1868,13 @@ mod tests {
                     first_write_distance: None,
                     read_count: 1,
                     write_count: 0,
-                    access_offsets: alloc::vec![0],
+                    access_offsets: collections::vec![0],
                     hot_score: 320,
                 })],
             }],
-            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+            block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 1,
-                values: alloc::vec![BlockStackValueInfo {
+                values: collections::vec![BlockStackValueInfo {
                     stack_index: 0,
                     ty: ValueType::I32,
                     touched_before_barrier: true,
@@ -1866,10 +1883,10 @@ mod tests {
                     hot_score: 320,
                 }],
             }],
-            block_transient_regions: alloc::vec![
+            block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
             ],
-            blocks: alloc::vec![BlockPlan::default()],
+            blocks: collections::vec![BlockPlan::default()],
         };
 
         let cfg = test_cfg();
@@ -1884,24 +1901,24 @@ mod tests {
             gp_unit_bytes: 8,
             gp_dynamic_budget: 2,
             fp_dynamic_budget: 0,
-            local_slot_types: alloc::vec![],
-            op_plans: alloc::vec![OpPlan::default()],
-            entry_states: alloc::vec![EntryState {
+            local_slot_types: collections::vec![],
+            op_plans: collections::vec![OpPlan::default()],
+            entry_states: collections::vec![EntryState {
                 stack_height: 2,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I32, ValueType::I32],
-                live_types: alloc::vec![ValueType::I32, ValueType::I32],
+                stack_types: collections::vec![ValueType::I32, ValueType::I32],
+                live_types: collections::vec![ValueType::I32, ValueType::I32],
             }],
-            op_info: alloc::vec![OpInfo {
+            op_info: collections::vec![OpInfo {
                 block_index: 0,
                 block_offset: 0,
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: alloc::vec![BlockLocalRegion::default()],
-            block_stack_regions: alloc::vec![BlockEntryStackRegion {
+            block_regions: collections::vec![BlockLocalRegion::default()],
+            block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 2,
-                values: alloc::vec![
+                values: collections::vec![
                     BlockStackValueInfo {
                         stack_index: 0,
                         ty: ValueType::I32,
@@ -1920,10 +1937,10 @@ mod tests {
                     },
                 ],
             }],
-            block_transient_regions: alloc::vec![
+            block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
             ],
-            blocks: alloc::vec![BlockPlan::default()],
+            blocks: collections::vec![BlockPlan::default()],
         };
 
         let cfg = test_cfg();
@@ -1939,23 +1956,24 @@ mod tests {
     fn finalize_entry_keeps_used_and_surviving_carried_values() {
         let mut plan = test_plan();
         plan.block_regions[0].locals.push(None);
-        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+        plan.blocks[0].tentative_entry_cached_locals =
+            collections::vec![FrameSlot(0), FrameSlot(1)];
         let finalized =
             crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
                 &plan,
                 crate::vm::middle::cfg::CfgBlockId(0),
                 &[FrameSlot(1)],
             );
-        assert_eq!(finalized, alloc::vec![FrameSlot(0), FrameSlot(1)]);
+        assert_eq!(finalized, collections::vec![FrameSlot(0), FrameSlot(1)]);
 
-        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(1)];
+        plan.blocks[0].tentative_entry_cached_locals = collections::vec![FrameSlot(1)];
         let finalized =
             crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
                 &plan,
                 crate::vm::middle::cfg::CfgBlockId(0),
                 &[],
             );
-        assert_eq!(finalized, alloc::vec![FrameSlot(1)]);
+        assert_eq!(finalized, collections::vec![FrameSlot(1)]);
     }
 
     #[test]
@@ -1974,10 +1992,11 @@ mod tests {
             first_write_distance: Some(0),
             read_count: 2,
             write_count: 1,
-            access_offsets: alloc::vec![0, 1, 2],
+            access_offsets: collections::vec![0, 1, 2],
             hot_score: 128,
         }));
-        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+        plan.blocks[0].tentative_entry_cached_locals =
+            collections::vec![FrameSlot(0), FrameSlot(1)];
 
         let finalized =
             crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
@@ -1988,7 +2007,7 @@ mod tests {
 
         assert_eq!(
             finalized,
-            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            collections::vec![FrameSlot(0), FrameSlot(1)],
             "under ALGORITHM4 the block-open public state is fixed before rewrite, so finalize no longer trims write-first locals based on one lowering pass"
         );
     }
@@ -2009,10 +2028,11 @@ mod tests {
             first_write_distance: Some(0),
             read_count: 3,
             write_count: 1,
-            access_offsets: alloc::vec![0, 1, 2, 3],
+            access_offsets: collections::vec![0, 1, 2, 3],
             hot_score: 192,
         }));
-        plan.blocks[0].tentative_entry_cached_locals = alloc::vec![FrameSlot(0), FrameSlot(1)];
+        plan.blocks[0].tentative_entry_cached_locals =
+            collections::vec![FrameSlot(0), FrameSlot(1)];
 
         let finalized =
             crate::vm::middle::joint_plan::block_open::finalize_block_entry_cached_locals(
@@ -2023,7 +2043,7 @@ mod tests {
 
         assert_eq!(
             finalized,
-            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            collections::vec![FrameSlot(0), FrameSlot(1)],
             "a write-first local that survives exit should stay in the public block entry so hot backedges can carry it and cold edges can reserve it"
         );
     }
@@ -2031,52 +2051,52 @@ mod tests {
     #[test]
     fn observed_exit_keeps_new_cache_admissions_and_drops_trimmed_carry_ins() {
         let mut plan = test_plan();
-        plan.local_slot_types = alloc::vec![ValueType::I32, ValueType::I32];
-        plan.op_plans = alloc::vec![
+        plan.local_slot_types = collections::vec![ValueType::I32, ValueType::I32];
+        plan.op_plans = collections::vec![
             OpPlan {
                 before: EntryState {
                     stack_height: 0,
                     spill_depth: 0,
-                    stack_types: Vec::new(),
-                    live_types: Vec::new(),
+                    stack_types: collections::Vec::new(),
+                    live_types: collections::Vec::new(),
                 },
                 after: EntryState {
                     stack_height: 0,
                     spill_depth: 0,
-                    stack_types: Vec::new(),
-                    live_types: Vec::new(),
+                    stack_types: collections::Vec::new(),
+                    live_types: collections::Vec::new(),
                 },
             },
             OpPlan {
                 before: EntryState {
                     stack_height: 0,
                     spill_depth: 0,
-                    stack_types: Vec::new(),
-                    live_types: Vec::new(),
+                    stack_types: collections::Vec::new(),
+                    live_types: collections::Vec::new(),
                 },
                 after: EntryState {
                     stack_height: 0,
                     spill_depth: 0,
-                    stack_types: Vec::new(),
-                    live_types: Vec::new(),
+                    stack_types: collections::Vec::new(),
+                    live_types: collections::Vec::new(),
                 },
             },
         ];
-        plan.entry_states = alloc::vec![
+        plan.entry_states = collections::vec![
             EntryState {
                 stack_height: 0,
                 spill_depth: 0,
-                stack_types: Vec::new(),
-                live_types: Vec::new(),
+                stack_types: collections::Vec::new(),
+                live_types: collections::Vec::new(),
             },
             EntryState {
                 stack_height: 0,
                 spill_depth: 0,
-                stack_types: Vec::new(),
-                live_types: Vec::new(),
+                stack_types: collections::Vec::new(),
+                live_types: collections::Vec::new(),
             },
         ];
-        plan.op_info = alloc::vec![
+        plan.op_info = collections::vec![
             OpInfo {
                 block_index: 0,
                 block_offset: 0,
@@ -2090,9 +2110,9 @@ mod tests {
                 local_op: None,
             },
         ];
-        plan.block_regions = alloc::vec![BlockLocalRegion {
-            ranked_slots: alloc::vec![FrameSlot(1)],
-            locals: alloc::vec![
+        plan.block_regions = collections::vec![BlockLocalRegion {
+            ranked_slots: collections::vec![FrameSlot(1)],
+            locals: collections::vec![
                 Some(BlockLocalInfo {
                     slot: FrameSlot(0),
                     ..BlockLocalInfo::default()
@@ -2103,19 +2123,19 @@ mod tests {
                     first_access_kind: Some(FirstAccessKind::WriteFirst),
                     entry_write_count: 1,
                     write_count: 1,
-                    access_offsets: alloc::vec![0],
+                    access_offsets: collections::vec![0],
                     entry_hot_score: 32,
                     hot_score: 32,
                     ..BlockLocalInfo::default()
                 }),
             ],
         }];
-        plan.blocks = alloc::vec![BlockPlan::default()];
+        plan.blocks = collections::vec![BlockPlan::default()];
         let block = crate::vm::middle::cfg::CfgBlock {
             id: crate::vm::middle::cfg::CfgBlockId(0),
             range: 0..2,
-            preds: Vec::new(),
-            succs: Vec::new(),
+            preds: collections::Vec::new(),
+            succs: collections::Vec::new(),
             terminator: crate::vm::middle::cfg::CfgTerminator::TrapUnreachable { op_index: 1 },
             flags: crate::vm::middle::cfg::CfgBlockFlags {
                 is_entry: true,
@@ -2127,59 +2147,59 @@ mod tests {
             simulate_block_exit_cached_locals(&block, &plan, &[false, false], &[FrameSlot(0)]);
         assert_eq!(
             exit,
-            alloc::vec![FrameSlot(0), FrameSlot(1)],
+            collections::vec![FrameSlot(0), FrameSlot(1)],
             "the observed block exit should carry through surviving entry caches and newly-admitted cached locals"
         );
     }
 
     #[test]
     fn ensure_capacity_can_spill_through_mismatched_bottom_bank() {
-        let mut state = PrepareState::new(0, alloc::vec![], alloc::vec![], 0);
+        let mut state = PrepareState::new(0, collections::vec![], collections::vec![], 0);
         state.height = 3;
         state.spill_depth = 0;
-        state.type_stack = alloc::vec![ValueType::F32, ValueType::I32, ValueType::I32];
-        state.block_symbols = alloc::vec![0, 1, 2];
+        state.type_stack = collections::vec![ValueType::F32, ValueType::I32, ValueType::I32];
+        state.block_symbols = collections::vec![0, 1, 2];
         state.next_block_symbol = 3;
 
-        let op_info = alloc::vec![OpInfo {
+        let op_info = collections::vec![OpInfo {
             block_index: 0,
             block_offset: 0,
             is_block_start: true,
             local_op: None,
         }];
-        let block_regions = alloc::vec![BlockLocalRegion::default()];
+        let block_regions = collections::vec![BlockLocalRegion::default()];
         let block_transient_regions =
-            alloc::vec![crate::vm::middle::joint_plan::facts::BlockTransientRegion {
+            collections::vec![crate::vm::middle::joint_plan::facts::BlockTransientRegion {
                 entry_stack_height: 3,
-                symbols: alloc::vec![
+                symbols: collections::vec![
                     crate::vm::middle::joint_plan::facts::TransientSymbolInfo {
                         first_touch_distance: None,
                         touch_count: 0,
-                        access_offsets: alloc::vec![],
+                        access_offsets: collections::vec![],
                         hot_score: 0,
                     },
                     crate::vm::middle::joint_plan::facts::TransientSymbolInfo {
                         first_touch_distance: Some(2),
                         touch_count: 1,
-                        access_offsets: alloc::vec![2],
+                        access_offsets: collections::vec![2],
                         hot_score: 10,
                     },
                     crate::vm::middle::joint_plan::facts::TransientSymbolInfo {
                         first_touch_distance: Some(3),
                         touch_count: 1,
-                        access_offsets: alloc::vec![3],
+                        access_offsets: collections::vec![3],
                         hot_score: 10,
                     },
                 ],
             }];
-        let mut prefix = Vec::new();
+        let mut prefix = collections::Vec::new();
 
         let ok = ensure_capacity(
             &mut prefix,
             &mut state,
             &CachePlan {
-                candidates: Vec::new(),
-                local_to_candidate: Vec::new(),
+                candidates: collections::Vec::new(),
+                local_to_candidate: collections::Vec::new(),
             },
             FrameLayoutPlan::default(),
             8,
@@ -2204,10 +2224,10 @@ mod tests {
 
     #[test]
     fn br_if_prefix_spills_fallthrough_only_stack_prefix() {
-        let mut state = PrepareState::new(0, alloc::vec![], alloc::vec![], 0);
+        let mut state = PrepareState::new(0, collections::vec![], collections::vec![], 0);
         state.height = 5;
         state.spill_depth = 5;
-        state.type_stack = alloc::vec![
+        state.type_stack = collections::vec![
             ValueType::I64,
             ValueType::I64,
             ValueType::I64,
@@ -2226,8 +2246,8 @@ mod tests {
             0,
             &mut state,
             &CachePlan {
-                candidates: Vec::new(),
-                local_to_candidate: Vec::new(),
+                candidates: collections::Vec::new(),
+                local_to_candidate: collections::Vec::new(),
             },
             crate::vm::middle::frame::plan_frame_layout(0, 5, 3),
             4,

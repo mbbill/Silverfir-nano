@@ -11,7 +11,9 @@
 //! - assign transient-window handlers
 //! - shape prepared execution blocks
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use crate::collections;
+
+use alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
@@ -30,7 +32,7 @@ use super::{
 /// Semantic IR builder used by Wasm decode.
 #[derive(Default)]
 pub(crate) struct SemanticBuilder {
-    ops: alloc::vec::Vec<SemanticOp>,
+    ops: collections::Vec<SemanticOp>,
 }
 
 impl SemanticBuilder {
@@ -78,9 +80,9 @@ impl SemanticBuilder {
         results: u16,
         local_count: u16,
         max_stack_height: u16,
-        local_types: Vec<ValueType>,
-        result_types: Vec<ValueType>,
-        op_result_types: BTreeMap<usize, Vec<ValueType>>,
+        local_types: collections::Vec<ValueType>,
+        result_types: collections::Vec<ValueType>,
+        op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
     ) -> SemanticProgram {
         SemanticProgram {
             params,
@@ -117,19 +119,19 @@ struct DecodeControlFrame {
     result_count: u16,
     start_inst_idx: SemanticTarget,
     if_inst_idx: Option<SemanticIndex>,
-    pending_fixups: Vec<PendingBranchFixup>,
+    pending_fixups: collections::Vec<PendingBranchFixup>,
 }
 
 /// Decode-time semantic context.
 pub(crate) struct DecodeContext<'a> {
     compile: CompileContext<'a>,
     builder: SemanticBuilder,
-    control: Vec<DecodeControlFrame>,
+    control: collections::Vec<DecodeControlFrame>,
     height: usize,
     max_height: usize,
     unreachable: bool,
     /// Per-op result types for calls and typed blocks.
-    op_result_types: BTreeMap<usize, Vec<ValueType>>,
+    op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
 }
 
 impl<'a> DecodeContext<'a> {
@@ -137,14 +139,14 @@ impl<'a> DecodeContext<'a> {
         Self {
             compile,
             builder: SemanticBuilder::default(),
-            control: vec![DecodeControlFrame {
+            control: collections::vec![DecodeControlFrame {
                 kind: DecodeBlockKind::Function,
                 start_height: 0,
                 param_count: 0,
                 result_count: compile.results,
                 start_inst_idx: SemanticTarget::new(0),
                 if_inst_idx: None,
-                pending_fixups: Vec::new(),
+                pending_fixups: collections::Vec::new(),
             }],
             height: 0,
             max_height: 0,
@@ -220,7 +222,7 @@ impl<'a> DecodeContext<'a> {
             result_count: results,
             start_inst_idx,
             if_inst_idx: None,
-            pending_fixups: Vec::new(),
+            pending_fixups: collections::Vec::new(),
         });
     }
 
@@ -297,7 +299,8 @@ impl<'a> DecodeContext<'a> {
 
     fn record_result_types(&mut self, idx: SemanticIndex, tys: &[ValueType]) {
         if !tys.is_empty() {
-            self.op_result_types.insert(idx.as_usize(), tys.to_vec());
+            self.op_result_types
+                .insert(idx.as_usize(), tys.to_vec().into());
         }
     }
 
@@ -367,8 +370,8 @@ impl<'a> DecodeContext<'a> {
             self.compile.results,
             self.compile.local_count,
             self.max_height as u16,
-            self.compile.local_types.to_vec(),
-            self.compile.result_types.to_vec(),
+            self.compile.local_types.to_vec().into(),
+            self.compile.result_types.to_vec().into(),
             self.op_result_types,
         )
     }
@@ -914,8 +917,8 @@ impl<'a> DecodeContext<'a> {
                         .iter()
                         .copied()
                         .chain(core::iter::once(*default_label))
-                        .collect::<Vec<_>>();
-                    let mut entries = Vec::with_capacity(all_labels.len());
+                        .collect::<collections::Vec<_>>();
+                    let mut entries = collections::Vec::with_capacity(all_labels.len());
                     for label in &all_labels {
                         let arity = self.branch_arity(*label);
                         let (stack_drop, target) = self.branch_info(*label);
@@ -994,8 +997,8 @@ pub(crate) fn decode_to_semantic_ir(
 }
 
 fn decode_function_body(cx: &mut DecodeContext<'_>, code: &[u8]) -> Result<(), WasmError> {
-    let mut decoder = Decoder::new(code);
     let mut handler = SemanticDecodeHandler { cx };
+    let mut decoder = Decoder::new(code);
     decoder.add_handler(&mut handler);
     decoder.decode_function()
 }

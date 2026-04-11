@@ -4,7 +4,7 @@
 //! Locals are normalized to slot-form operations here, but cache/spill policy
 //! is still deferred to the later planner and rewrite.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -25,7 +25,7 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SlotSsaProgram {
     pub entry: CfgBlockId,
-    pub blocks: Vec<SlotBlock>,
+    pub blocks: collections::Vec<SlotBlock>,
 }
 
 /// Slot-only block skeleton.
@@ -33,7 +33,7 @@ pub(crate) struct SlotSsaProgram {
 pub(crate) struct SlotBlock {
     pub id: CfgBlockId,
     pub range: core::ops::Range<usize>,
-    pub body: Vec<SlotInst>,
+    pub body: collections::Vec<SlotInst>,
     pub terminator: SlotTerminator,
 }
 
@@ -84,7 +84,7 @@ pub(crate) enum SlotTerminatorKind {
         else_target: CfgBlockId,
     },
     BrTable {
-        targets: Vec<CfgBlockId>,
+        targets: collections::Vec<CfgBlockId>,
     },
     Return,
     TrapUnreachable,
@@ -95,12 +95,12 @@ pub(crate) fn lower_slot_only_ssa(
     cfg: &SemanticCfg,
     _frame: FrameLayoutPlan,
 ) -> Result<SlotSsaProgram, WasmError> {
-    let mut blocks = Vec::with_capacity(cfg.blocks.len());
+    let mut blocks = collections::Vec::with_capacity(cfg.blocks.len());
     for block in &cfg.blocks {
         let Some(last_index) = block.range.end.checked_sub(1) else {
             return Err(WasmError::internal("cfg block cannot be empty".into()));
         };
-        let mut body = Vec::new();
+        let mut body = collections::Vec::new();
         for semantic_index in block.range.start..last_index {
             if let Some(kind) = lower_body_inst_kind(&semantic.ops[semantic_index].kind) {
                 body.push(SlotInst {
@@ -202,7 +202,7 @@ fn lower_terminator_kind(
             targets: entries
                 .iter()
                 .map(|entry| target_block(cfg, entry.target))
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<collections::Vec<_>, _>>()?,
         },
         SemanticOpKind::If { else_target, .. } => SlotTerminatorKind::Branch {
             then_target: fallthrough()?,

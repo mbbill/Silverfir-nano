@@ -4,7 +4,7 @@
 //! within a block when no intervening instruction can change the address or
 //! the stored source value.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
@@ -17,8 +17,8 @@ use super::helpers::{
 use super::TrackedStore;
 
 pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendConfig) {
-    let mut tracked = Vec::<TrackedStore>::new();
-    let mut rewritten = Vec::with_capacity(block.ops.len());
+    let mut tracked = collections::Vec::<TrackedStore>::new();
+    let mut rewritten = collections::Vec::with_capacity(block.ops.len());
 
     for mut inst in block.ops.drain(..) {
         let mut keep_inst = true;

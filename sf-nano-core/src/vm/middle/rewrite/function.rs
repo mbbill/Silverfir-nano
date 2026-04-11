@@ -6,8 +6,9 @@
 //! - `edge.rs` owns cached-local boundary repair block insertion
 //! - this file coordinates one block-at-a-time lowering using planner decisions
 
+use crate::collections;
+
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 use crate::{
     error::WasmError,
@@ -54,13 +55,13 @@ pub(crate) fn rewrite_function(
     if semantic.ops.is_empty() {
         return Ok(SsaProgram {
             entry: SsaTarget(0),
-            blocks: Vec::new(),
+            blocks: collections::Vec::new(),
             local_slot_types: semantic.local_types.clone(),
             local_slot_info: collect_local_slot_info(semantic),
-            block_entry_cached_slots: Vec::new(),
-            block_cfg_origins: Vec::new(),
-            value_types: Vec::new(),
-            value_sink_local: Vec::new(),
+            block_entry_cached_slots: collections::Vec::new(),
+            block_cfg_origins: collections::Vec::new(),
+            value_types: collections::Vec::new(),
+            value_sink_local: collections::Vec::new(),
         });
     }
 
@@ -68,7 +69,7 @@ pub(crate) fn rewrite_function(
         .semantic_to_block
         .iter()
         .map(|id| SsaTarget(id.0))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let setup = planner.function_setup();
     let mut values = ValueAlloc::default();
     let block_params = cfg
@@ -78,17 +79,17 @@ pub(crate) fn rewrite_function(
             let block_open = planner.block_open(block.id);
             make_block_params(block_open.transient.live_types, &mut values)
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     let original_block_count = cfg.blocks.len();
-    let mut blocks = Vec::with_capacity(original_block_count);
-    let mut block_entry_cached_slots = Vec::with_capacity(original_block_count);
-    let mut block_exit_cached_slots = Vec::with_capacity(original_block_count);
-    let mut block_cfg_origins = Vec::with_capacity(original_block_count);
-    let mut extra_blocks = Vec::new();
-    let mut extra_block_cached_slots = Vec::new();
-    let mut extra_block_exit_cached_slots = Vec::new();
-    let mut extra_block_cfg_origins = Vec::new();
+    let mut blocks = collections::Vec::with_capacity(original_block_count);
+    let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
+    let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
+    let mut block_cfg_origins = collections::Vec::with_capacity(original_block_count);
+    let mut extra_blocks = collections::Vec::new();
+    let mut extra_block_cached_slots = collections::Vec::new();
+    let mut extra_block_exit_cached_slots = collections::Vec::new();
+    let mut extra_block_cfg_origins = collections::Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
         let params = block_params[block_index].clone();
@@ -120,7 +121,7 @@ pub(crate) fn rewrite_function(
         let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
         block_entry_cached_slots.push(final_entry);
         block_exit_cached_slots.push(actual_exit);
-        block_cfg_origins.push(alloc::vec![block_index as u32]);
+        block_cfg_origins.push(collections::vec![block_index as u32]);
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -145,7 +146,7 @@ pub(crate) fn rewrite_function(
         block_cfg_origins,
         blocks,
         value_types: values.take_types(),
-        value_sink_local: Vec::new(),
+        value_sink_local: collections::Vec::new(),
     };
 
     if let Some(entry_block) = program
@@ -170,7 +171,7 @@ fn filter_block_entry_cached_slots(
     entry_slots: &[FrameSlot],
     actual_exit_slots: &[FrameSlot],
     ops: &[SsaInst],
-) -> Vec<FrameSlot> {
+) -> collections::Vec<FrameSlot> {
     entry_slots
         .iter()
         .copied()
@@ -180,7 +181,10 @@ fn filter_block_entry_cached_slots(
         .collect()
 }
 
-fn simulate_materialized_cache_exit(entry_slots: &[FrameSlot], ops: &[SsaInst]) -> Vec<FrameSlot> {
+fn simulate_materialized_cache_exit(
+    entry_slots: &[FrameSlot],
+    ops: &[SsaInst],
+) -> collections::Vec<FrameSlot> {
     let mut materialized = entry_slots.iter().copied().collect::<BTreeSet<_>>();
     for inst in ops {
         match inst.kind {
@@ -203,7 +207,7 @@ fn simulate_materialized_cache_exit(entry_slots: &[FrameSlot], ops: &[SsaInst]) 
     materialized.into_iter().collect()
 }
 
-fn collect_local_slot_info(semantic: &SemanticProgram) -> Vec<LocalSlotInfo> {
+fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<LocalSlotInfo> {
     let reads_before_write = locals_reads_before_write(semantic);
     (0..semantic.local_count as usize)
         .map(|idx| LocalSlotInfo {
@@ -214,18 +218,18 @@ fn collect_local_slot_info(semantic: &SemanticProgram) -> Vec<LocalSlotInfo> {
 }
 
 struct LoweredBlock {
-    ops: Vec<SsaInst>,
+    ops: collections::Vec<SsaInst>,
     terminator: SsaTerminator,
-    actual_exit_cached_slots: Vec<FrameSlot>,
-    extra_blocks: Vec<SsaBlock>,
-    extra_block_cached_slots: Vec<Vec<FrameSlot>>,
-    extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
-    extra_block_cfg_origins: Vec<Vec<u32>>,
+    actual_exit_cached_slots: collections::Vec<FrameSlot>,
+    extra_blocks: collections::Vec<SsaBlock>,
+    extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_cfg_origins: collections::Vec<collections::Vec<u32>>,
 }
 
 struct LowerScratch {
-    pressure_working: Vec<FrameSlot>,
-    pressure_drops: Vec<FrameSlot>,
+    pressure_working: collections::Vec<FrameSlot>,
+    pressure_drops: collections::Vec<FrameSlot>,
 }
 
 /// Lower one CFG block exactly once from the planner-chosen entry state.
@@ -242,7 +246,7 @@ fn lower_block_range(
     planner: &JointPlanner,
     frame: FrameLayoutPlan,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     entry_cached_locals: &[FrameSlot],
     values: &mut ValueAlloc,
     original_block_count: usize,
@@ -251,8 +255,8 @@ fn lower_block_range(
     let mut resident_cache = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
     let mut materialized_cache = resident_cache.clone();
     let mut scratch = LowerScratch {
-        pressure_working: Vec::new(),
-        pressure_drops: Vec::new(),
+        pressure_working: collections::Vec::new(),
+        pressure_drops: collections::Vec::new(),
     };
     ensure_state_fits_with_cache(
         &state,
@@ -408,8 +412,8 @@ fn realize_transient_contract(
                 "planner fill contract has fewer types than required".into(),
             ));
         }
-        let fill_types = target.live_types[..fill_count].to_vec();
-        let mut reloaded = Vec::with_capacity(fill_count);
+        let fill_types: collections::Vec<_> = target.live_types[..fill_count].to_vec().into();
+        let mut reloaded = collections::Vec::with_capacity(fill_count);
         let base_slot = frame.operand_slot(target.spill_depth);
         for (offset, ty) in fill_types.iter().copied().enumerate() {
             let dst = values.fresh_typed(ty);
@@ -436,7 +440,8 @@ fn realize_transient_contract(
         }
     }
 
-    if state.spill_depth() != target.spill_depth || state.live_types != target.live_types {
+    if state.spill_depth() != target.spill_depth || state.live_types.as_slice() != target.live_types
+    {
         return Err(WasmError::internal(
             "planner transient contract does not match realized rewrite state".into(),
         ));
@@ -463,7 +468,7 @@ fn ensure_state_fits_with_cache(
                 .is_none()
                 .then_some(*ty)
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let (gp_live, fp_live) =
         count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
     let (gp_cache, fp_cache) =
@@ -689,7 +694,7 @@ fn lower_primitive(
     state.consume_top(pop as usize)?;
     let results = (0..push)
         .map(|_| values.fresh_typed(result_ty))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     state.ops.push(SsaInst {
         kind: SsaInstKind::Value {
             op: SsaLeafOp::from_primitive(kind.clone()).expect("primitive leaf"),
@@ -697,7 +702,7 @@ fn lower_primitive(
             results: results.clone(),
         },
     });
-    state.push_results(results, alloc::vec![result_ty; push as usize])?;
+    state.push_results(results, collections::vec![result_ty; push as usize])?;
     apply_pressure_fallback_after_op(
         semantic_index,
         planner,
@@ -745,10 +750,10 @@ fn lower_local_get(
             }
         },
     });
-    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache)
+    let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
-    state.push_results_with_aliases(alloc::vec![dst], alloc::vec![ty], aliases)?;
+    state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     apply_pressure_fallback_after_op(
         semantic_index,
         planner,
@@ -847,10 +852,10 @@ fn lower_local_tee(
             }
         },
     });
-    let aliases = alloc::vec![matches!(access, LocalAccessDecision::Cache)
+    let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
-    state.push_results_with_aliases(alloc::vec![dst], alloc::vec![ty], aliases)?;
+    state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     apply_pressure_fallback_after_op(
         semantic_index,
         planner,
@@ -941,20 +946,20 @@ fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<FrameSpan> {
 
 struct LoweredTerminator {
     terminator: SsaTerminator,
-    extra_blocks: Vec<SsaBlock>,
-    extra_block_cached_slots: Vec<Vec<FrameSlot>>,
-    extra_block_exit_cached_slots: Vec<Vec<FrameSlot>>,
-    extra_block_cfg_origins: Vec<Vec<u32>>,
+    extra_blocks: collections::Vec<SsaBlock>,
+    extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_cfg_origins: collections::Vec<collections::Vec<u32>>,
 }
 
 impl LoweredTerminator {
     fn new(terminator: SsaTerminator) -> Self {
         Self {
             terminator,
-            extra_blocks: Vec::new(),
-            extra_block_cached_slots: Vec::new(),
-            extra_block_exit_cached_slots: Vec::new(),
-            extra_block_cfg_origins: Vec::new(),
+            extra_blocks: collections::Vec::new(),
+            extra_block_cached_slots: collections::Vec::new(),
+            extra_block_exit_cached_slots: collections::Vec::new(),
+            extra_block_cfg_origins: collections::Vec::new(),
         }
     }
 }
@@ -970,7 +975,7 @@ fn lower_block_terminator(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
@@ -1214,7 +1219,7 @@ fn lower_block_terminator(
                 let payload_types = payload
                     .iter()
                     .map(|v| values.value_type(*v))
-                    .collect::<Vec<_>>();
+                    .collect::<collections::Vec<_>>();
                 let then_params = values.many_typed(&payload_types);
                 let payload_span = branch_payload(frame, state.height(), *stack_drop, *arity)
                     .ok_or_else(|| {
@@ -1229,7 +1234,7 @@ fn lower_block_terminator(
                         "synthetic br_if then bridge requires canonical-only branch target".into(),
                     ));
                 }
-                let mut then_ops = Vec::with_capacity(*arity as usize);
+                let mut then_ops = collections::Vec::with_capacity(*arity as usize);
                 for (offset, param) in then_params.iter().copied().enumerate() {
                     then_ops.push(SsaInst {
                         kind: SsaInstKind::Spill {
@@ -1278,13 +1283,16 @@ fn lower_block_terminator(
                         then_edge,
                         else_edge,
                     },
-                    extra_blocks: alloc::vec![bridge_block],
-                    extra_block_cached_slots: alloc::vec![resident_cache.iter().copied().collect()],
-                    extra_block_exit_cached_slots: alloc::vec![materialized_cache
+                    extra_blocks: collections::vec![bridge_block],
+                    extra_block_cached_slots: collections::vec![resident_cache
                         .iter()
                         .copied()
                         .collect()],
-                    extra_block_cfg_origins: alloc::vec![Vec::new()],
+                    extra_block_exit_cached_slots: collections::vec![materialized_cache
+                        .iter()
+                        .copied()
+                        .collect()],
+                    extra_block_cfg_origins: collections::vec![collections::Vec::new()],
                 })
             } else {
                 if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
@@ -1332,7 +1340,7 @@ fn lower_block_terminator(
                         planner,
                     )
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<collections::Vec<_>, _>>()?;
             Ok(LoweredTerminator::new(SsaTerminator::BrTable {
                 index,
                 entries,
@@ -1493,7 +1501,7 @@ fn goto_next(
     semantic_len: usize,
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaTerminator, WasmError> {
     Ok(SsaTerminator::Goto(next_edge(
@@ -1511,7 +1519,7 @@ fn next_edge(
     semantic_len: usize,
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
     let next = semantic_index
@@ -1542,7 +1550,7 @@ fn edge_to_target(
     state: &BlockState,
     mapping: EdgeMapping,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
     let target_entry = planner.target_entry(target.index().as_usize());
@@ -1582,7 +1590,7 @@ fn edge_to_target(
                         "taken branch target expects no live values but still has params".into(),
                     ));
                 }
-                Vec::new()
+                collections::Vec::new()
             } else {
                 let live_needed = target_entry.transient.live_value_count() as usize;
                 let live_values = state.top_values(live_needed)?;
@@ -1607,7 +1615,7 @@ fn br_table_edge(
     payload: Option<FrameSpan>,
     state: &BlockState,
     semantic_to_block: &[SsaTarget],
-    block_params: &[Vec<SsaValue>],
+    block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
     edge_to_target(
@@ -1626,7 +1634,7 @@ fn br_table_edge(
 fn bind_values(
     target_params: &[SsaValue],
     values: &[SsaValue],
-) -> Result<Vec<SsaBinding>, WasmError> {
+) -> Result<collections::Vec<SsaBinding>, WasmError> {
     if target_params.len() != values.len() {
         return Err(WasmError::internal("edge binding mismatch".into()));
     }
@@ -1684,7 +1692,7 @@ fn maybe_publish_taken_branch_payloads(
     frame: FrameLayoutPlan,
     planner: &JointPlanner,
 ) -> Result<(), WasmError> {
-    let mut published = Vec::<u32>::new();
+    let mut published = collections::Vec::<u32>::new();
     for entry in entries {
         if !target_expects_canonical_payload(entry.target, entry.stack_drop, state, planner)? {
             continue;

@@ -4,7 +4,7 @@
 //! registers (via `Move { src: Imm64 }` or `FloatConst`), the second and
 //! subsequent materializations are replaced with register-to-register copies.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineFloatWidth, MachineInstKind, MachineReg, MachineStorageType, MachineValue,
@@ -13,8 +13,9 @@ use crate::vm::machine::machine_ir::{
 use super::helpers::for_each_defined_reg;
 
 pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
-    let mut gp_consts: Vec<(u64, MachineReg)> = Vec::new();
-    let mut fp_consts: Vec<(u64, MachineFloatWidth, MachineReg)> = Vec::new();
+    let mut gp_consts: collections::Vec<(u64, MachineReg)> = collections::Vec::new();
+    let mut fp_consts: collections::Vec<(u64, MachineFloatWidth, MachineReg)> =
+        collections::Vec::new();
 
     for inst in &mut block.ops {
         if matches!(inst.kind, MachineInstKind::CallExternal(_)) {

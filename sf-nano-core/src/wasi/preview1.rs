@@ -3,6 +3,8 @@
 //! Each public function has the signature `ExternalFn`:
 //! `fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>`
 
+use crate::collections;
+
 use std::format;
 use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -209,7 +211,7 @@ fn resolve_under_base(base: &Path, rel: &str) -> Result<PathBuf, i32> {
     if is_abs {
         return Err(ERRNO_NOTCAPABLE);
     }
-    let mut parts = Vec::new();
+    let mut parts = collections::Vec::new();
     for comp in rel.split(['/', '\\']) {
         if comp.is_empty() || comp == "." {
             continue;
@@ -299,7 +301,7 @@ pub(crate) fn args_get(
     let argv_ptr = as_i32(&args[0])? as u32;
     let buf_ptr = as_i32(&args[1])? as u32;
 
-    let argv: Vec<String> = super::with_ctx(|ctx| ctx.args.clone());
+    let argv: collections::Vec<String> = super::with_ctx(|ctx| ctx.args.clone());
 
     let mem = get_mem(caller)?;
     let mut buf_offset = buf_ptr;
@@ -360,7 +362,7 @@ pub(crate) fn environ_get(
     let environ_ptr = as_i32(&args[0])? as u32;
     let buf_ptr = as_i32(&args[1])? as u32;
 
-    let env: Vec<(String, String)> = super::with_ctx(|ctx| ctx.env.clone());
+    let env: collections::Vec<(String, String)> = super::with_ctx(|ctx| ctx.env.clone());
 
     let mem = get_mem(caller)?;
     let mut buf_offset = buf_ptr;
@@ -404,7 +406,7 @@ pub(crate) fn fd_write(
                 results[0] = Value::I32(ERRNO_BADF);
                 return Ok(());
             }
-            let mut out_buf = Vec::new();
+            let mut out_buf = collections::Vec::new();
             for i in 0..iovs_len {
                 let base = iovs_ptr + i * 8;
                 let ptr = read_u32_le(mem, base)?;
@@ -423,7 +425,7 @@ pub(crate) fn fd_write(
         }
         _ => {
             // Collect data first, then access ctx
-            let mut buffers = Vec::new();
+            let mut buffers = collections::Vec::new();
             for i in 0..iovs_len {
                 let base = iovs_ptr + i * 8;
                 let ptr = read_u32_le(mem, base)?;
@@ -493,7 +495,7 @@ pub(crate) fn fd_read(
                 results[0] = Value::I32(ERRNO_BADF);
                 return Ok(());
             }
-            let mut iovs = Vec::new();
+            let mut iovs = collections::Vec::new();
             for i in 0..iovs_len {
                 let base = iovs_ptr + i * 8;
                 let ptr = read_u32_le(mem, base)?;
@@ -538,7 +540,7 @@ pub(crate) fn fd_read(
         }
         _ => {
             // Collect iov specs
-            let mut iovs = Vec::new();
+            let mut iovs = collections::Vec::new();
             for i in 0..iovs_len {
                 let base = iovs_ptr + i * 8;
                 let ptr = read_u32_le(mem, base)?;

@@ -7,6 +7,8 @@
 mod address_space;
 pub(crate) mod config;
 
+use crate::collections;
+
 use self::address_space::EmulatorAddressSpace;
 use crate::{
     constants::MAX_STACK_SIZE,
@@ -37,7 +39,6 @@ use crate::{
         value::Value,
     },
 };
-use alloc::{vec, vec::Vec};
 
 #[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
@@ -58,8 +59,8 @@ unsafe extern "C" {
 #[derive(Debug)]
 struct SavedCaller {
     func_id: MachineFuncId,
-    regs: Vec<u64>,
-    addr_kinds: Vec<RegAddrKind>,
+    regs: collections::Vec<u64>,
+    addr_kinds: collections::Vec<RegAddrKind>,
     /// CFG block to resume on return. The new local-call ABI carries the
     /// continuation as an explicit MIR field rather than as a memory slot in
     /// the callee's frame, so the emulator stashes it on its logical call
@@ -87,9 +88,9 @@ struct Emulator<'a> {
     func_id: MachineFuncId,
     block_id: MachineBlockId,
     fp: *mut u64,
-    regs: Vec<u64>,
-    addr_kinds: Vec<RegAddrKind>,
-    call_stack: Vec<SavedCaller>,
+    regs: collections::Vec<u64>,
+    addr_kinds: collections::Vec<RegAddrKind>,
+    call_stack: collections::Vec<SavedCaller>,
     address_space: EmulatorAddressSpace,
 }
 
@@ -124,7 +125,7 @@ pub(crate) fn eval_root_with_context(
             mem0_size,
         ),
         addr_kinds: init_entry_addr_kinds(compiled.backend().total_reg_count()),
-        call_stack: Vec::new(),
+        call_stack: collections::Vec::new(),
         address_space,
     }
     .run()
@@ -157,7 +158,7 @@ pub(crate) fn eval(
             WasmError::internal("native entry function is missing runtime metadata".into())
         })?;
 
-    let mut stack = vec![0u64; MAX_STACK_SLOTS];
+    let mut stack = collections::vec![0u64; MAX_STACK_SLOTS];
     let stack_base = stack.as_mut_ptr();
     let stack_end = unsafe { stack_base.add(MAX_STACK_SLOTS) };
 
@@ -881,7 +882,8 @@ impl<'a> Emulator<'a> {
         // cache edges are identity-only: the target register already holds
         // the cached-local value, so no move happens across the edge — we
         // only verify the identity invariant the native backends rely on.
-        let mut pending: Vec<(MachineReg, u64, RegAddrKind)> = Vec::with_capacity(edge.args.len());
+        let mut pending: collections::Vec<(MachineReg, u64, RegAddrKind)> =
+            collections::Vec::with_capacity(edge.args.len());
         for (param, arg) in target_params.iter().zip(edge.args.iter()) {
             match *arg {
                 MachineValue::ReservedReg(reg) => {
@@ -1403,8 +1405,8 @@ fn init_entry_regs(
     fp: u64,
     mem0_base: u64,
     mem0_size: u64,
-) -> Vec<u64> {
-    let mut regs = vec![0; reg_count as usize];
+) -> collections::Vec<u64> {
+    let mut regs = collections::vec![0; reg_count as usize];
     if !regs.is_empty() {
         regs[MACHINE_CTX_REG.0 as usize] = ctx_ptr;
     }
@@ -1423,8 +1425,8 @@ fn init_entry_regs(
     regs
 }
 
-fn init_entry_addr_kinds(reg_count: u16) -> Vec<RegAddrKind> {
-    let mut kinds = vec![RegAddrKind::Unknown; reg_count as usize];
+fn init_entry_addr_kinds(reg_count: u16) -> collections::Vec<RegAddrKind> {
+    let mut kinds = collections::vec![RegAddrKind::Unknown; reg_count as usize];
     if (MACHINE_MEM0_BASE_REG.0 as usize) < kinds.len() {
         kinds[MACHINE_MEM0_BASE_REG.0 as usize] = RegAddrKind::Mem0;
     }
@@ -2289,9 +2291,10 @@ fn trunc_sat_f64_to_i64_u(bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::{eval, Emulator, EmulatorAddressSpace, RegAddrKind};
+    use crate::collections;
     use crate::{
         error::WasmError,
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
@@ -2365,17 +2368,17 @@ mod tests {
         let _guard = enable_reference_backend();
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::External {
             func_type: Rc::clone(&ty),
             callback: host_double,
         });
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
-        spec.set_locals(vec![]);
+        spec.set_locals(collections::vec![]);
         spec.set_code((&[0x20, 0x00, 0x10, 0x00, 0x0b][..]).into());
         module.functions.push(FunctionInst::Local {
             spec,
@@ -2399,10 +2402,10 @@ mod tests {
         let _guard = enable_reference_backend();
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x20, 0x00, 0x41, 0x01, 0x6a, 0x0b][..]).into());
@@ -2423,11 +2426,17 @@ mod tests {
         let _guard = enable_reference_backend();
 
         let check_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&check_ty), Rc::clone(&caller_ty)]);
+        let caller_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&check_ty),
+            Rc::clone(&caller_ty)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         // Callee: `(param i32 i32) -> i32 { local.get 0 }`
@@ -2481,8 +2490,11 @@ mod tests {
     fn runtime_eval_emu64_simple_block_result_survives_with_memory_present() {
         let _guard = enable_reference_backend();
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         // (func (result i32)
@@ -2522,11 +2534,17 @@ mod tests {
         let _guard = enable_reference_backend();
 
         let check_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&check_ty), Rc::clone(&caller_ty)]);
+        let caller_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&check_ty),
+            Rc::clone(&caller_ty)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut callee_spec = FunctionSpec::new(Rc::clone(&check_ty), 0);
@@ -2570,11 +2588,17 @@ mod tests {
         let _guard = enable_reference_backend();
 
         let malloc_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let diff_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&malloc_ty), Rc::clone(&diff_ty)]);
+        let diff_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&malloc_ty),
+            Rc::clone(&diff_ty)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut malloc_spec = FunctionSpec::new(Rc::clone(&malloc_ty), 0);
@@ -2585,7 +2609,7 @@ mod tests {
         });
 
         let mut diff_spec = FunctionSpec::new(Rc::clone(&diff_ty), 1);
-        diff_spec.set_locals(vec![ValueType::I32, ValueType::I32]);
+        diff_spec.set_locals(collections::vec![ValueType::I32, ValueType::I32]);
         diff_spec.set_code(
             (&[
                 0x41, 0x04, // i32.const 4
@@ -2620,11 +2644,17 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let malloc_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let diff_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&malloc_ty), Rc::clone(&diff_ty)]);
+        let diff_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&malloc_ty),
+            Rc::clone(&diff_ty)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut malloc_spec = FunctionSpec::new(Rc::clone(&malloc_ty), 0);
@@ -2635,7 +2665,7 @@ mod tests {
         });
 
         let mut diff_spec = FunctionSpec::new(Rc::clone(&diff_ty), 1);
-        diff_spec.set_locals(vec![ValueType::I32, ValueType::I32]);
+        diff_spec.set_locals(collections::vec![ValueType::I32, ValueType::I32]);
         diff_spec.set_code(
             (&[
                 0x41, 0x04, // i32.const 4
@@ -2670,10 +2700,10 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let fib_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&fib_ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&fib_ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut fib_spec = FunctionSpec::new(Rc::clone(&fib_ty), 0);
@@ -2718,11 +2748,14 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let id_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I64],
-            vec![ValueType::I64],
+            collections::vec![ValueType::I64],
+            collections::vec![ValueType::I64],
         ));
-        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I64]));
-        let types = TypeContext::new(vec![Rc::clone(&id_ty), Rc::clone(&caller_ty)]);
+        let caller_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I64],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&id_ty), Rc::clone(&caller_ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut id_spec = FunctionSpec::new(Rc::clone(&id_ty), 0);
@@ -2760,11 +2793,17 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let callee_ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I64, ValueType::I32],
-            vec![ValueType::I64],
+            collections::vec![ValueType::I32, ValueType::I64, ValueType::I32],
+            collections::vec![ValueType::I64],
         ));
-        let caller_ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I64]));
-        let types = TypeContext::new(vec![Rc::clone(&callee_ty), Rc::clone(&caller_ty)]);
+        let caller_ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I64],
+        ));
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&callee_ty),
+            Rc::clone(&caller_ty)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let mut callee_spec = FunctionSpec::new(Rc::clone(&callee_ty), 0);
@@ -2807,40 +2846,45 @@ mod tests {
                 super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                 MachineModule {
                     config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
-                    functions: vec![MachineFunction {
+                    functions: collections::vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
                             entry: MachineBlockId(0),
-                            fp_reg_init_widths: Vec::new(),
-                            blocks: vec![
+                            fp_reg_init_widths: collections::Vec::new(),
+                            blocks: collections::vec![
                                 MachineBlock {
                                     id: MachineBlockId(0),
-                                    params: Vec::new(),
-                                    ops: Vec::new(),
+                                    params: collections::Vec::new(),
+                                    ops: collections::Vec::new(),
                                     terminator: MachineTerminator::Jump(MachineEdge {
                                         target: MachineBlockId(1),
-                                        args: vec![MachineValue::Reg(MACHINE_MEM0_BASE_REG)],
+                                        args: collections::vec![MachineValue::Reg(
+                                            MACHINE_MEM0_BASE_REG
+                                        )],
                                     }),
                                 },
                                 MachineBlock {
                                     id: MachineBlockId(1),
-                                    params: vec![MachineBlockParam::gp_word(MachineReg(
-                                        MACHINE_FIXED_REG_COUNT,
-                                    ))],
-                                    ops: Vec::new(),
+                                    params: collections::vec![MachineBlockParam::gp_word(
+                                        MachineReg(MACHINE_FIXED_REG_COUNT,)
+                                    )],
+                                    ops: collections::Vec::new(),
                                     terminator: MachineTerminator::Return,
                                 },
                             ],
                         },
                     }],
-                    consts: Vec::new(),
+                    consts: collections::Vec::new(),
                 },
                 MachineModuleAbi::default(),
             )
             .expect("compiled machine module"),
         );
 
-        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::new(vec![])));
+        let mut store = Store::new(ModuleInst::new(
+            String::from("m"),
+            TypeContext::new(collections::vec![]),
+        ));
         let mut ctx = crate::vm::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
@@ -2861,14 +2905,14 @@ mod tests {
                 64,
             ),
             addr_kinds: super::init_entry_addr_kinds(MACHINE_FIXED_REG_COUNT + 1),
-            call_stack: Vec::new(),
+            call_stack: collections::Vec::new(),
             address_space: EmulatorAddressSpace::Host,
         };
 
         emulator
             .jump_to_edge(&MachineEdge {
                 target: MachineBlockId(1),
-                args: vec![MachineValue::Reg(MACHINE_MEM0_BASE_REG)],
+                args: collections::vec![MachineValue::Reg(MACHINE_MEM0_BASE_REG)],
             })
             .expect("jump to edge");
 
@@ -2886,27 +2930,30 @@ mod tests {
                 super::config::compile_backend_config(ReferenceBackendMode::Emu64),
                 MachineModule {
                     config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
-                    functions: vec![MachineFunction {
+                    functions: collections::vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
                             entry: MachineBlockId(0),
-                            fp_reg_init_widths: Vec::new(),
-                            blocks: vec![MachineBlock {
+                            fp_reg_init_widths: collections::Vec::new(),
+                            blocks: collections::vec![MachineBlock {
                                 id: MachineBlockId(0),
-                                params: Vec::new(),
-                                ops: Vec::new(),
+                                params: collections::Vec::new(),
+                                ops: collections::Vec::new(),
                                 terminator: MachineTerminator::Return,
                             }],
                         },
                     }],
-                    consts: Vec::new(),
+                    consts: collections::Vec::new(),
                 },
                 MachineModuleAbi::default(),
             )
             .expect("compiled machine module"),
         );
 
-        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::new(vec![])));
+        let mut store = Store::new(ModuleInst::new(
+            String::from("m"),
+            TypeContext::new(collections::vec![]),
+        ));
         let mut ctx = crate::vm::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
@@ -2927,7 +2974,7 @@ mod tests {
                 64,
             ),
             addr_kinds: super::init_entry_addr_kinds(MACHINE_FIXED_REG_COUNT + 2),
-            call_stack: Vec::new(),
+            call_stack: collections::Vec::new(),
             address_space: EmulatorAddressSpace::Host,
         };
         emulator
@@ -2958,15 +3005,15 @@ mod tests {
             backend,
             MachineModule {
                 config: backend,
-                functions: vec![MachineFunction {
+                functions: collections::vec![MachineFunction {
                     id: MachineFuncId(0),
                     program: MachineProgram {
                         entry: MachineBlockId(0),
-                        fp_reg_init_widths: Vec::new(),
-                        blocks: vec![MachineBlock {
+                        fp_reg_init_widths: collections::Vec::new(),
+                        blocks: collections::vec![MachineBlock {
                             id: MachineBlockId(0),
-                            params: Vec::new(),
-                            ops: vec![MachineInst {
+                            params: collections::Vec::new(),
+                            ops: collections::vec![MachineInst {
                                 kind: MachineInstKind::Move {
                                     owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                                     ty: MachineStorageType::GpI64,
@@ -2978,7 +3025,7 @@ mod tests {
                         }],
                     },
                 }],
-                consts: Vec::new(),
+                consts: collections::Vec::new(),
             },
             MachineModuleAbi::default(),
         )
@@ -3003,15 +3050,15 @@ mod tests {
             backend,
             MachineModule {
                 config: wrong_config,
-                functions: vec![MachineFunction {
+                functions: collections::vec![MachineFunction {
                     id: MachineFuncId(0),
                     program: MachineProgram {
                         entry: MachineBlockId(0),
-                        fp_reg_init_widths: Vec::new(),
-                        blocks: vec![MachineBlock {
+                        fp_reg_init_widths: collections::Vec::new(),
+                        blocks: collections::vec![MachineBlock {
                             id: MachineBlockId(0),
-                            params: Vec::new(),
-                            ops: vec![MachineInst {
+                            params: collections::Vec::new(),
+                            ops: collections::vec![MachineInst {
                                 kind: MachineInstKind::Store {
                                     ty: MachineStorageType::GpWord,
                                     addr: MachineAddr {
@@ -3026,7 +3073,7 @@ mod tests {
                         }],
                     },
                 }],
-                consts: Vec::new(),
+                consts: collections::Vec::new(),
             },
             MachineModuleAbi::default(),
         )
@@ -3042,8 +3089,11 @@ mod tests {
     fn runtime_eval_emu32_rejects_more_than_eight_memories() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x41, 0x00, 0x0b][..]).into());
@@ -3071,8 +3121,11 @@ mod tests {
     fn runtime_eval_emu32_rejects_more_than_sixteen_tables() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x41, 0x00, 0x0b][..]).into());
@@ -3102,10 +3155,10 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x20, 0x00, 0x2d, 0x00, 0x01, 0x0b][..]).into());
@@ -3133,10 +3186,10 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x20, 0x00, 0x2d, 0x00, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0b][..]).into());
@@ -3179,10 +3232,10 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x20, 0x00, 0x2d, 0x00, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0b][..]).into());
@@ -3207,10 +3260,10 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I64],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I64],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code((&[0x20, 0x00, 0x29, 0x00, 0x00, 0x0b][..]).into());
@@ -3236,8 +3289,11 @@ mod tests {
     fn runtime_eval_emu64_refreshes_mem0_regs_after_zero_page_memory_grow() {
         let _guard = enable_reference_backend();
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code(
@@ -3278,8 +3334,11 @@ mod tests {
     fn runtime_eval_emu64_traps_on_zero_page_memory_access() {
         let _guard = enable_reference_backend();
 
-        let ty = Rc::new(FunctionType::new(vec![], vec![ValueType::I32]));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let ty = Rc::new(FunctionType::new(
+            collections::vec![],
+            collections::vec![ValueType::I32],
+        ));
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_code(

@@ -1,4 +1,6 @@
 use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+use crate::collections;
+
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use super::helpers::{
@@ -12,7 +14,7 @@ fn local_set_lowers_to_cache_even_at_minimal_budget() {
         1,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::ReturnVoid),
@@ -43,7 +45,7 @@ fn local_tee_uses_cache_form_when_budget_has_spare_capacity() {
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalTee { idx: 0 }),
             op(SemanticOpKind::ReturnOne),
@@ -74,7 +76,7 @@ fn local_tee_uses_slot_form_when_existing_hot_cache_should_stay() {
         2,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
@@ -110,7 +112,7 @@ fn local_tee_promotes_hot_local_and_drops_cold_cache_under_pressure() {
         2,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
@@ -150,7 +152,7 @@ fn local_get_promotes_hot_local_and_drops_cold_cache() {
         2,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 1 }),
@@ -185,7 +187,7 @@ fn local_get_uses_slot_when_hot_resident_cache_should_stay() {
         2,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 1 }),
@@ -228,7 +230,7 @@ fn resident_local_get_keeps_current_cache_and_evicts_other_cache_when_result_roo
         2,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
@@ -270,7 +272,7 @@ fn local_get_drops_dead_cache_before_other_cache_that_is_still_live_later() {
         3,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),

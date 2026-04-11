@@ -1,5 +1,6 @@
 use super::types::MachineFloatWidth;
-use alloc::vec::Vec;
+
+use crate::collections;
 
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
 use crate::vm::backend::BackendConfig;
@@ -9,7 +10,7 @@ use crate::vm::backend::BackendConfig;
 pub(crate) struct MachineConstData {
     pub id: MachineConstId,
     pub align: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: collections::Vec<u8>,
 }
 
 /// Full machine program for one function.
@@ -19,8 +20,8 @@ pub(crate) struct MachineProgram {
     /// Initial semantic width for each FP-bank register, indexed by
     /// `reg - config.first_fp_reg()`. FP cached-local bindings use
     /// `Some(width)`; linear-value lanes start as `None`.
-    pub fp_reg_init_widths: Vec<Option<MachineFloatWidth>>,
-    pub blocks: Vec<super::cfg::MachineBlock>,
+    pub fp_reg_init_widths: collections::Vec<Option<MachineFloatWidth>>,
+    pub blocks: collections::Vec<super::cfg::MachineBlock>,
 }
 
 /// One machine function inside a machine module.
@@ -37,6 +38,6 @@ pub(crate) struct MachineFunction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MachineModule {
     pub config: BackendConfig,
-    pub functions: Vec<MachineFunction>,
-    pub consts: Vec<MachineConstData>,
+    pub functions: collections::Vec<MachineFunction>,
+    pub consts: collections::Vec<MachineConstData>,
 }

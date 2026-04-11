@@ -1,6 +1,6 @@
 //! 32-bit i64 pair lowering — splitting i64 operations into lo/hi word pairs.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -23,7 +23,7 @@ use super::super::{
 };
 
 /// Extract SsaValues from operands, skipping Const entries.
-fn dead_input_values(operands: &[SsaOperand]) -> Vec<SsaValue> {
+fn dead_input_values(operands: &[SsaOperand]) -> collections::Vec<SsaValue> {
     operands
         .iter()
         .filter_map(|op| match op {

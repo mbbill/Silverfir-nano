@@ -4,8 +4,9 @@
 //! Every block simply opens with its solved public set, and cached-local
 //! membership no longer changes as a side effect of local accesses.
 
+use crate::collections;
+
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 use crate::value_type::ValueType;
 use crate::vm::middle::cfg::CfgBlockId;
@@ -60,7 +61,7 @@ pub(crate) fn before_op_decision<'plan>(
     let _ = query.resident_cache;
     BeforeOpDecision {
         transient: transient_contract(&plan.op_plans[query.semantic_index].before),
-        drop_cached_locals: Vec::new(),
+        drop_cached_locals: collections::Vec::new(),
     }
 }
 
@@ -69,7 +70,7 @@ pub(crate) fn finalize_block_entry_cached_locals(
     plan: &FunctionPlan,
     block: CfgBlockId,
     _actual_exit: &[crate::vm::middle::frame::FrameSlot],
-) -> Vec<crate::vm::middle::frame::FrameSlot> {
+) -> collections::Vec<crate::vm::middle::frame::FrameSlot> {
     plan.blocks[block.as_usize()]
         .tentative_entry_cached_locals
         .clone()
@@ -78,8 +79,8 @@ pub(crate) fn finalize_block_entry_cached_locals(
 pub(crate) fn pressure_fallback_drops_into(
     plan: &FunctionPlan,
     query: PressureFallbackQuery<'_>,
-    working: &mut Vec<FrameSlot>,
-    dropped: &mut Vec<FrameSlot>,
+    working: &mut collections::Vec<FrameSlot>,
+    dropped: &mut collections::Vec<FrameSlot>,
 ) {
     let (gp_live, fp_live) = count_effective_live_bank_budget_units(
         query.live_types,

@@ -5,6 +5,8 @@
 //! backend-facing MachineIR artifact, but not part of the executable
 //! instruction vocabulary itself.
 
+use crate::collections;
+
 use super::types::MachineFuncId;
 
 /// One frame-relative region in the machine module ABI.
@@ -31,11 +33,11 @@ pub(crate) struct MachineFunctionAbi {
     /// These slots must be zero-initialized by the callee at function entry.
     /// Locals not listed here are guaranteed to be written before any read,
     /// so the wasm zero-init contract is satisfied without an explicit store.
-    pub init_locals: alloc::vec::Vec<u16>,
+    pub init_locals: collections::Vec<u16>,
 }
 
 /// Module-wide ABI metadata carried alongside MachineIR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MachineModuleAbi {
-    pub functions: alloc::vec::Vec<MachineFunctionAbi>,
+    pub functions: collections::Vec<MachineFunctionAbi>,
 }

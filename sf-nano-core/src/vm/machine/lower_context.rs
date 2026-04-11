@@ -1,4 +1,6 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use crate::collections;
+use alloc::collections::BTreeMap;
+
 use core::mem;
 
 use crate::{
@@ -84,26 +86,26 @@ pub(super) struct BlockLowerContext<'a> {
     program: &'a SsaProgram,
     block: &'a SsaBlock,
     all_runtime: &'a [MachineFunctionAbi],
-    machine_params: Vec<ValueRegs>,
-    entry_cache_params: Vec<EntryCacheParam>,
-    all_entry_cache_params: &'a [Vec<EntryCacheParam>],
+    machine_params: collections::Vec<ValueRegs>,
+    entry_cache_params: collections::Vec<EntryCacheParam>,
+    all_entry_cache_params: &'a [collections::Vec<EntryCacheParam>],
     gp_reg_width: u8,
     i64_ops: &'static dyn I64Lowering,
-    ops: Vec<MachineInst>,
-    cached_locals: Vec<CachedLocal>,
-    cache_bindings: Vec<Option<CachedLocalBinding>>,
+    ops: collections::Vec<MachineInst>,
+    cached_locals: collections::Vec<CachedLocal>,
+    cache_bindings: collections::Vec<Option<CachedLocalBinding>>,
     /// Per cached-local dirty bit: `true` means the register has been written
     /// since the last call save. Only dirty locals need saving before the next
     /// call. Entry blocks start clean; non-entry blocks receive their carried
     /// dirty state from cross-block analysis.
-    cache_live: Vec<bool>,
+    cache_live: collections::Vec<bool>,
     /// Per cached-local validity bit: `true` means the bound cache register
     /// currently holds the logical local value. `false` means the cache lane
     /// is merely reserved for a write-first local and must not be threaded as
     /// a real incoming edge value.
-    cache_has_value: Vec<bool>,
-    cache_dirty: Vec<bool>,
-    values: Vec<ValueLocation>,
+    cache_has_value: collections::Vec<bool>,
+    cache_dirty: collections::Vec<bool>,
+    values: collections::Vec<ValueLocation>,
     remaining_uses: alloc::collections::BTreeMap<SsaValue, u32>,
     /// Dynamic-register occupancy for linear SSA-like values.
     ///
@@ -113,7 +115,7 @@ pub(super) struct BlockLowerContext<'a> {
     /// - free
     /// - occupied by one linear value
     /// - bound to one cached local
-    linear_value_state: Vec<LinearValueState>,
+    linear_value_state: collections::Vec<LinearValueState>,
     #[cfg(sf_has_guard_pages)]
     guard_pages: bool,
 }
@@ -136,7 +138,7 @@ impl<'a> BlockLowerContext<'a> {
         regfile: &'a MachineRegFile,
         program: &'a SsaProgram,
         cached_locals: &'a [CachedLocal],
-        all_entry_cache_params: &'a [Vec<EntryCacheParam>],
+        all_entry_cache_params: &'a [collections::Vec<EntryCacheParam>],
         block: &'a SsaBlock,
         all_runtime: &'a [MachineFunctionAbi],
         gp_reg_width: u8,
@@ -150,9 +152,9 @@ impl<'a> BlockLowerContext<'a> {
             .get(block.id.as_usize())
             .cloned()
             .unwrap_or_default();
-        let cache_live = alloc::vec![false; cached_locals.len()];
-        let cache_has_value = alloc::vec![false; cached_locals.len()];
-        let cache_dirty = alloc::vec![false; cached_locals.len()];
+        let cache_live = collections::vec![false; cached_locals.len()];
+        let cache_has_value = collections::vec![false; cached_locals.len()];
+        let cache_dirty = collections::vec![false; cached_locals.len()];
         let mut lower = Self {
             regfile,
             program,
@@ -163,15 +165,15 @@ impl<'a> BlockLowerContext<'a> {
             all_entry_cache_params,
             gp_reg_width,
             i64_ops,
-            ops: Vec::new(),
-            cached_locals: cached_locals.to_vec(),
-            cache_bindings: alloc::vec![None; cache_live.len()],
+            ops: collections::Vec::new(),
+            cached_locals: cached_locals.to_vec().into(),
+            cache_bindings: collections::vec![None; cache_live.len()],
             cache_live,
             cache_has_value,
             cache_dirty,
-            values: Vec::new(),
+            values: collections::Vec::new(),
             remaining_uses: compute_remaining_uses(block),
-            linear_value_state: alloc::vec![
+            linear_value_state: collections::vec![
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
@@ -263,7 +265,7 @@ impl<'a> BlockLowerContext<'a> {
             .unwrap_or(&[])
     }
 
-    pub(super) fn take_ops(&mut self) -> Vec<MachineInst> {
+    pub(super) fn take_ops(&mut self) -> collections::Vec<MachineInst> {
         mem::take(&mut self.ops)
     }
 
@@ -1002,7 +1004,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
-pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
+pub(super) fn explicit_cached_locals(program: &SsaProgram) -> collections::Vec<CachedLocal> {
     let pref_map = explicit_cached_local_pref_map(program);
     let mut explicit = BTreeMap::<FrameSlot, ExplicitCachedLocalEntry>::new();
     let mut order = 0usize;
@@ -1038,7 +1040,7 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> Vec<CachedLocal> {
         }
     }
 
-    let mut entries = explicit.into_values().collect::<Vec<_>>();
+    let mut entries = explicit.into_values().collect::<collections::Vec<_>>();
     entries.sort_by_key(|entry| entry.order);
     entries.into_iter().map(|entry| entry.cached).collect()
 }

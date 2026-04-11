@@ -10,8 +10,9 @@
 //! - no local-cache decisions
 //! - no prepared block shaping or machine placement
 
+use crate::collections;
+
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
@@ -70,7 +71,7 @@ pub(crate) enum SemanticOpKind {
         target: SemanticTarget,
     },
     BrTable {
-        entries: Vec<BrTableEntry>,
+        entries: collections::Vec<BrTableEntry>,
     },
     CallDirect {
         callee: u32,
@@ -97,22 +98,22 @@ pub(crate) struct SemanticProgram {
     pub results: u16,
     pub local_count: u16,
     pub max_stack_height: u16,
-    pub ops: alloc::vec::Vec<SemanticOp>,
+    pub ops: collections::Vec<SemanticOp>,
     /// Per-local value types (params ++ non-param locals).
     ///
     /// When non-empty, `local_types.len() == local_count`.
     /// When empty, downstream consumers should treat all values as untyped.
-    pub local_types: Vec<ValueType>,
+    pub local_types: collections::Vec<ValueType>,
     /// Function result types in signature order.
     ///
     /// When non-empty, `result_types.len() == results`.
-    pub result_types: Vec<ValueType>,
+    pub result_types: collections::Vec<ValueType>,
     /// Per-op result types for dynamic producers and structured control signatures.
     ///
     /// Maps semantic op index to result value types for ops that push
     /// results whose types are not deterministic from the opcode alone
     /// (calls, blocks with multi-value signatures, etc.).
-    pub op_result_types: BTreeMap<usize, Vec<ValueType>>,
+    pub op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -273,11 +274,11 @@ mod tests {
             results: 0,
             local_count: 1,
             max_stack_height: 0,
-            ops: alloc::vec![SemanticOp {
+            ops: collections::vec![SemanticOp {
                 kind: SemanticOpKind::LocalGet { idx: 1 },
             }],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![],
+            local_types: collections::vec![],
+            result_types: collections::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -294,15 +295,15 @@ mod tests {
             results: 0,
             local_count: 0,
             max_stack_height: 0,
-            ops: alloc::vec![SemanticOp {
+            ops: collections::vec![SemanticOp {
                 kind: SemanticOpKind::Br {
                     stack_drop: 0,
                     arity: 0,
                     target: SemanticTarget::new(3),
                 },
             }],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![],
+            local_types: collections::vec![],
+            result_types: collections::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -319,11 +320,11 @@ mod tests {
             results: 1,
             local_count: 0,
             max_stack_height: 1,
-            ops: alloc::vec![SemanticOp {
+            ops: collections::vec![SemanticOp {
                 kind: SemanticOpKind::ReturnVoid,
             }],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![],
+            local_types: collections::vec![],
+            result_types: collections::vec![],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -342,7 +343,7 @@ mod tests {
             results: 1,
             local_count: 1,
             max_stack_height: 1,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalGet { idx: 0 },
                 },
@@ -371,11 +372,11 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![ValueType::I32],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![ValueType::I32],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::from([(
                 1usize,
-                alloc::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )]),
         };
 

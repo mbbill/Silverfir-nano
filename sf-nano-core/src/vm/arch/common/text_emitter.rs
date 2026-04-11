@@ -1,18 +1,20 @@
-use alloc::vec::Vec;
-
 /// Unified code emitter: a growable byte buffer with typed emit/patch operations.
 ///
 /// Used by all arch backends to build function text sections.
+use crate::collections;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TextEmitter {
-    text: Vec<u8>,
+    text: collections::Vec<u8>,
 }
 
 #[allow(dead_code)]
 impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {
-        Self { text: Vec::new() }
+        Self {
+            text: collections::Vec::new(),
+        }
     }
 
     #[inline]
@@ -82,7 +84,7 @@ impl TextEmitter {
     // ── Finish ───────────────────────────────────────────────────────────
 
     #[inline]
-    pub(crate) fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> collections::Vec<u8> {
         self.text
     }
 }

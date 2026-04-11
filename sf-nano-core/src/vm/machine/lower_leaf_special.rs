@@ -1,6 +1,6 @@
 //! Memory, global, and table lowering — loads, stores, bounds checks.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -1011,8 +1011,8 @@ impl<'a> BlockLowerContext<'a> {
             MachineLoadExtension,
         )>,
         store_src: Option<(MachineReg, MachineStorageType, MachineMemWidth)>,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1081,8 +1081,8 @@ impl<'a> BlockLowerContext<'a> {
         dst_hi: MachineReg,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1130,8 +1130,8 @@ impl<'a> BlockLowerContext<'a> {
         ty: MachineStorageType,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1176,8 +1176,8 @@ impl<'a> BlockLowerContext<'a> {
         dst_hi: MachineReg,
         width: MachineMemWidth,
         extension: MachineLoadExtension,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1217,8 +1217,8 @@ impl<'a> BlockLowerContext<'a> {
         src: MachineReg,
         ty: MachineStorageType,
         width: MachineMemWidth,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1262,8 +1262,8 @@ impl<'a> BlockLowerContext<'a> {
         src_lo: MachineReg,
         src_hi: MachineReg,
         width: MachineMemWidth,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1302,8 +1302,8 @@ impl<'a> BlockLowerContext<'a> {
         src_lo: MachineReg,
         src_hi: MachineReg,
         width: MachineMemWidth,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if access_bytes != 0 {
             ops.push(MachineInst {
                 kind: MachineInstKind::IntBinary {
@@ -1391,11 +1391,11 @@ impl<'a> BlockLowerContext<'a> {
             },
             then_edge: MachineEdge {
                 target: trap,
-                args: Vec::new(),
+                args: collections::Vec::new(),
             },
             else_edge: MachineEdge {
                 target: continuation,
-                args: Vec::new(),
+                args: collections::Vec::new(),
             },
         })
     }
@@ -1408,8 +1408,8 @@ impl<'a> BlockLowerContext<'a> {
         scratch: MachineReg,
         load_dst: Option<MachineReg>,
         store_src: Option<MachineReg>,
-    ) -> Result<Vec<MachineInst>, WasmError> {
-        let mut ops = Vec::new();
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
         if self.gp_reg_width() == 8 {
             ops.push(MachineInst {
                 kind: MachineInstKind::Convert {
@@ -1838,7 +1838,7 @@ pub(super) fn addr_with_byte_offset(
 }
 
 pub(super) fn append_i64_load_ops(
-    ops: &mut Vec<MachineInst>,
+    ops: &mut collections::Vec<MachineInst>,
     gp_word_int_width: crate::vm::machine::machine_ir::MachineIntWidth,
     base: MachineReg,
     dst_lo: MachineReg,
@@ -1899,7 +1899,7 @@ pub(super) fn append_i64_load_ops(
 }
 
 fn append_i64_load_hi_fill_ops(
-    ops: &mut Vec<MachineInst>,
+    ops: &mut collections::Vec<MachineInst>,
     gp_word_int_width: crate::vm::machine::machine_ir::MachineIntWidth,
     dst_lo: MachineReg,
     dst_hi: MachineReg,
@@ -1931,7 +1931,7 @@ fn append_i64_load_hi_fill_ops(
 }
 
 fn append_i64_store_ops(
-    ops: &mut Vec<MachineInst>,
+    ops: &mut collections::Vec<MachineInst>,
     base: MachineReg,
     src_lo: MachineReg,
     src_hi: MachineReg,
@@ -1971,7 +1971,7 @@ fn append_i64_store_ops(
 }
 
 fn emit_memory_base_load_ops(
-    ops: &mut Vec<MachineInst>,
+    ops: &mut collections::Vec<MachineInst>,
     runtime_base: MachineReg,
     memidx: u32,
     dst: MachineReg,

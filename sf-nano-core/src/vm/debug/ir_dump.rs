@@ -5,7 +5,9 @@
 //! - `native_index.txt`: function/region metadata, SSA-IR, MachineIR, runtime contract
 //! - `native_code.bin`: concatenated emitted native machine code bytes
 
-use alloc::{format, string::String, vec::Vec};
+use crate::collections;
+
+use alloc::{format, string::String};
 use core::fmt::Write as _;
 
 use crate::{
@@ -43,7 +45,7 @@ pub(crate) struct DumpFunctionLir {
 /// Per-function debug regions from compilation.
 pub(crate) struct DumpFunctionRegions {
     pub func_idx: u32,
-    pub regions: Vec<DebugRegion>,
+    pub regions: collections::Vec<DebugRegion>,
 }
 
 pub(crate) fn dump_enabled() -> bool {
@@ -120,7 +122,7 @@ fn write_dump_impl(
 
     // Write native_code.bin
     let mut code_file = File::create(root.join("native_code.bin"))?;
-    let mut code_offsets: Vec<(u32, u64, usize)> = Vec::new(); // (func_idx, file_offset, len)
+    let mut code_offsets: collections::Vec<(u32, u64, usize)> = collections::Vec::new(); // (func_idx, file_offset, len)
     let mut file_offset = 0u64;
     for (func_idx, code_bytes) in code_slices {
         code_file.write_all(code_bytes)?;
@@ -261,7 +263,7 @@ fn render_lir_block(
                 .params
                 .iter()
                 .map(|v| format!("v{}", v.0))
-                .collect::<Vec<_>>()
+                .collect::<collections::Vec<_>>()
                 .join(", ")
         );
     } else {
@@ -273,12 +275,12 @@ fn render_lir_block(
                 .params
                 .iter()
                 .map(|v| format!("v{}", v.0))
-                .collect::<Vec<_>>()
+                .collect::<collections::Vec<_>>()
                 .join(", "),
             cached
                 .iter()
                 .map(|s| format!("fp[{}]", s.0))
-                .collect::<Vec<_>>()
+                .collect::<collections::Vec<_>>()
                 .join(", ")
         );
     }
@@ -383,7 +385,8 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             render_lir_bindings(&else_edge.bindings),
         ),
         SsaTerminator::BrTable { index, entries } => {
-            let targets: Vec<String> = entries.iter().map(|e| format!("b{}", e.target.0)).collect();
+            let targets: collections::Vec<String> =
+                entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("br_table v{} [{}]", index.0, targets.join(", "))
         }
         SsaTerminator::Return { results } => match results {
@@ -398,14 +401,14 @@ fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -
     bindings
         .iter()
         .map(|b| format!("v{}=v{}", b.param.0, b.value.0))
-        .collect::<Vec<_>>()
+        .collect::<collections::Vec<_>>()
         .join(", ")
 }
 
 fn vals(vs: &[SsaValue]) -> String {
     vs.iter()
         .map(|v| format!("v{}", v.0))
-        .collect::<Vec<_>>()
+        .collect::<collections::Vec<_>>()
         .join(", ")
 }
 
@@ -415,7 +418,7 @@ fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
             crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => format!("v{}", v.0),
             crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => format!("#{bits}"),
         })
-        .collect::<Vec<_>>()
+        .collect::<collections::Vec<_>>()
         .join(", ")
 }
 
@@ -438,7 +441,7 @@ fn render_machine_function(out: &mut String, func: &MachineFunction) {
                     owner_tag(param.owner),
                     sty(&param.ty)
                 ))
-                .collect::<Vec<_>>()
+                .collect::<collections::Vec<_>>()
                 .join(", ")
         );
         for (i, inst) in block.ops.iter().enumerate() {
@@ -991,7 +994,8 @@ fn render_machine_term(term: &MachineTerminator) -> String {
             medge_args(&else_edge.args),
         ),
         MachineTerminator::JumpTable { index, entries } => {
-            let targets: Vec<String> = entries.iter().map(|e| format!("b{}", e.target.0)).collect();
+            let targets: collections::Vec<String> =
+                entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("jump_table {} [{}]", mval(index), targets.join(", "))
         }
         MachineTerminator::CallDirect {
@@ -1077,7 +1081,10 @@ fn maddr(a: &MachineAddr) -> String {
 }
 
 fn medge_args(args: &[MachineValue]) -> String {
-    args.iter().map(mval).collect::<Vec<_>>().join(", ")
+    args.iter()
+        .map(mval)
+        .collect::<collections::Vec<_>>()
+        .join(", ")
 }
 
 fn mwidth(w: &MachineMemWidth) -> &'static str {

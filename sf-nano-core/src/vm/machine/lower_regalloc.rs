@@ -1,6 +1,6 @@
 //! Register allocation and register-file layout for SSA-IR -> MachineIR lowering.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -37,8 +37,8 @@ use super::lower_context::BlockLowerContext;
 /// rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineRegFile {
-    gp_dynamic: Vec<MachineReg>,
-    fp_dynamic: Vec<MachineReg>,
+    gp_dynamic: collections::Vec<MachineReg>,
+    fp_dynamic: collections::Vec<MachineReg>,
     gp_allocatable_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
@@ -141,8 +141,8 @@ impl MachineRegFile {
     }
 }
 
-fn collect_regs(next: &mut u16, count: u8) -> Vec<MachineReg> {
-    let mut regs = Vec::with_capacity(count as usize);
+fn collect_regs(next: &mut u16, count: u8) -> collections::Vec<MachineReg> {
+    let mut regs = collections::Vec::with_capacity(count as usize);
     for _ in 0..count {
         regs.push(MachineReg(*next));
         *next += 1;
@@ -301,9 +301,9 @@ impl<'a> BlockLowerContext<'a> {
         &self,
         continuation_ops: &[MachineInst],
         continuation_term: &MachineTerminator,
-    ) -> Vec<MachineBlockParam> {
-        let mut params = Vec::new();
-        let mut all_defined = Vec::new();
+    ) -> collections::Vec<MachineBlockParam> {
+        let mut params = collections::Vec::new();
+        let mut all_defined = collections::Vec::new();
         for inst in continuation_ops {
             for_each_inst_defined_reg(&inst.kind, |reg| {
                 if self.is_linear_value_reg(reg) && !all_defined.contains(&reg) {
@@ -333,7 +333,7 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
 
-        let mut defined_so_far = Vec::new();
+        let mut defined_so_far = collections::Vec::new();
         for inst in continuation_ops {
             visit_inst_source_regs(&inst.kind, |reg| {
                 if self.is_linear_value_reg(reg) && !defined_so_far.contains(&reg) {
@@ -647,9 +647,9 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn borrow_free_gp_dynamic_regs(
         &self,
         count: usize,
-    ) -> Result<Vec<MachineReg>, WasmError> {
+    ) -> Result<collections::Vec<MachineReg>, WasmError> {
         let regfile = self.regfile();
-        let mut regs = Vec::with_capacity(count);
+        let mut regs = collections::Vec::with_capacity(count);
         for ordinal in 0..regfile.gp_dynamic_count() {
             let Some(reg) = preferred_gp_dynamic_reg(regfile, ordinal) else {
                 continue;
@@ -771,7 +771,7 @@ pub(super) fn canonical_value_mem_width_for_value(
     canonical_storage_mem_width(lir_value_storage_type(program, value))
 }
 
-fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockParam) {
+fn push_unique_param(params: &mut collections::Vec<MachineBlockParam>, param: MachineBlockParam) {
     if !params.iter().any(|candidate| candidate.reg == param.reg) {
         params.push(param);
     }
@@ -780,15 +780,15 @@ fn push_unique_param(params: &mut Vec<MachineBlockParam>, param: MachineBlockPar
 pub(super) fn machine_block_params_for_value(
     regs: super::lower_context::ValueRegs,
     ty: MachineStorageType,
-) -> alloc::vec::Vec<MachineBlockParam> {
+) -> collections::Vec<MachineBlockParam> {
     match (ty, regs.hi) {
         (MachineStorageType::GpI64, Some(hi)) => {
-            alloc::vec![
+            collections::vec![
                 MachineBlockParam::gp_word(regs.lo),
                 MachineBlockParam::gp_word(hi)
             ]
         }
-        _ => alloc::vec![machine_block_param(regs.lo, ty)],
+        _ => collections::vec![machine_block_param(regs.lo, ty)],
     }
 }
 
@@ -1158,27 +1158,27 @@ mod tests {
     use super::*;
     use crate::vm::machine::lower_context::BlockLowerContext;
 
-    fn make_test_context(value_types: Vec<ValueType>) -> BlockLowerContext<'static> {
+    fn make_test_context(value_types: collections::Vec<ValueType>) -> BlockLowerContext<'static> {
         let program = Box::leak(Box::new(SsaProgram {
             entry: SsaTarget(0),
-            blocks: alloc::vec![SsaBlock {
+            blocks: collections::vec![SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return { results: None },
             }],
-            local_slot_types: Vec::new(),
-            local_slot_info: Vec::new(),
-            block_entry_cached_slots: alloc::vec![alloc::vec![]],
-            block_cfg_origins: alloc::vec![],
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::vec![collections::vec![]],
+            block_cfg_origins: collections::vec![],
             value_types,
-            value_sink_local: alloc::vec![],
+            value_sink_local: collections::vec![],
         }));
         let regfile = Box::leak(Box::new(
             MachineRegFile::new(BackendConfig::new(5, 0, 4, 8)).expect("regfile"),
         ));
         let runtime = MachineFunctionAbi::default();
-        let all_runtime = Box::leak(Box::new(alloc::vec![runtime]));
+        let all_runtime = Box::leak(Box::new(collections::vec![runtime]));
         let explicit_cache = Box::leak(Box::new(
             super::super::lower_context::explicit_cached_locals(program),
         ));
@@ -1211,7 +1211,7 @@ mod tests {
 
     #[test]
     fn alloc_i64_value_pair_reserves_two_gp_word_linear_value_regs() {
-        let mut lower = make_test_context(alloc::vec![ValueType::I64]);
+        let mut lower = make_test_context(collections::vec![ValueType::I64]);
         let (lo, hi) = lower.alloc_i64_value_pair(SsaValue(0)).expect("pair alloc");
         assert_ne!(lo, hi);
         assert_eq!(
@@ -1234,7 +1234,7 @@ mod tests {
 
     #[test]
     fn scalar_reuse_can_claim_low_half_of_dead_pair_and_frees_high_half() {
-        let mut lower = make_test_context(alloc::vec![ValueType::I64, ValueType::I32]);
+        let mut lower = make_test_context(collections::vec![ValueType::I64, ValueType::I32]);
         let (pair_lo, pair_hi) = lower.alloc_i64_value_pair(SsaValue(0)).expect("pair alloc");
         let scalar = lower
             .alloc_value_in_bank_reusing_dead_inputs(
@@ -1253,7 +1253,7 @@ mod tests {
 
     #[test]
     fn pair_reuse_can_claim_low_half_of_dead_scalar_and_allocate_only_high_half() {
-        let mut lower = make_test_context(alloc::vec![ValueType::I32, ValueType::I64]);
+        let mut lower = make_test_context(collections::vec![ValueType::I32, ValueType::I64]);
         let scalar = lower
             .alloc_value_in_bank(SsaValue(0), MachineStorageType::GpWord)
             .expect("scalar alloc");

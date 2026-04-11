@@ -4,10 +4,11 @@
 //! Validates binary format correctness, structural requirements, and basic range checks.
 //! Returns **malformed** errors for structural/format issues.
 
+use crate::collections;
+
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use crate::{
     constants,
@@ -185,16 +186,16 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         )));
     }
 
-    let mut types: Vec<Rc<FunctionType>> = Vec::new();
-    let mut functions: Vec<Function> = Vec::new();
-    let mut tables: Vec<Table> = Vec::new();
-    let mut memories: Vec<Memory> = Vec::new();
-    let mut globals: Vec<Global> = Vec::new();
-    let mut elements: Vec<Element> = Vec::new();
-    let mut data_segments: Vec<Data> = Vec::new();
+    let mut types: collections::Vec<Rc<FunctionType>> = collections::Vec::new();
+    let mut functions: collections::Vec<Function> = collections::Vec::new();
+    let mut tables: collections::Vec<Table> = collections::Vec::new();
+    let mut memories: collections::Vec<Memory> = collections::Vec::new();
+    let mut globals: collections::Vec<Global> = collections::Vec::new();
+    let mut elements: collections::Vec<Element> = collections::Vec::new();
+    let mut data_segments: collections::Vec<Data> = collections::Vec::new();
     let mut start_func_index: Option<usize> = None;
     let mut data_count: Option<usize> = None;
-    let mut export_names: Vec<String> = Vec::new();
+    let mut export_names: collections::Vec<String> = collections::Vec::new();
 
     loop {
         if payload.is_empty() {
@@ -305,9 +306,9 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
 fn parse_vec<'a, T: 'a>(
     payload: &mut Payload<'a>,
     parser: fn(&mut Payload<'a>) -> Result<T, WasmError>,
-) -> Result<Vec<T>, WasmError> {
+) -> Result<collections::Vec<T>, WasmError> {
     let count = payload.read_leb128_u32()?;
-    let mut vec = Vec::with_capacity(count as usize);
+    let mut vec = collections::Vec::with_capacity(count as usize);
     for _ in 0..count {
         vec.push(parser(payload)?);
     }
@@ -322,7 +323,7 @@ fn parse_valtype(payload: &mut Payload) -> Result<ValueType, WasmError> {
     ValueType::parse(payload)
 }
 
-fn parse_resulttype(payload: &mut Payload) -> Result<Vec<ValueType>, WasmError> {
+fn parse_resulttype(payload: &mut Payload) -> Result<collections::Vec<ValueType>, WasmError> {
     parse_vec(payload, parse_valtype)
 }
 
@@ -430,9 +431,11 @@ fn parse_tabletype(payload: &mut Payload) -> Result<(ValueType, Limits), WasmErr
 // Section parsers
 // ============================================================================
 
-fn parse_type_section(payload: &mut Payload) -> Result<Vec<Rc<FunctionType>>, WasmError> {
+fn parse_type_section(
+    payload: &mut Payload,
+) -> Result<collections::Vec<Rc<FunctionType>>, WasmError> {
     let count = payload.read_leb128_u32()?;
-    let mut types = Vec::with_capacity(count as usize);
+    let mut types = collections::Vec::with_capacity(count as usize);
 
     for _ in 0..count {
         let tag = payload.read_u8()?;
@@ -452,10 +455,10 @@ fn parse_type_section(payload: &mut Payload) -> Result<Vec<Rc<FunctionType>>, Wa
 
 fn parse_import_section(
     types: &[Rc<FunctionType>],
-    functions: &mut Vec<Function>,
-    tables: &mut Vec<Table>,
-    memories: &mut Vec<Memory>,
-    globals: &mut Vec<Global>,
+    functions: &mut collections::Vec<Function>,
+    tables: &mut collections::Vec<Table>,
+    memories: &mut collections::Vec<Memory>,
+    globals: &mut collections::Vec<Global>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
@@ -507,7 +510,7 @@ fn parse_import_section(
 
 fn parse_function_section(
     types: &[Rc<FunctionType>],
-    functions: &mut Vec<Function>,
+    functions: &mut collections::Vec<Function>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let indices = parse_vec(payload, parse_indices)?;
@@ -520,7 +523,10 @@ fn parse_function_section(
     Ok(())
 }
 
-fn parse_table_section(tables: &mut Vec<Table>, payload: &mut Payload) -> Result<(), WasmError> {
+fn parse_table_section(
+    tables: &mut collections::Vec<Table>,
+    payload: &mut Payload,
+) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
     for _ in 0..count {
         let (value_type, limits) = parse_tabletype(payload)?;
@@ -530,7 +536,7 @@ fn parse_table_section(tables: &mut Vec<Table>, payload: &mut Payload) -> Result
 }
 
 fn parse_memory_section(
-    memories: &mut Vec<Memory>,
+    memories: &mut collections::Vec<Memory>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let mem_limits = parse_vec(payload, parse_limits)?;
@@ -546,7 +552,10 @@ fn parse_global<'a>(payload: &mut Payload<'a>) -> Result<Global, WasmError> {
     Ok(Global::new_local(global_type, is_mutable, init))
 }
 
-fn parse_global_section(globals: &mut Vec<Global>, payload: &mut Payload) -> Result<(), WasmError> {
+fn parse_global_section(
+    globals: &mut collections::Vec<Global>,
+    payload: &mut Payload,
+) -> Result<(), WasmError> {
     let parsed = parse_vec(payload, parse_global)?;
     for global in parsed {
         globals.push(global);
@@ -559,7 +568,7 @@ fn parse_export_section(
     tables: &mut [Table],
     memories: &mut [Memory],
     globals: &mut [Global],
-    export_names: &mut Vec<String>,
+    export_names: &mut collections::Vec<String>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
@@ -708,13 +717,15 @@ fn parse_element<'a>(payload: &mut Payload<'a>) -> Result<Element, WasmError> {
     }
 }
 
-fn parse_code(payload: &mut Payload) -> Result<(Vec<ValueType>, Bytecode, usize), WasmError> {
+fn parse_code(
+    payload: &mut Payload,
+) -> Result<(collections::Vec<ValueType>, Bytecode, usize), WasmError> {
     let total_size = payload.read_leb128_u32()? as usize;
     let local_begin = payload.position();
 
     let num_local_groups = payload.read_leb128_u32()?;
     let mut total_locals = 0u32;
-    let mut local_groups = Vec::with_capacity(num_local_groups as usize);
+    let mut local_groups = collections::Vec::with_capacity(num_local_groups as usize);
 
     for _ in 0..num_local_groups {
         let count = payload.read_leb128_u32()?;
@@ -728,7 +739,7 @@ fn parse_code(payload: &mut Payload) -> Result<(Vec<ValueType>, Bytecode, usize)
         local_groups.push((count, value_type));
     }
 
-    let mut locals = Vec::with_capacity(total_locals as usize);
+    let mut locals = collections::Vec::with_capacity(total_locals as usize);
     for (count, value_type) in local_groups {
         for _ in 0..count {
             locals.push(value_type);
@@ -800,7 +811,7 @@ fn parse_data<'a>(payload: &mut Payload<'a>) -> Result<Data, WasmError> {
 fn parse_data_section(
     data_count: Option<usize>,
     payload: &mut Payload,
-) -> Result<Vec<Data>, WasmError> {
+) -> Result<collections::Vec<Data>, WasmError> {
     let data = parse_vec(payload, parse_data)?;
     if let Some(dc) = data_count {
         if data.len() != dc {

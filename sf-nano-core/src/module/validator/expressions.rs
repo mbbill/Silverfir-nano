@@ -1,3 +1,4 @@
+use crate::collections;
 use crate::{
     error::WasmError,
     module::{entities::ConstExpr, Module},
@@ -5,6 +6,7 @@ use crate::{
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
 };
+
 use alloc::vec;
 
 /// Context for validating constant expressions
@@ -56,7 +58,7 @@ impl ConstExpr {
     ) -> Result<ValueType, WasmError> {
         let mut code: Payload = Payload::from(self.as_ref());
 
-        let mut stack = vec![];
+        let mut stack = collections::vec![];
         while !code.is_empty() {
             let op: Opcode = code.read_u8()?.try_into()?;
             if ctx.is_passive

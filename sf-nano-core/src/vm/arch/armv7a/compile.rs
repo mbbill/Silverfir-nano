@@ -4,7 +4,7 @@
 //! `compile_function::<Arm32Backend>`. This module handles ARM32-specific
 //! linking: MOVW/MOVT address patching and the 32-bit function info table.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -54,10 +54,10 @@ const ARM32_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Arm32FunctionInfo>(
 pub(crate) fn compile_module(
     module: &ModuleInst,
     compiled: &CompiledNativeModule,
-) -> Result<Vec<Option<CompiledArm32Entry>>, WasmError> {
+) -> Result<collections::Vec<Option<CompiledArm32Entry>>, WasmError> {
     // Pass 1: compile each function via common pipeline
-    let mut artifacts: Vec<FunctionArtifact> =
-        Vec::with_capacity(compiled.module().functions.len());
+    let mut artifacts: collections::Vec<FunctionArtifact> =
+        collections::Vec::with_capacity(compiled.module().functions.len());
     for function in &compiled.module().functions {
         artifacts.push(pipeline::compile_function::<Arm32Backend>(
             compiled, function,
@@ -65,7 +65,7 @@ pub(crate) fn compile_module(
     }
 
     // Pass 2: compute page-aligned base offsets
-    let mut base_offsets = Vec::with_capacity(artifacts.len());
+    let mut base_offsets = collections::Vec::with_capacity(artifacts.len());
     let mut running_offset = 0usize;
     for artifact in &artifacts {
         running_offset = page_align_function(running_offset, artifact.text.len());
@@ -82,7 +82,7 @@ pub(crate) fn compile_module(
         executable.as_ptr()
     };
 
-    let mut internal_entry_addrs = Vec::with_capacity(artifacts.len());
+    let mut internal_entry_addrs = collections::Vec::with_capacity(artifacts.len());
     for (i, base_offset) in base_offsets.iter().enumerate() {
         internal_entry_addrs.push(unsafe {
             base_ptr.add(*base_offset + artifacts[i].internal_entry_offset)
@@ -92,7 +92,7 @@ pub(crate) fn compile_module(
     // Build ARM32-specific function info table (3x u32 = 12 bytes per entry).
     // Layout matches `NativeLocalCallInfo32` after the call-link removal.
     let mut function_info_bytes =
-        Vec::with_capacity(compiled.abi().functions.len() * ARM32_FUNCTION_INFO_SIZE);
+        collections::Vec::with_capacity(compiled.abi().functions.len() * ARM32_FUNCTION_INFO_SIZE);
     for (func_idx, runtime) in compiled.abi().functions.iter().enumerate() {
         let info = Arm32FunctionInfo {
             entry: *internal_entry_addrs.get(func_idx).ok_or_else(|| {
@@ -133,9 +133,10 @@ pub(crate) fn compile_module(
     executable.reset();
 
     let written_start = executable.len();
-    let mut entries = Vec::with_capacity(artifacts.len());
+    let mut entries = collections::Vec::with_capacity(artifacts.len());
     #[cfg(sf_has_guard_pages)]
-    let mut body_local_error_addrs: Vec<usize> = Vec::with_capacity(artifacts.len());
+    let mut body_local_error_addrs: collections::Vec<usize> =
+        collections::Vec::with_capacity(artifacts.len());
     for (func_idx, artifact) in artifacts.into_iter().enumerate() {
         let current = executable.len() - written_start;
         let expected = base_offsets[func_idx];
@@ -203,7 +204,7 @@ pub(crate) fn compile_module(
     // propagation tail under the new ABI.
     #[cfg(sf_has_guard_pages)]
     {
-        let ranges: Vec<_> = entries
+        let ranges: collections::Vec<_> = entries
             .iter()
             .enumerate()
             .filter_map(|(idx, slot)| slot.as_ref().map(|e| (idx, e)))

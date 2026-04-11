@@ -1,6 +1,6 @@
 //! Constant expression evaluator for WebAssembly 2.0 module instantiation.
 
-use alloc::vec;
+use crate::collections;
 
 use crate::error::WasmError;
 use crate::module::entities::ConstExpr;
@@ -14,7 +14,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
     let bytes: &[u8] = expr;
     let mut code: Payload = bytes.into();
 
-    let mut stack = vec![];
+    let mut stack = collections::vec![];
     while !code.is_empty() {
         let op: Opcode = code.read_u8()?.try_into()?;
         match op {

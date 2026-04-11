@@ -1,7 +1,7 @@
 //! Instruction dispatch — lower_ops, lower_terminator, lower_inst, lower_leaf,
 //! lower_leaf_special, lower_edge.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -31,7 +31,7 @@ pub(super) enum LeafLowering {
         trap: MachineBlockId,
         trap_kind: MachineTrapKind,
         terminator: MachineTerminator,
-        continuation_ops: Vec<MachineInst>,
+        continuation_ops: collections::Vec<MachineInst>,
     },
 }
 
@@ -57,7 +57,7 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::BrTable { index, entries } => {
                 let index = self.use_value(*index)?;
                 self.release_dead_values()?;
-                let mut lowered = Vec::with_capacity(entries.len());
+                let mut lowered = collections::Vec::with_capacity(entries.len());
                 for edge in entries {
                     lowered.push(self.lower_edge(edge)?);
                 }
@@ -680,7 +680,7 @@ impl<'a> BlockLowerContext<'a> {
             .ok_or_else(|| {
                 WasmError::internal("edge target is out of range during native lowering".into())
             })?;
-        let mut args = Vec::with_capacity(target.params.len());
+        let mut args = collections::Vec::with_capacity(target.params.len());
         for target_param in &target.params {
             let binding = edge
                 .bindings

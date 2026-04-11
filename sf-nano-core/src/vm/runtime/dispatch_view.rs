@@ -1,7 +1,9 @@
 //! Runtime-published dispatch metadata shared by native lowering, backends,
 //! and the emulator.
 
-use alloc::{boxed::Box, vec::Vec};
+use crate::collections;
+
+use alloc::boxed::Box;
 use core::cell::Cell;
 
 use crate::vm::{backend::BackendConfig, machine::machine_ir::MachineModuleAbi};
@@ -122,7 +124,7 @@ impl NativeDispatchMetadata {
 fn build_local_call_info_records(backend: BackendConfig, abi: &MachineModuleAbi) -> Box<[u8]> {
     match backend.gp_unit_bytes {
         4 => {
-            let mut bytes = Vec::with_capacity(
+            let mut bytes = collections::Vec::with_capacity(
                 abi.functions.len() * core::mem::size_of::<NativeLocalCallInfo32>(),
             );
             for function in &abi.functions {
@@ -138,7 +140,7 @@ fn build_local_call_info_records(backend: BackendConfig, abi: &MachineModuleAbi)
             bytes.into_boxed_slice()
         }
         8 => {
-            let mut bytes = Vec::with_capacity(
+            let mut bytes = collections::Vec::with_capacity(
                 abi.functions.len() * core::mem::size_of::<NativeLocalCallInfo64>(),
             );
             for function in &abi.functions {

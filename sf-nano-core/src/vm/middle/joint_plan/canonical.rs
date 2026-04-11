@@ -1,17 +1,17 @@
 //! Canonical predecessor choice.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::middle::cfg::{CfgBlockId, SemanticCfg};
 
 /// One chosen canonical predecessor per block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalPredecessors {
-    pub by_block: Vec<Option<CfgBlockId>>,
+    pub by_block: collections::Vec<Option<CfgBlockId>>,
 }
 
 pub(crate) fn choose_canonical_predecessors(cfg: &SemanticCfg) -> CanonicalPredecessors {
-    let mut by_block = Vec::with_capacity(cfg.blocks.len());
+    let mut by_block = collections::Vec::with_capacity(cfg.blocks.len());
     for block in &cfg.blocks {
         let choice = if block.flags.is_entry || block.preds.is_empty() {
             None
@@ -38,22 +38,22 @@ mod tests {
         CfgBlock, CfgBlockFlags, CfgEdge, CfgPredecessor, CfgTerminator, SemanticCfg,
     };
 
-    fn empty_cfg(blocks: Vec<CfgBlock>) -> SemanticCfg {
+    fn empty_cfg(blocks: collections::Vec<CfgBlock>) -> SemanticCfg {
         SemanticCfg {
             entry: CfgBlockId(0),
-            semantic_to_block: Vec::new(),
+            semantic_to_block: collections::Vec::new(),
             blocks,
         }
     }
 
     #[test]
     fn chooses_only_predecessor_for_straight_line_block() {
-        let cfg = empty_cfg(alloc::vec![
+        let cfg = empty_cfg(collections::vec![
             CfgBlock {
                 id: CfgBlockId(0),
                 range: 0..1,
-                preds: Vec::new(),
-                succs: alloc::vec![CfgEdge {
+                preds: collections::Vec::new(),
+                succs: collections::vec![CfgEdge {
                     target: CfgBlockId(1),
                     is_backedge: false,
                 }],
@@ -72,11 +72,11 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(1),
                 range: 1..2,
-                preds: alloc::vec![CfgPredecessor {
+                preds: collections::vec![CfgPredecessor {
                     block: CfgBlockId(0),
                     is_backedge: false,
                 }],
-                succs: Vec::new(),
+                succs: collections::Vec::new(),
                 terminator: CfgTerminator::Return { op_index: 1 },
                 flags: CfgBlockFlags::default(),
             },
@@ -88,12 +88,12 @@ mod tests {
 
     #[test]
     fn chooses_backedge_for_loop_header() {
-        let cfg = empty_cfg(alloc::vec![
+        let cfg = empty_cfg(collections::vec![
             CfgBlock {
                 id: CfgBlockId(0),
                 range: 0..1,
-                preds: Vec::new(),
-                succs: alloc::vec![CfgEdge {
+                preds: collections::Vec::new(),
+                succs: collections::vec![CfgEdge {
                     target: CfgBlockId(1),
                     is_backedge: false,
                 }],
@@ -112,7 +112,7 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(1),
                 range: 1..2,
-                preds: alloc::vec![
+                preds: collections::vec![
                     CfgPredecessor {
                         block: CfgBlockId(0),
                         is_backedge: false,
@@ -122,7 +122,7 @@ mod tests {
                         is_backedge: true,
                     },
                 ],
-                succs: alloc::vec![
+                succs: collections::vec![
                     CfgEdge {
                         target: CfgBlockId(2),
                         is_backedge: false,
@@ -152,11 +152,11 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(2),
                 range: 2..3,
-                preds: alloc::vec![CfgPredecessor {
+                preds: collections::vec![CfgPredecessor {
                     block: CfgBlockId(1),
                     is_backedge: false,
                 }],
-                succs: alloc::vec![CfgEdge {
+                succs: collections::vec![CfgEdge {
                     target: CfgBlockId(1),
                     is_backedge: true,
                 }],
@@ -172,11 +172,11 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(3),
                 range: 3..4,
-                preds: alloc::vec![CfgPredecessor {
+                preds: collections::vec![CfgPredecessor {
                     block: CfgBlockId(1),
                     is_backedge: false,
                 }],
-                succs: Vec::new(),
+                succs: collections::Vec::new(),
                 terminator: CfgTerminator::Return { op_index: 3 },
                 flags: CfgBlockFlags::default(),
             },
@@ -188,12 +188,12 @@ mod tests {
 
     #[test]
     fn chooses_first_predecessor_for_ordinary_merge() {
-        let cfg = empty_cfg(alloc::vec![
+        let cfg = empty_cfg(collections::vec![
             CfgBlock {
                 id: CfgBlockId(0),
                 range: 0..1,
-                preds: Vec::new(),
-                succs: alloc::vec![
+                preds: collections::Vec::new(),
+                succs: collections::vec![
                     CfgEdge {
                         target: CfgBlockId(1),
                         is_backedge: false,
@@ -222,11 +222,11 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(1),
                 range: 1..2,
-                preds: alloc::vec![CfgPredecessor {
+                preds: collections::vec![CfgPredecessor {
                     block: CfgBlockId(0),
                     is_backedge: false,
                 }],
-                succs: alloc::vec![CfgEdge {
+                succs: collections::vec![CfgEdge {
                     target: CfgBlockId(3),
                     is_backedge: false,
                 }],
@@ -242,11 +242,11 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(2),
                 range: 2..3,
-                preds: alloc::vec![CfgPredecessor {
+                preds: collections::vec![CfgPredecessor {
                     block: CfgBlockId(0),
                     is_backedge: false,
                 }],
-                succs: alloc::vec![CfgEdge {
+                succs: collections::vec![CfgEdge {
                     target: CfgBlockId(3),
                     is_backedge: false,
                 }],
@@ -262,7 +262,7 @@ mod tests {
             CfgBlock {
                 id: CfgBlockId(3),
                 range: 3..4,
-                preds: alloc::vec![
+                preds: collections::vec![
                     CfgPredecessor {
                         block: CfgBlockId(1),
                         is_backedge: false,
@@ -272,7 +272,7 @@ mod tests {
                         is_backedge: false,
                     },
                 ],
-                succs: Vec::new(),
+                succs: collections::Vec::new(),
                 terminator: CfgTerminator::Return { op_index: 3 },
                 flags: CfgBlockFlags {
                     is_merge: true,

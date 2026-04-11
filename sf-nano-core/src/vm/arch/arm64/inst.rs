@@ -3831,11 +3831,11 @@ pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: Arm64Reg, value:
 #[cfg(test)]
 mod materialize_tests {
     use super::*;
+    use crate::collections;
     use crate::vm::arch::arm64::reg::Arm64Reg;
     use crate::vm::arch::common::text_emitter::TextEmitter;
-    use alloc::vec::Vec;
 
-    fn materialize(value: u64) -> Vec<u32> {
+    fn materialize(value: u64) -> collections::Vec<u32> {
         let mut text = TextEmitter::new();
         // Use x8 (a generic temp register) as the destination.
         materialize_u64_into(&mut text, Arm64Reg::from_raw(8), value);

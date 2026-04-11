@@ -7,7 +7,7 @@
 //! the emulator must use the explicit target-side layout helpers in
 //! [`super::layout`] rather than assuming these host offsets/strides directly.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -67,12 +67,12 @@ pub(crate) struct NativeContext {
     /// 0 = no trap, 1 = memory out of bounds.
     #[cfg(sf_has_guard_pages)]
     pub(crate) trap_kind: u32,
-    memory_views: Vec<NativeMemoryView>,
-    table_views: Vec<NativeTableView>,
-    function_views: Vec<NativeFunctionView>,
-    type_canon: Vec<u32>,
+    memory_views: collections::Vec<NativeMemoryView>,
+    table_views: collections::Vec<NativeTableView>,
+    function_views: collections::Vec<NativeFunctionView>,
+    type_canon: collections::Vec<u32>,
     #[cfg(sf_call_trace)]
-    pub(crate) trace_stack: Vec<u32>,
+    pub(crate) trace_stack: collections::Vec<u32>,
 }
 
 impl NativeContext {
@@ -98,12 +98,12 @@ impl NativeContext {
             error: None,
             #[cfg(sf_has_guard_pages)]
             trap_kind: 0,
-            memory_views: Vec::new(),
-            table_views: Vec::new(),
-            function_views: Vec::new(),
-            type_canon: Vec::new(),
+            memory_views: collections::Vec::new(),
+            table_views: collections::Vec::new(),
+            function_views: collections::Vec::new(),
+            type_canon: collections::Vec::new(),
             #[cfg(sf_call_trace)]
-            trace_stack: Vec::new(),
+            trace_stack: collections::Vec::new(),
         };
         ctx.refresh_cached_views();
         ctx
@@ -145,7 +145,7 @@ impl NativeContext {
             return;
         };
 
-        let memory_views: Vec<_> = store
+        let memory_views: collections::Vec<_> = store
             .module()
             .memories
             .iter()
@@ -186,7 +186,7 @@ impl NativeContext {
             return;
         };
 
-        let table_views: Vec<_> = store
+        let table_views: collections::Vec<_> = store
             .module()
             .tables
             .iter()
@@ -239,7 +239,7 @@ impl NativeContext {
 
         let module = store.module();
         let type_canon = &self.type_canon;
-        let function_views: Vec<_> = module
+        let function_views: collections::Vec<_> = module
             .functions
             .iter()
             .enumerate()
@@ -288,7 +288,7 @@ impl NativeContext {
         };
 
         let type_ctx = &store.module().types;
-        let mut type_canon = Vec::with_capacity(type_ctx.len());
+        let mut type_canon = collections::Vec::with_capacity(type_ctx.len());
         for idx in 0..type_ctx.len() {
             let idx_u32 = idx as u32;
             let mut canonical = idx_u32;
@@ -400,7 +400,7 @@ pub(crate) mod function_view_offset {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String, vec};
+    use alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::*;
     use crate::{
@@ -424,16 +424,19 @@ mod tests {
     #[test]
     fn refresh_function_views_canonicalizes_equivalent_type_indices() {
         let duplicated_sig = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I64],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I64],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&duplicated_sig),
+            duplicated_sig
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::Local {
             spec: crate::module::entities::FunctionSpec::new(
                 Rc::new(FunctionType::new(
-                    vec![ValueType::I32],
-                    vec![ValueType::I64],
+                    collections::vec![ValueType::I32],
+                    collections::vec![ValueType::I64],
                 )),
                 1,
             ),
@@ -454,15 +457,18 @@ mod tests {
     #[test]
     fn refresh_function_views_canonicalizes_equivalent_external_signatures() {
         let duplicated_sig = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I64],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I64],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&duplicated_sig), duplicated_sig]);
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&duplicated_sig),
+            duplicated_sig
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::External {
             func_type: Rc::new(FunctionType::new(
-                vec![ValueType::I32],
-                vec![ValueType::I64],
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I64],
             )),
             callback: external_noop,
         });

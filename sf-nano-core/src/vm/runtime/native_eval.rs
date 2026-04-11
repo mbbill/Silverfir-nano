@@ -1,3 +1,4 @@
+use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
@@ -26,7 +27,7 @@ pub(super) fn eval(
                     func_type.params().len()
                 )));
             }
-            let mut returns = alloc::vec![Value::default(); func_type.results().len()];
+            let mut returns = collections::vec![Value::default(); func_type.results().len()];
             let mem_slice = if store.module().memories.is_empty() {
                 None
             } else {

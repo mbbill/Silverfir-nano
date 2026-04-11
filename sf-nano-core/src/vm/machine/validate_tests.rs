@@ -1,6 +1,6 @@
-use alloc::{vec, vec::Vec};
-
+use crate::collections;
 use crate::vm::backend::BackendConfig;
+
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineCallExternal, MachineConstData,
     MachineConstId, MachineEdge, MachineFunction, MachineInst, MachineInstKind, MachineModule,
@@ -22,21 +22,21 @@ fn minimal_config() -> BackendConfig {
 fn rejects_edge_arity_mismatch() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: Vec::new(),
+                    args: collections::Vec::new(),
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(0))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(0))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -50,11 +50,11 @@ fn rejects_edge_arity_mismatch() {
 fn rejects_out_of_range_register() {
     let program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![MachineInst {
+            params: collections::Vec::new(),
+            ops: collections::vec![MachineInst {
                 kind: MachineInstKind::Move {
                     owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
@@ -74,15 +74,15 @@ fn rejects_out_of_range_register() {
 fn rejects_out_of_range_helper_metadata() {
     let module = MachineModule {
         config: minimal_config(),
-        functions: alloc::vec![MachineFunction {
+        functions: collections::vec![MachineFunction {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             program: MachineProgram {
                 entry: MachineBlockId(0),
-                fp_reg_init_widths: vec![],
-                blocks: alloc::vec![MachineBlock {
+                fp_reg_init_widths: collections::vec![],
+                blocks: collections::vec![MachineBlock {
                     id: MachineBlockId(0),
-                    params: Vec::new(),
-                    ops: alloc::vec![MachineInst {
+                    params: collections::Vec::new(),
+                    ops: collections::vec![MachineInst {
                         kind: MachineInstKind::CallExternal(MachineCallExternal {
                             metadata: MachineConstId(1),
                         }),
@@ -91,10 +91,10 @@ fn rejects_out_of_range_helper_metadata() {
                 }],
             },
         }],
-        consts: alloc::vec![MachineConstData {
+        consts: collections::vec![MachineConstData {
             id: MachineConstId(0),
             align: 8,
-            bytes: alloc::vec![0; 8],
+            bytes: collections::vec![0; 8],
         }],
     };
 

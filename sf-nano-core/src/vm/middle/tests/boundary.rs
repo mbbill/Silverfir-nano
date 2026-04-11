@@ -1,5 +1,7 @@
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
+use crate::collections;
+
 use super::helpers::{
     contains_ensure_cache, i32_program, op, plan_i32_program, prepare_i32_program,
     prepared_block_for_semantic_index, prim, target,
@@ -14,7 +16,7 @@ fn prepared_ssa_trims_carried_local_when_branch_block_never_uses_it_and_pressure
         2,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -60,7 +62,7 @@ fn prepared_ssa_keeps_unused_carried_local_when_branch_block_can_carry_it_throug
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -88,11 +90,11 @@ fn prepared_ssa_keeps_unused_carried_local_when_branch_block_can_carry_it_throug
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],
-        alloc::vec![slot0]
+        collections::vec![slot0]
     );
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[else_block],
-        alloc::vec![slot0]
+        collections::vec![slot0]
     );
 }
 
@@ -102,7 +104,7 @@ fn prepared_ssa_uses_trimmed_final_entry_for_branch_block() {
         2,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -145,7 +147,7 @@ fn prepared_ssa_keeps_surviving_carried_local_in_branch_entry() {
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -173,11 +175,11 @@ fn prepared_ssa_keeps_surviving_carried_local_in_branch_entry() {
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],
-        alloc::vec![slot0]
+        collections::vec![slot0]
     );
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[else_block],
-        alloc::vec![slot0]
+        collections::vec![slot0]
     );
 }
 
@@ -191,7 +193,7 @@ fn prepared_ssa_trims_multi_carried_entry_down_to_the_hot_survivor() {
         2,
         2,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 8 }),
@@ -221,7 +223,7 @@ fn prepared_ssa_trims_multi_carried_entry_down_to_the_hot_survivor() {
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],
-        alloc::vec![slot0],
+        collections::vec![slot0],
         "finalized entry should trim the colder carried local after one lowering pass"
     );
     assert!(

@@ -1,6 +1,6 @@
 //! Core joint-plan data types.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::value_type::ValueType;
 use crate::vm::middle::frame::{FrameSlot, FrameSpan};
@@ -12,7 +12,7 @@ use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PrepAction {
     Spill(FrameSpan),
-    Fill(FrameSpan, Vec<ValueType>),
+    Fill(FrameSpan, collections::Vec<ValueType>),
     DropCache(FrameSlot),
 }
 
@@ -25,8 +25,8 @@ pub(crate) struct EntryState {
     ///
     /// `live_types` is still the rewrite-facing resident suffix. The full stack
     /// shape is planner-only metadata used for entry-stack ranking.
-    pub stack_types: Vec<ValueType>,
-    pub live_types: Vec<ValueType>,
+    pub stack_types: collections::Vec<ValueType>,
+    pub live_types: collections::Vec<ValueType>,
 }
 
 impl EntryState {}
@@ -53,7 +53,7 @@ pub(crate) struct BlockLocalInfo {
     pub first_write_distance: Option<u16>,
     pub read_count: u16,
     pub write_count: u16,
-    pub access_offsets: Vec<u16>,
+    pub access_offsets: collections::Vec<u16>,
     pub hot_score: i32,
 }
 
@@ -91,8 +91,8 @@ impl BlockLocalInfo {
 /// Block-local entry-region and whole-block hotness facts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockLocalRegion {
-    pub ranked_slots: Vec<FrameSlot>,
-    pub locals: Vec<Option<BlockLocalInfo>>,
+    pub ranked_slots: collections::Vec<FrameSlot>,
+    pub locals: collections::Vec<Option<BlockLocalInfo>>,
 }
 
 impl BlockLocalRegion {
@@ -117,7 +117,7 @@ pub(crate) struct BlockStackValueInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockEntryStackRegion {
     pub entry_stack_height: u16,
-    pub values: Vec<BlockStackValueInfo>,
+    pub values: collections::Vec<BlockStackValueInfo>,
 }
 
 /// Whole-block use summary for one transient stack symbol.
@@ -125,7 +125,7 @@ pub(crate) struct BlockEntryStackRegion {
 pub(crate) struct TransientSymbolInfo {
     pub first_touch_distance: Option<u16>,
     pub touch_count: u16,
-    pub access_offsets: Vec<u16>,
+    pub access_offsets: collections::Vec<u16>,
     pub hot_score: i32,
 }
 
@@ -164,7 +164,7 @@ impl TransientSymbolInfo {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockTransientRegion {
     pub entry_stack_height: u16,
-    pub symbols: Vec<TransientSymbolInfo>,
+    pub symbols: collections::Vec<TransientSymbolInfo>,
 }
 
 impl BlockTransientRegion {
@@ -207,7 +207,7 @@ pub(crate) struct BlockPlan {
     /// This is intentionally tentative. Rewrite observes the actual exit and
     /// finalizes the public block entry afterward by trimming only useless
     /// carried-in locals.
-    pub tentative_entry_cached_locals: Vec<FrameSlot>,
+    pub tentative_entry_cached_locals: collections::Vec<FrameSlot>,
 }
 
 /// Whole-function joint plan.
@@ -216,12 +216,12 @@ pub(crate) struct FunctionPlan {
     pub gp_unit_bytes: u8,
     pub gp_dynamic_budget: u8,
     pub fp_dynamic_budget: u8,
-    pub local_slot_types: Vec<ValueType>,
-    pub op_plans: Vec<OpPlan>,
-    pub entry_states: Vec<EntryState>,
-    pub op_info: Vec<OpInfo>,
-    pub block_regions: Vec<BlockLocalRegion>,
-    pub block_stack_regions: Vec<BlockEntryStackRegion>,
-    pub block_transient_regions: Vec<BlockTransientRegion>,
-    pub blocks: Vec<BlockPlan>,
+    pub local_slot_types: collections::Vec<ValueType>,
+    pub op_plans: collections::Vec<OpPlan>,
+    pub entry_states: collections::Vec<EntryState>,
+    pub op_info: collections::Vec<OpInfo>,
+    pub block_regions: collections::Vec<BlockLocalRegion>,
+    pub block_stack_regions: collections::Vec<BlockEntryStackRegion>,
+    pub block_transient_regions: collections::Vec<BlockTransientRegion>,
+    pub blocks: collections::Vec<BlockPlan>,
 }

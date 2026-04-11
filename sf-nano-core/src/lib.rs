@@ -6,6 +6,7 @@ extern crate alloc;
 #[cfg(any(sf_has_std, test))]
 extern crate std;
 
+pub(crate) mod collections;
 pub mod constants;
 pub mod error;
 pub mod module;

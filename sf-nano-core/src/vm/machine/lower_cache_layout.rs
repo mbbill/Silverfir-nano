@@ -1,4 +1,6 @@
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use crate::collections;
+use alloc::collections::BTreeMap;
+
 use core::cmp::Reverse;
 
 use crate::{
@@ -41,9 +43,9 @@ pub(super) fn compute_block_entry_cache_params(
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
     gp_reg_width: u8,
-) -> Result<Vec<Vec<EntryCacheParam>>, WasmError> {
+) -> Result<collections::Vec<collections::Vec<EntryCacheParam>>, WasmError> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
-        return Ok(vec![Vec::new(); program.blocks.len()]);
+        return Ok(collections::vec![collections::Vec::new(); program.blocks.len()]);
     }
 
     let slot_to_cached_index = cached_locals
@@ -65,7 +67,7 @@ pub(super) fn compute_block_entry_cache_params(
                 1
             },
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let param_usage = compute_param_prefix_usage(program, gp_reg_width);
     let predecessors = compute_predecessors(program);
     let rpo = compute_reverse_postorder(program);
@@ -74,11 +76,15 @@ pub(super) fn compute_block_entry_cache_params(
     let idom_children = build_idom_children(program.blocks.len(), program.entry.as_usize(), &idom);
     let bank_slots = compute_block_bank_slots(program, &slot_to_cached_index, &slot_meta);
 
-    let mut gp_layouts = vec![vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut fp_layouts = vec![vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut gp_exit_layouts = vec![vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut fp_exit_layouts = vec![vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut visited = vec![false; program.blocks.len()];
+    let mut gp_layouts =
+        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
+    let mut fp_layouts =
+        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
+    let mut gp_exit_layouts =
+        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
+    let mut fp_exit_layouts =
+        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
+    let mut visited = collections::vec![false; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
         assign_bank_layouts_from_root(
             program.entry.as_usize(),
@@ -108,7 +114,7 @@ pub(super) fn compute_block_entry_cache_params(
             &param_usage,
             &mut fp_layouts,
             &mut fp_exit_layouts,
-            &mut vec![false; program.blocks.len()],
+            &mut collections::vec![false; program.blocks.len()],
         )?;
     }
 
@@ -132,7 +138,7 @@ pub(super) fn compute_block_entry_cache_params(
             &mut visited,
         )?;
     }
-    let mut fp_visited = vec![false; program.blocks.len()];
+    let mut fp_visited = collections::vec![false; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
         mark_idom_reachable(program.entry.as_usize(), &idom_children, &mut fp_visited);
     }
@@ -157,9 +163,9 @@ pub(super) fn compute_block_entry_cache_params(
         )?;
     }
 
-    let mut layouts = vec![Vec::new(); program.blocks.len()];
+    let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
-        let mut entries = Vec::<(u16, usize, EntryCacheParam)>::new();
+        let mut entries = collections::Vec::<(u16, usize, EntryCacheParam)>::new();
         let entry_slots = program
             .block_entry_cached_slots
             .get(block_index)
@@ -214,7 +220,10 @@ pub(super) fn compute_block_entry_cache_params(
     Ok(layouts)
 }
 
-fn compute_param_prefix_usage(program: &SsaProgram, gp_reg_width: u8) -> Vec<ParamPrefixUsage> {
+fn compute_param_prefix_usage(
+    program: &SsaProgram,
+    gp_reg_width: u8,
+) -> collections::Vec<ParamPrefixUsage> {
     program
         .blocks
         .iter()
@@ -232,8 +241,8 @@ fn compute_param_prefix_usage(program: &SsaProgram, gp_reg_width: u8) -> Vec<Par
         .collect()
 }
 
-fn compute_predecessors(program: &SsaProgram) -> Vec<Vec<usize>> {
-    let mut predecessors = vec![Vec::new(); program.blocks.len()];
+fn compute_predecessors(program: &SsaProgram) -> collections::Vec<collections::Vec<usize>> {
+    let mut predecessors = collections::vec![collections::Vec::new(); program.blocks.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
         for target in block_successors(&block.terminator) {
             if let Some(preds) = predecessors.get_mut(target.as_usize()) {
@@ -244,8 +253,13 @@ fn compute_predecessors(program: &SsaProgram) -> Vec<Vec<usize>> {
     predecessors
 }
 
-fn compute_reverse_postorder(program: &SsaProgram) -> Vec<usize> {
-    fn dfs(block_index: usize, program: &SsaProgram, seen: &mut [bool], order: &mut Vec<usize>) {
+fn compute_reverse_postorder(program: &SsaProgram) -> collections::Vec<usize> {
+    fn dfs(
+        block_index: usize,
+        program: &SsaProgram,
+        seen: &mut [bool],
+        order: &mut collections::Vec<usize>,
+    ) {
         if block_index >= program.blocks.len() || seen[block_index] {
             return;
         }
@@ -256,8 +270,8 @@ fn compute_reverse_postorder(program: &SsaProgram) -> Vec<usize> {
         order.push(block_index);
     }
 
-    let mut seen = vec![false; program.blocks.len()];
-    let mut order = Vec::with_capacity(program.blocks.len());
+    let mut seen = collections::vec![false; program.blocks.len()];
+    let mut order = collections::Vec::with_capacity(program.blocks.len());
     dfs(program.entry.as_usize(), program, &mut seen, &mut order);
     order.reverse();
     order
@@ -266,10 +280,10 @@ fn compute_reverse_postorder(program: &SsaProgram) -> Vec<usize> {
 fn compute_immediate_dominators(
     block_count: usize,
     entry: SsaTarget,
-    predecessors: &[Vec<usize>],
+    predecessors: &[collections::Vec<usize>],
     rpo: &[usize],
-) -> Vec<Option<usize>> {
-    let mut rpo_index = vec![usize::MAX; block_count];
+) -> collections::Vec<Option<usize>> {
+    let mut rpo_index = collections::vec![usize::MAX; block_count];
     for (index, &block_index) in rpo.iter().enumerate() {
         if block_index < block_count {
             rpo_index[block_index] = index;
@@ -277,7 +291,7 @@ fn compute_immediate_dominators(
     }
 
     let entry_index = entry.as_usize();
-    let mut idom = vec![None; block_count];
+    let mut idom = collections::vec![None; block_count];
     if entry_index >= block_count {
         return idom;
     }
@@ -328,8 +342,8 @@ fn build_idom_children(
     block_count: usize,
     entry_index: usize,
     idom: &[Option<usize>],
-) -> Vec<Vec<usize>> {
-    let mut children = vec![Vec::new(); block_count];
+) -> collections::Vec<collections::Vec<usize>> {
+    let mut children = collections::vec![collections::Vec::new(); block_count];
     for block_index in 0..block_count {
         let Some(parent) = idom[block_index] else {
             continue;
@@ -342,7 +356,7 @@ fn build_idom_children(
     children
 }
 
-fn mark_idom_reachable(block_index: usize, children: &[Vec<usize>], out: &mut [bool]) {
+fn mark_idom_reachable(block_index: usize, children: &[collections::Vec<usize>], out: &mut [bool]) {
     if block_index >= out.len() || out[block_index] {
         return;
     }
@@ -356,11 +370,11 @@ fn compute_block_bank_slots(
     program: &SsaProgram,
     slot_to_cached_index: &BTreeMap<crate::vm::middle::frame::FrameSlot, usize>,
     slot_meta: &[SlotLayoutMeta],
-) -> Vec<[Vec<usize>; 2]> {
+) -> collections::Vec<[collections::Vec<usize>; 2]> {
     (0..program.blocks.len())
         .map(|block_index| {
-            let mut gp = Vec::new();
-            let mut fp = Vec::new();
+            let mut gp = collections::Vec::new();
+            let mut fp = collections::Vec::new();
             let slots = program
                 .block_entry_cached_slots
                 .get(block_index)
@@ -387,12 +401,12 @@ fn assign_bank_layouts_from_root(
     lane_count: usize,
     program: &SsaProgram,
     slot_to_cached_index: &BTreeMap<crate::vm::middle::frame::FrameSlot, usize>,
-    idom_children: &[Vec<usize>],
-    bank_slots: &[[Vec<usize>; 2]],
+    idom_children: &[collections::Vec<usize>],
+    bank_slots: &[[collections::Vec<usize>; 2]],
     slot_meta: &[SlotLayoutMeta],
     param_usage: &[ParamPrefixUsage],
-    layouts: &mut [Vec<Option<usize>>],
-    exit_layouts: &mut [Vec<Option<usize>>],
+    layouts: &mut [collections::Vec<Option<usize>>],
+    exit_layouts: &mut [collections::Vec<Option<usize>>],
     visited: &mut [bool],
 ) -> Result<(), WasmError> {
     if block_index >= layouts.len() || visited[block_index] {
@@ -447,9 +461,9 @@ fn simulate_block_exit_layout(
     bank: LayoutBank,
     lane_count: usize,
     prefix_occupied: usize,
-) -> Result<Vec<Option<usize>>, WasmError> {
-    let mut layout = entry_layout.to_vec();
-    let mut occupied = vec![false; lane_count];
+) -> Result<collections::Vec<Option<usize>>, WasmError> {
+    let mut layout: collections::Vec<_> = entry_layout.to_vec().into();
+    let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
@@ -486,7 +500,7 @@ fn simulate_block_exit_layout(
                             (slot_meta[cached_index].bank == bank && start.is_some())
                                 .then_some(cached_index)
                         })
-                        .collect::<Vec<_>>();
+                        .collect::<collections::Vec<_>>();
                     active.push(slot_index);
                     layout = exact_gp_layout(
                         &active,
@@ -559,17 +573,17 @@ fn build_block_bank_layout(
     lane_count: usize,
     prefix_occupied: usize,
     bank: LayoutBank,
-) -> Result<Vec<Option<usize>>, WasmError> {
-    let mut layout = vec![None; slot_meta.len()];
+) -> Result<collections::Vec<Option<usize>>, WasmError> {
+    let mut layout = collections::vec![None; slot_meta.len()];
     if slots.is_empty() {
         return Ok(layout);
     }
-    let mut occupied = vec![false; lane_count];
+    let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
 
-    let mut additions = Vec::new();
+    let mut additions = collections::Vec::new();
     if let Some(parent_layout) = parent_layout {
         for &slot in slots {
             if let Some(start) = parent_layout[slot] {
@@ -618,7 +632,7 @@ fn exact_gp_layout(
     slot_meta: &[SlotLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
-) -> Result<Vec<Option<usize>>, WasmError> {
+) -> Result<collections::Vec<Option<usize>>, WasmError> {
     let mut ordered = slots.to_vec();
     ordered.sort_by_key(|&slot| {
         (
@@ -627,12 +641,12 @@ fn exact_gp_layout(
             slot,
         )
     });
-    let mut occupied = vec![false; lane_count];
+    let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
-    let mut current = vec![None; slot_meta.len()];
-    let mut best: Option<(usize, Vec<Option<usize>>)> = None;
+    let mut current = collections::vec![None; slot_meta.len()];
+    let mut best: Option<(usize, collections::Vec<Option<usize>>)> = None;
     search_exact_gp_layout(
         &ordered,
         0,
@@ -656,7 +670,7 @@ fn search_exact_gp_layout(
     occupied: &mut [bool],
     current: &mut [Option<usize>],
     current_cost: usize,
-    best: &mut Option<(usize, Vec<Option<usize>>)>,
+    best: &mut Option<(usize, collections::Vec<Option<usize>>)>,
 ) {
     if let Some((best_cost, _)) = best {
         if current_cost > *best_cost {
@@ -673,7 +687,7 @@ fn search_exact_gp_layout(
             }
         };
         if replace {
-            *best = Some((current_cost, current.to_vec()));
+            *best = Some((current_cost, current.to_vec().into()));
         }
         return;
     }
@@ -720,8 +734,8 @@ fn lexicographically_better(lhs: &[Option<usize>], rhs: &[Option<usize>]) -> boo
     false
 }
 
-fn feasible_starts(occupied: &[bool], width: usize) -> Vec<usize> {
-    let mut starts = Vec::new();
+fn feasible_starts(occupied: &[bool], width: usize) -> collections::Vec<usize> {
+    let mut starts = collections::Vec::new();
     if width == 0 || width > occupied.len() {
         return starts;
     }
@@ -809,17 +823,17 @@ fn regs_for_segment(
     }
 }
 
-fn block_successors(terminator: &SsaTerminator) -> Vec<SsaTarget> {
+fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
     match terminator {
-        SsaTerminator::Goto(edge) => vec![edge.target],
+        SsaTerminator::Goto(edge) => collections::vec![edge.target],
         SsaTerminator::Branch {
             then_edge,
             else_edge,
             ..
-        } => vec![then_edge.target, else_edge.target],
+        } => collections::vec![then_edge.target, else_edge.target],
         SsaTerminator::BrTable { entries, .. } => {
             entries.iter().map(|entry| entry.target).collect()
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => Vec::new(),
+        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => collections::Vec::new(),
     }
 }

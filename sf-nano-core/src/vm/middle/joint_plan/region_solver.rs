@@ -6,8 +6,7 @@
 //! - mismatch cost is paid only when residency changes at a region boundary
 //! - capacities are enforced per region/bank during the final extraction pass
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     value_type::ValueType,
@@ -39,11 +38,11 @@ struct LocalMeta {
 
 #[derive(Clone, Debug, Default)]
 struct RegionNode {
-    children: Vec<usize>,
+    children: collections::Vec<usize>,
     depth: usize,
     start_index: usize,
     end_index: usize,
-    owned_blocks: Vec<usize>,
+    owned_blocks: collections::Vec<usize>,
     entry_freq: f64,
     exit_freq: f64,
     gp_capacity: usize,
@@ -52,13 +51,13 @@ struct RegionNode {
 
 #[derive(Clone, Debug)]
 struct RegionTree {
-    nodes: Vec<RegionNode>,
-    owner_by_block: Vec<usize>,
+    nodes: collections::Vec<RegionNode>,
+    owner_by_block: collections::Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
 struct SlotDp {
-    force_value: Vec<[[f64; 2]; 2]>,
+    force_value: collections::Vec<[[f64; 2]; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +69,7 @@ enum StructuredFrame {
 impl SlotDp {
     fn new(region_count: usize) -> Self {
         Self {
-            force_value: vec![[[0.0; 2]; 2]; region_count],
+            force_value: collections::vec![[[0.0; 2]; 2]; region_count],
         }
     }
 
@@ -88,10 +87,10 @@ pub(super) fn solve_public_cache_sets(
     fp_dynamic_budget: u8,
     op_plans: &[OpPlan],
     block_regions: &[BlockLocalRegion],
-) -> Vec<Vec<FrameSlot>> {
+) -> collections::Vec<collections::Vec<FrameSlot>> {
     let local_count = semantic.local_count as usize;
     if cfg.blocks.is_empty() || local_count == 0 {
-        return vec![Vec::new(); cfg.blocks.len()];
+        return collections::vec![collections::Vec::new(); cfg.blocks.len()];
     }
 
     let mut regions = build_region_tree(semantic, cfg);
@@ -112,8 +111,8 @@ pub(super) fn solve_public_cache_sets(
     }
 
     let region_count = regions.nodes.len();
-    let mut benefit = vec![vec![0.0; local_count]; region_count];
-    let mut call_tax = vec![vec![0.0; local_count]; region_count];
+    let mut benefit = collections::vec![collections::vec![0.0; local_count]; region_count];
+    let mut call_tax = collections::vec![collections::vec![0.0; local_count]; region_count];
 
     for (block_index, region_id) in regions.owner_by_block.iter().copied().enumerate() {
         let weight = block_weights[block_index];
@@ -135,7 +134,7 @@ pub(super) fn solve_public_cache_sets(
         }
     }
 
-    let mut selected = vec![vec![false; local_count]; region_count];
+    let mut selected = collections::vec![collections::vec![false; local_count]; region_count];
     solve_bank(
         Bank::Gp,
         &regions,
@@ -158,7 +157,7 @@ pub(super) fn solve_public_cache_sets(
         .enumerate()
         .map(|(block_index, _)| {
             let owner = regions.owner_by_block[block_index];
-            let mut slots = Vec::new();
+            let mut slots = collections::Vec::new();
             for (slot_index, is_selected) in selected[owner].iter().copied().enumerate() {
                 if is_selected {
                     slots.push(FrameSlot(slot_index as u16));
@@ -173,15 +172,15 @@ fn solve_bank(
     bank: Bank,
     regions: &RegionTree,
     local_meta: &[LocalMeta],
-    benefit: &[Vec<f64>],
-    call_tax: &[Vec<f64>],
-    selected: &mut [Vec<bool>],
+    benefit: &[collections::Vec<f64>],
+    call_tax: &[collections::Vec<f64>],
+    selected: &mut [collections::Vec<bool>],
 ) {
     let slots = local_meta
         .iter()
         .enumerate()
         .filter_map(|(slot_index, meta)| (meta.bank == bank).then_some(slot_index))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     if slots.is_empty() {
         return;
     }
@@ -193,19 +192,19 @@ fn solve_bank(
             Bank::Gp => region.gp_capacity,
             Bank::Fp => region.fp_capacity,
         })
-        .collect::<Vec<_>>();
-    let mut lambdas = vec![0.0; regions.nodes.len()];
+        .collect::<collections::Vec<_>>();
+    let mut lambdas = collections::vec![0.0; regions.nodes.len()];
     let mut slot_dps = slots
         .iter()
         .map(|_| SlotDp::new(regions.nodes.len()))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let mut slot_choice = slots
         .iter()
-        .map(|_| vec![false; regions.nodes.len()])
-        .collect::<Vec<_>>();
+        .map(|_| collections::vec![false; regions.nodes.len()])
+        .collect::<collections::Vec<_>>();
 
     for _ in 0..PRICE_ITERS {
-        let mut demand = vec![0usize; regions.nodes.len()];
+        let mut demand = collections::vec![0usize; regions.nodes.len()];
         for (slot_pos, &slot_index) in slots.iter().enumerate() {
             compute_slot_dp(
                 slot_index,
@@ -238,7 +237,7 @@ fn solve_bank(
         }
     }
 
-    let zero_lambdas = vec![0.0; regions.nodes.len()];
+    let zero_lambdas = collections::vec![0.0; regions.nodes.len()];
     for (slot_pos, &slot_index) in slots.iter().enumerate() {
         compute_slot_dp(
             slot_index,
@@ -251,7 +250,7 @@ fn solve_bank(
         );
     }
 
-    let parent_selection = vec![false; local_meta.len()];
+    let parent_selection = collections::vec![false; local_meta.len()];
     extract_feasible_states(
         0,
         &parent_selection,
@@ -268,8 +267,8 @@ fn compute_slot_dp(
     slot_index: usize,
     meta: LocalMeta,
     regions: &RegionTree,
-    benefit: &[Vec<f64>],
-    call_tax: &[Vec<f64>],
+    benefit: &[collections::Vec<f64>],
+    call_tax: &[collections::Vec<f64>],
     lambdas: &[f64],
     dp: &mut SlotDp,
 ) {
@@ -320,12 +319,12 @@ fn extract_feasible_states(
     local_meta: &[LocalMeta],
     capacities: &[usize],
     slot_dps: &[SlotDp],
-    selected: &mut [Vec<bool>],
+    selected: &mut [collections::Vec<bool>],
 ) {
     let cap = capacities[region_id];
     let neg_inf = f64::NEG_INFINITY;
-    let mut values = vec![vec![neg_inf; cap + 1]; bank_slots.len() + 1];
-    let mut take = vec![vec![false; cap + 1]; bank_slots.len() + 1];
+    let mut values = collections::vec![collections::vec![neg_inf; cap + 1]; bank_slots.len() + 1];
+    let mut take = collections::vec![collections::vec![false; cap + 1]; bank_slots.len() + 1];
 
     for used in 0..=cap {
         values[0][used] = 0.0;
@@ -410,7 +409,7 @@ fn edge_cost(
 }
 
 fn build_region_tree(semantic: &SemanticProgram, cfg: &SemanticCfg) -> RegionTree {
-    let mut nodes = vec![RegionNode {
+    let mut nodes = collections::vec![RegionNode {
         depth: 0,
         start_index: 0,
         end_index: semantic.ops.len(),
@@ -418,7 +417,7 @@ fn build_region_tree(semantic: &SemanticProgram, cfg: &SemanticCfg) -> RegionTre
         exit_freq: 1.0,
         ..RegionNode::default()
     }];
-    let mut stack = Vec::<StructuredFrame>::new();
+    let mut stack = collections::Vec::<StructuredFrame>::new();
 
     for (index, op) in semantic.ops.iter().enumerate() {
         match op.kind {
@@ -449,7 +448,7 @@ fn build_region_tree(semantic: &SemanticProgram, cfg: &SemanticCfg) -> RegionTre
         }
     }
 
-    let mut owner_by_block = vec![0usize; cfg.blocks.len()];
+    let mut owner_by_block = collections::vec![0usize; cfg.blocks.len()];
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         let start_index = block
             .range
@@ -505,7 +504,7 @@ fn build_local_meta(
     local_types: &[ValueType],
     local_count: usize,
     gp_unit_bytes: u8,
-) -> Vec<LocalMeta> {
+) -> collections::Vec<LocalMeta> {
     (0..local_count)
         .map(|slot_index| {
             let ty = local_types
@@ -527,7 +526,7 @@ fn build_local_meta(
         .collect()
 }
 
-fn compute_block_weights(regions: &RegionTree) -> Vec<f64> {
+fn compute_block_weights(regions: &RegionTree) -> collections::Vec<f64> {
     regions
         .owner_by_block
         .iter()
@@ -544,7 +543,10 @@ fn block_weight(depth: usize) -> f64 {
     weight
 }
 
-fn compute_block_call_counts(semantic: &SemanticProgram, cfg: &SemanticCfg) -> Vec<u32> {
+fn compute_block_call_counts(
+    semantic: &SemanticProgram,
+    cfg: &SemanticCfg,
+) -> collections::Vec<u32> {
     cfg.blocks
         .iter()
         .map(|block| {
@@ -566,9 +568,9 @@ fn compute_block_peak_live_units(
     cfg: &SemanticCfg,
     op_plans: &[OpPlan],
     gp_unit_bytes: u8,
-) -> (Vec<usize>, Vec<usize>) {
-    let mut peak_gp = vec![0usize; cfg.blocks.len()];
-    let mut peak_fp = vec![0usize; cfg.blocks.len()];
+) -> (collections::Vec<usize>, collections::Vec<usize>) {
+    let mut peak_gp = collections::vec![0usize; cfg.blocks.len()];
+    let mut peak_fp = collections::vec![0usize; cfg.blocks.len()];
 
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         for semantic_index in block.range.clone() {
@@ -598,32 +600,32 @@ mod tests {
     fn block_peak_live_units_include_post_op_results() {
         let cfg = SemanticCfg {
             entry: CfgBlockId(0),
-            blocks: alloc::vec![CfgBlock {
+            blocks: collections::vec![CfgBlock {
                 id: CfgBlockId(0),
                 range: 0..1,
-                preds: Vec::new(),
-                succs: Vec::new(),
+                preds: collections::Vec::new(),
+                succs: collections::Vec::new(),
                 terminator: CfgTerminator::Return { op_index: 0 },
                 flags: CfgBlockFlags {
                     is_entry: true,
                     ..CfgBlockFlags::default()
                 },
             }],
-            semantic_to_block: alloc::vec![CfgBlockId(0)],
+            semantic_to_block: collections::vec![CfgBlockId(0)],
         };
-        let op_plans = alloc::vec![OpPlan {
+        let op_plans = collections::vec![OpPlan {
             before: EntryState::default(),
             after: EntryState {
                 stack_height: 1,
                 spill_depth: 0,
-                stack_types: alloc::vec![ValueType::I64],
-                live_types: alloc::vec![ValueType::I64],
+                stack_types: collections::vec![ValueType::I64],
+                live_types: collections::vec![ValueType::I64],
             },
         }];
 
         let (peak_gp, peak_fp) = compute_block_peak_live_units(&cfg, &op_plans, 8);
 
-        assert_eq!(peak_gp, alloc::vec![1]);
-        assert_eq!(peak_fp, alloc::vec![0]);
+        assert_eq!(peak_gp, collections::vec![1]);
+        assert_eq!(peak_fp, collections::vec![0]);
     }
 }

@@ -9,6 +9,8 @@
 //! can see that the guard borrows only the pool (via `Cell`), while
 //! `&mut TextEmitter` is reborrowed only for the call's duration.
 
+use crate::collections;
+
 use crate::{
     error::WasmError,
     vm::{
@@ -3609,14 +3611,14 @@ mod tests {
     fn load_byte_helper_materializes_large_offsets() {
         let mut text = TextEmitter::new();
         emit_load_byte_into(&mut text, Arm32Reg::R3, Arm32Reg::R10, 0x1234, false);
-        let words: Vec<u32> = text
+        let words: collections::Vec<u32> = text
             .finish()
             .chunks_exact(4)
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect();
         assert_eq!(
             words,
-            vec![
+            collections::vec![
                 enc::movw(Arm32Reg::R3, 0x1234),
                 enc::add_reg(Arm32Reg::R3, Arm32Reg::R10, Arm32Reg::R3),
                 enc::ldrb_imm(Arm32Reg::R3, Arm32Reg::R3, 0),
@@ -3629,14 +3631,14 @@ mod tests {
         let mut text = TextEmitter::new();
         let pool = ScratchPool::new([Arm32Reg::R12, Arm32Reg::R14]);
         emit_store_half_to(&mut text, &pool, Arm32Reg::R5, Arm32Reg::R10, 0x2345);
-        let words: Vec<u32> = text
+        let words: collections::Vec<u32> = text
             .finish()
             .chunks_exact(4)
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect();
         assert_eq!(
             words,
-            vec![
+            collections::vec![
                 enc::movw(Arm32Reg::R12, 0x2345),
                 enc::add_reg(Arm32Reg::R12, Arm32Reg::R10, Arm32Reg::R12),
                 enc::strh_imm(Arm32Reg::R5, Arm32Reg::R12, 0),

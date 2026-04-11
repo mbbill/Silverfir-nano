@@ -1,6 +1,7 @@
 #[cfg(sf_has_debug_regions)]
+use crate::collections;
+
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
@@ -32,9 +33,9 @@ pub(crate) struct DebugRegion {
 pub(crate) struct EdgeStub {
     pub label: usize,
     pub target: MachineBlockId,
-    pub params: Vec<MachineBlockParam>,
-    pub args: Vec<MachineValue>,
-    pub arg_float_widths: Vec<Option<MachineFloatWidth>>,
+    pub params: collections::Vec<MachineBlockParam>,
+    pub args: collections::Vec<MachineValue>,
+    pub arg_float_widths: collections::Vec<Option<MachineFloatWidth>>,
 }
 
 // ── Patch types ──────────────────────────────────────────────────────────────
@@ -63,8 +64,8 @@ pub(crate) struct DirectCallPatch {
 #[derive(Debug)]
 pub(crate) struct FunctionArtifact {
     pub text: TextEmitter,
-    pub local_ptr_patches: Vec<LocalPtrPatch>,
-    pub direct_call_patches: Vec<DirectCallPatch>,
+    pub local_ptr_patches: collections::Vec<LocalPtrPatch>,
+    pub direct_call_patches: collections::Vec<DirectCallPatch>,
     /// Offset within `text` of the function's `body_local_error_label`.
     /// Used by the guard-page signal handler to redirect a faulting PC to
     /// the trap propagation tail.
@@ -72,7 +73,7 @@ pub(crate) struct FunctionArtifact {
     pub body_local_error_offset: usize,
     pub internal_entry_offset: usize,
     #[cfg(sf_has_debug_regions)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 // ── Parallel move source ─────────────────────────────────────────────────────

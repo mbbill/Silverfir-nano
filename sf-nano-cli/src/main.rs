@@ -7,124 +7,12 @@ use sf_nano_core::{
     ReferenceBackendMode,
 };
 
-#[cfg(feature = "memtrace")]
-use std::alloc::System;
-#[cfg(feature = "memtrace")]
-use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::{env, fs, process};
 
-#[cfg(feature = "memtrace")]
-#[global_allocator]
-static ALLOCATOR: sf_nano_memtrace::TrackingAllocator<System> =
-    sf_nano_memtrace::TrackingAllocator::new(System);
-
-#[cfg(feature = "memtrace")]
-#[derive(Debug)]
-struct MemtraceOptions {
-    enabled: bool,
-    output_path: Option<PathBuf>,
-}
-
-#[cfg(feature = "memtrace")]
-impl Default for MemtraceOptions {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            output_path: None,
-        }
-    }
-}
-
 fn main() {
-    #[cfg(feature = "memtrace")]
-    {
-        let original_args: Vec<String> = env::args().collect();
-        let (memtrace_options, filtered_args) = match parse_memtrace_options(&original_args) {
-            Ok(value) => value,
-            Err(exit_code) => process::exit(exit_code),
-        };
-        let trace_output = if memtrace_options.enabled {
-            match sf_nano_memtrace::configure_trace(
-                original_args.clone(),
-                memtrace_options.output_path.clone(),
-            ) {
-                Ok(path) => Some(path),
-                Err(err) => {
-                    eprintln!("Error: failed to open memtrace output: {}", err);
-                    process::exit(1);
-                }
-            }
-        } else {
-            sf_nano_memtrace::disable_trace();
-            None
-        };
-
-        let run_result = panic::catch_unwind(AssertUnwindSafe(|| run_cli(&filtered_args)));
-        let exit_code = match run_result {
-            Ok(code) => code,
-            Err(payload) => {
-                eprintln!("panic: {}", panic_payload_message(&payload));
-                101
-            }
-        };
-        finish_tracing(exit_code, trace_output);
-    }
-
-    #[cfg(not(feature = "memtrace"))]
-    {
-        let args: Vec<String> = env::args().collect();
-        process::exit(run_cli(&args));
-    }
-}
-
-#[cfg(feature = "memtrace")]
-fn parse_memtrace_options(args: &[String]) -> Result<(MemtraceOptions, Vec<String>), i32> {
-    let mut options = MemtraceOptions::default();
-    let mut filtered_args = Vec::with_capacity(args.len());
-    filtered_args.push(args[0].clone());
-
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
-            "--" => {
-                filtered_args.extend(args[i..].iter().cloned());
-                break;
-            }
-            "--memtrace" => {
-                options.enabled = true;
-            }
-            "--memtrace-output" => {
-                i += 1;
-                let Some(path) = args.get(i) else {
-                    eprintln!("Error: --memtrace-output requires a path");
-                    return Err(1);
-                };
-                options.enabled = true;
-                options.output_path = Some(PathBuf::from(path));
-            }
-            "--memtrace-help" | "--help-memtrace" => {
-                print_usage(&args[0]);
-                return Err(0);
-            }
-            "--memtrace-top" | "--memtrace-json" => {
-                eprintln!(
-                    "Error: '{}' was removed; memtrace now emits only raw traces. Use --memtrace-output <path>.",
-                    arg
-                );
-                return Err(1);
-            }
-            _ if arg.starts_with("--memtrace-") => {
-                eprintln!("Error: unrecognized memtrace option '{}'", arg);
-                return Err(1);
-            }
-            _ => filtered_args.push(arg.clone()),
-        }
-        i += 1;
-    }
-
-    Ok((options, filtered_args))
+    let args: Vec<String> = env::args().collect();
+    process::exit(run_cli(&args));
 }
 
 fn run_cli(args: &[String]) -> i32 {
@@ -278,39 +166,6 @@ fn run_cli(args: &[String]) -> i32 {
     }
 }
 
-#[cfg(feature = "memtrace")]
-fn finish_tracing(mut exit_code: i32, trace_output: Option<PathBuf>) -> ! {
-    let printed_path = if trace_output.is_some() {
-        sf_nano_memtrace::trace_output_path().or(trace_output.clone())
-    } else {
-        None
-    };
-    if trace_output.is_some() {
-        if let Err(err) = sf_nano_memtrace::flush_trace() {
-            eprintln!("Error flushing memtrace output: {}", err);
-            if exit_code == 0 {
-                exit_code = 1;
-            }
-        }
-        sf_nano_memtrace::disable_trace();
-        if let Some(path) = printed_path {
-            eprintln!("[memtrace] raw trace={}", path.display());
-        }
-    }
-    process::exit(exit_code);
-}
-
-#[cfg(feature = "memtrace")]
-fn panic_payload_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&'static str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "non-string panic payload".to_string()
-    }
-}
-
 fn print_usage(program_name: &str) {
     eprintln!("Silverfir-nano — WebAssembly interpreter");
     eprintln!();
@@ -318,14 +173,6 @@ fn print_usage(program_name: &str) {
     eprintln!(
         "  {program_name} [--backend <auto|native>] [--emu64|--emu32] [--dir <path>] <wasm-file> [args...]"
     );
-    #[cfg(feature = "memtrace")]
-    {
-        eprintln!();
-        eprintln!("MEMTRACE OPTIONS:");
-        eprintln!("  --memtrace             Enable raw memtrace output");
-        eprintln!("  --memtrace-output <path>  Write the raw trace log to <path>");
-        eprintln!("  --memtrace-help        Show this help text");
-    }
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");
 }

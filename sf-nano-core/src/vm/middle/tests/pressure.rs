@@ -1,4 +1,6 @@
 use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+use crate::collections;
+
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::helpers::{
@@ -15,7 +17,7 @@ fn mid_block_pressure_spills_colder_bottom_transient_to_keep_hot_cache() {
         1,
         3,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
@@ -79,7 +81,7 @@ fn mid_block_pressure_spills_truly_unused_transient_before_dropping_hot_cache() 
         1,
         3,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
@@ -143,7 +145,7 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
         2,
         2,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 1 }),
@@ -197,7 +199,7 @@ fn mid_block_pressure_can_drop_multiple_cold_caches_to_admit_one_hot_local() {
         3,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),

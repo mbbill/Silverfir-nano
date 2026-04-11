@@ -1,4 +1,6 @@
+use crate::collections;
 use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use super::helpers::{
@@ -13,7 +15,7 @@ fn entry_block_hot_local_preload_uses_one_synthetic_entry_repair() {
         1,
         2,
         1,
-        alloc::vec![
+        collections::vec![
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
             prim(PrimitiveOpKind::I32Add),
@@ -37,7 +39,7 @@ fn local_get_uses_cache_when_local_is_already_resident_and_budget_has_result_roo
         1,
         1,
         1,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
@@ -66,7 +68,7 @@ fn hot_loop_body_keeps_hot_local_in_final_entry_with_at_most_one_cold_ensure() {
         2,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -130,7 +132,7 @@ fn hot_loop_header_needs_repair_on_at_most_one_incoming_edge() {
         2,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -196,7 +198,7 @@ fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
         4,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 11 }),
@@ -273,7 +275,7 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
         4,
         1,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 11 }),
@@ -383,7 +385,7 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
         2,
         2,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::LocalSet { idx: 1 }),
             op(SemanticOpKind::Block {
@@ -474,7 +476,7 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
         1,
         2,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::Block {
@@ -512,7 +514,7 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
 
     assert_eq!(
         pipeline.planner.block_open(loop_body_cfg).cached_locals,
-        alloc::vec![slot0]
+        &[slot0]
     );
     assert!(
         repair_blocks.is_empty(),
@@ -533,7 +535,7 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
         2,
         2,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 8 }),
@@ -585,7 +587,7 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
                 )
             })
         })
-        .collect::<alloc::vec::Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     assert!(
         pipeline

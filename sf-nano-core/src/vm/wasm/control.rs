@@ -4,6 +4,8 @@
 //! resolution. It is not the right place for spill/fill or prepared block
 //! shaping.
 
+use crate::collections;
+
 use super::common::{SemanticIndex, SemanticTarget};
 
 /// Structured Wasm block kind.
@@ -27,7 +29,7 @@ pub(crate) struct ControlFrame {
 /// Semantic control stack.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ControlStack {
-    pub frames: alloc::vec::Vec<ControlFrame>,
+    pub frames: collections::Vec<ControlFrame>,
 }
 
 impl ControlStack {

@@ -1,3 +1,5 @@
+use crate::collections;
+
 use crate::{
     error::WasmError,
     extract_imm,
@@ -12,7 +14,6 @@ use crate::{
 };
 use alloc::rc::Rc;
 use alloc::vec;
-use alloc::vec::Vec;
 
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
@@ -101,10 +102,14 @@ impl<'a> FunctionValidator<'a> {
 
     fn get_block_type(&self, block_type: BlockType) -> Result<Rc<FunctionType>, WasmError> {
         match block_type {
-            BlockType::Empty => Ok(Rc::new(FunctionType::new(Vec::new(), Vec::new()))),
-            BlockType::ValueType(value_type) => {
-                Ok(Rc::new(FunctionType::new(Vec::new(), vec![value_type])))
-            }
+            BlockType::Empty => Ok(Rc::new(FunctionType::new(
+                collections::Vec::new(),
+                collections::Vec::new(),
+            ))),
+            BlockType::ValueType(value_type) => Ok(Rc::new(FunctionType::new(
+                collections::Vec::new(),
+                collections::vec![value_type],
+            ))),
             BlockType::TypeIndex(type_index) => self
                 .module
                 .types()
@@ -986,33 +991,33 @@ impl ControlFrame {
         self.height
     }
 
-    fn label_types(&self) -> Vec<ValueType> {
+    fn label_types(&self) -> collections::Vec<ValueType> {
         if self.frame_type == FrameType::Loop {
-            self.function_type.params().to_vec()
+            self.function_type.params().to_vec().into()
         } else {
-            self.function_type.results().to_vec()
+            self.function_type.results().to_vec().into()
         }
     }
 }
 
 struct Context {
-    control_frames: Vec<ControlFrame>,
-    all_locals: Vec<ValueType>,
-    val_stack: Vec<ValueType>,
-    locals_init: Vec<bool>,
-    inits: Vec<u32>,
+    control_frames: collections::Vec<ControlFrame>,
+    all_locals: collections::Vec<ValueType>,
+    val_stack: collections::Vec<ValueType>,
+    locals_init: collections::Vec<bool>,
+    inits: collections::Vec<u32>,
 }
 
 impl Context {
     fn new(params: &[ValueType], locals: &[ValueType]) -> Self {
-        let mut all_locals = Vec::new();
+        let mut all_locals = collections::Vec::new();
         all_locals.extend_from_slice(params);
         all_locals.extend_from_slice(locals);
 
         let num_locals = all_locals.len();
         let num_params = params.len();
 
-        let mut locals_init = vec![false; num_locals];
+        let mut locals_init = collections::vec![false; num_locals];
         for slot in locals_init.iter_mut().take(num_params) {
             *slot = true;
         }
@@ -1025,11 +1030,11 @@ impl Context {
         }
 
         Context {
-            control_frames: Vec::new(),
+            control_frames: collections::Vec::new(),
             all_locals,
-            val_stack: Vec::new(),
+            val_stack: collections::Vec::new(),
             locals_init,
-            inits: Vec::new(),
+            inits: collections::Vec::new(),
         }
     }
 
@@ -1074,8 +1079,11 @@ impl Context {
         Ok(actual)
     }
 
-    fn pop_vals(&mut self, expected_vals: &[ValueType]) -> Result<Vec<ValueType>, WasmError> {
-        let mut popped_vals = Vec::new();
+    fn pop_vals(
+        &mut self,
+        expected_vals: &[ValueType],
+    ) -> Result<collections::Vec<ValueType>, WasmError> {
+        let mut popped_vals = collections::Vec::new();
         for &expected in expected_vals.iter().rev() {
             let popped = self.pop_val(Some(expected))?;
             popped_vals.push(popped);
@@ -1126,7 +1134,8 @@ impl Context {
             .unwrap()
             .function_type()
             .results()
-            .to_vec();
+            .to_vec()
+            .into();
         self.pop_vals(&results)?;
         let frame = self.control_frames.pop().unwrap();
         if frame.height() != self.val_stack.len() {

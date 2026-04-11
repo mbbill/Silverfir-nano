@@ -7,7 +7,7 @@
 //! The planner never mutates these structures directly. It only returns
 //! decisions that the rewriter validates and applies.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -23,7 +23,7 @@ use crate::{
 #[derive(Clone, Debug, Default)]
 pub(super) struct ValueAlloc {
     next: u32,
-    types: Vec<ValueType>,
+    types: collections::Vec<ValueType>,
 }
 
 impl ValueAlloc {
@@ -34,7 +34,7 @@ impl ValueAlloc {
         value
     }
 
-    pub(super) fn many_typed(&mut self, types: &[ValueType]) -> Vec<SsaValue> {
+    pub(super) fn many_typed(&mut self, types: &[ValueType]) -> collections::Vec<SsaValue> {
         types.iter().map(|ty| self.fresh_typed(*ty)).collect()
     }
 
@@ -45,7 +45,7 @@ impl ValueAlloc {
             .unwrap_or(ValueType::I64)
     }
 
-    pub(super) fn take_types(&mut self) -> Vec<ValueType> {
+    pub(super) fn take_types(&mut self) -> collections::Vec<ValueType> {
         core::mem::take(&mut self.types)
     }
 }
@@ -53,7 +53,7 @@ impl ValueAlloc {
 pub(super) fn make_block_params(
     entry_live_types: &[ValueType],
     values: &mut ValueAlloc,
-) -> Vec<SsaValue> {
+) -> collections::Vec<SsaValue> {
     values.many_typed(entry_live_types)
 }
 
@@ -64,10 +64,10 @@ pub(super) struct BlockState {
     pub(super) fp_live_budget: u8,
     stack_height: u16,
     spill_depth: u16,
-    live: Vec<SsaValue>,
-    pub(super) live_types: Vec<ValueType>,
-    live_aliases: Vec<Option<FrameSlot>>,
-    pub(super) ops: Vec<SsaInst>,
+    live: collections::Vec<SsaValue>,
+    pub(super) live_types: collections::Vec<ValueType>,
+    live_aliases: collections::Vec<Option<FrameSlot>>,
+    pub(super) ops: collections::Vec<SsaInst>,
 }
 
 impl BlockState {
@@ -84,10 +84,10 @@ impl BlockState {
             fp_live_budget,
             stack_height: entry.stack_height,
             spill_depth: entry.spill_depth,
-            live: params.to_vec(),
-            live_types: entry.live_types.to_vec(),
-            live_aliases: alloc::vec![None; params.len()],
-            ops: Vec::new(),
+            live: params.to_vec().into(),
+            live_types: entry.live_types.to_vec().into(),
+            live_aliases: collections::vec![None; params.len()],
+            ops: collections::Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
         Ok(state)
@@ -105,9 +105,9 @@ impl BlockState {
         &self.live
     }
 
-    pub(super) fn top_values(&self, count: usize) -> Result<Vec<SsaValue>, WasmError> {
+    pub(super) fn top_values(&self, count: usize) -> Result<collections::Vec<SsaValue>, WasmError> {
         if count == 0 {
-            return Ok(Vec::new());
+            return Ok(collections::Vec::new());
         }
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
@@ -118,7 +118,7 @@ impl BlockState {
                 self.spill_depth,
             )));
         }
-        Ok(self.live[self.live.len() - count..].to_vec())
+        Ok(self.live[self.live.len() - count..].to_vec().into())
     }
 
     pub(super) fn pop_one(&mut self) -> Result<SsaValue, WasmError> {
@@ -152,18 +152,18 @@ impl BlockState {
 
     pub(super) fn push_results(
         &mut self,
-        results: Vec<SsaValue>,
-        result_types: Vec<ValueType>,
+        results: collections::Vec<SsaValue>,
+        result_types: collections::Vec<ValueType>,
     ) -> Result<(), WasmError> {
         let alias_len = results.len();
-        self.push_results_with_aliases(results, result_types, alloc::vec![None; alias_len])
+        self.push_results_with_aliases(results, result_types, collections::vec![None; alias_len])
     }
 
     pub(super) fn push_results_with_aliases(
         &mut self,
-        results: Vec<SsaValue>,
-        result_types: Vec<ValueType>,
-        result_aliases: Vec<Option<FrameSlot>>,
+        results: collections::Vec<SsaValue>,
+        result_types: collections::Vec<ValueType>,
+        result_aliases: collections::Vec<Option<FrameSlot>>,
     ) -> Result<(), WasmError> {
         debug_assert_eq!(results.len(), result_types.len());
         debug_assert_eq!(results.len(), result_aliases.len());
@@ -174,7 +174,10 @@ impl BlockState {
         self.ensure_live_fit("value push")
     }
 
-    pub(super) fn spill_prefix(&mut self, count: u16) -> Result<Vec<SsaValue>, WasmError> {
+    pub(super) fn spill_prefix(
+        &mut self,
+        count: u16,
+    ) -> Result<collections::Vec<SsaValue>, WasmError> {
         let count = count as usize;
         if count > self.live.len() {
             return Err(WasmError::internal(alloc::format!(
@@ -183,7 +186,7 @@ impl BlockState {
                 self.live.len(),
             )));
         }
-        let spilled = self.live.drain(..count).collect::<Vec<_>>();
+        let spilled = self.live.drain(..count).collect::<collections::Vec<_>>();
         self.live_types.drain(..count);
         self.live_aliases.drain(..count);
         self.spill_depth = self.spill_depth.saturating_add(count as u16);
@@ -192,8 +195,8 @@ impl BlockState {
 
     pub(super) fn fill_prefix(
         &mut self,
-        values: Vec<SsaValue>,
-        value_types: Vec<ValueType>,
+        values: collections::Vec<SsaValue>,
+        value_types: collections::Vec<ValueType>,
     ) -> Result<(), WasmError> {
         let fill_count = values.len();
         self.spill_depth = self.spill_depth.saturating_sub(fill_count as u16);
@@ -203,7 +206,7 @@ impl BlockState {
         let mut new_live_types = value_types;
         new_live_types.extend(self.live_types.drain(..));
         self.live_types = new_live_types;
-        let mut new_live_aliases = alloc::vec![None; fill_count];
+        let mut new_live_aliases = collections::vec![None; fill_count];
         new_live_aliases.extend(self.live_aliases.drain(..));
         self.live_aliases = new_live_aliases;
         self.ensure_live_fit("prefix fill")
@@ -230,7 +233,7 @@ impl BlockState {
             .iter()
             .zip(self.live_aliases.iter())
             .filter_map(|(ty, alias)| alias.is_none().then_some(*ty))
-            .collect::<Vec<_>>();
+            .collect::<collections::Vec<_>>();
         let (gp_live, fp_live) =
             count_live_bank_budget_units(&effective_live_types, self.gp_unit_bytes);
         if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {

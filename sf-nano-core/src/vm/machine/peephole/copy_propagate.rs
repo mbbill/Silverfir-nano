@@ -7,8 +7,7 @@
 //! Also folds single-use `move rX <- Imm64(C)` into consumer operands as
 //! inline immediates.
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
@@ -23,18 +22,18 @@ use super::helpers::{
 
 /// Reusable scratch buffers for copy_propagate to avoid per-block allocation.
 pub(super) struct CopyPropagateScratch {
-    aliases: Vec<Option<MachineReg>>,
-    float_aliases: Vec<Option<MachineReg>>,
-    rewritten: Vec<MachineInst>,
+    aliases: collections::Vec<Option<MachineReg>>,
+    float_aliases: collections::Vec<Option<MachineReg>>,
+    rewritten: collections::Vec<MachineInst>,
     ownership: DynamicOwnershipTracker,
 }
 
 impl CopyPropagateScratch {
     pub(super) fn new(reg_count: usize) -> Self {
         Self {
-            aliases: vec![None; reg_count],
-            float_aliases: vec![None; reg_count],
-            rewritten: Vec::new(),
+            aliases: collections::vec![None; reg_count],
+            float_aliases: collections::vec![None; reg_count],
+            rewritten: collections::Vec::new(),
             ownership: DynamicOwnershipTracker::new(reg_count),
         }
     }

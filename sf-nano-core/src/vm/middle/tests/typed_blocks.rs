@@ -1,5 +1,6 @@
 use alloc::collections::BTreeSet;
-use alloc::vec;
+
+use crate::collections;
 
 use crate::value_type::ValueType;
 use crate::vm::middle::tests::helpers::{
@@ -18,10 +19,10 @@ fn typed_block_passthrough_keeps_all_param_values_live_on_identity_edge() {
     // keep the full param stack live; otherwise rewrite underflows while
     // binding target params at the block boundary.
     let mut semantic = typed_program(
-        vec![],
-        vec![],
+        collections::vec![],
+        collections::vec![],
         3,
-        vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 0 }),
             prim(PrimitiveOpKind::F64Const { value: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 0 }),
@@ -36,9 +37,10 @@ fn typed_block_passthrough_keeps_all_param_values_live_on_identity_edge() {
             op(SemanticOpKind::ReturnVoid),
         ],
     );
-    semantic
-        .op_result_types
-        .insert(3, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
+    semantic.op_result_types.insert(
+        3,
+        collections::vec![ValueType::I32, ValueType::F64, ValueType::I32],
+    );
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -49,10 +51,10 @@ fn typed_block_sequence_from_block_wast_type_use_prepares_successfully() {
     // only showed up under the richer sequence of typed blocks plus drops, not
     // in the minimal passthrough block above.
     let mut semantic = typed_program(
-        vec![],
-        vec![],
+        collections::vec![],
+        collections::vec![],
         3,
-        vec![
+        collections::vec![
             op(SemanticOpKind::Block {
                 params: 0,
                 results: 0,
@@ -107,14 +109,20 @@ fn typed_block_sequence_from_block_wast_type_use_prepares_successfully() {
             op(SemanticOpKind::ReturnVoid),
         ],
     );
-    semantic.op_result_types.insert(2, vec![ValueType::I32]);
     semantic
         .op_result_types
-        .insert(11, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
-    semantic.op_result_types.insert(16, vec![ValueType::I32]);
+        .insert(2, collections::vec![ValueType::I32]);
+    semantic.op_result_types.insert(
+        11,
+        collections::vec![ValueType::I32, ValueType::F64, ValueType::I32],
+    );
     semantic
         .op_result_types
-        .insert(25, vec![ValueType::I32, ValueType::F64, ValueType::I32]);
+        .insert(16, collections::vec![ValueType::I32]);
+    semantic.op_result_types.insert(
+        25,
+        collections::vec![ValueType::I32, ValueType::F64, ValueType::I32],
+    );
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -131,10 +139,10 @@ fn typed_block_param_identity_preserves_two_live_values_for_following_binary_op(
     // The identity edge into the typed block must preserve both live values so
     // the following binary op still sees two operands.
     let mut semantic = typed_program(
-        vec![],
-        vec![ValueType::I32],
+        collections::vec![],
+        collections::vec![ValueType::I32],
         2,
-        vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
             op(SemanticOpKind::Block {
@@ -148,7 +156,7 @@ fn typed_block_param_identity_preserves_two_live_values_for_following_binary_op(
     );
     semantic
         .op_result_types
-        .insert(2, vec![ValueType::I32, ValueType::I32]);
+        .insert(2, collections::vec![ValueType::I32, ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -170,10 +178,10 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
     // `block_open` eagerly fills the values at the block boundary, taken-branch
     // edge binding underflows before rewrite even reaches the following add.
     let mut semantic = typed_program(
-        vec![ValueType::I32],
-        vec![ValueType::I32],
+        collections::vec![ValueType::I32],
+        collections::vec![ValueType::I32],
         2,
-        vec![
+        collections::vec![
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::Block {
                 params: 0,
@@ -195,8 +203,12 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
             op(SemanticOpKind::ReturnOne),
         ],
     );
-    semantic.op_result_types.insert(1, vec![ValueType::I32]);
-    semantic.op_result_types.insert(2, vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(1, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(2, collections::vec![ValueType::I32]);
 
     let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 3);
     let cfg = cfg::build_semantic_cfg(&semantic);
@@ -233,10 +245,10 @@ fn typed_block_break_inner_sequence_prepares_successfully() {
     // If block entry/live-window accounting drops one of those carried values,
     // rewrite underflows on the following `i32.add`.
     let mut semantic = typed_program(
-        vec![ValueType::I32],
-        vec![ValueType::I32],
+        collections::vec![ValueType::I32],
+        collections::vec![ValueType::I32],
         3,
-        vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 0 }),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
@@ -316,12 +328,24 @@ fn typed_block_break_inner_sequence_prepares_successfully() {
             op(SemanticOpKind::ReturnOne),
         ],
     );
-    semantic.op_result_types.insert(3, vec![ValueType::I32]);
-    semantic.op_result_types.insert(4, vec![ValueType::I32]);
-    semantic.op_result_types.insert(12, vec![ValueType::I32]);
-    semantic.op_result_types.insert(21, vec![ValueType::I32]);
-    semantic.op_result_types.insert(29, vec![ValueType::I32]);
-    semantic.op_result_types.insert(30, vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(3, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(4, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(12, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(21, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(29, collections::vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(30, collections::vec![ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -350,10 +374,10 @@ fn typed_loop_br_if_backedge_keeps_loop_payload_live_for_fallthrough_and_reentry
     // payload at the branch point, rewrite underflows while binding the typed
     // loop header or the fallthrough path.
     let mut semantic = typed_program(
-        vec![ValueType::I32],
-        vec![ValueType::I32],
+        collections::vec![ValueType::I32],
+        collections::vec![ValueType::I32],
         4,
-        vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
             op(SemanticOpKind::Loop {
@@ -377,7 +401,9 @@ fn typed_loop_br_if_backedge_keeps_loop_payload_live_for_fallthrough_and_reentry
             op(SemanticOpKind::ReturnOne),
         ],
     );
-    semantic.op_result_types.insert(2, vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(2, collections::vec![ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }
@@ -385,10 +411,10 @@ fn typed_loop_br_if_backedge_keeps_loop_payload_live_for_fallthrough_and_reentry
 #[test]
 fn typed_loop_block_start_before_op_refills_loop_params_for_first_body_op() {
     let mut semantic = typed_program(
-        vec![ValueType::I32],
-        vec![ValueType::I32],
+        collections::vec![ValueType::I32],
+        collections::vec![ValueType::I32],
         4,
-        vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
             op(SemanticOpKind::Loop {
@@ -412,7 +438,9 @@ fn typed_loop_block_start_before_op_refills_loop_params_for_first_body_op() {
             op(SemanticOpKind::ReturnOne),
         ],
     );
-    semantic.op_result_types.insert(2, vec![ValueType::I32]);
+    semantic
+        .op_result_types
+        .insert(2, collections::vec![ValueType::I32]);
 
     let planned = plan_program(&semantic, 7, 13);
     let loop_block = block_for_semantic_index(&planned.cfg, 3);
@@ -455,10 +483,10 @@ fn br_if_value_inside_void_block_keeps_fallthrough_value_live_for_following_unar
     // value for `i32.ctz`. The spectest failure shows that current live-window
     // accounting loses it and underflows before rewrite.
     let semantic = typed_program(
-        vec![],
-        vec![],
+        collections::vec![],
+        collections::vec![],
         2,
-        vec![
+        collections::vec![
             op(SemanticOpKind::Block {
                 params: 0,
                 results: 0,

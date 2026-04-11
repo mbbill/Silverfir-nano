@@ -1,4 +1,6 @@
+use crate::collections;
 use crate::value_type::ValueType;
+
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use super::helpers::{
@@ -16,7 +18,7 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
         2,
         3,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::If {
@@ -62,7 +64,7 @@ fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_loc
         1,
         4,
         0,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
@@ -106,10 +108,10 @@ fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() 
     // only GP dynamic unit. The hot local is F32 and should still be admitted
     // into the separate FP budget when that bank has its own spare headroom.
     let semantic = typed_program(
-        alloc::vec![ValueType::F32],
-        alloc::vec![],
+        collections::vec![ValueType::F32],
+        collections::vec![],
         4,
-        alloc::vec![
+        collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 1 }),
             op(SemanticOpKind::If {

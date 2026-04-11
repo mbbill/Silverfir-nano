@@ -2,6 +2,8 @@
 // Copyright (c) 2021 Mohanson
 // Based on https://github.com/mohanson/leb128
 
+use crate::collections;
+
 use core::fmt;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -142,8 +144,8 @@ pub(crate) fn read_leb128_u64(data: &[u8]) -> Result<(u64, usize), ReadError> {
 }
 
 /// Write a signed 32-bit value as LEB128
-pub(crate) fn write_leb128_i32(value: i32) -> alloc::vec::Vec<u8> {
-    let mut result = alloc::vec::Vec::new();
+pub(crate) fn write_leb128_i32(value: i32) -> collections::Vec<u8> {
+    let mut result = collections::Vec::new();
     let mut value = value;
     let mut more = true;
     while more {

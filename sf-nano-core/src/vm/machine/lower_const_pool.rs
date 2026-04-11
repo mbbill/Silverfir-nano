@@ -1,4 +1,6 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use crate::collections;
+use alloc::collections::BTreeMap;
+
 use core::mem::{align_of, size_of};
 
 use crate::vm::{
@@ -7,19 +9,19 @@ use crate::vm::{
 };
 
 pub(super) struct ConstPoolBuilder {
-    consts: Vec<MachineConstData>,
-    const_ids: BTreeMap<(u32, Vec<u8>), MachineConstId>,
+    consts: collections::Vec<MachineConstData>,
+    const_ids: BTreeMap<(u32, collections::Vec<u8>), MachineConstId>,
 }
 
 impl ConstPoolBuilder {
     pub(super) fn new() -> Self {
         Self {
-            consts: Vec::new(),
+            consts: collections::Vec::new(),
             const_ids: BTreeMap::new(),
         }
     }
 
-    pub(super) fn finish(self) -> Vec<MachineConstData> {
+    pub(super) fn finish(self) -> collections::Vec<MachineConstData> {
         self.consts
     }
 
@@ -45,8 +47,8 @@ impl ConstPoolBuilder {
 }
 
 #[inline]
-fn encode_record<T: Copy>(record: &T) -> (u32, Vec<u8>) {
+fn encode_record<T: Copy>(record: &T) -> (u32, collections::Vec<u8>) {
     let bytes =
         unsafe { core::slice::from_raw_parts((record as *const T).cast::<u8>(), size_of::<T>()) };
-    (align_of::<T>() as u32, bytes.to_vec())
+    (align_of::<T>() as u32, bytes.to_vec().into())
 }

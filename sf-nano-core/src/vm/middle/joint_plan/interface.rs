@@ -4,8 +4,9 @@
 //! lowering state. Every planner consultation should flow through these query
 //! and decision types so the boundary stays explicit.
 
+use crate::collections;
+
 use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
 
 use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
 
@@ -49,7 +50,7 @@ pub(crate) struct TargetEntryDecision<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct BeforeOpDecision<'a> {
     pub transient: TransientContract<'a>,
-    pub drop_cached_locals: Vec<FrameSlot>,
+    pub drop_cached_locals: collections::Vec<FrameSlot>,
 }
 
 /// Query for the planner-owned pre-op boundary transition.

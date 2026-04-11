@@ -2,7 +2,7 @@
 //!
 //! This is semantic/frontend-only metadata used while decoding a function body.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     module::type_context::TypeContext,
@@ -70,23 +70,29 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_block_result_types(&self, block_type: &BlockType) -> Vec<ValueType> {
+    pub(crate) fn resolve_block_result_types(
+        &self,
+        block_type: &BlockType,
+    ) -> collections::Vec<ValueType> {
         match block_type {
-            BlockType::Empty => Vec::new(),
-            BlockType::ValueType(value_type) => alloc::vec![*value_type],
+            BlockType::Empty => collections::Vec::new(),
+            BlockType::ValueType(value_type) => collections::vec![*value_type],
             BlockType::TypeIndex(idx) => self
                 .types
                 .get(*idx as u32)
-                .map(|ty| ty.results().to_vec())
-                .unwrap_or_default(),
+                .map(|ty| ty.results().to_vec().into())
+                .unwrap_or_else(collections::Vec::new),
         }
     }
 
     #[inline]
-    pub(crate) fn resolve_block_result_types_from_imm(&self, imm: &Immediate) -> Vec<ValueType> {
+    pub(crate) fn resolve_block_result_types_from_imm(
+        &self,
+        imm: &Immediate,
+    ) -> collections::Vec<ValueType> {
         match imm {
             Immediate::Block(block_type) => self.resolve_block_result_types(block_type),
-            _ => Vec::new(),
+            _ => collections::Vec::new(),
         }
     }
 

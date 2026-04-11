@@ -1,4 +1,6 @@
-use alloc::{rc::Rc, vec::Vec};
+use crate::collections;
+use alloc::rc::Rc;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Minimal native stats surface for CLI/debug output.
@@ -72,23 +74,6 @@ use crate::{
     },
 };
 
-#[cfg(sf_memtrace)]
-type MemtraceScope = sf_nano_memtrace::ScopeGuard;
-#[cfg(not(sf_memtrace))]
-struct MemtraceScope;
-
-#[inline]
-#[cfg(sf_memtrace)]
-fn memtrace_scope(name: &'static str) -> MemtraceScope {
-    sf_nano_memtrace::scope(name)
-}
-
-#[inline]
-#[cfg(not(sf_memtrace))]
-fn memtrace_scope(_name: &'static str) -> MemtraceScope {
-    MemtraceScope
-}
-
 fn finish_native_compile(
     active_backend: arch::NativeBackend,
     backend: BackendConfig,
@@ -104,32 +89,23 @@ fn finish_native_compile(
         .iter()
         .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
         .sum();
-    let mut compiled = {
-        let _scope = memtrace_scope("native.compile.runtime_module");
-        Rc::new(CompiledNativeModule::new(
-            active_backend,
-            backend,
-            lowered.module,
-            lowered.abi,
-        )?)
-    };
-    let entries = {
-        let _scope = memtrace_scope("native.compile.backend_emit");
-        arch::dispatch_compile_module(active_backend, module, &compiled)?
-    };
+    let mut compiled = Rc::new(CompiledNativeModule::new(
+        active_backend,
+        backend,
+        lowered.module,
+        lowered.abi,
+    )?);
+    let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
 
-    {
-        let _scope = memtrace_scope("native.compile.stats");
-        let bytes: usize = entries
-            .iter()
-            .filter_map(|e| e.as_ref().map(|e| e.text_len))
-            .sum();
-        set_native_stats(groups, ssa_ops, mir_ops, bytes);
-    }
+    let bytes: usize = entries
+        .iter()
+        .filter_map(|e| e.as_ref().map(|e| e.text_len))
+        .sum();
+    set_native_stats(groups, ssa_ops, mir_ops, bytes);
 
     #[cfg(sf_ir_dump)]
     if ir_dump::dump_enabled() {
-        let code_slices: Vec<(u32, &[u8])> = entries
+        let code_slices: collections::Vec<(u32, &[u8])> = entries
             .iter()
             .enumerate()
             .filter_map(|(idx, entry)| {
@@ -140,7 +116,7 @@ fn finish_native_compile(
                 })
             })
             .collect();
-        let dump_regions: Vec<ir_dump::DumpFunctionRegions> = entries
+        let dump_regions: collections::Vec<ir_dump::DumpFunctionRegions> = entries
             .iter()
             .enumerate()
             .filter_map(|(idx, entry)| {
@@ -171,17 +147,14 @@ fn finish_native_compile(
         }
     }
 
-    {
-        let _scope = memtrace_scope("native.compile.publish");
-        for (func_idx, func) in module.functions.iter().enumerate() {
-            let Some(spec) = func.spec() else {
-                continue;
-            };
-            let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
-            let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
-            code = code.with_entry(native_entry.map(|e| e.entry));
-            spec.set_native_code(code, NativeCodeCache::compiled());
-        }
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
+        let native_entry = entries.get(func_idx).and_then(|e| e.as_ref());
+        code = code.with_entry(native_entry.map(|e| e.entry));
+        spec.set_native_code(code, NativeCodeCache::compiled());
     }
 
     Ok(())
@@ -210,108 +183,99 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     }
 
     // Phase 1: Decode all functions to semantic IR.
-    let mut semantics: Vec<Option<SemanticProgram>> = Vec::with_capacity(module.functions.len());
-    {
-        let _scope = memtrace_scope("native.compile.decode");
-        for (func_idx, func) in module.functions.iter().enumerate() {
-            let Some(spec) = func.spec() else {
-                semantics.push(None);
-                continue;
-            };
-            let params = spec.func_type().params().len() as u16;
-            let local_count = params.saturating_add(spec.locals().len() as u16);
-            let results = spec.func_type().results().len() as u16;
-            let mut local_types = Vec::with_capacity(local_count as usize);
-            local_types.extend_from_slice(spec.func_type().params());
-            local_types.extend_from_slice(spec.locals());
-            let semantic = decode::decode_to_semantic_ir(
-                spec.code(),
-                CompileContext::with_value_types(
-                    &module.types,
-                    store,
-                    params,
-                    local_count,
-                    results,
-                    &local_types,
-                    spec.func_type().results(),
-                ),
-            )
-            .map_err(|err| {
-                WasmError::internal(alloc::format!(
-                    "native decode failed for function {}: {}",
-                    func_idx,
-                    err
-                ))
-            })?;
-            semantics.push(Some(semantic));
-        }
+    let mut semantics: collections::Vec<Option<SemanticProgram>> =
+        collections::Vec::with_capacity(module.functions.len());
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            semantics.push(None);
+            continue;
+        };
+        let params = spec.func_type().params().len() as u16;
+        let local_count = params.saturating_add(spec.locals().len() as u16);
+        let results = spec.func_type().results().len() as u16;
+        let mut local_types = collections::Vec::with_capacity(local_count as usize);
+        local_types.extend_from_slice(spec.func_type().params());
+        local_types.extend_from_slice(spec.locals());
+        let semantic = decode::decode_to_semantic_ir(
+            spec.code(),
+            CompileContext::with_value_types(
+                &module.types,
+                store,
+                params,
+                local_count,
+                results,
+                &local_types,
+                spec.func_type().results(),
+            ),
+        )
+        .map_err(|err| {
+            WasmError::internal(alloc::format!(
+                "native decode failed for function {}: {}",
+                func_idx,
+                err
+            ))
+        })?;
+        semantics.push(Some(semantic));
     }
 
     // Phase 2: Inline small leaf callees into their callers.
     // Iterate until fixed-point so that transitive chains (A→B→C) are fully
     // resolved regardless of function index ordering.
-    {
-        let _scope = memtrace_scope("native.compile.inline");
-        loop {
-            let mut any_inlined = false;
-            for func_idx in 0..semantics.len() {
-                if semantics[func_idx].is_none() {
-                    continue;
-                }
-                let mut caller = semantics[func_idx].take().unwrap();
-                if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
-                    any_inlined = true;
-                }
-                semantics[func_idx] = Some(caller);
+    loop {
+        let mut any_inlined = false;
+        for func_idx in 0..semantics.len() {
+            if semantics[func_idx].is_none() {
+                continue;
             }
-            if !any_inlined {
-                break;
+            let mut caller = semantics[func_idx].take().unwrap();
+            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
+                any_inlined = true;
             }
+            semantics[func_idx] = Some(caller);
+        }
+        if !any_inlined {
+            break;
         }
     }
 
     // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
-    let mut prepared_functions: Vec<LowerFunctionInput> = Vec::new();
-    {
-        let _scope = memtrace_scope("native.compile.prepare");
-        for (func_idx, func) in module.functions.iter().enumerate() {
-            let Some(spec) = func.spec() else {
-                continue;
-            };
-            let semantic = semantics[func_idx].take().unwrap();
-            let prepared =
-                prepare_function(PrepareInput { config: backend }, &semantic).map_err(
-                    |err| {
-                        WasmError::internal(alloc::format!(
-                            "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
-                            func_idx,
-                            spec.type_index(),
-                            spec.func_type().params().len(),
-                            spec.func_type().results().len(),
-                            semantic.max_stack_height,
-                            semantic.ops.len(),
-                            err
-                        ))
-                    },
-                )?;
-            groups += 1;
-            ssa_ops += prepared
-                .ssa
-                .blocks
-                .iter()
-                .map(|block| block.ops.len())
-                .sum::<usize>();
-            let func_id = MachineFuncId(func_idx as u32);
-            let result_count = spec.func_type().results().len() as u16;
-            prepared_functions.push(LowerFunctionInput {
-                id: func_id,
-                frame: prepared.frame,
-                ssa: prepared.ssa,
-                result_count,
-            });
-        }
+    let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let semantic = semantics[func_idx].take().unwrap();
+        let prepared = prepare_function(PrepareInput { config: backend }, &semantic).map_err(
+            |err| {
+                WasmError::internal(alloc::format!(
+                    "native prepare failed for function {} type_idx={} params={} results={} max_stack={} ops={}: {}",
+                    func_idx,
+                    spec.type_index(),
+                    spec.func_type().params().len(),
+                    spec.func_type().results().len(),
+                    semantic.max_stack_height,
+                    semantic.ops.len(),
+                    err
+                ))
+            },
+        )?;
+        groups += 1;
+        ssa_ops += prepared
+            .ssa
+            .blocks
+            .iter()
+            .map(|block| block.ops.len())
+            .sum::<usize>();
+        let func_id = MachineFuncId(func_idx as u32);
+        let result_count = spec.func_type().results().len() as u16;
+        prepared_functions.push(LowerFunctionInput {
+            id: func_id,
+            frame: prepared.frame,
+            ssa: prepared.ssa,
+            result_count,
+        });
     }
     drop(semantics);
 
@@ -324,7 +288,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                     func_idx: prepared.id.0,
                     ssa: prepared.ssa.clone(),
                 })
-                .collect::<Vec<_>>(),
+                .collect::<collections::Vec<_>>(),
         )
     } else {
         None
@@ -338,19 +302,13 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .unwrap_or(false);
     #[cfg(sf_has_guard_pages)]
     let use_guard_pages = use_guard_pages && backend.gp_unit_bytes == 8;
-    let mut lowered = {
-        let _scope = memtrace_scope("native.compile.lower");
-        lower_module(LowerModuleInput {
-            backend,
-            functions: prepared_functions,
-            #[cfg(sf_has_guard_pages)]
-            use_guard_pages,
-        })?
-    };
-    {
-        let _scope = memtrace_scope("native.compile.optimize");
-        optimize_module(&mut lowered.module);
-    }
+    let mut lowered = lower_module(LowerModuleInput {
+        backend,
+        functions: prepared_functions,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages,
+    })?;
+    optimize_module(&mut lowered.module);
     if backend.is_32bit_gp_target() {
         lowered
             .module
@@ -371,9 +329,10 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
+    use alloc::{boxed::Box, rc::Rc, string::String};
 
     use super::ensure_module_compiled;
+    use crate::collections;
     use crate::{
         module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
         utils::limits::Limits,
@@ -405,7 +364,7 @@ mod tests {
         ReferenceBackendGuard { _lock: lock }
     }
 
-    fn encode_u32_leb(mut value: u32, out: &mut Vec<u8>) {
+    fn encode_u32_leb(mut value: u32, out: &mut collections::Vec<u8>) {
         loop {
             let mut byte = (value & 0x7f) as u8;
             value >>= 7;
@@ -419,15 +378,15 @@ mod tests {
         }
     }
 
-    fn local_get_code(index: u32) -> Vec<u8> {
-        let mut code = vec![0x20];
+    fn local_get_code(index: u32) -> collections::Vec<u8> {
+        let mut code = collections::vec![0x20];
         encode_u32_leb(index, &mut code);
         code.push(0x0b);
         code
     }
 
-    fn long_argument_caller_code(helper_params: &[ValueType]) -> Vec<u8> {
-        let mut code = Vec::new();
+    fn long_argument_caller_code(helper_params: &[ValueType]) -> collections::Vec<u8> {
+        let mut code = collections::Vec::new();
         for (index, ty) in helper_params.iter().copied().enumerate() {
             if index + 1 == helper_params.len() {
                 code.extend_from_slice(&[0x20, 0x00]);
@@ -449,15 +408,26 @@ mod tests {
 
     #[test]
     fn compiles_all_local_functions_once() {
-        let types = TypeContext::new(vec![
-            Rc::new(FunctionType::new(vec![], vec![])),
-            Rc::new(FunctionType::new(vec![ValueType::I32], vec![])),
+        let types = TypeContext::new(collections::vec![
+            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
+            Rc::new(FunctionType::new(
+                collections::vec![ValueType::I32],
+                collections::vec![]
+            )),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
-        let mut spec0 = FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
+        let mut spec0 = FunctionSpec::new(
+            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
+            0,
+        );
         spec0.set_code((&[0x0b][..]).into());
-        let mut spec1 =
-            FunctionSpec::new(Rc::new(FunctionType::new(vec![ValueType::I32], vec![])), 1);
+        let mut spec1 = FunctionSpec::new(
+            Rc::new(FunctionType::new(
+                collections::vec![ValueType::I32],
+                collections::vec![],
+            )),
+            1,
+        );
         spec1.set_code((&[0x20, 0x00, 0x1a, 0x0b][..]).into());
         module.functions.push(FunctionInst::Local {
             spec: spec0,
@@ -489,16 +459,19 @@ mod tests {
     fn emu64_compiled_module_publishes_local_call_info_table() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu64);
 
-        let types = TypeContext::new(vec![
-            Rc::new(FunctionType::new(vec![], vec![])),
+        let types = TypeContext::new(collections::vec![
+            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
             Rc::new(FunctionType::new(
-                vec![ValueType::I32],
-                vec![ValueType::I32],
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
-        let mut spec0 = FunctionSpec::new(Rc::new(FunctionType::new(vec![], vec![])), 0);
+        let mut spec0 = FunctionSpec::new(
+            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
+            0,
+        );
         spec0.set_code((&[0x0b][..]).into());
         module.functions.push(FunctionInst::Local {
             spec: spec0,
@@ -507,8 +480,8 @@ mod tests {
 
         let mut spec1 = FunctionSpec::new(
             Rc::new(FunctionType::new(
-                vec![ValueType::I32],
-                vec![ValueType::I32],
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )),
             1,
         );
@@ -538,15 +511,15 @@ mod tests {
     fn compiles_function_with_f64_local() {
         // (func (param f64) (result f64) (local.get 0))
         // Bytecode: local.get 0, end
-        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
-            vec![ValueType::F64],
-            vec![ValueType::F64],
+        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+            collections::vec![ValueType::F64],
+            collections::vec![ValueType::F64],
         ))]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
-                vec![ValueType::F64],
-                vec![ValueType::F64],
+                collections::vec![ValueType::F64],
+                collections::vec![ValueType::F64],
             )),
             0,
         );
@@ -564,15 +537,15 @@ mod tests {
     fn compiles_function_with_f32_local_and_add() {
         // (func (param f32 f32) (result f32) (f32.add (local.get 0) (local.get 1)))
         // Bytecode: local.get 0, local.get 1, f32.add, end
-        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
-            vec![ValueType::F32, ValueType::F32],
-            vec![ValueType::F32],
+        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+            collections::vec![ValueType::F32, ValueType::F32],
+            collections::vec![ValueType::F32],
         ))]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
-                vec![ValueType::F32, ValueType::F32],
-                vec![ValueType::F32],
+                collections::vec![ValueType::F32, ValueType::F32],
+                collections::vec![ValueType::F32],
             )),
             0,
         );
@@ -601,15 +574,15 @@ mod tests {
         //   f32.const 0     ;; 0x43 0x00 0x00 0x00 0x00
         //   end              ;; 0x0b
         //   end              ;; 0x0b
-        let types = TypeContext::new(vec![Rc::new(FunctionType::new(
-            vec![ValueType::F32, ValueType::I32],
-            vec![ValueType::F32],
+        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+            collections::vec![ValueType::F32, ValueType::I32],
+            collections::vec![ValueType::F32],
         ))]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
-                vec![ValueType::F32, ValueType::I32],
-                vec![ValueType::F32],
+                collections::vec![ValueType::F32, ValueType::I32],
+                collections::vec![ValueType::F32],
             )),
             0,
         );
@@ -648,13 +621,17 @@ mod tests {
         // Native ARM64 compilation was previously failing here with:
         // "missing float-width tracking for machine reg ... at bN terminator".
         let ty = Rc::new(FunctionType::new(
-            vec![ValueType::I32, ValueType::I32],
-            vec![ValueType::F32],
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::F32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
-        spec.set_locals(vec![ValueType::F32, ValueType::F32, ValueType::F32]);
+        spec.set_locals(collections::vec![
+            ValueType::F32,
+            ValueType::F32,
+            ValueType::F32
+        ]);
         spec.set_code(
             (&[
                 0x02, 0x40, // block
@@ -706,7 +683,7 @@ mod tests {
     fn emu32_compiles_long_argument_list_internal_call() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
-        let helper_params = vec![
+        let helper_params = collections::vec![
             ValueType::F32,
             ValueType::I32,
             ValueType::I32,
@@ -810,13 +787,16 @@ mod tests {
         ];
         let helper_type = Rc::new(FunctionType::new(
             helper_params.clone(),
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
         let caller_type = Rc::new(FunctionType::new(
-            vec![ValueType::I32],
-            vec![ValueType::I32],
+            collections::vec![ValueType::I32],
+            collections::vec![ValueType::I32],
         ));
-        let types = TypeContext::new(vec![Rc::clone(&helper_type), Rc::clone(&caller_type)]);
+        let types = TypeContext::new(collections::vec![
+            Rc::clone(&helper_type),
+            Rc::clone(&caller_type)
+        ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
         let helper_code = local_get_code((helper_params.len() - 1) as u32);

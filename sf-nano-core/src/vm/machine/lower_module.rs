@@ -2,7 +2,9 @@
 // Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use crate::collections;
+
+use alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
@@ -82,7 +84,7 @@ impl LowerFunctionInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LowerModuleInput {
     pub backend: BackendConfig,
-    pub functions: Vec<LowerFunctionInput>,
+    pub functions: collections::Vec<LowerFunctionInput>,
     #[cfg(sf_has_guard_pages)]
     pub use_guard_pages: bool,
 }
@@ -105,14 +107,14 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
         .max()
         .map(|max| max + 1)
         .unwrap_or(0);
-    let mut functions = alloc::vec![None; function_count];
-    let mut is_local_func = alloc::vec![false; function_count];
+    let mut functions = collections::vec![None; function_count];
+    let mut is_local_func = collections::vec![false; function_count];
     let mut function_abis = (0..function_count)
         .map(|index| MachineFunctionAbi {
             id: MachineFuncId(index as u32),
             ..MachineFunctionAbi::default()
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let mut const_pool = ConstPoolBuilder::new();
     for function in &input.functions {
         let borrowed = function.borrowed();
@@ -204,8 +206,8 @@ fn lower_function(
 ) -> Result<MachineFunction, WasmError> {
     let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();
-    let mut original_blocks = alloc::vec![None; original_block_count];
-    let mut extra_blocks = Vec::new();
+    let mut original_blocks = collections::vec![None; original_block_count];
+    let mut extra_blocks = collections::Vec::new();
     let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
     let i64_ops: &'static dyn I64Lowering = if gp_reg_width == 4 {
         &Gp32Lowering
@@ -236,7 +238,7 @@ fn lower_function(
             guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
-        let mut current_params = Vec::new();
+        let mut current_params = collections::Vec::new();
         for (regs, value) in lower
             .machine_params()
             .iter()
@@ -307,8 +309,8 @@ fn lower_function(
                                 )?;
                                 extra_blocks.push(MachineBlock {
                                     id: trap,
-                                    params: Vec::new(),
-                                    ops: Vec::new(),
+                                    params: collections::Vec::new(),
+                                    ops: collections::Vec::new(),
                                     terminator: MachineTerminator::Trap { kind: trap_kind },
                                 });
                                 current_block = continuation;
@@ -349,7 +351,7 @@ fn lower_function(
                             terminator,
                         )?;
                         current_block = continuation;
-                        current_params = Vec::new();
+                        current_params = collections::Vec::new();
                         lower.begin_continuation_block_selective()?;
                     }
                     // External targets stay in the current block as helper-call
@@ -453,11 +455,11 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_oob,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
                                     target: checked,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -468,7 +470,7 @@ fn lower_function(
                             checked,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             build_call_indirect_checked_block(&lower, table_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
@@ -480,11 +482,11 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_invalid_ref,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
                                     target: type_check,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -492,8 +494,8 @@ fn lower_function(
                             trap_oob,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
-                            Vec::new(),
+                            collections::Vec::new(),
+                            collections::Vec::new(),
                             MachineTerminator::Trap {
                                 kind: MachineTrapKind::TableOutOfBounds,
                             },
@@ -504,7 +506,7 @@ fn lower_function(
                             type_check,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             build_call_indirect_type_check_block(&lower, type_idx, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
@@ -516,11 +518,11 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: trap_type,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
                                     target: dispatch,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -528,8 +530,8 @@ fn lower_function(
                             trap_invalid_ref,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
-                            Vec::new(),
+                            collections::Vec::new(),
+                            collections::Vec::new(),
                             MachineTerminator::Trap {
                                 kind: MachineTrapKind::InvalidFunctionReference,
                             },
@@ -540,7 +542,7 @@ fn lower_function(
                             dispatch,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             build_call_indirect_dispatch_block(&lower, func_idx_slot)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
@@ -552,11 +554,13 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: local_prepare,
-                                    args: vec![MachineValue::Reg(indirect_temps.lane2)],
+                                    args: collections::vec![MachineValue::Reg(
+                                        indirect_temps.lane2
+                                    )],
                                 },
                                 else_edge: MachineEdge {
                                     target: external_call,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -564,8 +568,8 @@ fn lower_function(
                             trap_type,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
-                            Vec::new(),
+                            collections::Vec::new(),
+                            collections::Vec::new(),
                             MachineTerminator::Trap {
                                 kind: MachineTrapKind::IndirectCallTypeMismatch,
                             },
@@ -578,7 +582,7 @@ fn lower_function(
                             local_prepare,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            vec![MachineBlockParam::gp_word(local_call_target_param)],
+                            collections::vec![MachineBlockParam::gp_word(local_call_target_param)],
                             build_call_indirect_local_prepare_block(&mut lower, args)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
@@ -590,11 +594,11 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: local_transfer,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
                                     target: local_zero_loop,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -605,7 +609,7 @@ fn lower_function(
                             local_zero_loop,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             build_call_indirect_local_zero_loop_block(&mut lower)?,
                             MachineTerminator::Branch {
                                 cond: MachineBranchCond::IntCompare {
@@ -617,11 +621,11 @@ fn lower_function(
                                 },
                                 then_edge: MachineEdge {
                                     target: local_zero_loop,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
                                     target: local_transfer,
-                                    args: Vec::new(),
+                                    args: collections::Vec::new(),
                                 },
                             },
                         )?;
@@ -633,7 +637,7 @@ fn lower_function(
                             local_transfer,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             build_call_indirect_local_transfer_block(
                                 &mut lower,
                                 continuation,
@@ -661,16 +665,16 @@ fn lower_function(
                             external_call,
                             &mut original_blocks,
                             &mut extra_blocks,
-                            Vec::new(),
+                            collections::Vec::new(),
                             lower.build_external_call_ops(metadata),
                             MachineTerminator::Jump(MachineEdge {
                                 target: continuation,
-                                args: Vec::new(),
+                                args: collections::Vec::new(),
                             }),
                         )?;
 
                         current_block = continuation;
-                        current_params = Vec::new();
+                        current_params = collections::Vec::new();
                         lower.begin_continuation_block_selective()?;
                     }
                 },
@@ -689,7 +693,7 @@ fn lower_function(
         )?;
     }
 
-    let mut blocks = Vec::with_capacity(original_block_count + extra_blocks.len());
+    let mut blocks = collections::Vec::with_capacity(original_block_count + extra_blocks.len());
     for (index, block) in original_blocks.into_iter().enumerate() {
         blocks.push(block.ok_or_else(|| {
             WasmError::internal(alloc::format!(
@@ -718,11 +722,11 @@ fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
         id,
         program: MachineProgram {
             entry: MachineBlockId(0),
-            fp_reg_init_widths: Vec::new(),
-            blocks: vec![MachineBlock {
+            fp_reg_init_widths: collections::Vec::new(),
+            blocks: collections::vec![MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Trap {
                     kind: MachineTrapKind::Unreachable,
                 },
@@ -772,9 +776,9 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
 fn push_lowered_block(
     id: MachineBlockId,
     original_blocks: &mut [Option<MachineBlock>],
-    continuation_blocks: &mut Vec<MachineBlock>,
-    params: Vec<MachineBlockParam>,
-    ops: Vec<MachineInst>,
+    continuation_blocks: &mut collections::Vec<MachineBlock>,
+    params: collections::Vec<MachineBlockParam>,
+    ops: collections::Vec<MachineInst>,
     terminator: MachineTerminator,
 ) -> Result<(), WasmError> {
     let block = MachineBlock {
@@ -812,7 +816,7 @@ fn attach_continuation_args(
     let args = params
         .iter()
         .map(|param| MachineValue::Reg(param.reg))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let attached = match terminator {
         MachineTerminator::Jump(edge) => attach_edge_args(edge, continuation, args),
         MachineTerminator::Branch {
@@ -848,7 +852,7 @@ fn attach_continuation_args(
 fn attach_edge_args(
     edge: &mut MachineEdge,
     continuation: MachineBlockId,
-    args: Vec<MachineValue>,
+    args: collections::Vec<MachineValue>,
 ) -> bool {
     if edge.target != continuation {
         return false;
@@ -863,8 +867,8 @@ pub(super) fn target_param_regs(
     program: &SsaProgram,
     regfile: &MachineRegFile,
     gp_reg_width: u8,
-) -> Result<Vec<ValueRegs>, WasmError> {
-    let mut regs = Vec::with_capacity(params.len());
+) -> Result<collections::Vec<ValueRegs>, WasmError> {
+    let mut regs = collections::Vec::with_capacity(params.len());
     let mut gp_index = 0usize;
     let mut fp_index = 0usize;
     for param in params {
@@ -924,12 +928,12 @@ pub(super) fn preferred_fp_dynamic_reg(
 
 fn fp_reg_init_widths(
     regfile: &MachineRegFile,
-) -> Result<Vec<Option<MachineFloatWidth>>, WasmError> {
-    Ok(vec![None; regfile.fp_dynamic_count()])
+) -> Result<collections::Vec<Option<MachineFloatWidth>>, WasmError> {
+    Ok(collections::vec![None; regfile.fp_dynamic_count()])
 }
 
 fn append_entry_cache_params(
-    params: &mut Vec<MachineBlockParam>,
+    params: &mut collections::Vec<MachineBlockParam>,
     entry_cache_params: &[EntryCacheParam],
     cached_locals: &[super::lower_context::CachedLocal],
 ) {
@@ -1052,13 +1056,13 @@ fn build_call_indirect_checked_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
     index_slot: crate::vm::middle::frame::FrameSlot,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
     let index = temps.lane0;
     let table_base = temps.lane1;
     let func_idx = temps.lane2;
-    Ok(vec![
+    Ok(collections::vec![
         MachineInst {
             kind: MachineInstKind::Load {
                 owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1150,7 +1154,7 @@ fn build_call_indirect_type_check_block(
     lower: &BlockLowerContext<'_>,
     expected_type_idx: u32,
     index_slot: crate::vm::middle::frame::FrameSlot,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
     let runtime_layout = lower.runtime_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -1200,7 +1204,7 @@ fn build_call_indirect_type_check_block(
 fn build_call_indirect_dispatch_block(
     lower: &BlockLowerContext<'_>,
     index_slot: crate::vm::middle::frame::FrameSlot,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
     let kind = temps.lane0;
@@ -1237,7 +1241,7 @@ fn build_call_indirect_dispatch_block(
 fn build_call_indirect_local_prepare_block(
     lower: &mut BlockLowerContext<'_>,
     args: FrameSpan,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
@@ -1320,7 +1324,7 @@ fn build_call_indirect_local_prepare_block(
 
 fn build_call_indirect_local_zero_loop_block(
     lower: &mut BlockLowerContext<'_>,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let temps = call_indirect_gp_temps(lower)?;
     let prefix_end = temps.lane2;
     let prefix_current = temps.lane3;
@@ -1342,7 +1346,7 @@ fn build_call_indirect_local_transfer_block(
     lower: &mut BlockLowerContext<'_>,
     _continuation: MachineBlockId,
     results: FrameSpan,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
@@ -1442,9 +1446,9 @@ fn dynamic_function_view_load(
     field_width: MachineMemWidth,
     field_extension: MachineLoadExtension,
     dst: MachineReg,
-) -> Result<Vec<MachineInst>, WasmError> {
+) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = native_runtime_abi_layout(lower.gp_reg_width());
-    let mut ops = vec![MachineInst {
+    let mut ops = collections::vec![MachineInst {
         kind: MachineInstKind::Load {
             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
@@ -1538,9 +1542,9 @@ fn indexed_const_addr(
 fn compute_block_entry_cache_dirty(
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
-) -> Vec<Vec<bool>> {
+) -> collections::Vec<collections::Vec<bool>> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
-        return vec![Vec::new(); program.blocks.len()];
+        return collections::vec![collections::Vec::new(); program.blocks.len()];
     }
 
     let predecessors = compute_ssa_predecessors(program);
@@ -1549,7 +1553,8 @@ fn compute_block_entry_cache_dirty(
         .enumerate()
         .map(|(index, cached)| (cached.slot, index))
         .collect::<BTreeMap<FrameSlot, usize>>();
-    let mut entry_dirty = vec![vec![false; cached_locals.len()]; program.blocks.len()];
+    let mut entry_dirty =
+        collections::vec![collections::vec![false; cached_locals.len()]; program.blocks.len()];
 
     loop {
         let mut changed = false;
@@ -1565,7 +1570,7 @@ fn compute_block_entry_cache_dirty(
                 continue;
             }
 
-            let mut next_dirty = vec![false; cached_locals.len()];
+            let mut next_dirty = collections::vec![false; cached_locals.len()];
             for &pred_index in &predecessors[block_index] {
                 let (_, pred_exit_dirty) = simulate_block_cache_exit_state(
                     program,
@@ -1594,8 +1599,8 @@ fn compute_block_entry_cache_dirty(
     entry_dirty
 }
 
-fn compute_ssa_predecessors(program: &SsaProgram) -> Vec<Vec<usize>> {
-    let mut predecessors = vec![Vec::new(); program.blocks.len()];
+fn compute_ssa_predecessors(program: &SsaProgram) -> collections::Vec<collections::Vec<usize>> {
+    let mut predecessors = collections::vec![collections::Vec::new(); program.blocks.len()];
     for block in &program.blocks {
         let from = block.id.as_usize();
         match &block.terminator {
@@ -1639,9 +1644,9 @@ fn simulate_block_cache_exit_state(
     block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
     entry_dirty: &[bool],
     slot_to_index: &BTreeMap<FrameSlot, usize>,
-) -> (Vec<bool>, Vec<bool>) {
-    let mut resident = vec![false; slot_to_index.len()];
-    let mut dirty = vec![false; slot_to_index.len()];
+) -> (collections::Vec<bool>, collections::Vec<bool>) {
+    let mut resident = collections::vec![false; slot_to_index.len()];
+    let mut dirty = collections::vec![false; slot_to_index.len()];
 
     if let Some(entry_slots) = program.block_entry_cached_slots.get(block.id.as_usize()) {
         for &slot in entry_slots {

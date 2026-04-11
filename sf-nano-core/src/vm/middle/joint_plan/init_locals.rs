@@ -33,7 +33,7 @@
 //! Reachability: `Br`/`BrTable`/`Return*`/`Unreachable` set `reachable=false`.
 //! Reads on unreachable code are not counted.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::wasm::{
     primitive_op::PrimitiveOpKind,
@@ -48,21 +48,21 @@ use crate::vm::wasm::{
 /// caller (their values are passed in), so they never need init even if
 /// `reads_init[i]` is true. Callers that want the "needs zero init" set should
 /// also filter out params.
-pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> Vec<bool> {
+pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collections::Vec<bool> {
     let n = semantic.local_count as usize;
     if n == 0 {
-        return Vec::new();
+        return collections::Vec::new();
     }
 
-    let mut def_set = alloc::vec![false; n];
+    let mut def_set = collections::vec![false; n];
     // Params are guaranteed-initialized by the caller.
     for i in 0..(semantic.params as usize).min(n) {
         def_set[i] = true;
     }
-    let mut reads_init = alloc::vec![false; n];
+    let mut reads_init = collections::vec![false; n];
     let mut reachable = true;
 
-    let mut stack: Vec<Frame> = Vec::new();
+    let mut stack: collections::Vec<Frame> = collections::Vec::new();
     stack.push(Frame {
         kind: FrameKind::Block,
         entry_def_set: def_set.clone(),
@@ -121,7 +121,7 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> Vec<bool>
                         }
                         FrameKind::If => {
                             if let Some(if_arm) = &frame.if_arm_def_set {
-                                let mut paths: Vec<&[bool]> = Vec::new();
+                                let mut paths: alloc::vec::Vec<&[bool]> = alloc::vec::Vec::new();
                                 if frame.if_arm_reachable {
                                     paths.push(if_arm);
                                 }
@@ -136,7 +136,7 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> Vec<bool>
                                     || frame.if_arm_reachable
                                     || frame.branch_def_set.is_some();
                             } else {
-                                let mut paths: Vec<&[bool]> = Vec::new();
+                                let mut paths: alloc::vec::Vec<&[bool]> = alloc::vec::Vec::new();
                                 if reachable {
                                     paths.push(&def_set);
                                 }
@@ -231,21 +231,21 @@ enum FrameKind {
 
 struct Frame {
     kind: FrameKind,
-    entry_def_set: Vec<bool>,
-    branch_def_set: Option<Vec<bool>>,
-    if_arm_def_set: Option<Vec<bool>>,
+    entry_def_set: collections::Vec<bool>,
+    branch_def_set: Option<collections::Vec<bool>>,
+    if_arm_def_set: Option<collections::Vec<bool>>,
     if_arm_reachable: bool,
 }
 
-fn intersect_vecs(a: &[bool], b: &[bool]) -> Vec<bool> {
+fn intersect_vecs(a: &[bool], b: &[bool]) -> collections::Vec<bool> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x && y).collect()
 }
 
-fn intersect_all(paths: &[&[bool]], n: usize) -> Vec<bool> {
+fn intersect_all(paths: &[&[bool]], n: usize) -> collections::Vec<bool> {
     if paths.is_empty() {
-        return alloc::vec![false; n];
+        return collections::vec![false; n];
     }
-    let mut out = alloc::vec![true; n];
+    let mut out = collections::vec![true; n];
     for path in paths {
         for (i, bit) in path.iter().enumerate() {
             out[i] &= *bit;
@@ -254,10 +254,10 @@ fn intersect_all(paths: &[&[bool]], n: usize) -> Vec<bool> {
     out
 }
 
-fn merge_paths(a: Option<&[bool]>, b: Option<&[bool]>, n: usize) -> Vec<bool> {
+fn merge_paths(a: Option<&[bool]>, b: Option<&[bool]>, n: usize) -> collections::Vec<bool> {
     match (a, b) {
-        (None, None) => alloc::vec![false; n],
-        (Some(a), None) | (None, Some(a)) => a.to_vec(),
+        (None, None) => collections::vec![false; n],
+        (Some(a), None) | (None, Some(a)) => a.to_vec().into(),
         (Some(a), Some(b)) => intersect_vecs(a, b),
     }
 }

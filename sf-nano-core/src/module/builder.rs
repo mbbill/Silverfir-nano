@@ -3,9 +3,10 @@
 //! Provides a builder pattern for constructing Module instances.
 //! Used during module instantiation to incrementally set up module data.
 
+use crate::collections;
+
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::module::entities::{Data, Element, Function, FunctionType, Global, Memory, Table};
@@ -15,16 +16,16 @@ use crate::module::Module;
 pub struct ModuleBuilder {
     name: String,
     binary_version: u32,
-    types: Vec<Rc<FunctionType>>,
-    functions: Vec<Function>,
-    memories: Vec<Memory>,
-    tables: Vec<Table>,
-    globals: Vec<Global>,
-    elements: Vec<Element>,
-    data: Vec<Data>,
+    types: collections::Vec<Rc<FunctionType>>,
+    functions: collections::Vec<Function>,
+    memories: collections::Vec<Memory>,
+    tables: collections::Vec<Table>,
+    globals: collections::Vec<Global>,
+    elements: collections::Vec<Element>,
+    data: collections::Vec<Data>,
     start_func_index: Option<usize>,
     data_count: Option<usize>,
-    export_names: Vec<String>,
+    export_names: collections::Vec<String>,
 }
 
 impl ModuleBuilder {
@@ -32,16 +33,16 @@ impl ModuleBuilder {
         ModuleBuilder {
             name: String::new(),
             binary_version: 0,
-            types: Vec::new(),
-            functions: Vec::new(),
-            memories: Vec::new(),
-            tables: Vec::new(),
-            globals: Vec::new(),
-            elements: Vec::new(),
-            data: Vec::new(),
+            types: collections::Vec::new(),
+            functions: collections::Vec::new(),
+            memories: collections::Vec::new(),
+            tables: collections::Vec::new(),
+            globals: collections::Vec::new(),
+            elements: collections::Vec::new(),
+            data: collections::Vec::new(),
             start_func_index: None,
             data_count: None,
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
         }
     }
 
@@ -62,7 +63,7 @@ impl ModuleBuilder {
         self.binary_version = version;
     }
 
-    pub fn with_types(&mut self, types: Vec<Rc<FunctionType>>) {
+    pub fn with_types(&mut self, types: collections::Vec<Rc<FunctionType>>) {
         self.types = types;
     }
 
@@ -126,7 +127,7 @@ impl ModuleBuilder {
         Ok(())
     }
 
-    pub fn with_elements(&mut self, elements: Vec<Element>) {
+    pub fn with_elements(&mut self, elements: collections::Vec<Element>) {
         self.elements = elements;
     }
 
@@ -142,7 +143,7 @@ impl ModuleBuilder {
         self.data.is_empty()
     }
 
-    pub fn with_data(&mut self, data: Vec<Data>) {
+    pub fn with_data(&mut self, data: collections::Vec<Data>) {
         self.data = data;
     }
 
@@ -170,7 +171,7 @@ impl ModuleBuilder {
 
     /// Helper for tests: set function types directly.
     #[cfg(test)]
-    pub fn with_function_types(&mut self, function_types: Vec<Rc<FunctionType>>) {
+    pub fn with_function_types(&mut self, function_types: collections::Vec<Rc<FunctionType>>) {
         self.types = function_types;
     }
 }

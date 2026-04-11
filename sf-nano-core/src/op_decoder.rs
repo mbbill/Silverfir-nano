@@ -1,5 +1,6 @@
+use crate::collections;
 use alloc::string::ToString;
-use alloc::vec::Vec;
+
 use core::cell::{Cell, RefCell};
 use core::fmt;
 
@@ -48,7 +49,7 @@ pub enum Immediate {
     F64(f64),
     Block(BlockType),
     RefType(ValueType),
-    BrLabels(Vec<u32>, u32),
+    BrLabels(collections::Vec<u32>, u32),
     LabelIndex(u32),
     FunctionIndex(u32),
     LocalIndex(u32),
@@ -57,7 +58,7 @@ pub enum Immediate {
     DataIndex(u32),
     ElementIndex(u32),
     MemoryIndex(u32),
-    SelectTypes(Vec<ValueType>),
+    SelectTypes(collections::Vec<ValueType>),
     MemoryInitArgs {
         dataidx: u32,
         memidx: u32,
@@ -162,19 +163,19 @@ pub struct DecodedOp {
 }
 
 pub struct Decoder<'a, 'b> {
-    handlers: Vec<&'a mut dyn OpcodeHandler>,
+    handlers: collections::Vec<&'a mut dyn OpcodeHandler>,
     // Lazy decode state (interior mutability to avoid borrow conflicts with handlers)
     payload: RefCell<Payload<'b>>,
-    decoded_ops: RefCell<Vec<DecodedOp>>,
+    decoded_ops: RefCell<collections::Vec<DecodedOp>>,
     end_reached: Cell<bool>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
     pub fn new(code: &'b [u8]) -> Self {
         Decoder {
-            handlers: Vec::new(),
+            handlers: collections::Vec::new(),
             payload: RefCell::new(Payload::from(code)),
-            decoded_ops: RefCell::new(Vec::new()),
+            decoded_ops: RefCell::new(collections::Vec::new()),
             end_reached: Cell::new(false),
         }
     }
@@ -303,7 +304,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let imm1 = payload.read_leb128_u32()?;
                 let v_idx = (0..imm1)
                     .map(|_| payload.read_leb128_u32())
-                    .collect::<Result<Vec<u32>, _>>()?;
+                    .collect::<Result<collections::Vec<u32>, _>>()?;
                 let default_idx = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::BrLabels(v_idx.clone(), default_idx);
@@ -477,7 +478,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             }
             SELECT_T => {
                 let len = payload.read_leb128_u32()?;
-                let mut vec = Vec::new();
+                let mut vec = collections::Vec::new();
                 for _ in 0..len {
                     let valtype: ValueType = payload.read_u8()?.try_into()?;
                     vec.push(valtype);

@@ -13,8 +13,7 @@
 //! - No `LocalGetCache` or `LocalGetSlot` of the same slot exists between
 //!   the producer and the set (i.e., the old cached value is not read)
 
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::middle::{
     frame::FrameSlot,
@@ -28,7 +27,7 @@ pub(super) fn plan_sinks(program: &mut SsaProgram) {
     if value_count == 0 {
         return;
     }
-    let mut sinks: Vec<Option<FrameSlot>> = vec![None; value_count];
+    let mut sinks: collections::Vec<Option<FrameSlot>> = collections::vec![None; value_count];
 
     for block in &program.blocks {
         plan_block_sinks(block, &mut sinks);
@@ -45,7 +44,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     }
 
     // Step 1: Record producer positions for single-result Value ops.
-    let mut producer_pos: Vec<Option<u32>> = Vec::new();
+    let mut producer_pos: collections::Vec<Option<u32>> = collections::Vec::new();
     let mut max_val: u32 = 0;
 
     for inst in ops.iter() {
@@ -69,7 +68,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     }
 
     producer_pos.resize(max_val as usize, None);
-    let mut is_single_result = vec![false; max_val as usize];
+    let mut is_single_result = collections::vec![false; max_val as usize];
 
     for (pos, inst) in ops.iter().enumerate() {
         let produced = match &inst.kind {
@@ -135,7 +134,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use crate::collections;
 
     use crate::vm::middle::{
         frame::FrameSlot,
@@ -152,40 +151,40 @@ mod tests {
 
     use super::plan_sinks;
 
-    fn make_program(ops: alloc::vec::Vec<SsaInst>, value_count: usize) -> SsaProgram {
+    fn make_program(ops: collections::Vec<SsaInst>, value_count: usize) -> SsaProgram {
         SsaProgram {
             entry: SsaTarget(0),
-            local_slot_types: vec![crate::value_type::ValueType::I32; 2],
-            local_slot_info: vec![
+            local_slot_types: collections::vec![crate::value_type::ValueType::I32; 2],
+            local_slot_info: collections::vec![
                 LocalSlotInfo {
                     is_param: true,
                     reads_before_write: true,
                 };
                 2
             ],
-            blocks: vec![SsaBlock {
+            blocks: collections::vec![SsaBlock {
                 id: SsaTarget(0),
-                params: vec![],
+                params: collections::vec![],
                 ops,
                 terminator: SsaTerminator::Return { results: None },
             }],
-            value_types: vec![crate::value_type::ValueType::I32; value_count],
-            value_sink_local: vec![None; value_count],
-            block_entry_cached_slots: vec![],
-            block_cfg_origins: alloc::vec![],
+            value_types: collections::vec![crate::value_type::ValueType::I32; value_count],
+            value_sink_local: collections::vec![None; value_count],
+            block_entry_cached_slots: collections::vec![],
+            block_cfg_origins: collections::vec![],
         }
     }
 
     #[test]
     fn sinks_single_result_value_into_local_set_cache() {
         let mut program = make_program(
-            vec![
+            collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
                             .unwrap(),
-                        args: vec![],
-                        results: vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -204,13 +203,13 @@ mod tests {
     #[test]
     fn does_not_sink_when_old_value_is_read_between_producer_and_set() {
         let mut program = make_program(
-            vec![
+            collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
                             .unwrap(),
-                        args: vec![],
-                        results: vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 // Read of fp[0] between producer and set — old value is live.
@@ -236,13 +235,13 @@ mod tests {
     #[test]
     fn does_not_sink_across_call_barrier() {
         let mut program = make_program(
-            vec![
+            collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
                             .unwrap(),
-                        args: vec![],
-                        results: vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -274,13 +273,13 @@ mod tests {
     #[test]
     fn sinks_when_different_slot_is_read_between_producer_and_set() {
         let mut program = make_program(
-            vec![
+            collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
                             .unwrap(),
-                        args: vec![],
-                        results: vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 // Read of fp[1] (different slot) — does not block sinking into fp[0].
@@ -308,7 +307,7 @@ mod tests {
         // get_cache fp[0] → v0, i32.add(v0, #1) → v1, set_cache fp[0] ← v1
         // v1 should sink into fp[0].
         let mut program = make_program(
-            vec![
+            collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
                         slot: FrameSlot(0),
@@ -318,8 +317,11 @@ mod tests {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Const(1)],
-                        results: vec![SsaValue(1)],
+                        args: collections::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Const(1)
+                        ],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {

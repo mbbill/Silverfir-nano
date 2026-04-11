@@ -5,9 +5,10 @@
 //! - No GC types
 //! - Import vs local distinguished via enums
 
+use crate::collections;
+
 use alloc::rc::Rc;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::ops::Deref;
 
 use crate::constants;
@@ -86,7 +87,7 @@ impl Default for ConstExpr {
 pub struct FunctionSpec {
     func_type: Rc<FunctionType>,
     type_index: u32,
-    locals: Vec<ValueType>,
+    locals: collections::Vec<ValueType>,
     code: Bytecode,
     code_offset: usize,
     #[cfg(sf_jit)]
@@ -104,7 +105,7 @@ impl FunctionSpec {
         FunctionSpec {
             func_type,
             type_index,
-            locals: Vec::new(),
+            locals: collections::Vec::new(),
             code: Bytecode::default(),
             code_offset: 0,
             #[cfg(sf_jit)]
@@ -118,7 +119,7 @@ impl FunctionSpec {
         &self.locals
     }
 
-    pub fn set_locals(&mut self, locals: Vec<ValueType>) {
+    pub fn set_locals(&mut self, locals: collections::Vec<ValueType>) {
         self.locals = locals;
     }
 
@@ -189,14 +190,14 @@ pub enum FunctionDef {
 
 #[derive(Debug)]
 pub struct Function {
-    export_names: Vec<String>,
+    export_names: collections::Vec<String>,
     def: FunctionDef,
 }
 
 impl Function {
     pub fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
         Function {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: FunctionDef::Local(FunctionSpec::new(func_type, type_index)),
         }
     }
@@ -208,7 +209,7 @@ impl Function {
         type_index: u32,
     ) -> Self {
         Function {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: FunctionDef::Import {
                 module,
                 name,
@@ -277,7 +278,7 @@ impl Function {
     }
 
     /// Consume the Function, returning its export names and definition.
-    pub fn into_parts(self) -> (Vec<String>, FunctionDef) {
+    pub fn into_parts(self) -> (collections::Vec<String>, FunctionDef) {
         (self.export_names, self.def)
     }
 }
@@ -330,14 +331,14 @@ pub enum TableDef {
 
 #[derive(Debug, Clone)]
 pub struct Table {
-    export_names: Vec<String>,
+    export_names: collections::Vec<String>,
     def: TableDef,
 }
 
 impl Table {
     pub fn new_local(value_type: ValueType, limits: Limits) -> Result<Self, WasmError> {
         Ok(Table {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: TableDef::Local(TableSpec::new(value_type, limits)?),
         })
     }
@@ -349,7 +350,7 @@ impl Table {
         limits: Limits,
     ) -> Result<Self, WasmError> {
         Ok(Table {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: TableDef::Import {
                 module,
                 name,
@@ -434,21 +435,21 @@ pub enum MemoryDef {
 
 #[derive(Debug, Clone)]
 pub struct Memory {
-    export_names: Vec<String>,
+    export_names: collections::Vec<String>,
     def: MemoryDef,
 }
 
 impl Memory {
     pub fn new_local(limits: Limits) -> Result<Self, WasmError> {
         Ok(Memory {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: MemoryDef::Local(MemorySpec::new(limits)?),
         })
     }
 
     pub fn new_import(module: String, name: String, limits: Limits) -> Result<Self, WasmError> {
         Ok(Memory {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: MemoryDef::Import {
                 module,
                 name,
@@ -533,21 +534,21 @@ pub enum GlobalDef {
 
 #[derive(Debug, Clone)]
 pub struct Global {
-    export_names: Vec<String>,
+    export_names: collections::Vec<String>,
     def: GlobalDef,
 }
 
 impl Global {
     pub fn new_local(value_type: ValueType, mutable: bool, init_expr: ConstExpr) -> Self {
         Global {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: GlobalDef::Local(GlobalSpec::new(value_type, mutable, init_expr)),
         }
     }
 
     pub fn new_import(module: String, name: String, value_type: ValueType, mutable: bool) -> Self {
         Global {
-            export_names: Vec::new(),
+            export_names: collections::Vec::new(),
             def: GlobalDef::Import {
                 module,
                 name,
@@ -601,10 +602,10 @@ impl Global {
 
 #[derive(Debug, Clone)]
 pub enum ElementInit {
-    FunctionIndexes(Vec<usize>),
+    FunctionIndexes(collections::Vec<usize>),
     InitExprs {
         value_type: ValueType,
-        exprs: Vec<ConstExpr>,
+        exprs: collections::Vec<ConstExpr>,
     },
 }
 

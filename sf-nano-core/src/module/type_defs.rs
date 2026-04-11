@@ -3,8 +3,9 @@
 //! This module contains the function type definition used in the type section:
 //! - Function types (0x60)
 
+use crate::collections;
+
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt;
 
 use crate::value_type::ValueType;
@@ -14,13 +15,13 @@ use crate::value_type::ValueType;
 /// Defines the parameter types and result types for a function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
-    params: Vec<ValueType>,
-    results: Vec<ValueType>,
+    params: collections::Vec<ValueType>,
+    results: collections::Vec<ValueType>,
 }
 
 impl FunctionType {
     /// Create a new function type
-    pub fn new(params: Vec<ValueType>, results: Vec<ValueType>) -> Self {
+    pub fn new(params: collections::Vec<ValueType>, results: collections::Vec<ValueType>) -> Self {
         FunctionType { params, results }
     }
 
@@ -37,7 +38,7 @@ impl FunctionType {
 
 impl fmt::Display for FunctionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let params: Vec<String> = self
+        let params: collections::Vec<String> = self
             .params
             .iter()
             .map(|v| {
@@ -46,7 +47,7 @@ impl fmt::Display for FunctionType {
                 buf
             })
             .collect();
-        let results: Vec<String> = self
+        let results: collections::Vec<String> = self
             .results
             .iter()
             .map(|v| {
@@ -62,11 +63,13 @@ impl fmt::Display for FunctionType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     #[test]
     fn test_function_type() {
-        let ft = FunctionType::new(vec![ValueType::I32, ValueType::I64], vec![ValueType::F32]);
+        let ft = FunctionType::new(
+            collections::vec![ValueType::I32, ValueType::I64],
+            collections::vec![ValueType::F32],
+        );
 
         assert_eq!(ft.params().len(), 2);
         assert_eq!(ft.results().len(), 1);

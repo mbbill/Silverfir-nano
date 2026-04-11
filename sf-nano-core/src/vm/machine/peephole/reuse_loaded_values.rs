@@ -3,7 +3,7 @@
 //! When the same address is loaded twice with no intervening store that could
 //! alias, replaces the second load with a register copy from the first.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{MachineBlock, MachineInstKind, MachineValue};
@@ -14,8 +14,8 @@ use super::helpers::{
 use super::TrackedLoad;
 
 pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
-    let mut tracked = Vec::<TrackedLoad>::new();
-    let mut rewritten = Vec::with_capacity(block.ops.len());
+    let mut tracked = collections::Vec::<TrackedLoad>::new();
+    let mut rewritten = collections::Vec::with_capacity(block.ops.len());
 
     for mut inst in block.ops.drain(..) {
         let mut keep_inst = true;

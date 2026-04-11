@@ -1,8 +1,9 @@
 //! Public API for sf-nano: parse, instantiate, and invoke WebAssembly modules.
 
+use crate::collections;
+
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use crate::error::WasmError;
 use crate::module::entities::{
@@ -81,7 +82,7 @@ impl Import {
 
 pub struct Instance {
     store: Store,
-    exports: Vec<(String, ExportKind, usize)>,
+    exports: collections::Vec<(String, ExportKind, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -106,7 +107,7 @@ impl Instance {
             validator.validate()?;
         }
 
-        let mut exports = Vec::new();
+        let mut exports = collections::Vec::new();
         for (i, f) in module.functions().iter().enumerate() {
             for name in f.export_names() {
                 exports.push((name.clone(), ExportKind::Func, i));
@@ -140,7 +141,8 @@ impl Instance {
             _start,
         ) = module.into_parts();
 
-        let mut functions: Vec<FunctionInst> = Vec::with_capacity(mod_functions.len());
+        let mut functions: collections::Vec<FunctionInst> =
+            collections::Vec::with_capacity(mod_functions.len());
         for func in mod_functions {
             let type_index = func.type_index();
             let (_export_names, def) = func.into_parts();
@@ -188,7 +190,8 @@ impl Instance {
             }
         }
 
-        let mut tables: Vec<TableInst> = Vec::with_capacity(mod_tables.len());
+        let mut tables: collections::Vec<TableInst> =
+            collections::Vec::with_capacity(mod_tables.len());
         for table in &mod_tables {
             match table.def() {
                 TableDef::Local(_spec) => {
@@ -240,7 +243,8 @@ impl Instance {
             }
         }
 
-        let mut memories: Vec<MemInst> = Vec::with_capacity(mod_memories.len());
+        let mut memories: collections::Vec<MemInst> =
+            collections::Vec::with_capacity(mod_memories.len());
         for mem in &mod_memories {
             match mem.def() {
                 MemoryDef::Local(_spec) => {
@@ -306,7 +310,8 @@ impl Instance {
             }
         }
 
-        let mut globals: Vec<GlobalInst> = Vec::with_capacity(mod_globals.len());
+        let mut globals: collections::Vec<GlobalInst> =
+            collections::Vec::with_capacity(mod_globals.len());
         for global in &mod_globals {
             match global.def() {
                 GlobalDef::Local(_spec) => {
@@ -356,14 +361,14 @@ impl Instance {
             }
         }
 
-        let elements: Vec<ElementInst> = mod_elements
+        let elements: collections::Vec<ElementInst> = mod_elements
             .iter()
-            .map(|e| ElementInst::new(Vec::new(), e.value_type()))
+            .map(|e| ElementInst::new(collections::Vec::new(), e.value_type()))
             .collect();
 
-        let data: Vec<DataInst> = mod_data
+        let data: collections::Vec<DataInst> = mod_data
             .iter()
-            .map(|d| DataInst::new(d.get_init().to_vec()))
+            .map(|d| DataInst::new(d.get_init().to_vec().into()))
             .collect();
 
         let mut module_inst = ModuleInst::new("main".to_string(), types);
@@ -447,7 +452,11 @@ impl Instance {
         Ok(Instance { store, exports })
     }
 
-    pub fn invoke(&mut self, name: &str, args: &[Value]) -> Result<Vec<Value>, WasmError> {
+    pub fn invoke(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
         let (_, _, idx) = self
             .exports
             .iter()
@@ -462,7 +471,7 @@ impl Instance {
         let ft = func_ref.func_type();
         let result_types = ft.results();
 
-        let mut results = Vec::with_capacity(result_types.len());
+        let mut results = collections::Vec::with_capacity(result_types.len());
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
             results.push(Value::from_raw(raw, *ty));
@@ -514,7 +523,7 @@ impl Instance {
         }
     }
 
-    pub fn memory_mut(&mut self) -> Option<&mut Vec<u8>> {
+    pub fn memory_mut(&mut self) -> Option<&mut collections::Vec<u8>> {
         if self.store.module().memories.is_empty() {
             None
         } else {
@@ -568,7 +577,7 @@ fn eval_offset(
 fn materialize_element_init(
     init: &ElementInit,
     module: &ModuleInst,
-) -> Result<Vec<RefHandle>, WasmError> {
+) -> Result<collections::Vec<RefHandle>, WasmError> {
     match init {
         ElementInit::FunctionIndexes(indices) => indices
             .iter()

@@ -1,6 +1,6 @@
-use alloc::{vec, vec::Vec};
-
+use crate::collections;
 use crate::vm::backend::BackendConfig;
+
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
     MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
@@ -36,12 +36,12 @@ fn test_config(
 fn copy_propagates_linear_value_moves_into_ops_and_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: alloc::vec![
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -61,13 +61,13 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(7))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(7))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -114,23 +114,26 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(8))]
+    );
 }
 
 #[test]
 fn does_not_copy_propagate_move_from_cached_local_block_param() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
                 // This uses a dynamic GP register that historically would have
                 // been treated as a plain "transient" number. The explicit
                 // owner says otherwise, and the peephole must obey the owner.
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))
                     .with_owner(crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,)],
-                ops: alloc::vec![
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -150,13 +153,13 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(8))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -189,19 +192,22 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(8))]
+    );
 }
 
 #[test]
 fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![
+                params: collections::Vec::new(),
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Load {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -234,13 +240,13 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(8))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -272,19 +278,22 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(11))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(11))]
+    );
 }
 
 #[test]
 fn does_not_copy_propagate_cached_local_load_defs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![
+                params: collections::Vec::new(),
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Load {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
@@ -317,13 +326,13 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(8))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -363,18 +372,21 @@ fn does_not_copy_propagate_cached_local_load_defs() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(8))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(8))]
+    );
 }
 
 #[test]
 fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -469,11 +481,11 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
 fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefines_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -523,11 +535,11 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
 fn forwards_non_adjacent_u64_store_load_pairs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,
@@ -618,11 +630,11 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
 fn forwards_fp_spill_reload_into_gp_move() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::Fp64,
@@ -680,11 +692,11 @@ fn forwards_fp_spill_reload_into_gp_move() {
 fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,
@@ -745,11 +757,11 @@ fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
 fn does_not_forward_when_stored_source_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,
@@ -807,11 +819,11 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
 fn does_not_forward_across_overlapping_store() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Store {
                         ty: MachineStorageType::GpWord,
@@ -872,11 +884,11 @@ fn does_not_forward_across_overlapping_store() {
 fn reuses_identical_loads_when_memory_stays_unchanged() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -949,11 +961,11 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
 fn does_not_reuse_identical_loads_across_distinct_storage_types() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1005,11 +1017,11 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
 fn does_not_reuse_load_after_loaded_reg_is_redefined() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1069,11 +1081,11 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
 fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1136,11 +1148,11 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
 fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1189,11 +1201,11 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
 fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_terminator_use() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1213,7 +1225,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
             ],
             terminator: MachineTerminator::Jump(MachineEdge {
                 target: MachineBlockId(1),
-                args: alloc::vec![MachineValue::Reg(MachineReg(7))],
+                args: collections::vec![MachineValue::Reg(MachineReg(7))],
             }),
         }],
     };
@@ -1232,19 +1244,22 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(7))]
+    );
 }
 
 #[test]
 fn copy_propagates_linear_copies_of_cached_local_snapshots() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![
+                params: collections::Vec::new(),
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1272,13 +1287,13 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(8))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(8))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1306,18 +1321,21 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(7))]
+    );
 }
 
 #[test]
 fn preserves_linear_value_move_live_across_helper_barrier() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1375,12 +1393,12 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
 fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![
+                params: collections::Vec::new(),
+                ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
                             owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1400,13 +1418,13 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
                 ],
                 terminator: MachineTerminator::Jump(MachineEdge {
                     target: MachineBlockId(1),
-                    args: alloc::vec![MachineValue::Reg(MachineReg(7))],
+                    args: collections::vec![MachineValue::Reg(MachineReg(7))],
                 }),
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: alloc::vec![MachineBlockParam::gp_word(MachineReg(7))],
-                ops: Vec::new(),
+                params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))],
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1434,18 +1452,21 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
     let MachineTerminator::Jump(edge) = &block.terminator else {
         panic!("expected jump terminator");
     };
-    assert_eq!(edge.args, alloc::vec![MachineValue::Reg(MachineReg(7))]);
+    assert_eq!(
+        edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(7))]
+    );
 }
 
 #[test]
 fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1484,11 +1505,11 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
 fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1529,16 +1550,16 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
 fn preserves_moves_into_fp_cached_locals() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![
+        fp_reg_init_widths: collections::vec![
             None,
             None,
             Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
             Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
         ],
-        blocks: alloc::vec![MachineBlock {
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
@@ -1588,12 +1609,12 @@ fn preserves_moves_into_fp_cached_locals() {
 fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![MachineInst {
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
                         kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
@@ -1609,24 +1630,24 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
                     ),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                     else_edge: MachineEdge {
                         target: MachineBlockId(2),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                 },
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
             MachineBlock {
                 id: MachineBlockId(2),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1659,12 +1680,12 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
 fn still_fuses_i32_compare_branch_on_32_bit_targets() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![MachineInst {
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                         kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
@@ -1680,24 +1701,24 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
                     ),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                     else_edge: MachineEdge {
                         target: MachineBlockId(2),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                 },
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
             MachineBlock {
                 id: MachineBlockId(2),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1724,12 +1745,12 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
 fn fuses_compare_branch_for_high_dynamic_result_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
             MachineBlock {
                 id: MachineBlockId(0),
-                params: Vec::new(),
-                ops: alloc::vec![MachineInst {
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
                         kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
@@ -1745,24 +1766,24 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
                     ),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                     else_edge: MachineEdge {
                         target: MachineBlockId(2),
-                        args: Vec::new(),
+                        args: collections::Vec::new(),
                     },
                 },
             },
             MachineBlock {
                 id: MachineBlockId(1),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
             MachineBlock {
                 id: MachineBlockId(2),
-                params: Vec::new(),
-                ops: Vec::new(),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1792,11 +1813,11 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
 fn fuses_test_bits_for_high_dynamic_result_reg() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
@@ -1840,11 +1861,11 @@ fn fuses_test_bits_for_high_dynamic_result_reg() {
 fn does_not_fold_constant_past_non_adjacent_instruction() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![None],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![None],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1905,11 +1926,11 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
 fn does_not_fold_constant_used_as_non_replaceable_address_base() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
@@ -1965,11 +1986,11 @@ fn fuses_shru_and_into_bitfield_extract() {
     // ShrU(r4, #1) + And(result, #32767) → BitfieldExtractU(r4, lsb=1, bits=15)
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
-        fp_reg_init_widths: vec![],
-        blocks: alloc::vec![MachineBlock {
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
-            params: Vec::new(),
-            ops: alloc::vec![
+            params: collections::Vec::new(),
+            ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
                         width: crate::vm::machine::machine_ir::MachineIntWidth::I32,

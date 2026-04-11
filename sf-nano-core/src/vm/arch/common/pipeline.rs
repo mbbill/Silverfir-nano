@@ -1,5 +1,6 @@
-use alloc::vec::Vec;
 #[cfg(sf_has_debug_regions)]
+use crate::collections;
+
 use alloc::{format, string::String};
 
 use crate::{
@@ -17,43 +18,23 @@ use super::backend::ArchBackend;
 use super::types::DebugRegion;
 use super::types::{FunctionArtifact, ParallelSource};
 
-#[cfg(sf_memtrace)]
-type MemtraceScope = sf_nano_memtrace::ScopeGuard;
-#[cfg(not(sf_memtrace))]
-struct MemtraceScope;
-
-#[inline]
-#[cfg(sf_memtrace)]
-fn memtrace_scope(name: &'static str) -> MemtraceScope {
-    sf_nano_memtrace::scope(name)
-}
-
-#[inline]
-#[cfg(not(sf_memtrace))]
-fn memtrace_scope(_name: &'static str) -> MemtraceScope {
-    MemtraceScope
-}
-
 // ── compile_function ─────────────────────────────────────────────────────────
 
 pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     compiled: &'a CompiledNativeModule,
     function: &'a crate::vm::machine::machine_ir::MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
-    {
-        let _scope = memtrace_scope("native.compile.backend.validate");
-        super::core::CompilerCore::validate_function(
-            A::NAME,
-            function,
-            compiled.backend(),
-            A::max_total_regs(),
-            A::max_fp_regs(),
-        )?;
-    }
+    super::core::CompilerCore::validate_function(
+        A::NAME,
+        function,
+        compiled.backend(),
+        A::max_total_regs(),
+        A::max_fp_regs(),
+    )?;
 
     let mut b = A::new(compiled, function);
     #[cfg(sf_has_debug_regions)]
-    let mut debug_regions = Vec::new();
+    let mut debug_regions = collections::Vec::new();
 
     // Public entry (C ABI lands here):
     //
@@ -66,12 +47,9 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // The epilogue preserves C_RET0 and rets to the C caller.
     #[cfg(sf_has_debug_regions)]
     let public_entry_start = b.core().text.len();
-    {
-        let _scope = memtrace_scope("native.compile.backend.public_entry");
-        b.lower_prologue();
-        b.lower_root_caller_stub();
-        b.lower_epilogue();
-    }
+    b.lower_prologue();
+    b.lower_root_caller_stub();
+    b.lower_epilogue();
     #[cfg(sf_has_debug_regions)]
     debug_regions.push(DebugRegion {
         offset: public_entry_start,
@@ -93,10 +71,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     let internal_entry_offset = b.core().text.len();
     #[cfg(sf_has_debug_regions)]
     let body_prelude_start = internal_entry_offset;
-    {
-        let _scope = memtrace_scope("native.compile.backend.body_prelude");
-        b.lower_body_prelude();
-    }
+    b.lower_body_prelude();
     #[cfg(sf_has_debug_regions)]
     if b.core().text.len() > body_prelude_start {
         debug_regions.push(DebugRegion {
@@ -108,52 +83,44 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 
     // Blocks
     let block_layout = b.core().block_layout();
-    {
-        let _scope = memtrace_scope("native.compile.backend.blocks");
-        for (index, block_id) in block_layout.iter().copied().enumerate() {
-            let block = b
-                .core()
-                .function
-                .program
-                .blocks
-                .get(block_id.as_usize())
-                .ok_or_else(|| {
-                    WasmError::internal("block layout references missing block".into())
-                })?;
-            let label = b.core().block_label(block.id)?;
-            b.core_mut().bind_label(label);
-            #[cfg(sf_has_debug_regions)]
-            let block_start = b.core().text.len();
-            let fallthrough = block_layout.get(index + 1).copied();
-            b.lower_block(block, fallthrough)?;
-            #[cfg(sf_has_debug_regions)]
-            {
-                let block_end = b.core().text.len();
-                debug_regions.push(DebugRegion {
-                    offset: block_start,
-                    len: block_end - block_start,
-                    label: format!("b{}", block.id.0),
-                });
-            }
+    for (index, block_id) in block_layout.iter().copied().enumerate() {
+        let block = b
+            .core()
+            .function
+            .program
+            .blocks
+            .get(block_id.as_usize())
+            .ok_or_else(|| WasmError::internal("block layout references missing block".into()))?;
+        let label = b.core().block_label(block.id)?;
+        b.core_mut().bind_label(label);
+        #[cfg(sf_has_debug_regions)]
+        let block_start = b.core().text.len();
+        let fallthrough = block_layout.get(index + 1).copied();
+        b.lower_block(block, fallthrough)?;
+        #[cfg(sf_has_debug_regions)]
+        {
+            let block_end = b.core().text.len();
+            debug_regions.push(DebugRegion {
+                offset: block_start,
+                len: block_end - block_start,
+                label: format!("b{}", block.id.0),
+            });
         }
     }
 
     // Edge stubs (take, not clone)
     #[cfg(sf_has_debug_regions)]
     let edge_start = b.core().text.len();
-    {
-        let _scope = memtrace_scope("native.compile.backend.edges");
-        let edges = core::mem::take(&mut b.core_mut().edge_stubs);
-        for edge in edges {
-            b.core_mut().bind_label(edge.label);
-            b.core_mut().current_block = None;
-            b.core_mut().current_op_index = None;
-            b.core_mut().current_edge_target = Some(edge.target);
-            emit_parallel_moves::<A>(&mut b, &edge.params, &edge.args, &edge.arg_float_widths)?;
-            let target_label = b.core().block_label(edge.target)?;
-            b.lower_unconditional_branch(target_label);
-            b.core_mut().current_edge_target = None;
-        }
+    let edges = core::mem::take(&mut b.core_mut().edge_stubs);
+    for edge in edges {
+        b.core_mut().bind_label(edge.label);
+        b.core_mut().current_block = None;
+        b.core_mut().current_op_index = None;
+        b.core_mut().current_edge_target = Some(edge.target);
+        emit_parallel_moves::<A>(&mut b, &edge.params, &edge.args, &edge.arg_float_widths)?;
+        let target_label = b.core().block_label(edge.target)?;
+        b.lower_unconditional_branch(target_label);
+        b.core_mut().current_edge_target = None;
     }
     #[cfg(sf_has_debug_regions)]
     {
@@ -173,10 +140,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     // call site. Default impl is a no-op.
     #[cfg(sf_has_debug_regions)]
     let pool_start = b.core().text.len();
-    {
-        let _scope = memtrace_scope("native.compile.backend.literal_pool");
-        b.lower_function_literal_pool()?;
-    }
+    b.lower_function_literal_pool()?;
     #[cfg(sf_has_debug_regions)]
     {
         let pool_end = b.core().text.len();
@@ -199,21 +163,18 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     #[cfg(sf_has_debug_regions)]
     let tail_start = b.core().text.len();
 
-    {
-        let _scope = memtrace_scope("native.compile.backend.tail");
-        let body_local_error_label = b.core().body_local_error_label;
-        b.core_mut().bind_label(body_local_error_label);
-        b.lower_body_local_error_tail();
+    let body_local_error_label = b.core().body_local_error_label;
+    b.core_mut().bind_label(body_local_error_label);
+    b.lower_body_local_error_tail();
 
-        let stack_overflow_label = b.core().stack_overflow_label;
-        b.core_mut().bind_label(stack_overflow_label);
-        b.lower_trap(MachineTrapKind::StackOverflow);
+    let stack_overflow_label = b.core().stack_overflow_label;
+    b.core_mut().bind_label(stack_overflow_label);
+    b.lower_trap(MachineTrapKind::StackOverflow);
 
-        let deferred = core::mem::take(&mut b.core_mut().deferred_traps);
-        for (label, kind) in deferred {
-            b.core_mut().bind_label(label);
-            b.lower_trap(kind);
-        }
+    let deferred = core::mem::take(&mut b.core_mut().deferred_traps);
+    for (label, kind) in deferred {
+        b.core_mut().bind_label(label);
+        b.lower_trap(kind);
     }
 
     #[cfg(sf_has_debug_regions)]
@@ -229,10 +190,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     }
 
     // Patch fixups
-    {
-        let _scope = memtrace_scope("native.compile.backend.patch_fixups");
-        b.patch_fixups()?;
-    }
+    b.patch_fixups()?;
 
     #[cfg(sf_has_guard_pages)]
     let body_local_error_offset = b
@@ -260,7 +218,8 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
     args: &[MachineValue],
     arg_float_widths: &[Option<MachineFloatWidth>],
 ) -> Result<(), WasmError> {
-    let mut pending: Vec<(MachineBlockParam, ParallelSource)> = Vec::new();
+    let mut pending: collections::Vec<(MachineBlockParam, ParallelSource)> =
+        collections::Vec::new();
     for ((&dst, &arg), &float_width) in params.iter().zip(args.iter()).zip(arg_float_widths.iter())
     {
         let src = match arg {

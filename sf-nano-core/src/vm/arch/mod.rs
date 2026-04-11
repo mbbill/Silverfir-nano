@@ -1,5 +1,7 @@
-use alloc::{rc::Rc, vec::Vec};
 #[cfg(sf_emulator)]
+use crate::collections;
+use alloc::rc::Rc;
+
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{
@@ -239,7 +241,7 @@ pub(crate) struct CompiledArchEntry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
     #[cfg(sf_ir_dump)]
-    pub debug_regions: Vec<DebugRegion>,
+    pub debug_regions: collections::Vec<DebugRegion>,
 }
 
 /// Compile all functions for the active native backend and return the
@@ -253,7 +255,7 @@ pub(crate) fn dispatch_compile_module(
     active_backend: NativeBackend,
     module: &ModuleInst,
     compiled: &Rc<CompiledNativeModule>,
-) -> Result<Vec<Option<CompiledArchEntry>>, WasmError> {
+) -> Result<collections::Vec<Option<CompiledArchEntry>>, WasmError> {
     match active_backend {
         #[cfg(sf_arch_arm64)]
         NativeBackend::Arm64 => {
@@ -303,7 +305,7 @@ pub(crate) fn dispatch_compile_module(
                 .collect())
         }
         #[cfg(sf_emulator)]
-        NativeBackend::Reference => Ok(Vec::new()),
+        NativeBackend::Reference => Ok(collections::Vec::new()),
     }
 }
 

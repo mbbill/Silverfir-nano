@@ -4,7 +4,7 @@
 //! precomputed semantic flags, then delegates each rewrite consultation to the
 //! policy-focused helper modules.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -87,15 +87,15 @@ impl JointPlanner {
         &self,
         block: CfgBlockId,
         actual_exit: &[crate::vm::middle::frame::FrameSlot],
-    ) -> Vec<crate::vm::middle::frame::FrameSlot> {
+    ) -> collections::Vec<crate::vm::middle::frame::FrameSlot> {
         finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
     }
     #[inline]
     pub(crate) fn pressure_fallback_drops_into(
         &self,
         query: PressureFallbackQuery<'_>,
-        working: &mut Vec<crate::vm::middle::frame::FrameSlot>,
-        dropped: &mut Vec<crate::vm::middle::frame::FrameSlot>,
+        working: &mut collections::Vec<crate::vm::middle::frame::FrameSlot>,
+        dropped: &mut collections::Vec<crate::vm::middle::frame::FrameSlot>,
     ) {
         dropped.clear();
         if working.capacity() < query.resident_cache.len() {

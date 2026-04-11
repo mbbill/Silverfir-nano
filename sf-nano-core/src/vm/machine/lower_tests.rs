@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
-
+use crate::collections;
 use crate::value_type::ValueType;
+
 use crate::vm::{
     backend::BackendConfig,
     machine::{
@@ -87,12 +87,12 @@ fn lowers_simple_slot_and_add_block() {
     let frame = plan_frame_layout(1, 4, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
                         slot: frame.local_slot(0),
@@ -103,18 +103,18 @@ fn lowers_simple_slot_and_add_block() {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(0)),
                             SsaOperand::Value(SsaValue(1))
                         ],
-                        results: alloc::vec![SsaValue(2)],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
@@ -126,17 +126,17 @@ fn lowers_simple_slot_and_add_block() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -205,61 +205,61 @@ fn lowers_select_with_wasm_operand_order() {
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 11 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 22 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(2)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::Select).unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(0)),
                             SsaOperand::Value(SsaValue(1)),
                             SsaOperand::Value(SsaValue(2))
                         ],
-                        results: alloc::vec![SsaValue(3)],
+                        results: collections::vec![SsaValue(3)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 3, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -292,25 +292,25 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 0, 0, 0),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -331,27 +331,27 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let result_span = crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(result_span),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -385,13 +385,13 @@ fn rejects_inconsistent_return_result_spans() {
     let frame = plan_frame_layout(0, 4, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(0),
@@ -401,8 +401,8 @@ fn rejects_inconsistent_return_result_spans() {
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(1),
@@ -411,17 +411,17 @@ fn rejects_inconsistent_return_result_spans() {
                 },
             },
         ],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -438,19 +438,19 @@ fn rejects_mixed_void_and_value_returns() {
     let frame = plan_frame_layout(0, 4, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return { results: None },
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return {
                     results: Some(crate::vm::middle::frame::FrameSpan::new(
                         frame.operand_slot(0),
@@ -459,17 +459,17 @@ fn rejects_mixed_void_and_value_returns() {
                 },
             },
         ],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -485,16 +485,16 @@ fn rejects_mixed_void_and_value_returns() {
 fn lowers_branch_edge_bindings_into_machine_edge_args() {
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![SsaValue(0), SsaValue(1)],
-                ops: alloc::vec![],
+                params: collections::vec![SsaValue(0), SsaValue(1)],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![
+                    bindings: collections::vec![
                         SsaBinding {
                             param: SsaValue(3),
                             value: SsaValue(1),
@@ -508,22 +508,22 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![SsaValue(2), SsaValue(3)],
-                ops: alloc::vec![],
+                params: collections::vec![SsaValue(2), SsaValue(3)],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
             ssa: ssa,
@@ -546,16 +546,16 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
 fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![SsaValue(0)],
-                ops: alloc::vec![],
+                params: collections::vec![SsaValue(0)],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![SsaBinding {
+                    bindings: collections::vec![SsaBinding {
                         param: SsaValue(1),
                         value: SsaValue(0),
                     }],
@@ -563,22 +563,22 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![SsaValue(1)],
-                ops: alloc::vec![],
+                params: collections::vec![SsaValue(1)],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::I64, ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I64, ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
             ssa: ssa,
@@ -611,7 +611,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     };
     assert_eq!(
         edge.args,
-        alloc::vec![
+        collections::vec![
             MachineValue::Reg(MachineReg(4)),
             MachineValue::Reg(MachineReg(5))
         ]
@@ -629,20 +629,20 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(1, 4, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x0123_4567_89ab_cdef,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -663,39 +663,39 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
                             value: 0x1111_2222_3333_4444,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(2)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(1)),
                             SsaOperand::Value(SsaValue(2))
                         ],
-                        results: alloc::vec![SsaValue(3)],
+                        results: collections::vec![SsaValue(3)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![
+        value_types: collections::vec![
             ValueType::I64,
             ValueType::I64,
             ValueType::I64,
             ValueType::I64
         ],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -724,15 +724,15 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I64],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I64],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetSlot {
                         slot,
@@ -751,17 +751,17 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -799,23 +799,23 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I64],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I64],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: false,
             reads_before_write: false,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x0123_4567_89ab_cdef,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -830,17 +830,17 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -869,50 +869,50 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I64, ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I64, ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -930,18 +930,18 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
     let frame = plan_frame_layout(0, 3, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -950,8 +950,8 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
                             value: 0x8877_6655_4433_2211,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
@@ -961,19 +961,19 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(0)),
                             SsaOperand::Value(SsaValue(1))
                         ],
-                        results: alloc::vec![],
+                        results: collections::vec![],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(2)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
@@ -983,29 +983,29 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(2))],
-                        results: alloc::vec![SsaValue(3)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(2))],
+                        results: collections::vec![SsaValue(3)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![
+        value_types: collections::vec![
             ValueType::I32,
             ValueType::I64,
             ValueType::I32,
             ValueType::I64
         ],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1025,12 +1025,12 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
@@ -1042,19 +1042,19 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
@@ -1062,17 +1062,17 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![
+        functions: collections::vec![
             LowerFunctionInput {
                 id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
@@ -1097,15 +1097,15 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
                         slot: frame.local_slot(0),
@@ -1115,16 +1115,16 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
@@ -1136,17 +1136,17 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1194,18 +1194,18 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1217,17 +1217,17 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 1, 0, 0),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1253,21 +1253,21 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: false,
             reads_before_write: false
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1279,17 +1279,17 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1317,12 +1317,12 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 7,
                     args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
@@ -1331,17 +1331,17 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1368,20 +1368,20 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
     let frame = plan_frame_layout(0, 1, 1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const {
                             value: 0x0123_4567_89ab_cdef,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1393,17 +1393,17 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1429,21 +1429,21 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1467,17 +1467,17 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1510,21 +1510,21 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1548,17 +1548,17 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1581,21 +1581,21 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 5 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -1619,17 +1619,17 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -1664,12 +1664,12 @@ fn lowers_direct_local_call_with_continuation_block() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
@@ -1681,19 +1681,19 @@ fn lowers_direct_local_call_with_continuation_block() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
@@ -1701,17 +1701,17 @@ fn lowers_direct_local_call_with_continuation_block() {
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![
+        functions: collections::vec![
             LowerFunctionInput {
                 id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
@@ -1819,15 +1819,15 @@ fn flushes_cached_local_before_second_direct_call() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                         callee: 1,
@@ -1874,19 +1874,19 @@ fn flushes_cached_local_before_second_direct_call() {
             ],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
@@ -1894,17 +1894,17 @@ fn flushes_cached_local_before_second_direct_call() {
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![
+        functions: collections::vec![
             LowerFunctionInput {
                 id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
@@ -1946,7 +1946,7 @@ fn flushes_cached_local_before_second_direct_call() {
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let local_flush_indices = second_call_block
         .ops
         .iter()
@@ -1963,7 +1963,7 @@ fn flushes_cached_local_before_second_direct_call() {
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     assert_eq!(
         result_reload_indices.len(),
@@ -1997,22 +1997,22 @@ fn preserves_cached_locals_across_block_edges() {
     let frame = plan_frame_layout(1, 1, 4);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2029,13 +2029,13 @@ fn preserves_cached_locals_across_block_edges() {
                 ],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::LocalGetCache {
                             slot: frame.local_slot(0),
@@ -2052,17 +2052,17 @@ fn preserves_cached_locals_across_block_edges() {
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2138,22 +2138,22 @@ fn threads_cached_locals_through_block_edge_params() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2165,13 +2165,13 @@ fn threads_cached_locals_through_block_edge_params() {
                 ],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::LocalGetCache {
                             slot,
@@ -2188,17 +2188,17 @@ fn threads_cached_locals_through_block_edge_params() {
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![], collections::vec![slot]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2257,8 +2257,8 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
     let slot1 = frame.local_slot(1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
-        local_slot_info: alloc::vec![
+        local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: collections::vec![
             LocalSlotInfo {
                 is_param: false,
                 reads_before_write: false,
@@ -2268,17 +2268,17 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                 reads_before_write: false,
             },
         ],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2291,8 +2291,8 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 2 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(1)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(1)],
                         },
                     },
                     SsaInst {
@@ -2304,13 +2304,13 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                 ],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::LocalGetCache {
                             slot: slot1,
@@ -2327,17 +2327,17 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot1]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![], collections::vec![slot1]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2372,15 +2372,15 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: false,
             reads_before_write: false,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalReserveCache { slot },
                 },
@@ -2388,8 +2388,8 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -2401,17 +2401,17 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2449,42 +2449,42 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: false,
             reads_before_write: false,
         }],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![],
+                params: collections::vec![],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![SsaInst {
+                params: collections::vec![],
+                ops: collections::vec![SsaInst {
                     kind: SsaInstKind::LocalReserveCache { slot },
                 }],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(2),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(2),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 9 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2509,17 +2509,21 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![], alloc::vec![slot]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![
+            collections::vec![],
+            collections::vec![],
+            collections::vec![slot]
+        ],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2570,8 +2574,8 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
     let slot2 = frame.local_slot(2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
-        local_slot_info: alloc::vec![
+        local_slot_types: collections::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        local_slot_info: collections::vec![
             LocalSlotInfo {
                 is_param: false,
                 reads_before_write: false,
@@ -2585,11 +2589,11 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 reads_before_write: false,
             },
         ],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     // Reverse first-mention order so explicit cached-local
                     // metadata does not accidentally match the target entry
                     // slot order.
@@ -2605,19 +2609,19 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 ],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2630,8 +2634,8 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 2 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(1)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(1)],
                         },
                     },
                     SsaInst {
@@ -2644,8 +2648,8 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 3 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(2)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(2)],
                         },
                     },
                     SsaInst {
@@ -2658,17 +2662,20 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot0, slot1, slot2],],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![
+            collections::vec![],
+            collections::vec![slot0, slot1, slot2],
+        ],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(3, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2700,15 +2707,15 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalEnsureCache { slot },
                 },
@@ -2718,17 +2725,17 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2758,27 +2765,27 @@ fn does_not_save_clean_carried_cache_before_external_call() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![SsaInst {
+                params: collections::vec![],
+                ops: collections::vec![SsaInst {
                     kind: SsaInstKind::LocalEnsureCache { slot },
                 }],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![SsaInst {
+                params: collections::vec![],
+                ops: collections::vec![SsaInst {
                     kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                         callee: 7,
                         args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
@@ -2788,17 +2795,17 @@ fn does_not_save_clean_carried_cache_before_external_call() {
                 terminator: SsaTerminator::TrapUnreachable,
             },
         ],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![slot]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![], collections::vec![slot]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2835,8 +2842,8 @@ fn saves_only_dirty_cached_locals_before_external_call() {
     let clean_slot = frame.local_slot(1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
-        local_slot_info: alloc::vec![
+        local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: collections::vec![
             LocalSlotInfo {
                 is_param: false,
                 reads_before_write: false,
@@ -2846,28 +2853,28 @@ fn saves_only_dirty_cached_locals_before_external_call() {
                 reads_before_write: true,
             },
         ],
-        blocks: alloc::vec![
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![SsaInst {
+                params: collections::vec![],
+                ops: collections::vec![SsaInst {
                     kind: SsaInstKind::LocalEnsureCache { slot: clean_slot },
                 }],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![],
+                    bindings: collections::vec![],
                 }),
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![],
-                ops: alloc::vec![
+                params: collections::vec![],
+                ops: collections::vec![
                     SsaInst {
                         kind: SsaInstKind::Value {
                             op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 11 })
                                 .unwrap(),
-                            args: alloc::vec![],
-                            results: alloc::vec![SsaValue(0)],
+                            args: collections::vec![],
+                            results: collections::vec![SsaValue(0)],
                         },
                     },
                     SsaInst {
@@ -2893,17 +2900,20 @@ fn saves_only_dirty_cached_locals_before_external_call() {
                 terminator: SsaTerminator::TrapUnreachable,
             },
         ],
-        value_types: alloc::vec![ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![], alloc::vec![clean_slot]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![
+            collections::vec![],
+            collections::vec![clean_slot]
+        ],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2934,30 +2944,30 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::LocalEnsureCache { slot },
             }],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![alloc::vec![slot]],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![collections::vec![slot]],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -2992,15 +3002,15 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: false,
             reads_before_write: false
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
                         slot: frame.local_slot(0),
@@ -3011,8 +3021,8 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
@@ -3024,17 +3034,17 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32, ValueType::I64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let err = lower_module(LowerModuleInput {
         backend: gp32_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3058,12 +3068,12 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 2,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
@@ -3075,19 +3085,19 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
@@ -3095,17 +3105,17 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![
+        functions: collections::vec![
             LowerFunctionInput {
                 id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
@@ -3144,32 +3154,32 @@ fn lowers_memory_size_without_helper_boundary() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Value {
                     op: SsaLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
                         .unwrap(),
-                    args: alloc::vec![],
-                    results: alloc::vec![SsaValue(0)],
+                    args: collections::vec![],
+                    results: collections::vec![SsaValue(0)],
                 },
             }],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3197,32 +3207,32 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Value {
                     op: SsaLeafOp::from_primitive(PrimitiveOpKind::MemorySize { mem_idx: 1 })
                         .unwrap(),
-                    args: alloc::vec![],
-                    results: alloc::vec![SsaValue(0)],
+                    args: collections::vec![],
+                    results: collections::vec![SsaValue(0)],
                 },
             }],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3264,12 +3274,12 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     let call_base = frame.operand_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
@@ -3280,17 +3290,17 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3472,12 +3482,12 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     let call_base = frame.operand_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
                     type_idx: 3,
                     table_idx: 0,
@@ -3488,17 +3498,17 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3549,18 +3559,18 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -3578,24 +3588,24 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::Drop).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(1))],
-                        results: alloc::vec![],
+                        args: collections::vec![SsaOperand::Value(SsaValue(1))],
+                        results: collections::vec![],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3628,12 +3638,12 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
 
     let caller = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![SsaInst {
+            params: collections::vec![],
+            ops: collections::vec![SsaInst {
                 kind: SsaInstKind::Call(SsaCallOp::CallDirect {
                     callee: 1,
                     args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
@@ -3645,19 +3655,19 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             }],
             terminator: SsaTerminator::TrapUnreachable,
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
     let callee = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![],
+            params: collections::vec![],
+            ops: collections::vec![],
             terminator: SsaTerminator::Return {
                 results: Some(crate::vm::middle::frame::FrameSpan::new(
                     callee_frame.operand_slot(0),
@@ -3665,17 +3675,17 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![
+        functions: collections::vec![
             LowerFunctionInput {
                 id: crate::vm::machine::machine_ir::MachineFuncId(0),
                 frame: caller_frame,
@@ -3693,7 +3703,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     .expect("32-bit direct local call lowering should succeed");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    let store_widths: alloc::vec::Vec<_> = ops
+    let store_widths: collections::Vec<_> = ops
         .iter()
         .filter_map(|op| match op.kind {
             MachineInstKind::Store { width, .. } => Some(width),
@@ -3716,50 +3726,50 @@ fn lowers_global_get_and_set_without_helpers() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 9 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::GlobalGet { idx: 3 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3788,42 +3798,42 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 0 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
                             .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3859,18 +3869,18 @@ fn lowers_i32_load_with_inline_trap_if() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -3880,24 +3890,24 @@ fn lowers_i32_load_with_inline_trap_if() {
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -3949,18 +3959,18 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -3970,24 +3980,24 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4029,18 +4039,18 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -4050,24 +4060,24 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4110,18 +4120,18 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     let frame = plan_frame_layout(0, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -4130,8 +4140,8 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
                             value: 0x8877_6655_4433_2211,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
@@ -4141,26 +4151,26 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
                             memidx: 0,
                         })
                         .unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(0)),
                             SsaOperand::Value(SsaValue(1))
                         ],
-                        results: alloc::vec![],
+                        results: collections::vec![],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         use_guard_pages: true,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4212,40 +4222,40 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::RefNull).unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::RefIsNull).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4279,18 +4289,18 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
     let frame = plan_frame_layout(0, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -4300,24 +4310,24 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4344,44 +4354,44 @@ fn threads_live_linear_values_through_split_continuation_params() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Const { value: 3 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::TableGet { table_idx: 1 })
                             .unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0))],
-                        results: alloc::vec![SsaValue(2)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(0))],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I64Add).unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(1)),
                             SsaOperand::Value(SsaValue(2))
                         ],
-                        results: alloc::vec![SsaValue(3)],
+                        results: collections::vec![SsaValue(3)],
                     },
                 },
                 SsaInst {
@@ -4393,17 +4403,17 @@ fn threads_live_linear_values_through_split_continuation_params() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4421,7 +4431,7 @@ fn threads_live_linear_values_through_split_continuation_params() {
         .params
         .iter()
         .map(|param| MachineValue::Reg(param.reg))
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
 
     assert_eq!(else_edge.target, continuation.id);
     assert_eq!(else_edge.args, expected_args);
@@ -4443,18 +4453,18 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
     let frame = plan_frame_layout(0, 0, 3);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 8 })
                             .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -4463,15 +4473,15 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
                             value: 0x3f800000,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Abs).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(1))],
-                        results: alloc::vec![SsaValue(2)],
+                        args: collections::vec![SsaOperand::Value(SsaValue(1))],
+                        results: collections::vec![SsaValue(2)],
                     },
                 },
                 SsaInst {
@@ -4481,27 +4491,27 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
                             memidx: 1,
                         })
                         .unwrap(),
-                        args: alloc::vec![
+                        args: collections::vec![
                             SsaOperand::Value(SsaValue(0)),
                             SsaOperand::Value(SsaValue(2))
                         ],
-                        results: alloc::vec![],
+                        results: collections::vec![],
                     },
                 },
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4543,20 +4553,20 @@ fn lowers_f32_const_to_fp_machine_const() {
     let frame = plan_frame_layout(0, 1, 1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::F32Const {
                             value: 0x4120_0000,
                         })
                         .unwrap(),
-                        args: alloc::vec![],
-                        results: alloc::vec![SsaValue(0)],
+                        args: collections::vec![],
+                        results: collections::vec![SsaValue(0)],
                     },
                 },
                 SsaInst {
@@ -4573,17 +4583,17 @@ fn lowers_f32_const_to_fp_machine_const() {
                 )),
             },
         }],
-        value_types: alloc::vec![ValueType::F32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::F32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4620,12 +4630,12 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
@@ -4646,17 +4656,17 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
                 )),
             },
         }],
-        value_types: alloc::vec![ValueType::F64],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::F64],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4687,12 +4697,12 @@ fn untyped_slot_load_stays_in_gp_bank() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![SsaBlock {
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
@@ -4713,17 +4723,17 @@ fn untyped_slot_load_stays_in_gp_bank() {
                 )),
             },
         }],
-        value_types: alloc::vec![],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4755,13 +4765,13 @@ fn f32_block_params_keep_f32_width() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![],
-        local_slot_info: alloc::vec![],
-        blocks: alloc::vec![
+        local_slot_types: collections::vec![],
+        local_slot_info: collections::vec![],
+        blocks: collections::vec![
             SsaBlock {
                 id: SsaTarget(0),
-                params: alloc::vec![],
-                ops: alloc::vec![SsaInst {
+                params: collections::vec![],
+                ops: collections::vec![SsaInst {
                     kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
                         dst: SsaValue(0),
@@ -4769,7 +4779,7 @@ fn f32_block_params_keep_f32_width() {
                 }],
                 terminator: SsaTerminator::Goto(SsaEdge {
                     target: SsaTarget(1),
-                    bindings: alloc::vec![SsaBinding {
+                    bindings: collections::vec![SsaBinding {
                         param: SsaValue(1),
                         value: SsaValue(0),
                     }],
@@ -4777,22 +4787,22 @@ fn f32_block_params_keep_f32_width() {
             },
             SsaBlock {
                 id: SsaTarget(1),
-                params: alloc::vec![SsaValue(1)],
-                ops: alloc::vec![],
+                params: collections::vec![SsaValue(1)],
+                ops: collections::vec![],
                 terminator: SsaTerminator::Return { results: None },
             },
         ],
-        value_types: alloc::vec![ValueType::F32, ValueType::F32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::F32, ValueType::F32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4813,15 +4823,15 @@ fn f32_cached_locals_use_f32_slot_widths() {
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::F32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::F32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 SsaInst {
                     kind: SsaInstKind::LocalGetSlot {
                         slot: frame.local_slot(0),
@@ -4837,17 +4847,17 @@ fn f32_cached_locals_use_f32_slot_widths() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::F32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::F32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 1, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4857,7 +4867,10 @@ fn f32_cached_locals_use_f32_slot_widths() {
     .expect("typed f32 cached locals should lower");
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.fp_reg_init_widths, alloc::vec![None, None, None],);
+    assert_eq!(
+        program.fp_reg_init_widths,
+        collections::vec![None, None, None],
+    );
 
     let ops = &program.blocks[0].ops;
     assert!(matches!(
@@ -4879,15 +4892,15 @@ fn local_get_cache_source_aliases_without_move() {
     let slot = frame.local_slot(0);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32],
-        local_slot_info: alloc::vec![LocalSlotInfo {
+        local_slot_types: collections::vec![ValueType::I32],
+        local_slot_info: collections::vec![LocalSlotInfo {
             is_param: true,
             reads_before_write: true,
         }],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 // get_cache produces v0 aliased to the cache register
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
@@ -4899,8 +4912,11 @@ fn local_get_cache_source_aliases_without_move() {
                 SsaInst {
                     kind: SsaInstKind::Value {
                         op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: alloc::vec![SsaOperand::Value(SsaValue(0)), SsaOperand::Const(1),],
-                        results: alloc::vec![SsaValue(1)],
+                        args: collections::vec![
+                            SsaOperand::Value(SsaValue(0)),
+                            SsaOperand::Const(1),
+                        ],
+                        results: collections::vec![SsaValue(1)],
                     },
                 },
                 SsaInst {
@@ -4912,17 +4928,17 @@ fn local_get_cache_source_aliases_without_move() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -4934,7 +4950,7 @@ fn local_get_cache_source_aliases_without_move() {
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     // Expected: Load(ensure cache) + Move(const 1) + IntBinary(Add) + Store
     // NO Move from cache→linear for LocalGetCache.
-    let cache_to_linear_moves: Vec<_> = ops
+    let cache_to_linear_moves: collections::Vec<_> = ops
         .iter()
         .filter(|inst| {
             matches!(
@@ -4953,7 +4969,7 @@ fn local_get_cache_source_aliases_without_move() {
         cache_to_linear_moves
             .iter()
             .map(|i| &i.kind)
-            .collect::<Vec<_>>()
+            .collect::<collections::Vec<_>>()
     );
 }
 
@@ -4966,8 +4982,8 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
     let slot1 = frame.local_slot(1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
-        local_slot_info: alloc::vec![
+        local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: collections::vec![
             LocalSlotInfo {
                 is_param: true,
                 reads_before_write: true
@@ -4977,10 +4993,10 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
                 reads_before_write: true
             },
         ],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 // v0 aliases cache_reg of fp[0]
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
@@ -5014,17 +5030,17 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32, ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32, ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -5036,7 +5052,7 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     // There must be at least one LinearValue Move that materializes the
     // aliased value out of the cache register before the overwrite.
-    let materialization_moves: Vec<_> = ops
+    let materialization_moves: collections::Vec<_> = ops
         .iter()
         .filter(|inst| {
             matches!(
@@ -5052,7 +5068,7 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
     assert!(
         !materialization_moves.is_empty(),
         "must materialize aliased live value before cache overwrite; ops={:?}",
-        ops.iter().map(|i| &i.kind).collect::<Vec<_>>()
+        ops.iter().map(|i| &i.kind).collect::<collections::Vec<_>>()
     );
 }
 
@@ -5066,8 +5082,8 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
     let slot1 = frame.local_slot(1);
     let ssa = SsaProgram {
         entry: SsaTarget(0),
-        local_slot_types: alloc::vec![ValueType::I32, ValueType::I32],
-        local_slot_info: alloc::vec![
+        local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+        local_slot_info: collections::vec![
             LocalSlotInfo {
                 is_param: true,
                 reads_before_write: true
@@ -5077,10 +5093,10 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
                 reads_before_write: true
             },
         ],
-        blocks: alloc::vec![SsaBlock {
+        blocks: collections::vec![SsaBlock {
             id: SsaTarget(0),
-            params: alloc::vec![],
-            ops: alloc::vec![
+            params: collections::vec![],
+            ops: collections::vec![
                 // v0 aliases cache_reg of fp[0]
                 SsaInst {
                     kind: SsaInstKind::LocalGetCache {
@@ -5098,17 +5114,17 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             ],
             terminator: SsaTerminator::Return { results: None },
         }],
-        value_types: alloc::vec![ValueType::I32],
-        value_sink_local: alloc::vec![],
-        block_entry_cached_slots: alloc::vec![],
-        block_cfg_origins: alloc::vec![],
+        value_types: collections::vec![ValueType::I32],
+        value_sink_local: collections::vec![],
+        block_entry_cached_slots: collections::vec![],
+        block_cfg_origins: collections::vec![],
     };
 
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
-        functions: alloc::vec![LowerFunctionInput {
+        functions: collections::vec![LowerFunctionInput {
             id: crate::vm::machine::machine_ir::MachineFuncId(0),
             frame,
             ssa: ssa,
@@ -5120,7 +5136,7 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     // Expected: Load(fp[0]) + Load(fp[1]) + Move(CachedLocal, cache1 <- cache0)
     // The Move from LocalGetCache→LocalSetCache should be a single CachedLocal move.
-    let reg_moves: Vec<_> = ops
+    let reg_moves: collections::Vec<_> = ops
         .iter()
         .filter(|inst| {
             matches!(
@@ -5136,6 +5152,9 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
         reg_moves.len(),
         1,
         "get_cache(fp[0]) → set_cache(fp[1]) should produce exactly one reg-to-reg Move; got {:?}",
-        reg_moves.iter().map(|i| &i.kind).collect::<Vec<_>>()
+        reg_moves
+            .iter()
+            .map(|i| &i.kind)
+            .collect::<collections::Vec<_>>()
     );
 }

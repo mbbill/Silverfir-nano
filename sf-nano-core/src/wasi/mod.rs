@@ -4,12 +4,12 @@
 //! so that plain `fn`-pointer `ExternalFn` callbacks can access WASI state
 //! without closures.
 
+use crate::collections;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::{String, ToString};
 use std::thread_local;
-use std::vec;
-use std::vec::Vec;
 
 use crate::vm::instance::Import;
 
@@ -59,9 +59,9 @@ impl std::fmt::Debug for FdEntry {
 }
 
 pub struct WasiCtx {
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-    pub preopens: Vec<PreopenDir>,
+    pub args: collections::Vec<String>,
+    pub env: collections::Vec<(String, String)>,
+    pub preopens: collections::Vec<PreopenDir>,
     pub next_fd: i32,
     pub fds: HashMap<i32, FdEntry>,
     pub closed_preopens: HashSet<i32>,
@@ -69,7 +69,11 @@ pub struct WasiCtx {
 }
 
 impl WasiCtx {
-    pub fn new(args: Vec<String>, env: Vec<(String, String)>, preopens: Vec<PreopenDir>) -> Self {
+    pub fn new(
+        args: collections::Vec<String>,
+        env: collections::Vec<(String, String)>,
+        preopens: collections::Vec<PreopenDir>,
+    ) -> Self {
         let next_fd = 3 + preopens.len() as i32;
         Self {
             args,
@@ -95,17 +99,17 @@ impl WasiCtx {
 // ---------------------------------------------------------------------------
 
 pub struct WasiContextBuilder {
-    args: Vec<String>,
-    env: Vec<(String, String)>,
-    preopens: Vec<PreopenDir>,
+    args: collections::Vec<String>,
+    env: collections::Vec<(String, String)>,
+    preopens: collections::Vec<PreopenDir>,
 }
 
 impl WasiContextBuilder {
     pub fn new() -> Self {
         Self {
-            args: vec!["program".into()],
-            env: vec![],
-            preopens: vec![],
+            args: collections::vec!["program".into()],
+            env: collections::vec![],
+            preopens: collections::vec![],
         }
     }
 
@@ -200,14 +204,14 @@ fn with_ctx_mut<R>(f: impl FnOnce(&mut WasiCtx) -> R) -> R {
 // ---------------------------------------------------------------------------
 
 /// Generate WASI imports for a given module namespace.
-fn wasi_imports_for(module: &str) -> Vec<Import> {
+fn wasi_imports_for(module: &str) -> collections::Vec<Import> {
     macro_rules! wasi {
         ($name:literal, $f:expr) => {
             Import::func(module, $name, $f)
         };
     }
 
-    vec![
+    collections::vec![
         wasi!("args_sizes_get", preview1::args_sizes_get),
         wasi!("args_get", preview1::args_get),
         wasi!("environ_sizes_get", preview1::environ_sizes_get),
@@ -254,7 +258,7 @@ fn wasi_imports_for(module: &str) -> Vec<Import> {
 }
 
 /// Generate all WASI imports (preview1 + unstable) for use with `Instance::new()`.
-pub fn wasi_imports() -> Vec<Import> {
+pub fn wasi_imports() -> collections::Vec<Import> {
     let mut imports = wasi_imports_for(WASI_SNAPSHOT_PREVIEW1);
     imports.extend(wasi_imports_for(WASI_UNSTABLE));
     imports

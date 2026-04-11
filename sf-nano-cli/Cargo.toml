@@ -14,7 +14,5 @@ path = "src/main.rs"
 default = ["jit"]
 jit = ["sf-nano-core/jit"]
 call-trace = ["sf-nano-core/call-trace"]
-memtrace = ["sf-nano-core/memtrace", "dep:sf-nano-memtrace"]
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", features = ["wasi", "emulator"] }
-sf-nano-memtrace = { path = "../tools/memtrace", optional = true }

@@ -3,7 +3,7 @@
 //! Stack and SSA edge shape are already handled by the semantic CFG plus block
 //! params. The only repair left here is cached-local set reconciliation.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::vm::middle::{
     frame::FrameSlot,
@@ -18,14 +18,14 @@ use crate::vm::middle::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct RepairActions {
-    ensure_cached_locals: Vec<FrameSlot>,
-    reserve_cached_locals: Vec<FrameSlot>,
-    drop_cached_locals: Vec<FrameSlot>,
+    ensure_cached_locals: collections::Vec<FrameSlot>,
+    reserve_cached_locals: collections::Vec<FrameSlot>,
+    drop_cached_locals: collections::Vec<FrameSlot>,
 }
 
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
-    exit_cached_slots: &[Vec<FrameSlot>],
+    exit_cached_slots: &[collections::Vec<FrameSlot>],
 ) {
     let original_len = program.blocks.len();
     let target_blocks = program.blocks.clone();
@@ -33,9 +33,9 @@ pub(super) fn insert_boundary_repair_blocks(
         .blocks
         .iter()
         .map(|block| block.params.clone())
-        .collect::<Vec<_>>();
+        .collect::<collections::Vec<_>>();
     let target_entries = program.block_entry_cached_slots.clone();
-    let mut extra_blocks = Vec::new();
+    let mut extra_blocks = collections::Vec::new();
 
     for block_index in 0..original_len {
         let pred_exit = exit_cached_slots
@@ -117,11 +117,11 @@ fn maybe_repair_edge(
     edge: &mut SsaEdge,
     pred_exit: &[FrameSlot],
     target_blocks: &[SsaBlock],
-    target_entries: &[Vec<FrameSlot>],
-    target_params: &[Vec<SsaValue>],
-    extra_blocks: &mut Vec<SsaBlock>,
-    block_entry_cached_slots: &mut Vec<Vec<FrameSlot>>,
-    block_cfg_origins: &mut Vec<Vec<u32>>,
+    target_entries: &[collections::Vec<FrameSlot>],
+    target_params: &[collections::Vec<SsaValue>],
+    extra_blocks: &mut collections::Vec<SsaBlock>,
+    block_entry_cached_slots: &mut collections::Vec<collections::Vec<FrameSlot>>,
+    block_cfg_origins: &mut collections::Vec<collections::Vec<u32>>,
     original_len: usize,
 ) {
     let target_id = edge.target.as_usize();
@@ -140,7 +140,7 @@ fn maybe_repair_edge(
 
     let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
     let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
-    let mut ops = Vec::new();
+    let mut ops = collections::Vec::new();
     for slot in repair.drop_cached_locals {
         ops.push(SsaInst {
             kind: SsaInstKind::LocalDropCache { slot },
@@ -173,17 +173,17 @@ fn maybe_repair_edge(
         ops,
         terminator: SsaTerminator::Goto(repair_edge),
     });
-    block_entry_cached_slots.push(pred_exit.to_vec());
-    block_cfg_origins.push(Vec::new());
+    block_entry_cached_slots.push(pred_exit.to_vec().into());
+    block_cfg_origins.push(collections::Vec::new());
     edge.target = repair_id;
 }
 
 fn maybe_repair_entry(
     program: &mut SsaProgram,
     target_blocks: &[SsaBlock],
-    target_entries: &[Vec<FrameSlot>],
-    target_params: &[Vec<SsaValue>],
-    extra_blocks: &mut Vec<SsaBlock>,
+    target_entries: &[collections::Vec<FrameSlot>],
+    target_params: &[collections::Vec<SsaValue>],
+    extra_blocks: &mut collections::Vec<SsaBlock>,
     original_len: usize,
 ) {
     let entry_target = program.entry.as_usize();
@@ -205,7 +205,7 @@ fn maybe_repair_entry(
 
     let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
     let repair_params = target_params.get(entry_target).cloned().unwrap_or_default();
-    let mut ops = Vec::new();
+    let mut ops = collections::Vec::new();
     for slot in repair.drop_cached_locals {
         ops.push(SsaInst {
             kind: SsaInstKind::LocalDropCache { slot },
@@ -238,8 +238,10 @@ fn maybe_repair_entry(
         ops,
         terminator: SsaTerminator::Goto(repair_edge),
     });
-    program.block_entry_cached_slots.push(Vec::new());
-    program.block_cfg_origins.push(Vec::new());
+    program
+        .block_entry_cached_slots
+        .push(collections::Vec::new());
+    program.block_cfg_origins.push(collections::Vec::new());
     program.entry = repair_id;
 }
 

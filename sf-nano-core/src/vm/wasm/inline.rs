@@ -7,7 +7,7 @@
 //! Runs after all functions have been decoded to `SemanticProgram` and before
 //! `prepare_function` / IR lowering.
 
-use alloc::vec::Vec;
+use crate::collections;
 
 use crate::value_type::ValueType;
 
@@ -85,10 +85,10 @@ struct ReturnSite {
 /// Walk the callee's semantic ops and compute the `stack_drop` value for every
 /// `Return`/`ReturnOne`/`ReturnVoid` op. Returns an empty vec when there are
 /// no explicit returns.
-fn find_return_sites(callee: &SemanticProgram) -> Vec<ReturnSite> {
-    let mut sites = Vec::new();
+fn find_return_sites(callee: &SemanticProgram) -> collections::Vec<ReturnSite> {
+    let mut sites = collections::Vec::new();
     let mut depth: i32 = 0;
-    let mut control: Vec<(i32, u16, u16)> = Vec::new(); // (height_below_params, params, results)
+    let mut control: collections::Vec<(i32, u16, u16)> = collections::Vec::new(); // (height_below_params, params, results)
     let mut unreachable = false;
 
     for (i, op) in callee.ops.iter().enumerate() {
@@ -211,9 +211,9 @@ pub(crate) fn inline_calls_in_function(
 ) -> bool {
     // Collect inline sites (process back-to-front so earlier indices stay valid).
     // Track loop depth so that call sites inside loops get a larger inline budget.
-    let mut sites: Vec<(usize, u32)> = Vec::new(); // (op_index, callee_func_idx)
+    let mut sites: collections::Vec<(usize, u32)> = collections::Vec::new(); // (op_index, callee_func_idx)
     let mut loop_depth: u32 = 0;
-    let mut control_is_loop: Vec<bool> = Vec::new();
+    let mut control_is_loop: collections::Vec<bool> = collections::Vec::new();
     for (i, op) in caller.ops.iter().enumerate() {
         match &op.kind {
             SemanticOpKind::Loop { .. } => {
@@ -317,7 +317,7 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     // caller op index (site + prefix_len + I).
     let target_offset = site + prefix_len;
 
-    let mut inserted = Vec::with_capacity(total_inserted);
+    let mut inserted = collections::Vec::with_capacity(total_inserted);
 
     // 1. Wrapper Block — params must match the call's params so that the
     //    values sitting on the caller's stack are consumed by the block, giving
@@ -389,7 +389,7 @@ fn inline_single_call(caller: &mut SemanticProgram, site: usize, callee: &Semant
     // 4. Copy callee's op_result_types with target_offset applied.
     {
         let wrapper_result_types = caller.op_result_types.get(&site).cloned();
-        let shifted: Vec<_> = caller
+        let shifted: collections::Vec<_> = caller
             .op_result_types
             .iter()
             .filter(|(&k, _)| k != site) // remove old call entry
@@ -452,7 +452,7 @@ fn merge_inlined_local_types(
 fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
     let mut depth: i32 = 0;
     let mut max_depth: i32 = 0;
-    let mut control: Vec<(i32, u16, u16)> = Vec::new();
+    let mut control: collections::Vec<(i32, u16, u16)> = collections::Vec::new();
     let mut unreachable = false;
 
     for op in &program.ops {
@@ -678,7 +678,7 @@ mod tests {
             results: 1,
             local_count: 0,
             max_stack_height: 1,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::CallDirect {
                         callee: 1,
@@ -690,11 +690,11 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::from([(
                 0usize,
-                alloc::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )]),
         };
         let callee = SemanticProgram {
@@ -702,7 +702,7 @@ mod tests {
             results: 1,
             local_count: 0,
             max_stack_height: 1,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 7 }),
                 },
@@ -713,8 +713,8 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
@@ -729,7 +729,7 @@ mod tests {
         ));
         assert_eq!(
             caller.op_result_types.get(&0),
-            Some(&alloc::vec![ValueType::I32]),
+            Some(&collections::vec![ValueType::I32]),
             "wrapper Block must keep the inlined call's result types",
         );
     }
@@ -741,7 +741,7 @@ mod tests {
             results: 1,
             local_count: 0,
             max_stack_height: 1,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::Primitive(PrimitiveOpKind::I32Const { value: 1 }),
                 },
@@ -756,11 +756,11 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::from([(
                 1usize,
-                alloc::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )]),
         };
         let callee = SemanticProgram {
@@ -768,7 +768,7 @@ mod tests {
             results: 1,
             local_count: 1,
             max_stack_height: 1,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalGet { idx: 0 },
                 },
@@ -779,15 +779,15 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![ValueType::I32],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![ValueType::I32],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::new(),
         };
 
         inline_single_call(&mut caller, 1, &callee);
 
         assert_eq!(caller.local_count, 1);
-        assert_eq!(caller.local_types, alloc::vec![ValueType::I32]);
+        assert_eq!(caller.local_types, collections::vec![ValueType::I32]);
     }
 
     #[test]
@@ -797,7 +797,7 @@ mod tests {
             results: 1,
             local_count: 1,
             max_stack_height: 2,
-            ops: alloc::vec![
+            ops: collections::vec![
                 SemanticOp {
                     kind: SemanticOpKind::LocalGet { idx: 0 },
                 },
@@ -826,11 +826,11 @@ mod tests {
                     kind: SemanticOpKind::ReturnOne,
                 },
             ],
-            local_types: alloc::vec![ValueType::I32],
-            result_types: alloc::vec![ValueType::I32],
+            local_types: collections::vec![ValueType::I32],
+            result_types: collections::vec![ValueType::I32],
             op_result_types: alloc::collections::BTreeMap::from([(
                 1usize,
-                alloc::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
             )]),
         };
 
