@@ -157,7 +157,7 @@ fn build_local_call_info_records(backend: BackendConfig, abi: &MachineModuleAbi)
         }
         other => {
             debug_assert!(false, "unsupported GP unit width {other}");
-            Box::new([])
+            Box::from([])
         }
     }
 }

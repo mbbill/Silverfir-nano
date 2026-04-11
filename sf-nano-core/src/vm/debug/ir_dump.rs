@@ -404,6 +404,7 @@ fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -
         .map(|b| format!("v{}=v{}", b.param.0, b.value.0))
         .collect::<collections::Vec<_>>()
         .join(", ")
+        .into()
 }
 
 fn vals(vs: &[SsaValue]) -> String {
@@ -411,6 +412,7 @@ fn vals(vs: &[SsaValue]) -> String {
         .map(|v| format!("v{}", v.0))
         .collect::<collections::Vec<_>>()
         .join(", ")
+        .into()
 }
 
 fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
@@ -421,6 +423,7 @@ fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
         })
         .collect::<collections::Vec<_>>()
         .join(", ")
+        .into()
 }
 
 // ---- MachineIR rendering ----
@@ -1086,6 +1089,7 @@ fn medge_args(args: &[MachineValue]) -> String {
         .map(mval)
         .collect::<collections::Vec<_>>()
         .join(", ")
+        .into()
 }
 
 fn mwidth(w: &MachineMemWidth) -> &'static str {

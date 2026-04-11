@@ -11,11 +11,15 @@
 use core::ptr;
 
 use super::os;
+#[cfg(feature = "memprof")]
+use tracked_alloc::{AllocationDescriptor, AllocationHandle, AllocationState};
 
 pub struct CodeBuffer {
     base: *mut u8,
     capacity: usize,
     offset: usize,
+    #[cfg(feature = "memprof")]
+    trace: AllocationHandle,
 }
 
 impl core::fmt::Debug for CodeBuffer {
@@ -45,8 +49,25 @@ impl CodeBuffer {
             base,
             capacity,
             offset: 0,
+            #[cfg(feature = "memprof")]
+            trace: AllocationHandle::new(
+                AllocationDescriptor::new("RuntimeMemory", "CodeBuffer"),
+                AllocationState::new(capacity)
+                    .with_len(0)
+                    .with_capacity(capacity)
+                    .with_ptr(base as usize),
+            ),
         };
         Ok(buffer)
+    }
+
+    #[cfg(feature = "memprof")]
+    #[inline]
+    fn trace_state(&self) -> AllocationState {
+        AllocationState::new(self.capacity)
+            .with_len(self.offset)
+            .with_capacity(self.capacity)
+            .with_ptr(self.base as usize)
     }
 
     #[inline]
@@ -59,6 +80,8 @@ impl CodeBuffer {
         unsafe {
             os::finish_write_executable(self.base, self.capacity, written_start, written_len);
         }
+        #[cfg(feature = "memprof")]
+        self.trace.update(self.trace_state());
     }
 
     #[inline]
@@ -140,11 +163,15 @@ impl CodeBuffer {
     #[inline]
     pub fn reset(&mut self) {
         self.offset = 0;
+        #[cfg(feature = "memprof")]
+        self.trace.update(self.trace_state());
     }
 }
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {
+        #[cfg(feature = "memprof")]
+        self.trace.remove();
         os::free_executable(self.base, self.capacity);
     }
 }

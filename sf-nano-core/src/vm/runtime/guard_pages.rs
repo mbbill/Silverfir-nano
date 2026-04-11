@@ -13,6 +13,8 @@
 use crate::error::WasmError;
 
 use super::os;
+#[cfg(feature = "memprof")]
+use tracked_alloc::{AllocationDescriptor, AllocationHandle, AllocationState};
 
 const WASM_PAGE_SIZE: usize = crate::constants::WASM_PAGE_SIZE;
 
@@ -29,6 +31,8 @@ const GUARD_RESERVATION: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
 pub struct GuardPageMemory {
     base: *mut u8,
     committed: usize,
+    #[cfg(feature = "memprof")]
+    trace: AllocationHandle,
 }
 
 // SAFETY: The reserved region is process-private and not aliased.
@@ -57,8 +61,25 @@ impl GuardPageMemory {
         let memory = Self {
             base,
             committed: initial_bytes,
+            #[cfg(feature = "memprof")]
+            trace: AllocationHandle::new(
+                AllocationDescriptor::new("RuntimeMemory", "GuardPageMemory"),
+                AllocationState::new(initial_bytes)
+                    .with_len(initial_bytes)
+                    .with_capacity(GUARD_RESERVATION)
+                    .with_ptr(base as usize),
+            ),
         };
         Ok(memory)
+    }
+
+    #[cfg(feature = "memprof")]
+    #[inline]
+    fn trace_state(&self) -> AllocationState {
+        AllocationState::new(self.committed)
+            .with_len(self.committed)
+            .with_capacity(GUARD_RESERVATION)
+            .with_ptr(self.base as usize)
     }
 
     /// Grow by `delta_pages`. Returns the old size in pages.
@@ -79,6 +100,8 @@ impl GuardPageMemory {
                 .map_err(|msg| WasmError::internal(msg))?;
         }
         self.committed = new_bytes;
+        #[cfg(feature = "memprof")]
+        self.trace.update(self.trace_state());
         Ok(old_pages)
     }
 
@@ -105,6 +128,8 @@ impl GuardPageMemory {
 
 impl Drop for GuardPageMemory {
     fn drop(&mut self) {
+        #[cfg(feature = "memprof")]
+        self.trace.remove();
         os::release_guarded(self.base, GUARD_RESERVATION);
     }
 }

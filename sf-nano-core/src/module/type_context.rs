@@ -36,7 +36,9 @@ impl TypeContext {
 
     /// Create an empty type context (for modules with no type section)
     pub fn empty() -> Self {
-        Self { types: Rc::new([]) }
+        Self {
+            types: Rc::from([]),
+        }
     }
 
     /// Get a type definition by index

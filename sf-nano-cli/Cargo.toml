@@ -14,5 +14,9 @@ path = "src/main.rs"
 default = ["jit"]
 jit = ["sf-nano-core/jit"]
 call-trace = ["sf-nano-core/call-trace"]
+memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
+
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", features = ["wasi", "emulator"] }
+tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc", features = ["memprof"], optional = true }
+memprof_report = { package = "sf-nano-memprof-report", path = "../tools/memprof-report", optional = true }

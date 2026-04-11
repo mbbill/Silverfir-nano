@@ -290,6 +290,8 @@ name = "sf-nano-cli"
 version = "0.1.0"
 dependencies = [
  "sf-nano-core",
+ "sf-nano-memprof-report",
+ "sf-nano-tracked-alloc",
 ]
 
 [[package]]
@@ -297,6 +299,15 @@ name = "sf-nano-core"
 version = "0.1.0"
 dependencies = [
  "paste",
+ "sf-nano-tracked-alloc",
+]
+
+[[package]]
+name = "sf-nano-memprof-report"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "sf-nano-tracked-alloc",
 ]
 
