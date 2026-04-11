@@ -75,10 +75,12 @@ pub(crate) fn finalize_block_entry_cached_locals(
         .clone()
 }
 
-pub(crate) fn pressure_fallback_drops(
+pub(crate) fn pressure_fallback_drops_into(
     plan: &FunctionPlan,
     query: PressureFallbackQuery<'_>,
-) -> Vec<FrameSlot> {
+    working: &mut Vec<FrameSlot>,
+    dropped: &mut Vec<FrameSlot>,
+) {
     let (gp_live, fp_live) = count_effective_live_bank_budget_units(
         query.live_types,
         query.live_aliases,
@@ -98,9 +100,9 @@ pub(crate) fn pressure_fallback_drops(
         }
     }
 
-    let mut working = Vec::with_capacity(query.resident_cache.len());
+    working.clear();
     working.extend(query.resident_cache.iter().copied());
-    let mut dropped = Vec::new();
+    dropped.clear();
 
     while gp_live + gp_cache > plan.gp_dynamic_budget as usize
         || fp_live + fp_cache > plan.fp_dynamic_budget as usize
@@ -163,7 +165,6 @@ pub(crate) fn pressure_fallback_drops(
         dropped.push(victim);
     }
 
-    dropped
 }
 
 fn count_effective_live_bank_budget_units(

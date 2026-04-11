@@ -22,7 +22,7 @@ use crate::{
 use super::{
     block_open::{
         before_op_decision, block_open_decision, finalize_block_entry_cached_locals,
-        pressure_fallback_drops, target_entry_decision,
+        pressure_fallback_drops_into, target_entry_decision,
     },
     build,
     facts::FunctionPlan,
@@ -91,10 +91,16 @@ impl JointPlanner {
         finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
     }
     #[inline]
-    pub(crate) fn pressure_fallback_drops(
+    pub(crate) fn pressure_fallback_drops_into(
         &self,
         query: PressureFallbackQuery<'_>,
-    ) -> Vec<crate::vm::middle::frame::FrameSlot> {
-        pressure_fallback_drops(&self.plan, query)
+        working: &mut Vec<crate::vm::middle::frame::FrameSlot>,
+        dropped: &mut Vec<crate::vm::middle::frame::FrameSlot>,
+    ) {
+        dropped.clear();
+        if working.capacity() < query.resident_cache.len() {
+            working.reserve(query.resident_cache.len() - working.len());
+        }
+        pressure_fallback_drops_into(&self.plan, query, working, dropped)
     }
 }
