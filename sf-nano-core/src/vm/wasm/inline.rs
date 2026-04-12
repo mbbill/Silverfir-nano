@@ -4,8 +4,8 @@
 //! small leaf function. The wrapper `Block/End` pair provides the target for
 //! any branch that would have exited the callee.
 //!
-//! Runs after all functions have been decoded to `SemanticProgram` and before
-//! `prepare_function` / IR lowering.
+//! Runs on a decoded caller using a retained set of tiny semantic callee
+//! bodies, before `prepare_function` / IR lowering.
 
 use crate::collections;
 
@@ -58,6 +58,15 @@ fn is_leaf_inline_candidate(callee: &SemanticProgram) -> bool {
         }
     }
     true
+}
+
+/// Return whether this semantic program is worth retaining as an inline seed.
+///
+/// Call-site-specific budgets are still checked during inlining. This only
+/// keeps leaf callees that are small enough to inline somewhere, including the
+/// larger hot-loop budget.
+pub(crate) fn retain_inline_candidate(callee: &SemanticProgram) -> bool {
+    is_leaf_inline_candidate(callee) && callee.ops.len() <= inline_ops_limit(true)
 }
 
 /// Return the inline ops budget for a call site.  Sites inside loops get a

@@ -3,6 +3,8 @@ use tracked_alloc::rc::Rc;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::module::entities::FunctionSpec;
+
 /// Minimal native stats surface for CLI/debug output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeStatsSnapshot {
@@ -73,6 +75,32 @@ use crate::{
         wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
     },
 };
+
+fn decode_function_semantic(
+    module: &ModuleInst,
+    store: &Store,
+    spec: &FunctionSpec,
+) -> Result<SemanticProgram, WasmError> {
+    let params = spec.func_type().params().len() as u16;
+    let local_count = params.saturating_add(spec.locals().len() as u16);
+    let results = spec.func_type().results().len() as u16;
+    let mut local_types = collections::Vec::with_capacity(local_count as usize);
+    local_types.extend_from_slice(spec.func_type().params());
+    local_types.extend_from_slice(spec.locals());
+    decode::decode_to_semantic_ir(
+        spec.code(),
+        CompileContext::with_value_types(
+            &module.types,
+            store,
+            params,
+            local_count,
+            results,
+            &local_types,
+            spec.func_type().results(),
+        ),
+    )
+    .map_err(|_err| WasmError::internal("native decode failed for function"))
+}
 
 fn finish_native_compile(
     active_backend: arch::NativeBackend,
@@ -184,62 +212,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         return Ok(());
     }
 
-    // Phase 1: Decode all functions to semantic IR.
-    let mut semantics: collections::Vec<Option<SemanticProgram>> =
+    // Phase 1: Scan for tiny leaf semantic callees worth retaining as inline seeds.
+    let mut inline_candidates: collections::Vec<Option<SemanticProgram>> =
         collections::Vec::with_capacity(module.functions.len());
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
-            semantics.push(None);
+            inline_candidates.push(None);
             continue;
         };
-        let sem_decode_function_phase =
-            phase_span_with_function("sem_decode", Some(func_idx as u32));
-        let params = spec.func_type().params().len() as u16;
-        let local_count = params.saturating_add(spec.locals().len() as u16);
-        let results = spec.func_type().results().len() as u16;
-        let mut local_types = collections::Vec::with_capacity(local_count as usize);
-        local_types.extend_from_slice(spec.func_type().params());
-        local_types.extend_from_slice(spec.locals());
-        let semantic = decode::decode_to_semantic_ir(
-            spec.code(),
-            CompileContext::with_value_types(
-                &module.types,
-                store,
-                params,
-                local_count,
-                results,
-                &local_types,
-                spec.func_type().results(),
-            ),
-        )
-        .map_err(|_err| WasmError::internal("native decode failed for function"))?;
-        semantics.push(Some(semantic));
-        drop(sem_decode_function_phase);
+        let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
+        let semantic = decode_function_semantic(module, store, spec)?;
+        inline_candidates.push(inline::retain_inline_candidate(&semantic).then_some(semantic));
+        drop(sem_scan_function_phase);
     }
 
-    // Phase 2: Inline small leaf callees into their callers.
-    // Iterate until fixed-point so that transitive chains (A→B→C) are fully
-    // resolved regardless of function index ordering.
-    let sem_inline_phase = phase_span("sem_inline");
-    loop {
-        let mut any_inlined = false;
-        for func_idx in 0..semantics.len() {
-            if semantics[func_idx].is_none() {
-                continue;
-            }
-            let mut caller = semantics[func_idx].take().unwrap();
-            if inline::inline_calls_in_function(&mut caller, func_idx as u32, &semantics) {
-                any_inlined = true;
-            }
-            semantics[func_idx] = Some(caller);
-        }
-        if !any_inlined {
-            break;
-        }
-    }
-    drop(sem_inline_phase);
-
-    // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
+    // Phase 2: Decode each caller, inline retained leaf callees, and lower immediately.
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
     let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
@@ -247,8 +234,17 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let Some(spec) = func.spec() else {
             continue;
         };
+        let sem_decode_function_phase =
+            phase_span_with_function("sem_decode", Some(func_idx as u32));
+        let mut semantic = decode_function_semantic(module, store, spec)?;
+        drop(sem_decode_function_phase);
+
+        let sem_inline_function_phase =
+            phase_span_with_function("sem_inline", Some(func_idx as u32));
+        inline::inline_calls_in_function(&mut semantic, func_idx as u32, &inline_candidates);
+        drop(sem_inline_function_phase);
+
         let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
-        let semantic = semantics[func_idx].take().unwrap();
         let prepared = prepare_function(
             PrepareInput {
                 config: backend,
@@ -278,7 +274,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             result_count,
         });
     }
-    drop(semantics);
+    drop(inline_candidates);
 
     #[cfg(sf_ir_dump)]
     let dump_lir_inputs = if ir_dump::dump_enabled() {

@@ -166,7 +166,9 @@ pub struct Decoder<'a, 'b> {
     // Lazy decode state (interior mutability to avoid borrow conflicts with handlers)
     payload: RefCell<Payload<'b>>,
     decoded_ops: RefCell<collections::Vec<DecodedOp>>,
+    decoded_base: Cell<usize>,
     end_reached: Cell<bool>,
+    retain_decoded_ops: Cell<bool>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -175,7 +177,9 @@ impl<'a, 'b> Decoder<'a, 'b> {
             handlers: collections::Vec::new(),
             payload: RefCell::new(Payload::from(code)),
             decoded_ops: RefCell::new(collections::Vec::new()),
+            decoded_base: Cell::new(0),
             end_reached: Cell::new(false),
+            retain_decoded_ops: Cell::new(false),
         }
     }
 
@@ -196,6 +200,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         // Drive each handler with a fresh stream that can lazily decode as needed
         // Move out the handler references to avoid borrow conflicts while streaming over `self`.
         let mut handlers = core::mem::take(&mut self.handlers);
+        self.retain_decoded_ops.set(handlers.len() > 1);
         for handler in handlers.iter_mut() {
             let mut stream = OpStream {
                 decoder: self,
@@ -681,9 +686,26 @@ pub struct OpStream<'d, 'a, 'b> {
 }
 
 impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
+    const COMPACT_THRESHOLD: usize = 256;
+
+    fn compact_consumed_prefix(&mut self) {
+        if self.decoder.retain_decoded_ops.get() {
+            return;
+        }
+        let base = self.decoder.decoded_base.get();
+        let consumed = self.cursor.saturating_sub(base);
+        if consumed < Self::COMPACT_THRESHOLD {
+            return;
+        }
+        self.decoder.decoded_ops.borrow_mut().drain(..consumed);
+        self.decoder.decoded_base.set(self.cursor);
+    }
+
     fn ensure(&mut self, need: usize) -> Result<(), WasmError> {
+        self.compact_consumed_prefix();
         while !self.decoder.end_reached.get()
-            && self.decoder.decoded_ops.borrow().len() < self.cursor + need
+            && self.decoder.decoded_base.get() + self.decoder.decoded_ops.borrow().len()
+                < self.cursor + need
         {
             self.decoder.decode_one()?;
         }
@@ -693,10 +715,12 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
     /// Consume and return the next op, advancing the cursor.
     pub fn next(&mut self) -> Result<Option<&DecodedOp>, WasmError> {
         self.ensure(1)?;
-        if self.cursor >= self.decoder.decoded_ops.borrow().len() {
+        let base = self.decoder.decoded_base.get();
+        let relative = self.cursor.saturating_sub(base);
+        if relative >= self.decoder.decoded_ops.borrow().len() {
             return Ok(None);
         }
-        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(self.cursor) };
+        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(relative) };
         self.cursor += 1;
         Ok(Some(op))
     }
@@ -710,11 +734,12 @@ impl<'d, 'a, 'b> OpStream<'d, 'a, 'b> {
     /// Used for lookahead in instruction fusion.
     pub fn peek_at(&mut self, offset: usize) -> Result<Option<&DecodedOp>, WasmError> {
         self.ensure(offset + 1)?;
-        let idx = self.cursor + offset;
-        if idx >= self.decoder.decoded_ops.borrow().len() {
+        let base = self.decoder.decoded_base.get();
+        let relative = self.cursor + offset - base;
+        if relative >= self.decoder.decoded_ops.borrow().len() {
             return Ok(None);
         }
-        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(idx) };
+        let op = unsafe { &*self.decoder.decoded_ops.borrow().as_ptr().add(relative) };
         Ok(Some(op))
     }
 

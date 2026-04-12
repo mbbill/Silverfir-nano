@@ -79,14 +79,29 @@ pub(crate) fn prepare_function(
     let planner = JointPlanner::build(semantic, &semantic_cfg, &slot_program, frame, input.config)?;
     drop(joint_plan_phase);
 
-    let ssa_phase = phase_span_with_function("ssa_rewrite", input.function_index);
+    let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
     let mut ssa =
         rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
+    drop(ssa_emit_phase);
+    drop(planner);
+    drop(slot_program);
+    drop(semantic_cfg);
+
+    let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
     cleanup::cleanup_program(&mut ssa);
+    drop(ssa_cleanup_phase);
+
+    let ssa_opt_phase = phase_span_with_function("ssa_opt", input.function_index);
     optimize::optimize_program(&mut ssa);
+    drop(ssa_opt_phase);
+
+    let ssa_sink_phase = phase_span_with_function("ssa_sink", input.function_index);
     sink_plan::plan_sinks(&mut ssa);
+    drop(ssa_sink_phase);
+
+    let ssa_validate_phase = phase_span_with_function("ssa_validate", input.function_index);
     validate_program(&ssa)?;
-    drop(ssa_phase);
+    drop(ssa_validate_phase);
 
     Ok(PreparedFunction { frame, ssa })
 }

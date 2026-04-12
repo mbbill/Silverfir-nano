@@ -1,9 +1,13 @@
 use serde::Serialize;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 
-use tracked_alloc::{self, AllocationProfile, GlobalAllocationProfile, ProfileEventKind};
+use tracked_alloc::{
+    self, AllocationProfile, GlobalAllocationProfile, ProfileEventKind, ProfilePhase, TimelinePoint,
+};
 
 pub struct Session {
     output_path: PathBuf,
@@ -53,10 +57,9 @@ struct ReportDocument {
     summary: ReportSummary,
     initial_index: usize,
     timeline: Vec<ReportPoint>,
-    global_timeline: Vec<ReportGlobalPoint>,
     phases: Vec<ReportPhase>,
     stacks: Vec<ReportStack>,
-    events: Vec<ReportEvent>,
+    snapshots: Vec<ReportSnapshot>,
 }
 
 impl ReportDocument {
@@ -65,20 +68,29 @@ impl ReportDocument {
         global_profile: GlobalAllocationProfile,
         command_line: &[String],
     ) -> Self {
-        let mut peak_index = 0usize;
+        let mut raw_peak_index = 0usize;
         let mut peak_bytes = 0usize;
         let mut peak_time_ns = 0u64;
         for (index, point) in profile.timeline.iter().enumerate() {
             if point.total_bytes >= peak_bytes {
                 peak_bytes = point.total_bytes;
                 peak_time_ns = point.time_ns;
-                peak_index = index;
+                raw_peak_index = index;
             }
         }
-        let initial_index = if profile.timeline.is_empty() {
+        let phase_peaks = compute_phase_peaks(&profile.timeline, &profile.phases);
+        let compact_timeline = compact_timeline(&profile.timeline, raw_peak_index, &phase_peaks);
+        let sampled = sample_report_data(
+            &profile.events,
+            &compact_timeline.points,
+            &global_profile.timeline,
+        );
+        let timeline = sampled.timeline;
+        let snapshots = sampled.snapshots;
+        let initial_index = if timeline.is_empty() {
             0
         } else {
-            peak_index.min(profile.timeline.len().saturating_sub(1))
+            nearest_timeline_index(&timeline, peak_time_ns)
         };
         let summary = ReportSummary {
             peak_bytes,
@@ -92,31 +104,17 @@ impl ReportDocument {
             global_final_bytes: global_profile.final_bytes,
             global_final_time_ns: global_profile.now_ns,
         };
-        let timeline = profile
-            .timeline
-            .into_iter()
-            .map(|point| ReportPoint {
-                time_ns: point.time_ns,
-                total_bytes: point.total_bytes,
-                live_records: point.live_records,
-            })
-            .collect();
-        let global_timeline = global_profile
-            .timeline
-            .into_iter()
-            .map(|point| ReportGlobalPoint {
-                time_ns: point.time_ns,
-                live_bytes: point.live_bytes,
-            })
-            .collect();
         let phases = profile
             .phases
             .into_iter()
+            .zip(phase_peaks.into_iter())
             .map(|phase| ReportPhase {
-                name: phase.name,
-                start_time_ns: phase.start_time_ns,
-                end_time_ns: phase.end_time_ns,
-                function_index: phase.function_index,
+                name: phase.0.name,
+                start_time_ns: phase.0.start_time_ns,
+                end_time_ns: phase.0.end_time_ns,
+                function_index: phase.0.function_index,
+                peak_time_ns: phase.1.peak_time_ns,
+                peak_bytes: phase.1.peak_bytes,
             })
             .collect();
         let stacks = profile
@@ -127,36 +125,449 @@ impl ReportDocument {
                 text: stack.text.into(),
             })
             .collect();
-        let events = profile
-            .events
-            .into_iter()
-            .map(|event| ReportEvent {
-                time_ns: event.time_ns,
-                total_bytes: event.total_bytes,
-                live_records: event.live_records,
-                kind: profile_event_kind_name(event.kind),
-                id: event.id,
-                owner_kind: event.owner_kind,
-                type_name: event.type_name,
-                element_type: event.element_type,
-                len: event.len,
-                capacity: event.capacity,
-                size_bytes: event.size_bytes,
-                ptr: event.ptr,
-                create_stack_id: event.create_stack_id,
-                last_update_stack_id: event.last_update_stack_id,
-            })
-            .collect();
         Self {
             command_line: command_line.to_vec(),
             summary,
             initial_index,
             timeline,
-            global_timeline,
             phases,
             stacks,
-            events,
+            snapshots,
         }
+    }
+}
+
+const MAX_REPORT_TIMELINE_POINTS: usize = 1_024;
+const MAX_RECORDS_PER_SNAPSHOT: usize = 500;
+
+struct CompactedTimeline {
+    points: Vec<TimelinePoint>,
+}
+
+#[derive(Clone, Copy)]
+struct PhasePeakInfo {
+    peak_time_ns: u64,
+    peak_bytes: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Breakdown {
+    tracked_alloc_bytes: usize,
+    code_buffer_bytes: usize,
+    guard_page_bytes: usize,
+    runtime_other_bytes: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LiveRecord {
+    owner_kind: &'static str,
+    type_name: &'static str,
+    element_type: Option<&'static str>,
+    len: Option<usize>,
+    capacity: Option<usize>,
+    size_bytes: usize,
+    ptr: usize,
+    create_stack_id: u64,
+    last_update_stack_id: Option<u64>,
+}
+
+struct SampledReportData {
+    timeline: Vec<ReportPoint>,
+    snapshots: Vec<ReportSnapshot>,
+}
+
+fn compact_timeline(
+    timeline: &[TimelinePoint],
+    raw_peak_index: usize,
+    _phase_peaks: &[PhasePeakInfo],
+) -> CompactedTimeline {
+    if timeline.is_empty() {
+        return CompactedTimeline { points: Vec::new() };
+    }
+    if timeline.len() <= MAX_REPORT_TIMELINE_POINTS {
+        return CompactedTimeline {
+            points: timeline.to_vec(),
+        };
+    }
+
+    let last_index = timeline.len().saturating_sub(1);
+    let mut keep = BTreeSet::new();
+    keep.insert(0usize);
+    keep.insert(last_index);
+    keep.insert(raw_peak_index.min(last_index));
+    keep.insert(raw_peak_index.saturating_sub(1));
+    keep.insert((raw_peak_index + 1).min(last_index));
+
+    if MAX_REPORT_TIMELINE_POINTS > keep.len() {
+        let free_slots = MAX_REPORT_TIMELINE_POINTS - keep.len();
+        for slot in 0..free_slots {
+            let numerator = slot.saturating_mul(last_index);
+            let denominator = free_slots.saturating_sub(1).max(1);
+            keep.insert(numerator / denominator);
+        }
+    }
+
+    CompactedTimeline {
+        points: keep.into_iter().map(|index| timeline[index]).collect(),
+    }
+}
+
+fn compute_phase_peaks(timeline: &[TimelinePoint], phases: &[ProfilePhase]) -> Vec<PhasePeakInfo> {
+    if timeline.is_empty() {
+        return phases
+            .iter()
+            .map(|_| PhasePeakInfo {
+                peak_time_ns: 0,
+                peak_bytes: 0,
+            })
+            .collect();
+    }
+
+    let mut phase_order = (0..phases.len()).collect::<Vec<_>>();
+    phase_order.sort_by_key(|&index| phases[index].start_time_ns);
+
+    let mut peaks = phases
+        .iter()
+        .map(|phase| {
+            let raw_peak_index = nearest_raw_timeline_index(timeline, phase.start_time_ns);
+            PhasePeakInfo {
+                peak_time_ns: timeline[raw_peak_index].time_ns,
+                peak_bytes: timeline[raw_peak_index].total_bytes,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut active = Vec::<usize>::new();
+    let mut next_phase = 0usize;
+    for point in timeline {
+        while next_phase < phase_order.len()
+            && phases[phase_order[next_phase]].start_time_ns <= point.time_ns
+        {
+            active.push(phase_order[next_phase]);
+            next_phase += 1;
+        }
+        active.retain(|&phase_index| phases[phase_index].end_time_ns >= point.time_ns);
+        for &phase_index in &active {
+            if point.total_bytes >= peaks[phase_index].peak_bytes {
+                peaks[phase_index] = PhasePeakInfo {
+                    peak_time_ns: point.time_ns,
+                    peak_bytes: point.total_bytes,
+                };
+            }
+        }
+    }
+
+    peaks
+}
+
+fn sample_report_data(
+    events: &[tracked_alloc::ProfileEvent],
+    timeline: &[TimelinePoint],
+    global_timeline: &[tracked_alloc::GlobalTimelinePoint],
+) -> SampledReportData {
+    let mut report_timeline = Vec::with_capacity(timeline.len());
+    let mut current_live = HashMap::<u64, LiveRecord>::new();
+    let mut breakdown = Breakdown::default();
+    let mut event_index = 0usize;
+    let mut global_index = 0usize;
+    let mut global_bytes = global_timeline
+        .first()
+        .map(|point| point.live_bytes)
+        .unwrap_or(0);
+    let mut snapshots = Vec::<ReportSnapshot>::new();
+    let mut last_snapshot_id = None;
+    let mut snapshot_dirty = true;
+
+    for point in timeline {
+        while event_index < events.len() && events[event_index].time_ns <= point.time_ns {
+            let event = &events[event_index];
+            if apply_raw_event(&mut current_live, &mut breakdown, event) {
+                snapshot_dirty = true;
+            }
+            event_index += 1;
+        }
+
+        while global_index + 1 < global_timeline.len()
+            && global_timeline[global_index + 1].time_ns <= point.time_ns
+        {
+            global_index += 1;
+            global_bytes = global_timeline[global_index].live_bytes;
+        }
+
+        let snapshot_id = if snapshot_dirty || last_snapshot_id.is_none() {
+            snapshots.push(build_snapshot(&current_live));
+            let snapshot_id = snapshots.len().saturating_sub(1);
+            last_snapshot_id = Some(snapshot_id);
+            snapshot_dirty = false;
+            snapshot_id
+        } else {
+            last_snapshot_id.unwrap_or(0)
+        };
+
+        report_timeline.push(ReportPoint {
+            time_ns: point.time_ns,
+            total_bytes: point.total_bytes,
+            live_records: point.live_records,
+            global_bytes,
+            tracked_alloc_bytes: breakdown.tracked_alloc_bytes,
+            code_buffer_bytes: breakdown.code_buffer_bytes,
+            guard_page_bytes: breakdown.guard_page_bytes,
+            runtime_other_bytes: breakdown.runtime_other_bytes,
+            snapshot_id,
+        });
+    }
+
+    SampledReportData {
+        timeline: report_timeline,
+        snapshots,
+    }
+}
+
+fn apply_raw_event(
+    current_live: &mut HashMap<u64, LiveRecord>,
+    breakdown: &mut Breakdown,
+    event: &tracked_alloc::ProfileEvent,
+) -> bool {
+    match event.kind {
+        ProfileEventKind::Create => {
+            let record = LiveRecord {
+                owner_kind: event.owner_kind.expect("create owner kind"),
+                type_name: event.type_name.expect("create type name"),
+                element_type: event.element_type,
+                len: event.len,
+                capacity: event.capacity,
+                size_bytes: event.size_bytes.expect("create size"),
+                ptr: event.ptr.expect("create ptr"),
+                create_stack_id: event.create_stack_id.expect("create stack"),
+                last_update_stack_id: event.last_update_stack_id,
+            };
+            apply_breakdown_delta(
+                breakdown,
+                allocation_category(record.owner_kind, record.type_name),
+                record.size_bytes as isize,
+            );
+            current_live.insert(event.id, record);
+            true
+        }
+        ProfileEventKind::Update => {
+            let Some(record) = current_live.get_mut(&event.id) else {
+                return false;
+            };
+            let mut changed = false;
+            if let Some(size_bytes) = event.size_bytes {
+                let delta = size_bytes as isize - record.size_bytes as isize;
+                apply_breakdown_delta(
+                    breakdown,
+                    allocation_category(record.owner_kind, record.type_name),
+                    delta,
+                );
+                record.size_bytes = size_bytes;
+                changed = true;
+            }
+            if record.len != event.len {
+                changed = true;
+            }
+            record.len = event.len;
+            if record.capacity != event.capacity {
+                changed = true;
+            }
+            record.capacity = event.capacity;
+            if let Some(ptr) = event.ptr {
+                if record.ptr != ptr {
+                    changed = true;
+                }
+                record.ptr = ptr;
+            }
+            if let Some(stack_id) = event.last_update_stack_id {
+                if record.last_update_stack_id != Some(stack_id) {
+                    changed = true;
+                }
+                record.last_update_stack_id = Some(stack_id);
+            }
+            changed
+        }
+        ProfileEventKind::Remove => {
+            let Some(record) = current_live.remove(&event.id) else {
+                return false;
+            };
+            apply_breakdown_delta(
+                breakdown,
+                allocation_category(record.owner_kind, record.type_name),
+                -(record.size_bytes as isize),
+            );
+            true
+        }
+    }
+}
+
+fn build_snapshot(current_live: &HashMap<u64, LiveRecord>) -> ReportSnapshot {
+    ReportSnapshot {
+        aggregates: aggregate_types(current_live),
+        records: largest_records(current_live),
+    }
+}
+
+fn allocation_category(owner_kind: &str, type_name: &str) -> &'static str {
+    if owner_kind == "RuntimeMemory" {
+        if type_name == "CodeBuffer" {
+            return "code_buffer";
+        }
+        if type_name == "GuardPageMemory" {
+            return "guard_page";
+        }
+        return "runtime_other";
+    }
+    "tracked_alloc"
+}
+
+fn apply_breakdown_delta(breakdown: &mut Breakdown, category: &str, delta: isize) {
+    match category {
+        "code_buffer" => {
+            breakdown.code_buffer_bytes = breakdown.code_buffer_bytes.saturating_add_signed(delta);
+        }
+        "guard_page" => {
+            breakdown.guard_page_bytes = breakdown.guard_page_bytes.saturating_add_signed(delta);
+        }
+        "runtime_other" => {
+            breakdown.runtime_other_bytes =
+                breakdown.runtime_other_bytes.saturating_add_signed(delta);
+        }
+        _ => {
+            breakdown.tracked_alloc_bytes =
+                breakdown.tracked_alloc_bytes.saturating_add_signed(delta);
+        }
+    }
+}
+
+fn aggregate_types(current_live: &HashMap<u64, LiveRecord>) -> Vec<ReportAggregate> {
+    let mut by_type = HashMap::<String, ReportAggregate>::new();
+    for record in current_live.values() {
+        let type_label = display_type_label(record);
+        let entry = by_type
+            .entry(type_label.clone())
+            .or_insert(ReportAggregate {
+                type_label,
+                total_bytes: 0,
+                count: 0,
+                largest_bytes: 0,
+            });
+        entry.total_bytes += record.size_bytes;
+        entry.count += 1;
+        entry.largest_bytes = entry.largest_bytes.max(record.size_bytes);
+    }
+    let mut aggregates = by_type.into_values().collect::<Vec<_>>();
+    aggregates.sort_by(|left, right| {
+        right
+            .total_bytes
+            .cmp(&left.total_bytes)
+            .then_with(|| left.type_label.cmp(&right.type_label))
+    });
+    aggregates
+}
+
+fn largest_records(current_live: &HashMap<u64, LiveRecord>) -> Vec<ReportRecord> {
+    let mut records = current_live.iter().collect::<Vec<_>>();
+    records.sort_by(|(left_id, left), (right_id, right)| {
+        right
+            .size_bytes
+            .cmp(&left.size_bytes)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    records
+        .into_iter()
+        .take(MAX_RECORDS_PER_SNAPSHOT)
+        .map(|(_, record)| ReportRecord {
+            type_label: display_type_label(record),
+            len: record.len,
+            capacity: record.capacity,
+            size_bytes: record.size_bytes,
+            ptr: record.ptr,
+            create_stack_id: record.create_stack_id,
+            last_update_stack_id: record.last_update_stack_id,
+        })
+        .collect()
+}
+
+fn display_type_label(record: &LiveRecord) -> String {
+    match record.owner_kind {
+        "String" => "String".to_owned(),
+        "Vec" => match record.element_type {
+            Some(element_type) => format!("Vec<{element_type}>"),
+            None => "Vec".to_owned(),
+        },
+        "BTreeSet" => match record.element_type {
+            Some(element_type) => format!("BTreeSet<{element_type}>"),
+            None => "BTreeSet".to_owned(),
+        },
+        "Rc" => {
+            if record.type_name == "str" {
+                "Rc<str>".to_owned()
+            } else if record.type_name.starts_with('[') {
+                match record.element_type {
+                    Some(element_type) => format!("Rc<[{element_type}]>"),
+                    None => "Rc".to_owned(),
+                }
+            } else {
+                format!("Rc<{}>", record.type_name)
+            }
+        }
+        "Box" => {
+            if record.type_name == "str" {
+                "Box<str>".to_owned()
+            } else if record.type_name.starts_with('[') {
+                match record.element_type {
+                    Some(element_type) => format!("Box<[{element_type}]>"),
+                    None => "Box".to_owned(),
+                }
+            } else {
+                format!("Box<{}>", record.type_name)
+            }
+        }
+        _ => record.type_name.to_owned(),
+    }
+}
+
+fn nearest_raw_timeline_index(timeline: &[TimelinePoint], time_ns: u64) -> usize {
+    let mut low = 0usize;
+    let mut high = timeline.len().saturating_sub(1);
+    while low < high {
+        let mid = (low + high) / 2;
+        if timeline[mid].time_ns < time_ns {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    let right = low;
+    let left = right.saturating_sub(1);
+    let left_dist = timeline[left].time_ns.abs_diff(time_ns);
+    let right_dist = timeline[right].time_ns.abs_diff(time_ns);
+    if left_dist <= right_dist {
+        left
+    } else {
+        right
+    }
+}
+
+fn nearest_timeline_index(timeline: &[ReportPoint], time_ns: u64) -> usize {
+    let mut low = 0usize;
+    let mut high = timeline.len().saturating_sub(1);
+    while low < high {
+        let mid = (low + high) / 2;
+        if timeline[mid].time_ns < time_ns {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    let right = low;
+    let left = right.saturating_sub(1);
+    let left_dist = timeline[left].time_ns.abs_diff(time_ns);
+    let right_dist = timeline[right].time_ns.abs_diff(time_ns);
+    if left_dist <= right_dist {
+        left
+    } else {
+        right
     }
 }
 
@@ -179,12 +590,12 @@ struct ReportPoint {
     time_ns: u64,
     total_bytes: usize,
     live_records: usize,
-}
-
-#[derive(Serialize)]
-struct ReportGlobalPoint {
-    time_ns: u64,
-    live_bytes: usize,
+    global_bytes: usize,
+    tracked_alloc_bytes: usize,
+    code_buffer_bytes: usize,
+    guard_page_bytes: usize,
+    runtime_other_bytes: usize,
+    snapshot_id: usize,
 }
 
 #[derive(Serialize)]
@@ -192,7 +603,10 @@ struct ReportPhase {
     name: &'static str,
     start_time_ns: u64,
     end_time_ns: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     function_index: Option<u32>,
+    peak_time_ns: u64,
+    peak_bytes: usize,
 }
 
 #[derive(Serialize)]
@@ -202,29 +616,31 @@ struct ReportStack {
 }
 
 #[derive(Serialize)]
-struct ReportEvent {
-    time_ns: u64,
-    total_bytes: usize,
-    live_records: usize,
-    kind: &'static str,
-    id: u64,
-    owner_kind: Option<&'static str>,
-    type_name: Option<&'static str>,
-    element_type: Option<&'static str>,
-    len: Option<usize>,
-    capacity: Option<usize>,
-    size_bytes: Option<usize>,
-    ptr: Option<usize>,
-    create_stack_id: Option<u64>,
-    last_update_stack_id: Option<u64>,
+struct ReportSnapshot {
+    aggregates: Vec<ReportAggregate>,
+    records: Vec<ReportRecord>,
 }
 
-fn profile_event_kind_name(kind: ProfileEventKind) -> &'static str {
-    match kind {
-        ProfileEventKind::Create => "create",
-        ProfileEventKind::Update => "update",
-        ProfileEventKind::Remove => "remove",
-    }
+#[derive(Serialize)]
+struct ReportAggregate {
+    type_label: String,
+    total_bytes: usize,
+    count: usize,
+    largest_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct ReportRecord {
+    type_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    len: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capacity: Option<usize>,
+    size_bytes: usize,
+    ptr: usize,
+    create_stack_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_update_stack_id: Option<u64>,
 }
 
 const HTML_PREFIX: &str = r#"<!doctype html>
@@ -663,14 +1079,20 @@ const recordInspector = document.getElementById('record-inspector');
 const recordInspectorHeader = document.getElementById('record-inspector-header');
 const recordInspectorClose = document.getElementById('record-inspector-close');
 const recordDetail = document.getElementById('record-detail');
+const snapshots = report.snapshots || [];
 const phaseStageOrder = [
+  'sem_scan',
   'sem_decode',
   'sem_inline',
   'ssa_lower',
   'cfg_lower',
   'slot_lower',
   'joint_plan',
-  'ssa_rewrite',
+  'ssa_emit',
+  'ssa_cleanup',
+  'ssa_opt',
+  'ssa_sink',
+  'ssa_validate',
   'mir_lower',
   'module_opt',
   'arch_lower',
@@ -685,6 +1107,8 @@ const reportPhases = (report.phases || [])
     __index: index,
     start_time_ns: Number(phase.start_time_ns) || 0,
     end_time_ns: Number(phase.end_time_ns) || 0,
+    peak_time_ns: Number(phase.peak_time_ns) || 0,
+    peak_bytes: Number(phase.peak_bytes) || 0,
   }))
   .sort((left, right) => {
     if (left.start_time_ns !== right.start_time_ns) {
@@ -697,9 +1121,6 @@ const reportPhases = (report.phases || [])
   });
 const maxTimelineTimeNs = Math.max(
   report.timeline.length ? Number(report.timeline[report.timeline.length - 1].time_ns) : 0,
-  report.global_timeline.length
-    ? Number(report.global_timeline[report.global_timeline.length - 1].time_ns)
-    : 0,
   reportPhases.length
     ? reportPhases.reduce(
         (maxTimeNs, phase) => Math.max(maxTimeNs, Number(phase.end_time_ns) || 0),
@@ -716,12 +1137,6 @@ const maxTimelineBytes = (() => {
       maxBytes = bytes;
     }
   }
-  for (const point of report.global_timeline || []) {
-    const bytes = Number(point.live_bytes) || 0;
-    if (bytes > maxBytes) {
-      maxBytes = bytes;
-    }
-  }
   return maxBytes;
 })();
 const curvePadding = {
@@ -730,20 +1145,17 @@ const curvePadding = {
   top: 12,
   bottom: 28,
 };
-const showCodeBufferSeries = report.events.some(
-  (event) => event.owner_kind === 'RuntimeMemory' && event.type_name === 'CodeBuffer'
+const showCodeBufferSeries = report.timeline.some(
+  (point) => Number(point.code_buffer_bytes || 0) > 0
 );
-const showGuardPageSeries = report.events.some(
-  (event) => event.owner_kind === 'RuntimeMemory' && event.type_name === 'GuardPageMemory'
+const showGuardPageSeries = report.timeline.some(
+  (point) => Number(point.guard_page_bytes || 0) > 0
 );
-const showRuntimeOtherSeries = report.events.some(
-  (event) =>
-    event.owner_kind === 'RuntimeMemory' &&
-    event.type_name !== 'CodeBuffer' &&
-    event.type_name !== 'GuardPageMemory'
+const showRuntimeOtherSeries = report.timeline.some(
+  (point) => Number(point.runtime_other_bytes || 0) > 0
 );
 const showGlobalAllocatorSeries =
-  (report.global_timeline && report.global_timeline.length > 1) ||
+  report.timeline.some((point) => Number(point.global_bytes || 0) > 0) ||
   Number(report.summary.global_peak_bytes || 0) > 0;
 const curveSeriesMeta = [
   { key: 'total_bytes', label: 'Tracked total', color: '#7cc5ff', width: 2.5, visible: true },
@@ -865,18 +1277,6 @@ function breakdownTotal(breakdown) {
   );
 }
 
-function breakdownForRecords(records) {
-  const breakdown = emptyBreakdown();
-  for (const record of records) {
-    applyBreakdownDelta(
-      breakdown,
-      allocationCategory(record),
-      Number(record.size_bytes) || 0
-    );
-  }
-  return breakdown;
-}
-
 function renderCurveLegend() {
   curveLegend.innerHTML = curveSeriesMeta
     .filter((series) => series.visible)
@@ -908,124 +1308,6 @@ function renderCurveLegend() {
   }
 }
 
-function snapshotBreakdownPoint(breakdown) {
-  return {
-    total_bytes: breakdownTotal(breakdown),
-    global_bytes: 0,
-    tracked_alloc_bytes: breakdown.tracked_alloc_bytes,
-    code_buffer_bytes: breakdown.code_buffer_bytes,
-    guard_page_bytes: breakdown.guard_page_bytes,
-    runtime_other_bytes: breakdown.runtime_other_bytes,
-  };
-}
-
-function buildTrackedCurveBuckets(bucketCount) {
-  const safeBucketCount = Math.max(2, bucketCount);
-  const buckets = new Array(safeBucketCount);
-  const live = new Map();
-  const breakdown = emptyBreakdown();
-
-  buckets[0] = snapshotBreakdownPoint(breakdown);
-
-  for (const event of report.events) {
-    if (event.kind === 'create') {
-      const category = allocationCategory(event);
-      const sizeBytes = Number(event.size_bytes) || 0;
-      live.set(event.id, { category, size_bytes: sizeBytes });
-      applyBreakdownDelta(breakdown, category, sizeBytes);
-    } else if (event.kind === 'update') {
-      const liveRecord = live.get(event.id);
-      if (liveRecord) {
-        const nextSizeBytes = Number(event.size_bytes) || 0;
-        applyBreakdownDelta(
-          breakdown,
-          liveRecord.category,
-          nextSizeBytes - liveRecord.size_bytes
-        );
-        liveRecord.size_bytes = nextSizeBytes;
-      }
-    } else if (event.kind === 'remove') {
-      const liveRecord = live.get(event.id);
-      if (liveRecord) {
-        applyBreakdownDelta(breakdown, liveRecord.category, -liveRecord.size_bytes);
-        live.delete(event.id);
-      }
-    }
-
-    const bucketIndex = Math.max(
-      0,
-      Math.min(
-        safeBucketCount - 1,
-        Math.floor((Number(event.time_ns) / maxTimelineTimeNs) * (safeBucketCount - 1))
-      )
-    );
-    buckets[bucketIndex] = snapshotBreakdownPoint(breakdown);
-  }
-
-  let last = buckets[0];
-  for (let index = 0; index < safeBucketCount; index += 1) {
-    if (buckets[index]) {
-      last = buckets[index];
-    } else {
-      buckets[index] = { ...last };
-    }
-  }
-
-  return buckets;
-}
-
-function buildGlobalCurveBuckets(bucketCount) {
-  const safeBucketCount = Math.max(2, bucketCount);
-  const buckets = new Array(safeBucketCount).fill(0);
-  if (!report.global_timeline.length) {
-    return buckets;
-  }
-  let pointIndex = 0;
-  let currentBytes = Number(report.global_timeline[0].live_bytes) || 0;
-  for (let index = 0; index < safeBucketCount; index += 1) {
-    const timeNs = (index / Math.max(1, safeBucketCount - 1)) * maxTimelineTimeNs;
-    while (
-      pointIndex + 1 < report.global_timeline.length &&
-      Number(report.global_timeline[pointIndex + 1].time_ns) <= timeNs
-    ) {
-      pointIndex += 1;
-      currentBytes = Number(report.global_timeline[pointIndex].live_bytes) || 0;
-    }
-    buckets[index] = currentBytes;
-  }
-  return buckets;
-}
-
-function globalBytesAtTimeNs(timeNs) {
-  if (!report.global_timeline.length) {
-    return 0;
-  }
-  let low = 0;
-  let high = report.global_timeline.length - 1;
-  while (low < high) {
-    const mid = Math.floor((low + high + 1) / 2);
-    if (Number(report.global_timeline[mid].time_ns) <= timeNs) {
-      low = mid;
-    } else {
-      high = mid - 1;
-    }
-  }
-  return Number(report.global_timeline[low].live_bytes) || 0;
-}
-
-function curveBucketsForPlotWidth(plotWidth) {
-  const bucketCount = Math.max(2, Math.floor(plotWidth));
-  if (cachedCurveBuckets && cachedCurveBucketCount === bucketCount) {
-    return cachedCurveBuckets;
-  }
-  cachedCurveBuckets = {
-    tracked: buildTrackedCurveBuckets(bucketCount),
-    global: buildGlobalCurveBuckets(bucketCount),
-  };
-  cachedCurveBucketCount = bucketCount;
-  return cachedCurveBuckets;
-}
-
 function seriesIsEnabled(series) {
   return series.visible && curveSeriesState.get(series.key) !== false;
 }
@@ -1034,30 +1316,21 @@ function enabledCurveSeries() {
   return curveSeriesMeta.filter((series) => seriesIsEnabled(series));
 }
 
-function curveValueAtIndex(series, trackedCurveBuckets, globalCurveBuckets, index) {
-  if (series.key === 'global_bytes') {
-    return globalCurveBuckets[index] || 0;
-  }
-  const point = trackedCurveBuckets[index];
-  return point ? point[series.key] || 0 : 0;
+function curveValueAtPoint(series, point) {
+  return Number(point[series.key] || 0);
 }
 
-function currentMaxBytes(trackedCurveBuckets, globalCurveBuckets) {
+function currentMaxBytes() {
   let maxBytes = 1;
   for (const series of enabledCurveSeries()) {
-    const bucketCount =
-      series.key === 'global_bytes' ? globalCurveBuckets.length : trackedCurveBuckets.length;
-    for (let index = 0; index < bucketCount; index += 1) {
-      maxBytes = Math.max(
-        maxBytes,
-        curveValueAtIndex(series, trackedCurveBuckets, globalCurveBuckets, index)
-      );
+    for (const point of report.timeline) {
+      maxBytes = Math.max(maxBytes, curveValueAtPoint(series, point));
     }
   }
   return maxBytes;
 }
 
-function selectedMarkerValue(point, breakdown, globalBytes) {
+function selectedMarkerValue(point) {
   const visibleSeries = enabledCurveSeries();
   if (!visibleSeries.length) {
     return null;
@@ -1065,15 +1338,15 @@ function selectedMarkerValue(point, breakdown, globalBytes) {
   for (const series of visibleSeries) {
     switch (series.key) {
       case 'global_bytes':
-        return globalBytes;
+        return point.global_bytes;
       case 'tracked_alloc_bytes':
-        return breakdown.tracked_alloc_bytes;
+        return point.tracked_alloc_bytes;
       case 'code_buffer_bytes':
-        return breakdown.code_buffer_bytes;
+        return point.code_buffer_bytes;
       case 'guard_page_bytes':
-        return breakdown.guard_page_bytes;
+        return point.guard_page_bytes;
       case 'runtime_other_bytes':
-        return breakdown.runtime_other_bytes;
+        return point.runtime_other_bytes;
       default:
         return point.total_bytes;
     }
@@ -1130,6 +1403,8 @@ function phaseDurationNs(phase) {
 
 function phaseColor(name) {
   switch (name) {
+    case 'sem_scan':
+      return '#0ea5e9';
     case 'sem_decode':
       return '#38bdf8';
     case 'sem_inline':
@@ -1142,8 +1417,16 @@ function phaseColor(name) {
       return '#f59e0b';
     case 'ssa_lower':
       return '#f97316';
-    case 'ssa_rewrite':
+    case 'ssa_emit':
       return '#fb923c';
+    case 'ssa_cleanup':
+      return '#fdba74';
+    case 'ssa_opt':
+      return '#facc15';
+    case 'ssa_sink':
+      return '#fbbf24';
+    case 'ssa_validate':
+      return '#fcd34d';
     case 'mir_lower':
       return '#ef4444';
     case 'module_opt':
@@ -1277,7 +1560,7 @@ function activePhasesAtTimeNs(timeNs) {
 }
 
 function phasePeakIndex(phase) {
-  return peakIndexForSpans([phase]);
+  return nearestTimelineIndex(Number(phase.peak_time_ns) || Number(phase.start_time_ns) || 0);
 }
 
 function peakIndexForSpans(spans) {
@@ -1287,30 +1570,16 @@ function peakIndexForSpans(spans) {
   if (!spans.length) {
     return selectedIndex;
   }
-  let bestIndex = nearestTimelineIndex(spans[0].start_time_ns);
-  let bestBytes = -1;
-  let found = false;
-  let spanIndex = 0;
-  for (let index = 0; index < report.timeline.length; index += 1) {
-    const point = report.timeline[index];
-    const timeNs = Number(point.time_ns) || 0;
-    while (spanIndex < spans.length && timeNs > spans[spanIndex].end_time_ns) {
-      spanIndex += 1;
-    }
-    if (spanIndex >= spans.length) {
-      break;
-    }
-    if (timeNs < spans[spanIndex].start_time_ns) {
-      continue;
-    }
-    const bytes = Number(point.total_bytes) || 0;
-    if (!found || bytes >= bestBytes) {
-      found = true;
+  let bestPhase = spans[0];
+  let bestBytes = Number(bestPhase.peak_bytes) || 0;
+  for (const phase of spans) {
+    const bytes = Number(phase.peak_bytes) || 0;
+    if (bytes >= bestBytes) {
+      bestPhase = phase;
       bestBytes = bytes;
-      bestIndex = index;
     }
   }
-  return bestIndex;
+  return phasePeakIndex(bestPhase);
 }
 
 function renderPhaseTimeline() {
@@ -1425,37 +1694,6 @@ function renderPhaseTimeline() {
   }
 }
 
-function displayType(record) {
-  if (record.owner_kind === 'String') {
-    return 'String';
-  }
-  if (record.owner_kind === 'Vec' && record.element_type) {
-    return `Vec<${record.element_type}>`;
-  }
-  if (record.owner_kind === 'BTreeSet' && record.element_type) {
-    return `BTreeSet<${record.element_type}>`;
-  }
-  if (record.owner_kind === 'Rc') {
-    if (record.type_name === 'str') {
-      return 'Rc<str>';
-    }
-    if (record.element_type && record.type_name && record.type_name.startsWith('[')) {
-      return `Rc<[${record.element_type}]>`;
-    }
-    return record.type_name ? `Rc<${record.type_name}>` : 'Rc';
-  }
-  if (record.owner_kind === 'Box') {
-    if (record.type_name === 'str') {
-      return 'Box<str>';
-    }
-    if (record.element_type && record.type_name && record.type_name.startsWith('[')) {
-      return `Box<[${record.element_type}]>`;
-    }
-    return record.type_name ? `Box<${record.type_name}>` : 'Box';
-  }
-  return record.type_name || record.owner_kind || 'unknown';
-}
-
 function pointerText(ptr) {
   if (!ptr) {
     return '-';
@@ -1468,74 +1706,6 @@ function stackText(stackId) {
     return '(none)';
   }
   return stackById.get(stackId) || '(missing stack)';
-}
-
-function snapshotAt(timeNs) {
-  const live = new Map();
-  for (const event of report.events) {
-    if (event.time_ns > timeNs) {
-      break;
-    }
-    if (event.kind === 'create') {
-      live.set(event.id, {
-        id: event.id,
-        owner_kind: event.owner_kind,
-        type_name: event.type_name,
-        element_type: event.element_type,
-        len: event.len,
-        capacity: event.capacity,
-        size_bytes: event.size_bytes || 0,
-        ptr: event.ptr || 0,
-        create_stack_id: event.create_stack_id ?? null,
-        last_update_stack_id: null,
-      });
-    } else if (event.kind === 'update') {
-      const record = live.get(event.id);
-      if (!record) {
-        continue;
-      }
-      record.len = event.len;
-      record.capacity = event.capacity;
-      if (event.size_bytes != null) {
-        record.size_bytes = event.size_bytes;
-      }
-      if (event.ptr != null) {
-        record.ptr = event.ptr;
-      }
-      if (event.last_update_stack_id != null) {
-        record.last_update_stack_id = event.last_update_stack_id;
-      }
-    } else if (event.kind === 'remove') {
-      live.delete(event.id);
-    }
-  }
-  return Array.from(live.values()).sort((a, b) => {
-    if (b.size_bytes !== a.size_bytes) {
-      return b.size_bytes - a.size_bytes;
-    }
-    return a.id - b.id;
-  });
-}
-
-function aggregate(records) {
-  const byType = new Map();
-  for (const record of records) {
-    const key = displayType(record);
-    let bucket = byType.get(key);
-    if (!bucket) {
-      bucket = { type: key, total_bytes: 0, count: 0, largest_bytes: 0 };
-      byType.set(key, bucket);
-    }
-    bucket.total_bytes += record.size_bytes;
-    bucket.count += 1;
-    bucket.largest_bytes = Math.max(bucket.largest_bytes, record.size_bytes);
-  }
-  return Array.from(byType.values()).sort((a, b) => {
-    if (b.total_bytes !== a.total_bytes) {
-      return b.total_bytes - a.total_bytes;
-    }
-    return a.type.localeCompare(b.type);
-  });
 }
 
 function renderSummaryStats() {
@@ -1566,7 +1736,7 @@ function renderRecordDetail(record) {
     return;
   }
   const parts = [
-    `${displayType(record)}  ${formatBytes(record.size_bytes)}`,
+    `${record.type_label || 'unknown'}  ${formatBytes(record.size_bytes)}`,
     '',
     'Create site:',
     stackText(record.create_stack_id),
@@ -1607,30 +1777,34 @@ function renderSelection(index) {
   selectedIndex = Math.max(0, Math.min(index, report.timeline.length - 1));
   hideInspector();
   const point = report.timeline[selectedIndex] || { time_ns: 0, total_bytes: 0, live_records: 0 };
-  selectedRecords = snapshotAt(point.time_ns);
-  const aggregates = aggregate(selectedRecords);
-  const breakdown = breakdownForRecords(selectedRecords);
-  const globalBytes = globalBytesAtTimeNs(point.time_ns);
-  const untrackedGlobalGap = Math.max(0, globalBytes - breakdown.tracked_alloc_bytes);
+  const snapshot = snapshots[Number(point.snapshot_id) || 0] || { aggregates: [], records: [] };
+  selectedRecords = snapshot.records || [];
+  const aggregates = snapshot.aggregates || [];
+  const globalBytes = Number(point.global_bytes || 0);
+  const trackedAllocBytes = Number(point.tracked_alloc_bytes || 0);
+  const codeBufferBytes = Number(point.code_buffer_bytes || 0);
+  const guardPageBytes = Number(point.guard_page_bytes || 0);
+  const runtimeOtherBytes = Number(point.runtime_other_bytes || 0);
+  const untrackedGlobalGap = Math.max(0, globalBytes - trackedAllocBytes);
   const activePhases = activePhasesAtTimeNs(Number(point.time_ns) || 0);
 
   const selectionItems = [
     ['Selected Time', formatTime(point.time_ns)],
     ['Total Bytes', formatBytes(point.total_bytes)],
     ['Global allocator', formatBytes(globalBytes)],
-    ['Tracked alloc', formatBytes(breakdown.tracked_alloc_bytes)],
+    ['Tracked alloc', formatBytes(trackedAllocBytes)],
   ];
   if (showGlobalAllocatorSeries) {
     selectionItems.push(['Untracked heap gap', formatBytes(untrackedGlobalGap)]);
   }
   if (showCodeBufferSeries) {
-    selectionItems.push(['Code Buffer', formatBytes(breakdown.code_buffer_bytes)]);
+    selectionItems.push(['Code Buffer', formatBytes(codeBufferBytes)]);
   }
   if (showGuardPageSeries) {
-    selectionItems.push(['Guard Pages', formatBytes(breakdown.guard_page_bytes)]);
+    selectionItems.push(['Guard Pages', formatBytes(guardPageBytes)]);
   }
   if (showRuntimeOtherSeries) {
-    selectionItems.push(['Runtime other', formatBytes(breakdown.runtime_other_bytes)]);
+    selectionItems.push(['Runtime other', formatBytes(runtimeOtherBytes)]);
   }
   if (activePhases.length) {
     selectionItems.push(['Active phases', activePhases.map(phaseLabel).join(', ')]);
@@ -1650,7 +1824,7 @@ function renderSelection(index) {
     ? aggregates
         .map((entry) => `
           <tr>
-            <td>${escapeHtml(entry.type)}</td>
+            <td>${escapeHtml(entry.type_label)}</td>
             <td>${escapeHtml(formatBytes(entry.total_bytes))}</td>
             <td>${escapeHtml(entry.count)}</td>
             <td>${escapeHtml(formatBytes(entry.largest_bytes))}</td>
@@ -1664,7 +1838,7 @@ function renderSelection(index) {
     ? visibleRecords
         .map((record, index) => `
           <tr class="record-row" data-record-index="${index}">
-            <td>${escapeHtml(displayType(record))}</td>
+            <td>${escapeHtml(record.type_label || 'unknown')}</td>
             <td>${escapeHtml(formatBytes(record.size_bytes))}</td>
             <td>${escapeHtml(record.len == null ? '-' : record.len)}</td>
             <td>${escapeHtml(record.capacity == null ? '-' : record.capacity)}</td>
@@ -1675,9 +1849,9 @@ function renderSelection(index) {
     : '<tr><td colspan="5" class="muted">No live allocations at this point.</td></tr>';
 
   const recordsNoteParts = [];
-  if (selectedRecords.length > visibleRecords.length) {
+  if (Number(point.live_records || 0) > visibleRecords.length) {
     recordsNoteParts.push(
-      `Showing the largest ${visibleRecords.length} of ${selectedRecords.length} live allocations.`
+      `Showing the largest ${visibleRecords.length} of ${point.live_records} live allocations.`
     );
   }
   if (visibleRecords.length) {
@@ -1737,12 +1911,9 @@ function resizeCanvas() {
 function drawCurve() {
   resizeCanvas();
   const { width, height, padLeft, padTop, plotWidth, plotHeight } = curveMetrics();
-  const curveBuckets = curveBucketsForPlotWidth(plotWidth);
-  const trackedCurveBuckets = curveBuckets.tracked;
-  const globalCurveBuckets = curveBuckets.global;
   ctx.clearRect(0, 0, width, height);
 
-  if (!report.timeline.length && !report.global_timeline.length) {
+  if (!report.timeline.length) {
     ctx.fillStyle = '#8da3bc';
     ctx.font = '13px sans-serif';
     ctx.fillText('No timeline data', 12, 24);
@@ -1750,7 +1921,7 @@ function drawCurve() {
   }
 
   const maxTime = maxTimelineTimeNs;
-  const maxBytes = currentMaxBytes(trackedCurveBuckets, globalCurveBuckets);
+  const maxBytes = currentMaxBytes();
 
   const xFor = (timeNs) => padLeft + (Number(timeNs) / Number(maxTime)) * plotWidth;
   const yFor = (bytes) => padTop + plotHeight - (Number(bytes) / Number(maxBytes)) * plotHeight;
@@ -1767,16 +1938,13 @@ function drawCurve() {
     if (!seriesIsEnabled(series)) {
       return;
     }
-    const buckets = series.key === 'global_bytes' ? globalCurveBuckets : trackedCurveBuckets;
     let started = false;
     ctx.strokeStyle = series.color;
     ctx.lineWidth = series.width;
     ctx.beginPath();
-    for (let index = 0; index < buckets.length; index += 1) {
-      const point = buckets[index];
-      const x =
-        padLeft + (index / Math.max(1, buckets.length - 1)) * plotWidth;
-      const y = yFor(series.key === 'global_bytes' ? point : point[series.key]);
+    for (const point of report.timeline) {
+      const x = xFor(point.time_ns);
+      const y = yFor(curveValueAtPoint(series, point));
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -1794,9 +1962,7 @@ function drawCurve() {
   const selected = report.timeline[selectedIndex];
   if (selected) {
     const x = xFor(selected.time_ns);
-    const breakdown = breakdownForRecords(selectedRecords);
-    const globalBytes = globalBytesAtTimeNs(selected.time_ns);
-    const markerBytes = selectedMarkerValue(selected, breakdown, globalBytes);
+    const markerBytes = selectedMarkerValue(selected);
     ctx.strokeStyle = '#34d399';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -1822,7 +1988,7 @@ function drawCurve() {
 }
 
 canvas.addEventListener('click', (event) => {
-  if (!report.timeline.length && !report.global_timeline.length) {
+  if (!report.timeline.length) {
     return;
   }
   const rect = canvas.getBoundingClientRect();
