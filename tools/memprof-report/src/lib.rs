@@ -499,6 +499,7 @@ fn display_type_label(record: &LiveRecord) -> String {
             Some(element_type) => format!("BTreeSet<{element_type}>"),
             None => "BTreeSet".to_owned(),
         },
+        "BTreeMap" => format!("BTreeMap<{}>", record.type_name),
         "Rc" => {
             if record.type_name == "str" {
                 "Rc<str>".to_owned()

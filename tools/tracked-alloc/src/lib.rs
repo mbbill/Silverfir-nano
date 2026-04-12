@@ -202,6 +202,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         #[cfg(feature = "memprof")]
         if !ptr.is_null() {
             record_global_delta(layout.size() as isize);
+            record_context_allocation(ptr, layout.size());
         }
         ptr
     }
@@ -211,6 +212,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         #[cfg(feature = "memprof")]
         if !ptr.is_null() {
             record_global_delta(layout.size() as isize);
+            record_context_allocation(ptr, layout.size());
         }
         ptr
     }
@@ -218,7 +220,10 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         unsafe { self.inner.dealloc(ptr, layout) };
         #[cfg(feature = "memprof")]
-        record_global_delta(-(layout.size() as isize));
+        {
+            record_global_delta(-(layout.size() as isize));
+            remove_unique_allocation(ptr as usize);
+        }
     }
 
     unsafe fn realloc(
@@ -234,6 +239,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
             if delta != 0 {
                 record_global_delta(delta);
             }
+            record_context_reallocation(ptr, new_ptr, new_size);
         }
         new_ptr
     }
@@ -677,6 +683,13 @@ struct EventRecord {
 }
 
 #[cfg(feature = "memprof")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AllocationContext {
+    descriptor: AllocationDescriptor,
+    create_stack: Option<StackId>,
+}
+
+#[cfg(feature = "memprof")]
 struct ProfilerState {
     start: std::time::Instant,
     next_stack_id: StackId,
@@ -753,10 +766,14 @@ static GLOBAL_TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 static PROFILER: OnceLock<Mutex<ProfilerState>> = OnceLock::new();
 #[cfg(feature = "memprof")]
 static GLOBAL_TRACKER: OnceLock<Mutex<GlobalTrackerState>> = OnceLock::new();
+#[cfg(feature = "memprof")]
+static TRACKED_ALLOCATIONS: OnceLock<Mutex<StdHashMap<usize, AllocationHandle>>> = OnceLock::new();
 
 #[cfg(feature = "memprof")]
 std::thread_local! {
     static GLOBAL_TRACKING_REENTRANT: Cell<bool> = const { Cell::new(false) };
+    static TRACKING_INTERNAL_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static ALLOCATION_CONTEXT: Cell<Option<AllocationContext>> = const { Cell::new(None) };
 }
 
 #[cfg(feature = "memprof")]
@@ -767,6 +784,26 @@ fn profiler() -> &'static Mutex<ProfilerState> {
 #[cfg(feature = "memprof")]
 fn global_tracker() -> &'static Mutex<GlobalTrackerState> {
     GLOBAL_TRACKER.get_or_init(|| Mutex::new(GlobalTrackerState::default()))
+}
+
+#[cfg(feature = "memprof")]
+fn tracked_allocations() -> &'static Mutex<StdHashMap<usize, AllocationHandle>> {
+    TRACKED_ALLOCATIONS.get_or_init(|| Mutex::new(StdHashMap::new()))
+}
+
+#[cfg(feature = "memprof")]
+fn tracking_internal_active() -> bool {
+    TRACKING_INTERNAL_DEPTH.with(|depth| depth.get() != 0)
+}
+
+#[cfg(feature = "memprof")]
+fn with_tracking_internal<R>(f: impl FnOnce() -> R) -> R {
+    TRACKING_INTERNAL_DEPTH.with(|depth| {
+        depth.set(depth.get().saturating_add(1));
+        let result = f();
+        depth.set(depth.get().saturating_sub(1));
+        result
+    })
 }
 
 #[cfg(feature = "memprof")]
@@ -804,6 +841,59 @@ fn capture_site() -> AllocBox<str> {
         location.column()
     )
     .into_boxed_str()
+}
+
+#[cfg(feature = "memprof")]
+fn capture_stack_id() -> Option<StackId> {
+    if !tracking_enabled() {
+        return None;
+    }
+    with_tracking_internal(|| {
+        let create_stack = capture_site();
+        let mut profiler = profiler().lock().unwrap();
+        Some(intern_stack(&mut profiler, create_stack))
+    })
+}
+
+#[cfg(feature = "memprof")]
+#[track_caller]
+fn with_allocation_context<R>(descriptor: AllocationDescriptor, f: impl FnOnce() -> R) -> R {
+    if !tracking_enabled() {
+        return f();
+    }
+    let context = AllocationContext {
+        descriptor,
+        create_stack: capture_stack_id(),
+    };
+    ALLOCATION_CONTEXT.with(|slot| {
+        let previous = slot.get();
+        slot.set(Some(context));
+        let result = f();
+        slot.set(previous);
+        result
+    })
+}
+
+#[cfg(feature = "memprof")]
+fn with_existing_allocation_context<R>(context: AllocationContext, f: impl FnOnce() -> R) -> R {
+    if !tracking_enabled() {
+        return f();
+    }
+    ALLOCATION_CONTEXT.with(|slot| {
+        let previous = slot.get();
+        slot.set(Some(context));
+        let result = f();
+        slot.set(previous);
+        result
+    })
+}
+
+#[cfg(feature = "memprof")]
+fn current_allocation_context() -> Option<AllocationContext> {
+    if tracking_internal_active() {
+        return None;
+    }
+    ALLOCATION_CONTEXT.with(|slot| slot.get())
 }
 
 #[cfg(feature = "memprof")]
@@ -872,6 +962,9 @@ fn record_global_delta(delta_bytes: isize) {
     if !global_tracking_enabled() {
         return;
     }
+    if tracking_internal_active() {
+        return;
+    }
     GLOBAL_TRACKING_REENTRANT.with(|flag| {
         if flag.get() {
             return;
@@ -900,6 +993,124 @@ fn record_global_delta(delta_bytes: isize) {
         }
         flag.set(false);
     });
+}
+
+#[cfg(feature = "memprof")]
+fn insert_tracked_allocation(ptr: usize, mut handle: AllocationHandle) {
+    if ptr == 0 {
+        handle.remove();
+        return;
+    }
+    let displaced = with_tracking_internal(|| {
+        let mut allocations = tracked_allocations().lock().unwrap();
+        allocations.insert(ptr, handle)
+    });
+    if let Some(mut displaced) = displaced {
+        displaced.remove();
+    }
+}
+
+#[cfg(feature = "memprof")]
+fn sync_unique_allocation_with_stack(
+    old_ptr: usize,
+    descriptor: AllocationDescriptor,
+    state: AllocationState,
+    create_stack: Option<StackId>,
+) {
+    let mut handle = if old_ptr == 0 {
+        None
+    } else {
+        tracked_allocations().lock().unwrap().remove(&old_ptr)
+    };
+
+    if let Some(existing) = handle.as_mut() {
+        if state.size_bytes == 0 || state.ptr == 0 {
+            existing.remove();
+            return;
+        }
+        existing.update(state);
+        insert_tracked_allocation(state.ptr, handle.take().expect("tracked handle exists"));
+        return;
+    }
+
+    if !tracking_enabled() || state.size_bytes == 0 || state.ptr == 0 {
+        return;
+    }
+
+    let handle = AllocationHandle::new_with_stack(descriptor, state, create_stack);
+    insert_tracked_allocation(state.ptr, handle);
+}
+
+#[cfg(feature = "memprof")]
+#[track_caller]
+fn sync_unique_allocation(
+    old_ptr: usize,
+    descriptor: AllocationDescriptor,
+    state: AllocationState,
+) {
+    let create_stack = if old_ptr == 0 && state.ptr != 0 && state.size_bytes != 0 {
+        capture_stack_id()
+    } else {
+        None
+    };
+    sync_unique_allocation_with_stack(old_ptr, descriptor, state, create_stack);
+}
+
+#[cfg(feature = "memprof")]
+fn remove_unique_allocation(ptr: usize) {
+    if ptr == 0 || tracking_internal_active() {
+        return;
+    }
+    let mut handle = tracked_allocations().lock().unwrap().remove(&ptr);
+    if let Some(handle) = handle.as_mut() {
+        handle.remove();
+    }
+}
+
+#[cfg(feature = "memprof")]
+fn record_context_allocation(ptr: *mut u8, size_bytes: usize) {
+    if ptr.is_null() || size_bytes == 0 || tracking_internal_active() {
+        return;
+    }
+    let Some(context) = current_allocation_context() else {
+        return;
+    };
+    let state = AllocationState::new(size_bytes).with_ptr(ptr as usize);
+    let handle = AllocationHandle::new_with_stack(context.descriptor, state, context.create_stack);
+    insert_tracked_allocation(ptr as usize, handle);
+}
+
+#[cfg(feature = "memprof")]
+fn record_context_reallocation(old_ptr: *mut u8, new_ptr: *mut u8, new_size: usize) {
+    if old_ptr.is_null() || tracking_internal_active() {
+        return;
+    }
+    let mut handle = tracked_allocations()
+        .lock()
+        .unwrap()
+        .remove(&(old_ptr as usize));
+    if new_ptr.is_null() {
+        if let Some(handle) = handle.take() {
+            insert_tracked_allocation(old_ptr as usize, handle);
+        }
+        return;
+    }
+
+    let state = AllocationState::new(new_size).with_ptr(new_ptr as usize);
+    if let Some(existing) = handle.as_mut() {
+        existing.update(state);
+        insert_tracked_allocation(
+            new_ptr as usize,
+            handle.take().expect("tracked handle exists"),
+        );
+        return;
+    }
+
+    let Some(context) = current_allocation_context() else {
+        return;
+    };
+    let handle = AllocationHandle::new_with_stack(context.descriptor, state, context.create_stack);
+    insert_tracked_allocation(new_ptr as usize, handle);
 }
 
 #[cfg(feature = "memprof")]
@@ -949,75 +1160,77 @@ pub struct AllocationHandle {
 
 #[cfg(feature = "memprof")]
 impl AllocationHandle {
-    #[track_caller]
-    fn capture_stack_id() -> Option<StackId> {
-        if !tracking_enabled() {
-            return None;
-        }
-        let create_stack = capture_site();
-        let mut profiler = profiler().lock().unwrap();
-        Some(intern_stack(&mut profiler, create_stack))
-    }
-
     fn materialize(&mut self, state: AllocationState) {
         if self.id.is_some() || !tracking_enabled() || state.size_bytes == 0 {
             return;
         }
-        let id = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
-        let create_stack = self.create_stack.unwrap_or_else(|| {
-            let create_stack = capture_site();
+        with_tracking_internal(|| {
+            let id = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
+            let create_stack = self
+                .create_stack
+                .or_else(capture_stack_id)
+                .unwrap_or_else(|| {
+                    let create_stack = capture_site();
+                    let mut profiler = profiler().lock().unwrap();
+                    intern_stack(&mut profiler, create_stack)
+                });
             let mut profiler = profiler().lock().unwrap();
-            intern_stack(&mut profiler, create_stack)
-        });
-        let mut profiler = profiler().lock().unwrap();
-        profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
-        profiler.records.insert(
-            id,
-            Record {
-                owner_kind: self.descriptor.owner_kind,
-                type_name: self.descriptor.type_name,
+            profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
+            profiler.records.insert(
+                id,
+                Record {
+                    owner_kind: self.descriptor.owner_kind,
+                    type_name: self.descriptor.type_name,
+                    element_type: self.descriptor.element_type,
+                    len: state.len,
+                    capacity: state.capacity,
+                    size_bytes: state.size_bytes,
+                    ptr: state.ptr,
+                    create_stack,
+                    last_update_stack: None,
+                },
+            );
+            let time_ns = elapsed_ns(profiler.start);
+            let live_records = profiler.records.len();
+            let total_bytes = profiler.total_bytes;
+            profiler.timeline.push(TimelinePoint {
+                time_ns,
+                total_bytes,
+                live_records,
+            });
+            profiler.events.push(EventRecord {
+                time_ns,
+                total_bytes,
+                live_records,
+                kind: ProfileEventKind::Create,
+                id,
+                owner_kind: Some(self.descriptor.owner_kind),
+                type_name: Some(self.descriptor.type_name),
                 element_type: self.descriptor.element_type,
                 len: state.len,
                 capacity: state.capacity,
-                size_bytes: state.size_bytes,
-                ptr: state.ptr,
-                create_stack,
+                size_bytes: Some(state.size_bytes),
+                ptr: Some(state.ptr),
+                create_stack: Some(create_stack),
                 last_update_stack: None,
-            },
-        );
-        let time_ns = elapsed_ns(profiler.start);
-        let live_records = profiler.records.len();
-        let total_bytes = profiler.total_bytes;
-        profiler.timeline.push(TimelinePoint {
-            time_ns,
-            total_bytes,
-            live_records,
+            });
+            self.id = Some(id);
         });
-        profiler.events.push(EventRecord {
-            time_ns,
-            total_bytes,
-            live_records,
-            kind: ProfileEventKind::Create,
-            id,
-            owner_kind: Some(self.descriptor.owner_kind),
-            type_name: Some(self.descriptor.type_name),
-            element_type: self.descriptor.element_type,
-            len: state.len,
-            capacity: state.capacity,
-            size_bytes: Some(state.size_bytes),
-            ptr: Some(state.ptr),
-            create_stack: Some(create_stack),
-            last_update_stack: None,
-        });
-        self.id = Some(id);
     }
 
-    #[track_caller]
     pub fn new(descriptor: AllocationDescriptor, state: AllocationState) -> Self {
+        Self::new_with_stack(descriptor, state, capture_stack_id())
+    }
+
+    fn new_with_stack(
+        descriptor: AllocationDescriptor,
+        state: AllocationState,
+        create_stack: Option<StackId>,
+    ) -> Self {
         let mut handle = Self {
             id: None,
             descriptor,
-            create_stack: Self::capture_stack_id(),
+            create_stack,
         };
         handle.materialize(state);
         handle
@@ -1035,63 +1248,65 @@ impl AllocationHandle {
         let Some(id) = self.id else {
             return;
         };
-        let mut profiler = profiler().lock().unwrap();
-        let total_before = profiler.total_bytes;
-        let Some(record) = profiler.records.get(&id) else {
-            return;
-        };
-        let size_changed = record.capacity != state.capacity
-            || record.size_bytes != state.size_bytes
-            || record.ptr != state.ptr;
-        let old_size_bytes = record.size_bytes;
-        if !size_changed {
-            if record.len != state.len {
+        with_tracking_internal(|| {
+            let mut profiler = profiler().lock().unwrap();
+            let total_before = profiler.total_bytes;
+            let Some(record) = profiler.records.get(&id) else {
+                return;
+            };
+            let size_changed = record.capacity != state.capacity
+                || record.size_bytes != state.size_bytes
+                || record.ptr != state.ptr;
+            let old_size_bytes = record.size_bytes;
+            if !size_changed {
+                if record.len != state.len {
+                    let record = profiler
+                        .records
+                        .get_mut(&id)
+                        .expect("tracked allocation exists");
+                    record.len = state.len;
+                }
+                return;
+            }
+
+            let total_bytes = total_before
+                .saturating_sub(old_size_bytes)
+                .saturating_add(state.size_bytes);
+            {
                 let record = profiler
                     .records
                     .get_mut(&id)
                     .expect("tracked allocation exists");
                 record.len = state.len;
-            }
-            return;
-        }
-
-        let total_bytes = total_before
-            .saturating_sub(old_size_bytes)
-            .saturating_add(state.size_bytes);
-        {
-            let record = profiler
-                .records
-                .get_mut(&id)
-                .expect("tracked allocation exists");
-            record.len = state.len;
-            record.capacity = state.capacity;
-            record.size_bytes = state.size_bytes;
-            record.ptr = state.ptr;
-            record.last_update_stack = None;
-        };
-        let live_records = profiler.records.len();
-        profiler.total_bytes = total_bytes;
-        let time_ns = elapsed_ns(profiler.start);
-        profiler.timeline.push(TimelinePoint {
-            time_ns,
-            total_bytes,
-            live_records,
-        });
-        profiler.events.push(EventRecord {
-            time_ns,
-            total_bytes,
-            live_records,
-            kind: ProfileEventKind::Update,
-            id,
-            owner_kind: None,
-            type_name: None,
-            element_type: None,
-            len: state.len,
-            capacity: state.capacity,
-            size_bytes: Some(state.size_bytes),
-            ptr: Some(state.ptr),
-            create_stack: None,
-            last_update_stack: None,
+                record.capacity = state.capacity;
+                record.size_bytes = state.size_bytes;
+                record.ptr = state.ptr;
+                record.last_update_stack = None;
+            };
+            let live_records = profiler.records.len();
+            profiler.total_bytes = total_bytes;
+            let time_ns = elapsed_ns(profiler.start);
+            profiler.timeline.push(TimelinePoint {
+                time_ns,
+                total_bytes,
+                live_records,
+            });
+            profiler.events.push(EventRecord {
+                time_ns,
+                total_bytes,
+                live_records,
+                kind: ProfileEventKind::Update,
+                id,
+                owner_kind: None,
+                type_name: None,
+                element_type: None,
+                len: state.len,
+                capacity: state.capacity,
+                size_bytes: Some(state.size_bytes),
+                ptr: Some(state.ptr),
+                create_stack: None,
+                last_update_stack: None,
+            });
         });
     }
 
@@ -1099,34 +1314,36 @@ impl AllocationHandle {
         let Some(id) = self.id.take() else {
             return;
         };
-        let mut profiler = profiler().lock().unwrap();
-        let Some(record) = profiler.records.remove(&id) else {
-            return;
-        };
-        profiler.total_bytes = profiler.total_bytes.saturating_sub(record.size_bytes);
-        let time_ns = elapsed_ns(profiler.start);
-        let live_records = profiler.records.len();
-        let total_bytes = profiler.total_bytes;
-        profiler.timeline.push(TimelinePoint {
-            time_ns,
-            total_bytes,
-            live_records,
-        });
-        profiler.events.push(EventRecord {
-            time_ns,
-            total_bytes,
-            live_records,
-            kind: ProfileEventKind::Remove,
-            id,
-            owner_kind: None,
-            type_name: None,
-            element_type: None,
-            len: None,
-            capacity: None,
-            size_bytes: None,
-            ptr: None,
-            create_stack: None,
-            last_update_stack: None,
+        with_tracking_internal(|| {
+            let mut profiler = profiler().lock().unwrap();
+            let Some(record) = profiler.records.remove(&id) else {
+                return;
+            };
+            profiler.total_bytes = profiler.total_bytes.saturating_sub(record.size_bytes);
+            let time_ns = elapsed_ns(profiler.start);
+            let live_records = profiler.records.len();
+            let total_bytes = profiler.total_bytes;
+            profiler.timeline.push(TimelinePoint {
+                time_ns,
+                total_bytes,
+                live_records,
+            });
+            profiler.events.push(EventRecord {
+                time_ns,
+                total_bytes,
+                live_records,
+                kind: ProfileEventKind::Remove,
+                id,
+                owner_kind: None,
+                type_name: None,
+                element_type: None,
+                len: None,
+                capacity: None,
+                size_bytes: None,
+                ptr: None,
+                create_stack: None,
+                last_update_stack: None,
+            });
         });
     }
 }
@@ -1155,33 +1372,42 @@ fn shared_allocations() -> &'static Mutex<StdHashMap<usize, SharedAllocationReco
 }
 
 #[cfg(feature = "memprof")]
-#[derive(Debug)]
-struct SharedAllocationHandle {
+fn retain_shared_allocation_with_stack(
     ptr: usize,
-}
-
-#[cfg(feature = "memprof")]
-impl SharedAllocationHandle {
-    #[track_caller]
-    fn new(ptr: usize, descriptor: AllocationDescriptor, state: AllocationState) -> Self {
-        if ptr == 0 || !tracking_enabled() {
-            return Self { ptr: 0 };
-        }
+    descriptor: AllocationDescriptor,
+    state: AllocationState,
+    create_stack: Option<StackId>,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let found_existing = {
         let mut shared = shared_allocations().lock().unwrap();
         if let Some(record) = shared.get_mut(&ptr) {
             record.refs = record.refs.saturating_add(1);
-            return Self { ptr };
+            true
+        } else {
+            false
         }
-        let trace = AllocationHandle::new(descriptor, state);
-        shared.insert(ptr, SharedAllocationRecord { refs: 1, trace });
-        Self { ptr }
+    };
+    if found_existing || !tracking_enabled() {
+        return;
     }
+    let trace = AllocationHandle::new_with_stack(descriptor, state, create_stack);
+    let mut shared = shared_allocations().lock().unwrap();
+    if let Some(record) = shared.get_mut(&ptr) {
+        record.refs = record.refs.saturating_add(1);
+    } else {
+        shared.insert(ptr, SharedAllocationRecord { refs: 1, trace });
+    }
+}
 
-    fn remove(&mut self) {
-        let ptr = mem::take(&mut self.ptr);
-        if ptr == 0 {
-            return;
-        }
+#[cfg(feature = "memprof")]
+fn release_shared_allocation(ptr: usize) {
+    if ptr == 0 || tracking_internal_active() {
+        return;
+    }
+    let maybe_trace = {
         let mut shared = shared_allocations().lock().unwrap();
         let Some(mut record) = shared.remove(&ptr) else {
             return;
@@ -1189,16 +1415,13 @@ impl SharedAllocationHandle {
         if record.refs > 1 {
             record.refs -= 1;
             shared.insert(ptr, record);
-            return;
+            None
+        } else {
+            Some(record.trace)
         }
-        record.trace.remove();
-    }
-}
-
-#[cfg(feature = "memprof")]
-impl Drop for SharedAllocationHandle {
-    fn drop(&mut self) {
-        self.remove();
+    };
+    if let Some(mut trace) = maybe_trace {
+        trace.remove();
     }
 }
 
@@ -1337,6 +1560,7 @@ pub fn reset_tracking() {
     profiler.phases.clear();
     profiler.events.clear();
     NEXT_ID.store(1, AtomicOrdering::Relaxed);
+    tracked_allocations().lock().unwrap().clear();
     shared_allocations().lock().unwrap().clear();
 }
 
@@ -1484,76 +1708,13 @@ fn rc_str_state(inner: &inner::Rc<str>) -> AllocationState {
 }
 
 #[cfg(feature = "memprof")]
-const BTREE_B: usize = 6;
-#[cfg(feature = "memprof")]
-const BTREE_CAPACITY: usize = 2 * BTREE_B - 1;
-#[cfg(feature = "memprof")]
-const BTREE_MAX_CHILDREN: usize = 2 * BTREE_B;
-
-#[cfg(feature = "memprof")]
-#[allow(dead_code)]
-struct BTreeLeafLayout<K, V> {
-    parent: Option<core::ptr::NonNull<u8>>,
-    parent_idx: core::mem::MaybeUninit<u16>,
-    len: u16,
-    keys: [core::mem::MaybeUninit<K>; BTREE_CAPACITY],
-    vals: [core::mem::MaybeUninit<V>; BTREE_CAPACITY],
-}
-
-#[cfg(feature = "memprof")]
-#[repr(C)]
-struct BTreeInternalLayout<K, V> {
-    data: BTreeLeafLayout<K, V>,
-    edges: [core::mem::MaybeUninit<core::ptr::NonNull<u8>>; BTREE_MAX_CHILDREN],
-}
-
-#[cfg(feature = "memprof")]
-fn btree_node_counts(len: usize) -> (usize, usize) {
-    if len == 0 {
-        return (0, 0);
-    }
-    let mut leaf_nodes = len.div_ceil(BTREE_CAPACITY);
-    let mut internal_nodes = 0usize;
-    while leaf_nodes > 1 {
-        leaf_nodes = leaf_nodes.div_ceil(BTREE_MAX_CHILDREN);
-        internal_nodes = internal_nodes.saturating_add(leaf_nodes);
-    }
-    (len.div_ceil(BTREE_CAPACITY), internal_nodes)
-}
-
-#[cfg(feature = "memprof")]
-fn estimate_btree_map_bytes<K, V>(len: usize) -> usize {
-    let (leaf_nodes, internal_nodes) = btree_node_counts(len);
-    leaf_nodes
-        .saturating_mul(mem::size_of::<BTreeLeafLayout<K, V>>())
-        .saturating_add(internal_nodes.saturating_mul(mem::size_of::<BTreeInternalLayout<K, V>>()))
-}
-
-#[cfg(feature = "memprof")]
-fn btree_map_state<K, V>(len: usize) -> AllocationState {
-    AllocationState::new(estimate_btree_map_bytes::<K, V>(len)).with_len(len)
-}
-
-#[cfg(feature = "memprof")]
-fn btree_set_state<T>(len: usize) -> AllocationState {
-    AllocationState::new(estimate_btree_map_bytes::<T, ()>(len)).with_len(len)
-}
-
-#[cfg(feature = "memprof")]
-unsafe fn sync_btree_map_trace<K, V>(trace: *mut AllocationHandle, len: usize) {
-    unsafe {
-        (*trace).update(btree_map_state::<K, V>(len));
-    }
-}
-
-#[cfg(feature = "memprof")]
 /// A tracked box.
 ///
 /// This records heap usage for uniquely-owned box allocations. For
 /// `Box<[T]>` and `Box<str>`, length is reported directly from the boxed data.
+#[repr(transparent)]
 pub struct Box<T: ?Sized> {
     inner: AllocBox<T>,
-    trace: AllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
@@ -1585,14 +1746,15 @@ impl<T: ?Sized> Box<T> {
         descriptor: AllocationDescriptor,
         state: AllocationState,
     ) -> Self {
-        let trace = AllocationHandle::new(descriptor, state);
-        Self { inner, trace }
+        let boxed = Self { inner };
+        sync_unique_allocation_with_stack(0, descriptor, state, capture_stack_id());
+        boxed
     }
 
     #[inline]
     pub fn into_alloc_box(self) -> AllocBox<T> {
-        let mut this = mem::ManuallyDrop::new(self);
-        this.trace.remove();
+        let this = mem::ManuallyDrop::new(self);
+        remove_unique_allocation(box_ptr(&this.inner));
         unsafe { core::ptr::read(&this.inner) }
     }
 
@@ -1603,8 +1765,6 @@ impl<T: ?Sized> Box<T> {
     {
         let this = mem::ManuallyDrop::new(value);
         let inner = unsafe { core::ptr::read(&this.inner) };
-        let trace = unsafe { core::ptr::read(&this.trace) };
-        mem::forget(trace);
         AllocBox::leak(inner)
     }
 }
@@ -1641,7 +1801,7 @@ impl Box<str> {
 #[cfg(feature = "memprof")]
 impl<T: ?Sized> Drop for Box<T> {
     fn drop(&mut self) {
-        self.trace.remove();
+        remove_unique_allocation(box_ptr(&self.inner));
     }
 }
 
@@ -1821,9 +1981,9 @@ where
 /// A tracked vector.
 ///
 /// This records allocation state from the vector's backing buffer directly.
+#[repr(transparent)]
 pub struct Vec<T> {
     inner: inner::Vec<T>,
-    trace: AllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
@@ -1843,22 +2003,30 @@ impl<T> Vec<T> {
     #[inline]
     #[track_caller]
     pub fn from_alloc_vec(inner: inner::Vec<T>) -> Self {
-        let trace = AllocationHandle::new(
+        let values = Self { inner };
+        sync_unique_allocation(
+            0,
             AllocationDescriptor::new("Vec", type_name::<T>()).with_element_type(type_name::<T>()),
-            vec_state(&inner),
+            vec_state(&values.inner),
         );
-        Self { inner, trace }
+        values
     }
 
     #[inline]
-    fn sync(&mut self) {
-        self.trace.update(vec_state(&self.inner));
+    #[track_caller]
+    fn sync_from_old_ptr(&mut self, old_ptr: usize) {
+        sync_unique_allocation(
+            old_ptr,
+            AllocationDescriptor::new("Vec", type_name::<T>()).with_element_type(type_name::<T>()),
+            vec_state(&self.inner),
+        );
     }
 
-    #[inline]
+    #[track_caller]
     fn mutate<R>(&mut self, f: impl FnOnce(&mut inner::Vec<T>) -> R) -> R {
+        let old_ptr = buffer_ptr(&self.inner);
         let result = f(&mut self.inner);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
@@ -1888,85 +2056,104 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn push(&mut self, value: T) {
         self.mutate(|inner| inner.push(value));
     }
 
     #[inline]
+    #[track_caller]
     pub fn pop(&mut self) -> Option<T> {
         self.mutate(|inner| inner.pop())
     }
 
     #[inline]
+    #[track_caller]
     pub fn clear(&mut self) {
         self.mutate(inner::Vec::clear);
     }
 
     #[inline]
+    #[track_caller]
     pub fn truncate(&mut self, len: usize) {
         self.mutate(|inner| inner.truncate(len));
     }
 
     #[inline]
+    #[track_caller]
     pub fn reserve(&mut self, additional: usize) {
         self.mutate(|inner| inner.reserve(additional));
     }
 
     #[inline]
+    #[track_caller]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.mutate(|inner| inner.reserve_exact(additional));
     }
 
     #[inline]
+    #[track_caller]
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), collections::TryReserveError> {
+        let old_ptr = buffer_ptr(&self.inner);
         let result = self.inner.try_reserve(additional);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
     #[inline]
+    #[track_caller]
     pub fn try_reserve_exact(
         &mut self,
         additional: usize,
     ) -> Result<(), collections::TryReserveError> {
+        let old_ptr = buffer_ptr(&self.inner);
         let result = self.inner.try_reserve_exact(additional);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
     #[inline]
+    #[track_caller]
     pub fn shrink_to_fit(&mut self) {
         self.mutate(inner::Vec::shrink_to_fit);
     }
 
     #[inline]
+    #[track_caller]
     pub fn insert(&mut self, index: usize, element: T) {
         self.mutate(|inner| inner.insert(index, element));
     }
 
     #[inline]
+    #[track_caller]
     pub fn remove(&mut self, index: usize) -> T {
         self.mutate(|inner| inner.remove(index))
     }
 
     #[inline]
+    #[track_caller]
     pub fn swap_remove(&mut self, index: usize) -> T {
         self.mutate(|inner| inner.swap_remove(index))
     }
 
     #[inline]
+    #[track_caller]
     pub fn append(&mut self, other: &mut Self) {
+        let self_old_ptr = buffer_ptr(&self.inner);
+        let other_old_ptr = buffer_ptr(&other.inner);
         self.inner.append(&mut other.inner);
-        self.sync();
-        other.sync();
+        self.sync_from_old_ptr(self_old_ptr);
+        other.sync_from_old_ptr(other_old_ptr);
     }
 
     #[inline]
+    #[track_caller]
     pub fn retain(&mut self, f: impl FnMut(&T) -> bool) {
         self.mutate(|inner| inner.retain(f));
     }
 
     #[inline]
+    #[track_caller]
     pub fn dedup(&mut self)
     where
         T: PartialEq,
@@ -1975,6 +2162,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn resize(&mut self, new_len: usize, value: T)
     where
         T: Clone,
@@ -1983,6 +2171,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn resize_with<F>(&mut self, new_len: usize, f: F)
     where
         F: FnMut() -> T,
@@ -1991,6 +2180,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn extend_from_slice(&mut self, other: &[T])
     where
         T: Clone,
@@ -1999,6 +2189,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn sort(&mut self)
     where
         T: Ord,
@@ -2007,6 +2198,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn sort_by<F>(&mut self, compare: F)
     where
         F: FnMut(&T, &T) -> Ordering,
@@ -2015,6 +2207,7 @@ impl<T> Vec<T> {
     }
 
     #[inline]
+    #[track_caller]
     pub fn sort_unstable(&mut self)
     where
         T: Ord,
@@ -2028,10 +2221,12 @@ impl<T> Vec<T> {
         R: RangeBounds<usize>,
     {
         let owner = self as *mut Self;
+        let old_ptr = buffer_ptr(&self.inner);
         let inner = self.inner.drain(range);
         Drain {
             inner: Some(inner),
             owner,
+            old_ptr,
             marker: PhantomData,
         }
     }
@@ -2043,23 +2238,25 @@ impl<T> Vec<T> {
         I: IntoIterator<Item = T>,
     {
         let owner = self as *mut Self;
+        let old_ptr = buffer_ptr(&self.inner);
         let inner = self.inner.splice(range, replace_with);
         Splice {
             inner: Some(inner),
             owner,
+            old_ptr,
             marker: PhantomData,
         }
     }
 
     #[inline]
     pub fn into_boxed_slice(mut self) -> Box<[T]> {
-        self.trace.remove();
+        remove_unique_allocation(buffer_ptr(&self.inner));
         Box::from_alloc_boxed_slice(mem::take(&mut self.inner).into_boxed_slice())
     }
 
     #[inline]
     pub fn into_alloc_vec(mut self) -> inner::Vec<T> {
-        self.trace.remove();
+        remove_unique_allocation(buffer_ptr(&self.inner));
         mem::take(&mut self.inner)
     }
 }
@@ -2081,6 +2278,7 @@ pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
 pub struct Drain<'a, T> {
     inner: Option<inner::Drain<'a, T>>,
     owner: *mut Vec<T>,
+    old_ptr: usize,
     marker: PhantomData<&'a mut Vec<T>>,
 }
 
@@ -2115,7 +2313,7 @@ impl<'a, T> Drop for Drain<'a, T> {
     fn drop(&mut self) {
         drop(self.inner.take());
         unsafe {
-            (*self.owner).sync();
+            (*self.owner).sync_from_old_ptr(self.old_ptr);
         }
     }
 }
@@ -2124,6 +2322,7 @@ impl<'a, T> Drop for Drain<'a, T> {
 pub struct Splice<'a, T, I: Iterator<Item = T>> {
     inner: Option<inner::Splice<'a, I>>,
     owner: *mut Vec<T>,
+    old_ptr: usize,
     marker: PhantomData<&'a mut Vec<T>>,
 }
 
@@ -2155,7 +2354,7 @@ impl<'a, T, I: Iterator<Item = T>> Drop for Splice<'a, T, I> {
     fn drop(&mut self) {
         drop(self.inner.take());
         unsafe {
-            (*self.owner).sync();
+            (*self.owner).sync_from_old_ptr(self.old_ptr);
         }
     }
 }
@@ -2163,7 +2362,7 @@ impl<'a, T, I: Iterator<Item = T>> Drop for Splice<'a, T, I> {
 #[cfg(feature = "memprof")]
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
-        self.trace.remove();
+        remove_unique_allocation(buffer_ptr(&self.inner));
     }
 }
 
@@ -2216,17 +2415,21 @@ impl<T, const N: usize> From<[T; N]> for Vec<T> {
 
 #[cfg(feature = "memprof")]
 impl<T> Extend<T> for Vec<T> {
+    #[track_caller]
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let old_ptr = buffer_ptr(&self.inner);
         self.inner.extend(iter);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
     }
 }
 
 #[cfg(feature = "memprof")]
 impl<'a, T: 'a + Clone> Extend<&'a T> for Vec<T> {
+    #[track_caller]
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        let old_ptr = buffer_ptr(&self.inner);
         self.inner.extend(iter.into_iter().cloned());
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
     }
 }
 
@@ -2355,9 +2558,9 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
 /// A tracked string.
 ///
 /// This records allocation state from the string's UTF-8 backing buffer.
+#[repr(transparent)]
 pub struct String {
     inner: inner::String,
-    trace: AllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
@@ -2377,22 +2580,30 @@ impl String {
     #[inline]
     #[track_caller]
     pub fn from_alloc_string(inner: inner::String) -> Self {
-        let trace = AllocationHandle::new(
+        let value = Self { inner };
+        sync_unique_allocation(
+            0,
             AllocationDescriptor::new("String", type_name::<str>()).with_element_type("u8"),
-            string_state(&inner),
+            string_state(&value.inner),
         );
-        Self { inner, trace }
+        value
     }
 
     #[inline]
-    fn sync(&mut self) {
-        self.trace.update(string_state(&self.inner));
+    #[track_caller]
+    fn sync_from_old_ptr(&mut self, old_ptr: usize) {
+        sync_unique_allocation(
+            old_ptr,
+            AllocationDescriptor::new("String", type_name::<str>()).with_element_type("u8"),
+            string_state(&self.inner),
+        );
     }
 
-    #[inline]
+    #[track_caller]
     fn mutate<R>(&mut self, f: impl FnOnce(&mut inner::String) -> R) -> R {
+        let old_ptr = string_ptr(&self.inner);
         let result = f(&mut self.inner);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
@@ -2422,72 +2633,83 @@ impl String {
     }
 
     #[inline]
+    #[track_caller]
     pub fn clear(&mut self) {
         self.mutate(inner::String::clear);
     }
 
     #[inline]
+    #[track_caller]
     pub fn push(&mut self, ch: char) {
         self.mutate(|inner| inner.push(ch));
     }
 
     #[inline]
+    #[track_caller]
     pub fn push_str(&mut self, string: &str) {
         self.mutate(|inner| inner.push_str(string));
     }
 
     #[inline]
+    #[track_caller]
     pub fn truncate(&mut self, new_len: usize) {
         self.mutate(|inner| inner.truncate(new_len));
     }
 
     #[inline]
+    #[track_caller]
     pub fn reserve(&mut self, additional: usize) {
         self.mutate(|inner| inner.reserve(additional));
     }
 
     #[inline]
+    #[track_caller]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.mutate(|inner| inner.reserve_exact(additional));
     }
 
     #[inline]
+    #[track_caller]
     pub fn try_reserve(&mut self, additional: usize) -> Result<(), collections::TryReserveError> {
+        let old_ptr = string_ptr(&self.inner);
         let result = self.inner.try_reserve(additional);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
     #[inline]
+    #[track_caller]
     pub fn try_reserve_exact(
         &mut self,
         additional: usize,
     ) -> Result<(), collections::TryReserveError> {
+        let old_ptr = string_ptr(&self.inner);
         let result = self.inner.try_reserve_exact(additional);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         result
     }
 
     #[inline]
+    #[track_caller]
     pub fn shrink_to_fit(&mut self) {
         self.mutate(inner::String::shrink_to_fit);
     }
 
     #[inline]
     pub fn into_boxed_str(mut self) -> Box<str> {
-        self.trace.remove();
+        remove_unique_allocation(string_ptr(&self.inner));
         Box::from_alloc_boxed_str(mem::take(&mut self.inner).into_boxed_str())
     }
 
     #[inline]
     pub fn into_bytes(mut self) -> Vec<u8> {
-        self.trace.remove();
+        remove_unique_allocation(string_ptr(&self.inner));
         from_alloc_vec(mem::take(&mut self.inner).into_bytes())
     }
 
     #[inline]
     pub fn into_alloc_string(mut self) -> inner::String {
-        self.trace.remove();
+        remove_unique_allocation(string_ptr(&self.inner));
         mem::take(&mut self.inner)
     }
 }
@@ -2495,7 +2717,7 @@ impl String {
 #[cfg(feature = "memprof")]
 impl Drop for String {
     fn drop(&mut self) {
-        self.trace.remove();
+        remove_unique_allocation(string_ptr(&self.inner));
     }
 }
 
@@ -2592,32 +2814,40 @@ impl Borrow<str> for String {
 
 #[cfg(feature = "memprof")]
 impl fmt::Write for String {
+    #[track_caller]
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        let old_ptr = string_ptr(&self.inner);
         self.inner.push_str(s);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         Ok(())
     }
 
+    #[track_caller]
     fn write_char(&mut self, c: char) -> fmt::Result {
+        let old_ptr = string_ptr(&self.inner);
         self.inner.push(c);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
         Ok(())
     }
 }
 
 #[cfg(feature = "memprof")]
 impl Extend<char> for String {
+    #[track_caller]
     fn extend<I: IntoIterator<Item = char>>(&mut self, iter: I) {
+        let old_ptr = string_ptr(&self.inner);
         self.inner.extend(iter);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
     }
 }
 
 #[cfg(feature = "memprof")]
 impl<'a> Extend<&'a str> for String {
+    #[track_caller]
     fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        let old_ptr = string_ptr(&self.inner);
         self.inner.extend(iter);
-        self.sync();
+        self.sync_from_old_ptr(old_ptr);
     }
 }
 
@@ -2701,9 +2931,9 @@ impl Hash for String {
 ///
 /// Tracking is shared across all clones so one `Rc` allocation appears once in
 /// the profiler until the last clone is dropped.
+#[repr(transparent)]
 pub struct Rc<T: ?Sized> {
     inner: inner::Rc<T>,
-    trace: SharedAllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
@@ -2724,8 +2954,8 @@ impl<T: ?Sized> Rc<T> {
         descriptor: AllocationDescriptor,
         state: AllocationState,
     ) -> Self {
-        let trace = SharedAllocationHandle::new(state.ptr, descriptor, state);
-        Self { inner, trace }
+        retain_shared_allocation_with_stack(state.ptr, descriptor, state, capture_stack_id());
+        Self { inner }
     }
 
     #[inline]
@@ -2763,7 +2993,7 @@ impl<T: ?Sized> Rc<T> {
 #[cfg(feature = "memprof")]
 impl<T: ?Sized> Drop for Rc<T> {
     fn drop(&mut self) {
-        self.trace.remove();
+        release_shared_allocation(rc_ptr(&self.inner));
     }
 }
 
@@ -2895,35 +3125,25 @@ impl From<inner::String> for Rc<str> {
 #[cfg(feature = "memprof")]
 /// A tracked ordered map.
 ///
-/// Heap usage is estimated from the standard library B-tree node layout and
-/// current `len()`, because stable `alloc::collections::BTreeMap` does not
-/// expose its internal allocation size.
+/// Heap usage is tracked from the actual B-tree node allocations made by the
+/// standard library map implementation.
+#[repr(transparent)]
 pub struct BTreeMap<K, V> {
     inner: inner::BTreeMap<K, V>,
-    trace: AllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
 impl<K, V> BTreeMap<K, V> {
     #[inline]
-    #[track_caller]
     pub fn new() -> Self {
-        Self::from_alloc_btree_map(inner::BTreeMap::new())
+        Self {
+            inner: inner::BTreeMap::new(),
+        }
     }
 
     #[inline]
-    #[track_caller]
-    pub fn from_alloc_btree_map(inner: inner::BTreeMap<K, V>) -> Self {
-        let trace = AllocationHandle::new(
-            AllocationDescriptor::new("BTreeMap", type_name::<(K, V)>()),
-            btree_map_state::<K, V>(inner.len()),
-        );
-        Self { inner, trace }
-    }
-
-    #[inline]
-    fn sync(&mut self) {
-        self.trace.update(btree_map_state::<K, V>(self.inner.len()));
+    fn descriptor() -> AllocationDescriptor {
+        AllocationDescriptor::new("BTreeMap", type_name::<(K, V)>())
     }
 
     #[inline]
@@ -2941,17 +3161,31 @@ impl<K, V> BTreeMap<K, V> {
         K: Borrow<Q> + Ord,
         Q: Ord,
     {
-        let removed = self.inner.remove(key);
-        if removed.is_some() {
-            self.sync();
+        self.inner.remove(key)
+    }
+}
+
+#[cfg(feature = "memprof")]
+impl<K: Ord, V> BTreeMap<K, V> {
+    #[inline]
+    #[track_caller]
+    pub fn from_alloc_btree_map(inner: inner::BTreeMap<K, V>) -> Self {
+        if !tracking_enabled() || inner.is_empty() {
+            return Self { inner };
         }
-        removed
+        let descriptor = Self::descriptor();
+        let rebuilt = with_allocation_context(descriptor, || inner.into_iter().collect());
+        Self { inner: rebuilt }
     }
 
     #[inline]
-    pub fn into_alloc_btree_map(mut self) -> inner::BTreeMap<K, V> {
-        self.trace.remove();
-        mem::take(&mut self.inner)
+    pub fn into_alloc_btree_map(self) -> inner::BTreeMap<K, V> {
+        let this = mem::ManuallyDrop::new(self);
+        let inner = unsafe { core::ptr::read(&this.inner) };
+        if !tracking_enabled() || inner.is_empty() {
+            return inner;
+        }
+        with_tracking_internal(|| inner.into_iter().collect())
     }
 
     #[inline]
@@ -2963,74 +3197,58 @@ impl<K, V> BTreeMap<K, V> {
     pub fn into_keys(self) -> alloc::collections::btree_map::IntoKeys<K, V> {
         self.into_alloc_btree_map().into_keys()
     }
-}
 
-#[cfg(feature = "memprof")]
-impl<K: Ord, V> BTreeMap<K, V> {
     #[inline]
+    #[track_caller]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let previous = self.inner.insert(key, value);
-        self.sync();
-        previous
+        with_allocation_context(Self::descriptor(), || self.inner.insert(key, value))
     }
 
     #[inline]
+    #[track_caller]
     pub fn clear(&mut self) {
         self.inner.clear();
-        self.sync();
     }
 
     #[inline]
+    #[track_caller]
     pub fn append(&mut self, other: &mut Self) {
-        self.inner.append(&mut other.inner);
-        self.sync();
-        other.sync();
+        with_allocation_context(Self::descriptor(), || self.inner.append(&mut other.inner));
     }
 
     #[inline]
+    #[track_caller]
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
-        let len_before = self.inner.len();
-        let trace = &mut self.trace as *mut AllocationHandle;
+        let context = AllocationContext {
+            descriptor: Self::descriptor(),
+            create_stack: capture_stack_id(),
+        };
         match self.inner.entry(key) {
-            inner::BTreeMapEntry::Occupied(inner) => Entry::Occupied(OccupiedEntry {
-                inner,
-                trace,
-                len_before,
-            }),
-            inner::BTreeMapEntry::Vacant(inner) => Entry::Vacant(VacantEntry {
-                inner,
-                trace,
-                len_before,
-            }),
+            inner::BTreeMapEntry::Occupied(inner) => Entry::Occupied(OccupiedEntry { inner }),
+            inner::BTreeMapEntry::Vacant(inner) => Entry::Vacant(VacantEntry { inner, context }),
         }
     }
 }
 
 #[cfg(feature = "memprof")]
-impl<K, V> Drop for BTreeMap<K, V> {
-    fn drop(&mut self) {
-        self.trace.remove();
-    }
-}
-
-#[cfg(feature = "memprof")]
 impl<K, V> Default for BTreeMap<K, V> {
-    #[track_caller]
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[cfg(feature = "memprof")]
-impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
+impl<K: Clone + Ord, V: Clone> Clone for BTreeMap<K, V> {
     #[track_caller]
     fn clone(&self) -> Self {
-        Self::from_alloc_btree_map(self.inner.clone())
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || self.inner.clone());
+        Self { inner }
     }
 }
 
 #[cfg(feature = "memprof")]
-impl<K, V> From<inner::BTreeMap<K, V>> for BTreeMap<K, V> {
+impl<K: Ord, V> From<inner::BTreeMap<K, V>> for BTreeMap<K, V> {
     #[track_caller]
     fn from(value: inner::BTreeMap<K, V>) -> Self {
         Self::from_alloc_btree_map(value)
@@ -3038,7 +3256,7 @@ impl<K, V> From<inner::BTreeMap<K, V>> for BTreeMap<K, V> {
 }
 
 #[cfg(feature = "memprof")]
-impl<K, V> From<BTreeMap<K, V>> for inner::BTreeMap<K, V> {
+impl<K: Ord, V> From<BTreeMap<K, V>> for inner::BTreeMap<K, V> {
     fn from(value: BTreeMap<K, V>) -> Self {
         value.into_alloc_btree_map()
     }
@@ -3048,7 +3266,9 @@ impl<K, V> From<BTreeMap<K, V>> for inner::BTreeMap<K, V> {
 impl<K: Ord, V, const N: usize> From<[(K, V); N]> for BTreeMap<K, V> {
     #[track_caller]
     fn from(value: [(K, V); N]) -> Self {
-        Self::from_alloc_btree_map(inner::BTreeMap::from(value))
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || inner::BTreeMap::from(value));
+        Self { inner }
     }
 }
 
@@ -3056,7 +3276,9 @@ impl<K: Ord, V, const N: usize> From<[(K, V); N]> for BTreeMap<K, V> {
 impl<K: Ord, V> FromIterator<(K, V)> for BTreeMap<K, V> {
     #[track_caller]
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
-        Self::from_alloc_btree_map(inner::BTreeMap::from_iter(iter))
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || inner::BTreeMap::from_iter(iter));
+        Self { inner }
     }
 }
 
@@ -3122,7 +3344,7 @@ where
 }
 
 #[cfg(feature = "memprof")]
-impl<K, V> IntoIterator for BTreeMap<K, V> {
+impl<K: Ord, V> IntoIterator for BTreeMap<K, V> {
     type Item = (K, V);
     type IntoIter = inner::BTreeMapIntoIter<K, V>;
 
@@ -3160,15 +3382,12 @@ pub enum Entry<'a, K: 'a, V: 'a> {
 #[cfg(feature = "memprof")]
 pub struct VacantEntry<'a, K, V> {
     inner: inner::BTreeMapVacantEntry<'a, K, V>,
-    trace: *mut AllocationHandle,
-    len_before: usize,
+    context: AllocationContext,
 }
 
 #[cfg(feature = "memprof")]
 pub struct OccupiedEntry<'a, K, V> {
     inner: inner::BTreeMapOccupiedEntry<'a, K, V>,
-    trace: *mut AllocationHandle,
-    len_before: usize,
 }
 
 #[cfg(feature = "memprof")]
@@ -3248,11 +3467,7 @@ impl<'a, K: Ord, V> VacantEntry<'a, K, V> {
 #[cfg(feature = "memprof")]
 impl<'a, K: Ord, V> VacantEntry<'a, K, V> {
     pub fn insert(self, value: V) -> &'a mut V {
-        let value_ref = self.inner.insert(value);
-        unsafe {
-            sync_btree_map_trace::<K, V>(self.trace, self.len_before.saturating_add(1));
-        }
-        value_ref
+        with_existing_allocation_context(self.context, || self.inner.insert(value))
     }
 }
 
@@ -3282,126 +3497,110 @@ impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
     }
 
     pub fn remove(self) -> V {
-        let value = self.inner.remove();
-        unsafe {
-            sync_btree_map_trace::<K, V>(self.trace, self.len_before.saturating_sub(1));
-        }
-        value
+        self.inner.remove()
     }
 
     pub fn remove_entry(self) -> (K, V) {
-        let pair = self.inner.remove_entry();
-        unsafe {
-            sync_btree_map_trace::<K, V>(self.trace, self.len_before.saturating_sub(1));
-        }
-        pair
+        self.inner.remove_entry()
     }
 }
 
 #[cfg(feature = "memprof")]
 /// A tracked ordered set.
 ///
-/// Heap usage is estimated from the standard library B-tree node layout and
-/// current `len()`.
+/// Heap usage is tracked from the actual B-tree node allocations made by the
+/// standard library set implementation.
+#[repr(transparent)]
 pub struct BTreeSet<T> {
     inner: inner::BTreeSet<T>,
-    trace: AllocationHandle,
 }
 
 #[cfg(feature = "memprof")]
 impl<T> BTreeSet<T> {
     #[inline]
-    #[track_caller]
     pub fn new() -> Self {
-        Self::from_alloc_btree_set(inner::BTreeSet::new())
+        Self {
+            inner: inner::BTreeSet::new(),
+        }
     }
 
     #[inline]
-    #[track_caller]
-    pub fn from_alloc_btree_set(inner: inner::BTreeSet<T>) -> Self {
-        let trace = AllocationHandle::new(
-            AllocationDescriptor::new("BTreeSet", type_name::<T>())
-                .with_element_type(type_name::<T>()),
-            btree_set_state::<T>(inner.len()),
-        );
-        Self { inner, trace }
-    }
-
-    #[inline]
-    fn sync(&mut self) {
-        self.trace.update(btree_set_state::<T>(self.inner.len()));
-    }
-
-    #[inline]
-    pub fn into_alloc_btree_set(mut self) -> inner::BTreeSet<T> {
-        self.trace.remove();
-        mem::take(&mut self.inner)
+    fn descriptor() -> AllocationDescriptor {
+        AllocationDescriptor::new("BTreeSet", type_name::<T>()).with_element_type(type_name::<T>())
     }
 }
 
 #[cfg(feature = "memprof")]
 impl<T: Ord> BTreeSet<T> {
     #[inline]
-    pub fn insert(&mut self, value: T) -> bool {
-        let inserted = self.inner.insert(value);
-        if inserted {
-            self.sync();
+    #[track_caller]
+    pub fn from_alloc_btree_set(inner: inner::BTreeSet<T>) -> Self {
+        if !tracking_enabled() || inner.is_empty() {
+            return Self { inner };
         }
-        inserted
+        let descriptor = Self::descriptor();
+        let rebuilt = with_allocation_context(descriptor, || inner.into_iter().collect());
+        Self { inner: rebuilt }
     }
 
     #[inline]
+    pub fn into_alloc_btree_set(self) -> inner::BTreeSet<T> {
+        let this = mem::ManuallyDrop::new(self);
+        let inner = unsafe { core::ptr::read(&this.inner) };
+        if !tracking_enabled() || inner.is_empty() {
+            return inner;
+        }
+        with_tracking_internal(|| inner.into_iter().collect())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn insert(&mut self, value: T) -> bool {
+        with_allocation_context(Self::descriptor(), || self.inner.insert(value))
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn clear(&mut self) {
         self.inner.clear();
-        self.sync();
     }
 
     #[inline]
+    #[track_caller]
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where
         T: Borrow<Q>,
         Q: Ord,
     {
-        let removed = self.inner.remove(value);
-        if removed {
-            self.sync();
-        }
-        removed
+        self.inner.remove(value)
     }
 
     #[inline]
+    #[track_caller]
     pub fn append(&mut self, other: &mut Self) {
-        self.inner.append(&mut other.inner);
-        self.sync();
-        other.sync();
-    }
-}
-
-#[cfg(feature = "memprof")]
-impl<T> Drop for BTreeSet<T> {
-    fn drop(&mut self) {
-        self.trace.remove();
+        with_allocation_context(Self::descriptor(), || self.inner.append(&mut other.inner));
     }
 }
 
 #[cfg(feature = "memprof")]
 impl<T> Default for BTreeSet<T> {
-    #[track_caller]
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[cfg(feature = "memprof")]
-impl<T: Clone> Clone for BTreeSet<T> {
+impl<T: Clone + Ord> Clone for BTreeSet<T> {
     #[track_caller]
     fn clone(&self) -> Self {
-        Self::from_alloc_btree_set(self.inner.clone())
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || self.inner.clone());
+        Self { inner }
     }
 }
 
 #[cfg(feature = "memprof")]
-impl<T> From<inner::BTreeSet<T>> for BTreeSet<T> {
+impl<T: Ord> From<inner::BTreeSet<T>> for BTreeSet<T> {
     #[track_caller]
     fn from(value: inner::BTreeSet<T>) -> Self {
         Self::from_alloc_btree_set(value)
@@ -3409,7 +3608,7 @@ impl<T> From<inner::BTreeSet<T>> for BTreeSet<T> {
 }
 
 #[cfg(feature = "memprof")]
-impl<T> From<BTreeSet<T>> for inner::BTreeSet<T> {
+impl<T: Ord> From<BTreeSet<T>> for inner::BTreeSet<T> {
     fn from(value: BTreeSet<T>) -> Self {
         value.into_alloc_btree_set()
     }
@@ -3419,7 +3618,9 @@ impl<T> From<BTreeSet<T>> for inner::BTreeSet<T> {
 impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
     #[track_caller]
     fn from(value: [T; N]) -> Self {
-        Self::from_alloc_btree_set(inner::BTreeSet::from(value))
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || inner::BTreeSet::from(value));
+        Self { inner }
     }
 }
 
@@ -3427,7 +3628,9 @@ impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
 impl<T: Ord> FromIterator<T> for BTreeSet<T> {
     #[track_caller]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::from_alloc_btree_set(inner::BTreeSet::from_iter(iter))
+        let descriptor = Self::descriptor();
+        let inner = with_allocation_context(descriptor, || inner::BTreeSet::from_iter(iter));
+        Self { inner }
     }
 }
 
@@ -3494,7 +3697,7 @@ where
 }
 
 #[cfg(feature = "memprof")]
-impl<T> IntoIterator for BTreeSet<T> {
+impl<T: Ord> IntoIterator for BTreeSet<T> {
     type Item = T;
     type IntoIter = inner::BTreeSetIntoIter<T>;
 
@@ -3512,6 +3715,11 @@ impl<'a, T> IntoIterator for &'a BTreeSet<T> {
         self.inner.iter()
     }
 }
+
+#[cfg(all(test, feature = "memprof"))]
+#[global_allocator]
+static TEST_TRACKING_ALLOCATOR: TrackingAllocator<std::alloc::System> =
+    TrackingAllocator::new(std::alloc::System);
 
 // === Facade modules ==========================================================
 //
@@ -3647,6 +3855,47 @@ mod tests {
             set_tracking_enabled(false);
             reset_tracking();
         }
+    }
+
+    #[cfg(feature = "memprof")]
+    #[test]
+    fn tracked_types_match_alloc_layout() {
+        struct WithTrackedVec {
+            _values: Vec<u16>,
+        }
+
+        struct WithAllocVec {
+            _values: alloc::vec::Vec<u16>,
+        }
+
+        assert_eq!(
+            mem::size_of::<Vec<u8>>(),
+            mem::size_of::<alloc::vec::Vec<u8>>()
+        );
+        assert_eq!(
+            mem::size_of::<String>(),
+            mem::size_of::<alloc::string::String>()
+        );
+        assert_eq!(
+            mem::size_of::<Box<u64>>(),
+            mem::size_of::<alloc::boxed::Box<u64>>()
+        );
+        assert_eq!(
+            mem::size_of::<Rc<u64>>(),
+            mem::size_of::<alloc::rc::Rc<u64>>()
+        );
+        assert_eq!(
+            mem::size_of::<BTreeMap<u8, u8>>(),
+            mem::size_of::<alloc::collections::BTreeMap<u8, u8>>()
+        );
+        assert_eq!(
+            mem::size_of::<BTreeSet<u8>>(),
+            mem::size_of::<alloc::collections::BTreeSet<u8>>()
+        );
+        assert_eq!(
+            mem::size_of::<WithTrackedVec>(),
+            mem::size_of::<WithAllocVec>()
+        );
     }
 
     #[cfg(feature = "memprof")]
@@ -3908,13 +4157,20 @@ mod tests {
             .or_insert_with(|| 20);
         map.entry(2).and_modify(|value| *value += 1).or_insert(0);
         let snapshot1 = snapshot();
-        assert_eq!(snapshot1.records.len(), 1);
-        assert_eq!(snapshot1.records[0].len, Some(2));
-        assert!(snapshot1.records[0].size_bytes > 0);
+        assert!(!snapshot1.records.is_empty());
+        assert!(snapshot1
+            .records
+            .iter()
+            .all(|record| record.owner_kind == "BTreeMap"));
+        assert!(snapshot1.records.iter().all(|record| record.size_bytes > 0));
 
         assert_eq!(map.remove(&1), Some(10));
         let snapshot2 = snapshot();
-        assert_eq!(snapshot2.records[0].len, Some(1));
+        assert!(!snapshot2.records.is_empty());
+        assert!(snapshot2
+            .records
+            .iter()
+            .all(|record| record.owner_kind == "BTreeMap"));
 
         drop(map);
         assert!(snapshot().records.is_empty());
@@ -3933,17 +4189,26 @@ mod tests {
 
         let mut set = BTreeSet::from([1u32, 3, 5]);
         let snapshot0 = snapshot();
-        assert_eq!(snapshot0.records.len(), 1);
-        assert_eq!(snapshot0.records[0].owner_kind, "BTreeSet");
-        assert_eq!(snapshot0.records[0].type_name, type_name::<u32>());
-        assert_eq!(snapshot0.records[0].len, Some(3));
+        assert!(!snapshot0.records.is_empty());
+        assert!(snapshot0
+            .records
+            .iter()
+            .all(|record| record.owner_kind == "BTreeSet"));
+        assert!(snapshot0
+            .records
+            .iter()
+            .all(|record| record.type_name == type_name::<u32>()));
 
         assert!(!set.insert(3));
         assert!(set.insert(7));
         assert!(set.remove(&1));
         let snapshot1 = snapshot();
-        assert_eq!(snapshot1.records[0].len, Some(3));
-        assert!(snapshot1.records[0].size_bytes > 0);
+        assert!(!snapshot1.records.is_empty());
+        assert!(snapshot1
+            .records
+            .iter()
+            .all(|record| record.owner_kind == "BTreeSet"));
+        assert!(snapshot1.records.iter().all(|record| record.size_bytes > 0));
 
         drop(set);
         assert!(snapshot().records.is_empty());
