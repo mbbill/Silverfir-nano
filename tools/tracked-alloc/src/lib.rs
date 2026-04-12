@@ -57,16 +57,20 @@ use std::collections::HashMap as StdHashMap;
 use std::sync::{Mutex, OnceLock};
 
 mod inner {
+    #[cfg(feature = "memprof")]
     pub use alloc::collections::btree_map::{
         Entry as BTreeMapEntry, IntoIter as BTreeMapIntoIter,
         OccupiedEntry as BTreeMapOccupiedEntry, VacantEntry as BTreeMapVacantEntry,
     };
+    #[cfg(feature = "memprof")]
     pub use alloc::collections::btree_set::IntoIter as BTreeSetIntoIter;
     pub type BTreeMap<K, V> = alloc::collections::BTreeMap<K, V>;
     pub type BTreeSet<T> = alloc::collections::BTreeSet<T>;
     pub type Rc<T> = alloc::rc::Rc<T>;
     pub type String = alloc::string::String;
-    pub use alloc::vec::{Drain, IntoIter, Splice};
+    pub use alloc::vec::IntoIter;
+    #[cfg(feature = "memprof")]
+    pub use alloc::vec::{Drain, Splice};
     pub type Vec<T> = alloc::vec::Vec<T>;
 }
 
@@ -2569,6 +2573,13 @@ impl AsRef<str> for String {
 impl AsRef<[u8]> for String {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
+    }
+}
+
+#[cfg(feature = "memprof")]
+impl AsRef<std::path::Path> for String {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(self.as_str())
     }
 }
 

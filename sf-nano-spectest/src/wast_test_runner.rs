@@ -511,12 +511,15 @@ impl WastTestRunner {
             TestError::infrastructure(format!("Instance '{}' not found", internal_name))
         })?;
 
-        instance.invoke(invoke.name, &args).map_err(|e| {
-            TestError::runtime(
-                format!("successful invocation of function '{}'", invoke.name),
-                e,
-            )
-        })
+        instance
+            .invoke(invoke.name, &args)
+            .map(|v| v.into_iter().collect())
+            .map_err(|e| {
+                TestError::runtime(
+                    format!("successful invocation of function '{}'", invoke.name),
+                    e,
+                )
+            })
     }
 
     // -----------------------------------------------------------------------
