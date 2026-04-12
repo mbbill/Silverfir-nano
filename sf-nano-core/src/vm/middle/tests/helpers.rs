@@ -113,6 +113,7 @@ pub(super) fn prepare_program(
     prepare_function(
         PrepareInput {
             config: host_config(gp_dynamic_budget, fp_dynamic_budget),
+            function_index: None,
         },
         semantic,
     )

@@ -379,6 +379,15 @@ pub struct TimelinePoint {
 }
 
 #[cfg(not(feature = "memprof"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfilePhase {
+    pub name: &'static str,
+    pub start_time_ns: u64,
+    pub end_time_ns: u64,
+    pub function_index: Option<u32>,
+}
+
+#[cfg(not(feature = "memprof"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileStack {
     pub id: u64,
@@ -391,8 +400,27 @@ pub struct AllocationProfile {
     pub now_ns: u64,
     pub snapshot: RegistrySnapshot,
     pub timeline: inner::Vec<TimelinePoint>,
+    pub phases: inner::Vec<ProfilePhase>,
     pub stacks: inner::Vec<ProfileStack>,
     pub events: inner::Vec<ProfileEvent>,
+}
+
+#[cfg(not(feature = "memprof"))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhaseGuard;
+
+#[cfg(not(feature = "memprof"))]
+#[inline]
+#[must_use]
+pub fn phase_span(_name: &'static str) -> PhaseGuard {
+    PhaseGuard
+}
+
+#[cfg(not(feature = "memprof"))]
+#[inline]
+#[must_use]
+pub fn phase_span_with_function(_name: &'static str, _function_index: Option<u32>) -> PhaseGuard {
+    PhaseGuard
 }
 
 #[cfg(not(feature = "memprof"))]
@@ -566,6 +594,15 @@ pub struct TimelinePoint {
 }
 
 #[cfg(feature = "memprof")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfilePhase {
+    pub name: &'static str,
+    pub start_time_ns: u64,
+    pub end_time_ns: u64,
+    pub function_index: Option<u32>,
+}
+
+#[cfg(feature = "memprof")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileStack {
     pub id: u64,
@@ -578,6 +615,7 @@ pub struct AllocationProfile {
     pub now_ns: u64,
     pub snapshot: RegistrySnapshot,
     pub timeline: inner::Vec<TimelinePoint>,
+    pub phases: inner::Vec<ProfilePhase>,
     pub stacks: inner::Vec<ProfileStack>,
     pub events: inner::Vec<ProfileEvent>,
 }
@@ -643,6 +681,7 @@ struct ProfilerState {
     stack_ids_by_text: StdHashMap<AllocBox<str>, StackId>,
     records: StdHashMap<u64, Record>,
     timeline: inner::Vec<TimelinePoint>,
+    phases: inner::Vec<ProfilePhase>,
     events: inner::Vec<EventRecord>,
 }
 
@@ -667,6 +706,7 @@ impl Default for ProfilerState {
             stack_ids_by_text: StdHashMap::new(),
             records: StdHashMap::new(),
             timeline: inner::Vec::from([TimelinePoint::default()]),
+            phases: inner::Vec::new(),
             events: inner::Vec::new(),
         }
     }
@@ -1176,10 +1216,19 @@ pub fn profile() -> AllocationProfile {
         })
         .collect();
     stacks.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut phases = profiler.phases.clone();
+    phases.sort_by(|a, b| {
+        a.start_time_ns
+            .cmp(&b.start_time_ns)
+            .then_with(|| a.end_time_ns.cmp(&b.end_time_ns))
+            .then_with(|| a.name.cmp(b.name))
+            .then_with(|| a.function_index.cmp(&b.function_index))
+    });
     AllocationProfile {
         now_ns: elapsed_ns(profiler.start),
         snapshot: snapshot_from_records(&profiler),
         timeline: profiler.timeline.clone(),
+        phases,
         stacks,
         events: profiler
             .events
@@ -1281,9 +1330,56 @@ pub fn reset_tracking() {
     profiler.records.clear();
     profiler.timeline.clear();
     profiler.timeline.push(TimelinePoint::default());
+    profiler.phases.clear();
     profiler.events.clear();
     NEXT_ID.store(1, AtomicOrdering::Relaxed);
     shared_allocations().lock().unwrap().clear();
+}
+
+#[cfg(feature = "memprof")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhaseGuard {
+    name: Option<&'static str>,
+    function_index: Option<u32>,
+    start_time_ns: u64,
+}
+
+#[cfg(feature = "memprof")]
+impl Drop for PhaseGuard {
+    fn drop(&mut self) {
+        let Some(name) = self.name.take() else {
+            return;
+        };
+        let mut profiler = profiler().lock().unwrap();
+        let end_time_ns = elapsed_ns(profiler.start);
+        profiler.phases.push(ProfilePhase {
+            name,
+            start_time_ns: self.start_time_ns,
+            end_time_ns,
+            function_index: self.function_index,
+        });
+    }
+}
+
+#[cfg(feature = "memprof")]
+#[inline]
+#[must_use]
+pub fn phase_span(name: &'static str) -> PhaseGuard {
+    phase_span_with_function(name, None)
+}
+
+#[cfg(feature = "memprof")]
+#[must_use]
+pub fn phase_span_with_function(name: &'static str, function_index: Option<u32>) -> PhaseGuard {
+    if !tracking_enabled() {
+        return PhaseGuard::default();
+    }
+    let profiler = profiler().lock().unwrap();
+    PhaseGuard {
+        name: Some(name),
+        function_index,
+        start_time_ns: elapsed_ns(profiler.start),
+    }
 }
 
 #[cfg(feature = "memprof")]

@@ -1,4 +1,4 @@
-use crate::collections;
+use crate::collections::{self, phase_span, phase_span_with_function};
 use tracked_alloc::rc::Rc;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -89,6 +89,7 @@ fn finish_native_compile(
         .iter()
         .map(|f| f.program.blocks.iter().map(|b| b.ops.len()).sum::<usize>())
         .sum();
+    let arch_lower_phase = phase_span("arch_lower");
     let mut compiled = Rc::new(CompiledNativeModule::new(
         active_backend,
         backend,
@@ -96,6 +97,7 @@ fn finish_native_compile(
         lowered.abi,
     )?);
     let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
+    drop(arch_lower_phase);
 
     let bytes: usize = entries
         .iter()
@@ -185,11 +187,13 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     // Phase 1: Decode all functions to semantic IR.
     let mut semantics: collections::Vec<Option<SemanticProgram>> =
         collections::Vec::with_capacity(module.functions.len());
-    for (_func_idx, func) in module.functions.iter().enumerate() {
+    for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
             semantics.push(None);
             continue;
         };
+        let sem_decode_function_phase =
+            phase_span_with_function("sem_decode", Some(func_idx as u32));
         let params = spec.func_type().params().len() as u16;
         let local_count = params.saturating_add(spec.locals().len() as u16);
         let results = spec.func_type().results().len() as u16;
@@ -210,11 +214,13 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         )
         .map_err(|_err| WasmError::internal("native decode failed for function"))?;
         semantics.push(Some(semantic));
+        drop(sem_decode_function_phase);
     }
 
     // Phase 2: Inline small leaf callees into their callers.
     // Iterate until fixed-point so that transitive chains (A→B→C) are fully
     // resolved regardless of function index ordering.
+    let sem_inline_phase = phase_span("sem_inline");
     loop {
         let mut any_inlined = false;
         for func_idx in 0..semantics.len() {
@@ -231,6 +237,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             break;
         }
     }
+    drop(sem_inline_phase);
 
     // Phase 3: Prepare all functions (frame layout + SSA-IR lowering).
     let mut groups = 0usize;
@@ -240,13 +247,21 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         let Some(spec) = func.spec() else {
             continue;
         };
+        let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
         let semantic = semantics[func_idx].take().unwrap();
-        let prepared =
-            prepare_function(PrepareInput { config: backend }, &semantic).map_err(|_err| {
-                WasmError::internal(
-                    "native prepare failed for function type_idx= params= results= max_stack= ops=",
-                )
-            })?;
+        let prepared = prepare_function(
+            PrepareInput {
+                config: backend,
+                function_index: Some(func_idx as u32),
+            },
+            &semantic,
+        )
+        .map_err(|_err| {
+            WasmError::internal(
+                "native prepare failed for function type_idx= params= results= max_stack= ops=",
+            )
+        })?;
+        drop(ssa_lower_function_phase);
         groups += 1;
         ssa_ops += prepared
             .ssa
@@ -294,12 +309,14 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
     })?;
+    let module_opt_phase = phase_span("module_opt");
     optimize_module(&mut lowered.module);
     if backend.is_32bit_gp_target() {
         lowered
             .module
             .validate_32bit_gp_target(backend.first_fp_reg())?;
     }
+    drop(module_opt_phase);
 
     finish_native_compile(
         active_backend,

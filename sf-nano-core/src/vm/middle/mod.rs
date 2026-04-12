@@ -21,7 +21,7 @@ mod slot_ssa;
 #[cfg(test)]
 mod tests;
 
-use crate::collections;
+use crate::collections::{self, phase_span_with_function};
 
 use crate::{
     error::WasmError,
@@ -38,6 +38,7 @@ use self::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareInput {
     pub config: BackendConfig,
+    pub function_index: Option<u32>,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
@@ -66,15 +67,26 @@ pub(crate) fn prepare_function(
         });
     }
 
+    let cfg_phase = phase_span_with_function("cfg_lower", input.function_index);
     let semantic_cfg = cfg::build_semantic_cfg(semantic);
+    drop(cfg_phase);
+
+    let slot_phase = phase_span_with_function("slot_lower", input.function_index);
     let slot_program = slot_ssa::lower_slot_only_ssa(semantic, &semantic_cfg, frame)?;
+    drop(slot_phase);
+
+    let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
     let planner = JointPlanner::build(semantic, &semantic_cfg, &slot_program, frame, input.config)?;
+    drop(joint_plan_phase);
+
+    let ssa_phase = phase_span_with_function("ssa_rewrite", input.function_index);
     let mut ssa =
         rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
     cleanup::cleanup_program(&mut ssa);
     optimize::optimize_program(&mut ssa);
     sink_plan::plan_sinks(&mut ssa);
     validate_program(&ssa)?;
+    drop(ssa_phase);
 
     Ok(PreparedFunction { frame, ssa })
 }

@@ -2,7 +2,7 @@
 // Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
 
-use crate::collections;
+use crate::collections::{self, phase_span_with_function};
 
 use tracked_alloc::collections::BTreeMap;
 
@@ -125,6 +125,7 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
     for function in input.functions {
+        let mir_lower_function_phase = phase_span_with_function("mir_lower", Some(function.id.0));
         let borrowed = function.borrowed();
         functions[borrowed.id.0 as usize] = Some(lower_function(
             borrowed,
@@ -136,6 +137,7 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
             #[cfg(sf_has_guard_pages)]
             guard_pages,
         )?);
+        drop(mir_lower_function_phase);
     }
     let abi = MachineModuleAbi {
         functions: function_abis,
