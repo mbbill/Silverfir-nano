@@ -44,14 +44,11 @@ pub(crate) struct BlockLocalInfo {
     pub entry_first_write_distance: Option<u16>,
     pub entry_read_count: u16,
     pub entry_write_count: u16,
-    pub entry_hot_score: i32,
     pub first_access_kind: Option<FirstAccessKind>,
     pub first_read_distance: Option<u16>,
     pub first_write_distance: Option<u16>,
     pub read_count: u16,
     pub write_count: u16,
-    pub access_offsets: collections::Vec<u16>,
-    pub hot_score: i32,
 }
 
 /// Compact per-block local summary retained for all blocks.
@@ -102,19 +99,11 @@ pub(crate) struct BlockEntryStackRegion {
 }
 
 /// Whole-block use summary for one transient stack symbol.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TransientSymbolInfo {
     pub first_touch_distance: Option<u16>,
     pub touch_count: u16,
-    pub access_offsets: collections::Vec<u16>,
     pub hot_score: i32,
-}
-
-impl TransientSymbolInfo {
-    #[inline]
-    pub(crate) fn used_anywhere(&self) -> bool {
-        !self.access_offsets.is_empty()
-    }
 }
 
 /// Whole-block transient-symbol facts for one CFG block.

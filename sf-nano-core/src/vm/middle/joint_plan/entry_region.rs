@@ -162,7 +162,6 @@ fn record_local_access(
         return;
     }
 
-    info.access_offsets.push(block_offset);
     match access_kind {
         FirstAccessKind::ReadFirst => {
             info.read_count = info.read_count.saturating_add(1);
@@ -547,11 +546,10 @@ fn touch_transient_symbol(
     };
     info.first_touch_distance.get_or_insert(block_offset);
     info.touch_count = info.touch_count.saturating_add(1);
-    info.access_offsets.push(block_offset);
 }
 
 fn score_transient_symbol(info: &TransientSymbolInfo) -> i32 {
-    if !info.used_anywhere() {
+    if info.touch_count == 0 {
         return 0;
     }
     let first = info.first_touch_distance.unwrap_or(u16::MAX) as i32;
