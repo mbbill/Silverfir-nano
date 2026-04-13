@@ -29,3 +29,16 @@ just to make the compiler quiet. These hide real problems.
 If code is unused, remove it. If a parameter is unused, remove it from the
 signature and fix the call sites. If you believe a suppression is genuinely
 the right call, always ask the user for permission first and explain why.
+
+## Do not keep dead code behind `#[cfg(test)]`
+
+If code is only needed by tests, it does not belong in the production source
+gated behind `#[cfg(test)]`. Test helpers should live inside `#[cfg(test)]
+mod tests { }` blocks. Production structs should not have `#[cfg(test)]`
+fields or methods — with very rare exceptions (e.g., a field that enables
+test-only invariant checking on a hot-path struct), which require explicit
+discussion before adding.
+
+Rule of thumb: if removing a function, struct, or field from production code
+means some tests break, that is a signal to **rewrite or delete those tests**,
+not to keep the dead code alive with `#[cfg(test)]`.
