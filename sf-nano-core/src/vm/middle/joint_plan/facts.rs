@@ -3,19 +3,7 @@
 use crate::collections;
 
 use crate::value_type::ValueType;
-use crate::vm::middle::frame::{FrameSlot, FrameSpan};
-
-/// Prefix actions chosen while simulating transient legality.
-///
-/// These actions are builder-internal. The rewrite-facing planner no longer
-/// consumes static prep scripts; it only uses the resulting transient state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PrepAction {
-    Spill(FrameSpan),
-    Fill(FrameSpan, collections::Vec<ValueType>),
-    DropCache(FrameSlot),
-}
-
+use crate::vm::middle::frame::FrameSlot;
 /// Exact transient entry state at one semantic program point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct EntryState {
@@ -29,7 +17,16 @@ pub(crate) struct EntryState {
     pub live_types: collections::Vec<ValueType>,
 }
 
-impl EntryState {}
+/// Compact per-op entry state for target branch queries.
+///
+/// The rewriter only needs `stack_height` and `spill_depth` when checking
+/// branch target contracts. The full `EntryState` with heap-allocated
+/// `stack_types` and `live_types` vecs is not needed for this purpose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CompactEntryPoint {
+    pub stack_height: u16,
+    pub spill_depth: u16,
+}
 
 /// First meaningful access shape for one local inside a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,54 +52,6 @@ pub(crate) struct BlockLocalInfo {
     pub write_count: u16,
     pub access_offsets: collections::Vec<u16>,
     pub hot_score: i32,
-}
-
-impl BlockLocalInfo {
-    #[inline]
-    pub(crate) fn used_anywhere(&self) -> bool {
-        self.first_access_kind.is_some()
-    }
-
-    #[inline]
-    pub(crate) fn used_after(&self, block_offset: u16) -> bool {
-        self.access_offsets
-            .iter()
-            .any(|offset| *offset > block_offset)
-    }
-
-    #[inline]
-    pub(crate) fn remaining_use_count(&self, block_offset: u16) -> u16 {
-        self.access_offsets
-            .iter()
-            .filter(|offset| **offset > block_offset)
-            .count() as u16
-    }
-
-    #[inline]
-    pub(crate) fn next_use_distance(&self, block_offset: u16) -> Option<u16> {
-        self.access_offsets
-            .iter()
-            .copied()
-            .find(|offset| *offset > block_offset)
-            .map(|offset| offset.saturating_sub(block_offset))
-    }
-}
-
-/// Block-local entry-region and whole-block hotness facts.
-///
-/// This is an ephemeral analysis scratch buffer, not stored per block.
-/// Use `BlockLocalAnalyzer` to compute it on demand for the current block.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BlockLocalRegion {
-    pub ranked_slots: collections::Vec<FrameSlot>,
-    pub locals: collections::Vec<Option<BlockLocalInfo>>,
-}
-
-impl BlockLocalRegion {
-    #[inline]
-    pub(crate) fn info(&self, slot: FrameSlot) -> Option<&BlockLocalInfo> {
-        self.locals.get(slot.0 as usize).and_then(Option::as_ref)
-    }
 }
 
 /// Compact per-block local summary retained for all blocks.
@@ -166,30 +115,6 @@ impl TransientSymbolInfo {
     pub(crate) fn used_anywhere(&self) -> bool {
         !self.access_offsets.is_empty()
     }
-
-    #[inline]
-    pub(crate) fn used_after(&self, block_offset: u16) -> bool {
-        self.access_offsets
-            .iter()
-            .any(|offset| *offset > block_offset)
-    }
-
-    #[inline]
-    pub(crate) fn remaining_use_count(&self, block_offset: u16) -> u16 {
-        self.access_offsets
-            .iter()
-            .filter(|offset| **offset > block_offset)
-            .count() as u16
-    }
-
-    #[inline]
-    pub(crate) fn next_use_distance(&self, block_offset: u16) -> Option<u16> {
-        self.access_offsets
-            .iter()
-            .copied()
-            .find(|offset| *offset > block_offset)
-            .map(|offset| offset.saturating_sub(block_offset))
-    }
 }
 
 /// Whole-block transient-symbol facts for one CFG block.
@@ -197,13 +122,6 @@ impl TransientSymbolInfo {
 pub(crate) struct BlockTransientRegion {
     pub entry_stack_height: u16,
     pub symbols: collections::Vec<TransientSymbolInfo>,
-}
-
-impl BlockTransientRegion {
-    #[inline]
-    pub(crate) fn info(&self, symbol: u16) -> Option<&TransientSymbolInfo> {
-        self.symbols.get(symbol as usize)
-    }
 }
 
 /// Local semantic op kind used by the planner.
@@ -221,13 +139,6 @@ pub(crate) struct OpInfo {
     pub block_offset: u16,
     pub is_block_start: bool,
     pub local_op: Option<(FrameSlot, LocalOpKind)>,
-}
-
-/// Planned straight-line behavior for one semantic op.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct OpPlan {
-    pub before: EntryState,
-    pub after: EntryState,
 }
 
 /// Planned block boundary state used by the planner facade.
@@ -249,8 +160,11 @@ pub(crate) struct FunctionPlan {
     pub gp_dynamic_budget: u8,
     pub fp_dynamic_budget: u8,
     pub local_slot_types: collections::Vec<ValueType>,
-    pub op_plans: collections::Vec<OpPlan>,
-    pub entry_states: collections::Vec<EntryState>,
+    /// Compact per-op entry points for target branch queries.
+    ///
+    /// Only `stack_height` and `spill_depth` — the rewriter never reads
+    /// `live_types` or `stack_types` from these entries.
+    pub compact_entries: collections::Vec<CompactEntryPoint>,
     pub op_info: collections::Vec<OpInfo>,
     pub block_local_summaries: collections::Vec<BlockLocalSummary>,
     pub block_stack_regions: collections::Vec<BlockEntryStackRegion>,

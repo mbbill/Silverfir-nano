@@ -1,5 +1,3 @@
-use tracked_alloc::collections::BTreeSet;
-
 use crate::collections;
 
 use crate::value_type::ValueType;
@@ -445,18 +443,9 @@ fn typed_loop_block_start_before_op_refills_loop_params_for_first_body_op() {
     let planned = plan_program(&semantic, 7, 13);
     let loop_block = block_for_semantic_index(&planned.cfg, 3);
     let block_open = planned.planner.block_open(loop_block);
-    let before_add = planned.planner.before_op(joint_plan::BeforeOpQuery {
-        semantic_index: 3,
-        resident_cache: &BTreeSet::from([planned.frame.local_slot(0)]),
-    });
 
     assert_eq!(block_open.transient.stack_height, 2);
     assert_eq!(block_open.transient.spill_depth, 2);
-    assert_eq!(
-        before_add.transient.live_value_count(),
-        2,
-        "the structural loop entry may stay fully spilled, but the first body op must refill the loop params before the i32.add",
-    );
 }
 
 #[test]

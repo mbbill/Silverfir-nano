@@ -19,8 +19,8 @@ use crate::{
             cfg::SemanticCfg,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                init_locals::locals_reads_before_write, BeforeOpQuery, JointPlanner,
-                LocalAccessDecision, LocalAccessQuery, TransientContract,
+                init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
+                LocalAccessQuery,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -95,6 +95,7 @@ pub(crate) fn rewrite_function(
         let params = block_params[block_index].clone();
         let state = BlockState::from_entry(
             block_entry.transient,
+            block_entry.stack_types,
             &params,
             setup.gp_unit_bytes,
             setup.gp_dynamic_budget,
@@ -261,7 +262,7 @@ fn lower_block_range(
     for semantic_index in semantic_range.start..last_index {
         if matches!(semantic.ops[semantic_index].kind, SemanticOpKind::End) {
             let target = fallthrough_target(semantic_index, semantic.ops.len())?;
-            canonicalize_live_window_for_target(target, &mut state, frame, planner)?;
+            canonicalize_live_window_for_target(target, &mut state, frame, values, planner)?;
         }
         lower_block_body_op(
             semantic,
@@ -301,111 +302,6 @@ fn lower_block_range(
         extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,
         extra_block_cfg_origins: terminator.extra_block_cfg_origins,
     })
-}
-
-/// Apply the planner-owned pre-op transition.
-///
-/// This is where the boundary contract becomes executable:
-/// - planner may request dropping some cached locals first
-/// - planner then supplies the exact transient contract that must hold
-/// - rewrite validates and materializes that contract, but does not invent one
-fn lower_prefix_actions(
-    semantic_index: usize,
-    planner: &JointPlanner,
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    local_slot_types: &[ValueType],
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    let before_op = planner.before_op(BeforeOpQuery {
-        semantic_index,
-        resident_cache,
-    });
-    for slot in before_op.drop_cached_locals {
-        if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(
-                "planner dropped uncached local slot before semantic op",
-            ));
-        }
-        materialized_cache.remove(&slot);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
-    }
-    realize_transient_contract(before_op.transient, state, frame, values)?;
-    ensure_state_fits_with_cache(
-        state,
-        resident_cache,
-        local_slot_types,
-        "planned pre-op boundary",
-    )?;
-    Ok(())
-}
-
-/// Realize the exact transient contract chosen by the planner.
-///
-/// The rewriter only performs two legal shape changes here:
-/// - fill a spilled prefix back into the live window
-/// - spill a live prefix out to frame slots
-///
-/// Everything else about the stack shape must already agree.
-fn realize_transient_contract(
-    target: TransientContract<'_>,
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    values: &mut ValueAlloc,
-) -> Result<(), WasmError> {
-    if state.height() != target.stack_height {
-        return Err(WasmError::internal(
-            "planner expected stack height before op, but rewrite has",
-        ));
-    }
-
-    let current_spill_depth = state.spill_depth();
-    if current_spill_depth > target.spill_depth {
-        let fill_count = (current_spill_depth - target.spill_depth) as usize;
-        if target.live_types.len() < fill_count {
-            return Err(WasmError::internal(
-                "planner fill contract has fewer types than required",
-            ));
-        }
-        let fill_types: collections::Vec<_> = target.live_types[..fill_count].to_vec().into();
-        let mut reloaded = collections::Vec::with_capacity(fill_count);
-        let base_slot = frame.operand_slot(target.spill_depth);
-        for (offset, ty) in fill_types.iter().copied().enumerate() {
-            let dst = values.fresh_typed(ty);
-            state.ops.push(SsaInst {
-                kind: SsaInstKind::Fill {
-                    slot: base_slot.advance(offset as u16),
-                    dst,
-                },
-            });
-            reloaded.push(dst);
-        }
-        state.fill_prefix(reloaded, fill_types)?;
-    } else if current_spill_depth < target.spill_depth {
-        let spill_count = target.spill_depth - current_spill_depth;
-        let base_slot = frame.operand_slot(current_spill_depth);
-        let spilled = state.spill_prefix(spill_count)?;
-        for (offset, src) in spilled.into_iter().enumerate() {
-            state.ops.push(SsaInst {
-                kind: SsaInstKind::Spill {
-                    slot: base_slot.advance(offset as u16),
-                    src,
-                },
-            });
-        }
-    }
-
-    if state.spill_depth() != target.spill_depth || state.live_types.as_slice() != target.live_types
-    {
-        return Err(WasmError::internal(
-            "planner transient contract does not match realized rewrite state",
-        ));
-    }
-    Ok(())
 }
 
 /// Check the central joint invariant:
@@ -463,6 +359,252 @@ fn count_cached_local_budget_units(
     (gp, fp)
 }
 
+/// Inline prefix: fill/spill decisions made directly by the rewriter.
+///
+/// This replaces the old `lower_prefix_actions` which consulted
+/// `before_op_decision` for a pre-computed `TransientContract` target.
+/// The rewriter now makes fill/spill decisions locally based on the upcoming
+/// op's needs and the current `BlockState`.
+fn apply_inline_prefix(
+    op: &SemanticOpKind,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    local_slot_types: &[ValueType],
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    values: &mut ValueAlloc,
+) -> Result<(), WasmError> {
+    match op {
+        SemanticOpKind::Primitive(kind) => {
+            if matches!(kind, PrimitiveOpKind::Unreachable) {
+                return Ok(());
+            }
+            let (pop, push) = primitive_op::stack_effect(kind);
+            // Ensure capacity BEFORE filling operands. The fill must not be
+            // undone by subsequent spills — operands are consumed immediately.
+            // Reserve room for both the operands (after fill) and the push result.
+            let net_push = (push as u16).saturating_sub(pop as u16);
+            if net_push > 0 {
+                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
+                let (extra_gp, extra_fp) = if result_ty.is_float() {
+                    (0, net_push as usize)
+                } else {
+                    (net_push as usize, 0)
+                };
+                inline_ensure_capacity(
+                    state,
+                    frame,
+                    resident_cache,
+                    local_slot_types,
+                    extra_gp,
+                    extra_fp,
+                )?;
+            }
+            inline_fill_for_operands(state, frame, values, pop as u16)?;
+        }
+        SemanticOpKind::LocalGet { idx } => {
+            // Reserve room for the push in the correct bank.
+            let ty = local_slot_types
+                .get(*idx as usize)
+                .copied()
+                .unwrap_or(ValueType::I64);
+            let (extra_gp, extra_fp) = if ty.is_float() { (0, 1) } else { (1, 0) };
+            inline_ensure_capacity(
+                state,
+                frame,
+                resident_cache,
+                local_slot_types,
+                extra_gp,
+                extra_fp,
+            )?;
+        }
+        SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {
+            inline_fill_for_operands(state, frame, values, 1)?;
+        }
+        SemanticOpKind::Block { .. } => {}
+        SemanticOpKind::Loop { .. } => {
+            inline_spill_all(state, frame)?;
+        }
+        SemanticOpKind::If { params, .. } => {
+            let keep_live = params.saturating_add(1);
+            inline_fill_for_operands(state, frame, values, keep_live)?;
+            inline_spill_all_except_top(state, frame, keep_live)?;
+        }
+        SemanticOpKind::Else { .. } => {
+            // Else restores to block start height + params. The structural
+            // effect in apply_semantic_effect handles height/spill_depth changes.
+            // No explicit fill needed here — the rewriter processes Else as a
+            // control flow boundary that the semantic CFG already accounts for.
+        }
+        SemanticOpKind::End => {}
+        SemanticOpKind::Br { arity, .. } => {
+            inline_fill_for_operands(state, frame, values, *arity)?;
+            inline_spill_all_except_top(state, frame, *arity)?;
+        }
+        SemanticOpKind::BrIf { arity, .. } => {
+            let keep_live = arity.saturating_add(1);
+            inline_fill_for_operands(state, frame, values, keep_live)?;
+            inline_spill_all_except_top(state, frame, keep_live)?;
+        }
+        SemanticOpKind::BrTable { entries } => {
+            let arity = entries.first().map(|entry| entry.arity).unwrap_or(0);
+            let keep_live = arity.saturating_add(1);
+            inline_fill_for_operands(state, frame, values, keep_live)?;
+            inline_spill_all_except_top(state, frame, keep_live)?;
+        }
+        SemanticOpKind::CallDirect { .. }
+        | SemanticOpKind::CallIndirect { .. }
+        | SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. } => {
+            inline_spill_all(state, frame)?;
+        }
+    }
+    // Ensure capacity: if live transients + cached locals exceed the budget,
+    // spill the bottom transient until it fits. This replaces the old planner's
+    // ensure_capacity which was only needed because it ran with tentative cache.
+    inline_ensure_capacity(state, frame, resident_cache, local_slot_types, 0, 0)?;
+    Ok(())
+}
+
+/// Spill bottom transients until live + cache + extra_gp/extra_fp fits the budget.
+///
+/// `extra_gp` and `extra_fp` reserve room for values about to be pushed
+/// (e.g., the result of a primitive op).
+fn inline_ensure_capacity(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    extra_gp: usize,
+    extra_fp: usize,
+) -> Result<(), WasmError> {
+    loop {
+        let effective_live_types = state
+            .live_types
+            .iter()
+            .zip(state.live_aliases().iter())
+            .filter_map(|(ty, alias)| {
+                alias
+                    .and_then(|slot| resident_cache.contains(&slot).then_some(()))
+                    .is_none()
+                    .then_some(*ty)
+            })
+            .collect::<collections::Vec<_>>();
+        let (gp_live, fp_live) =
+            count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
+        let (gp_cache, fp_cache) =
+            count_cached_local_budget_units(resident_cache, local_slot_types, state.gp_unit_bytes);
+        if gp_live + gp_cache + extra_gp <= state.gp_live_budget as usize
+            && fp_live + fp_cache + extra_fp <= state.fp_live_budget as usize
+        {
+            return Ok(());
+        }
+        // Prefer spilling a transient over dropping a cache.
+        if !state.live().is_empty() {
+            let base_slot = frame.operand_slot(state.spill_depth());
+            let spilled = state.spill_prefix(1)?;
+            for (offset, src) in spilled.into_iter().enumerate() {
+                state.ops.push(SsaInst {
+                    kind: SsaInstKind::Spill {
+                        slot: base_slot.advance(offset as u16),
+                        src,
+                    },
+                });
+            }
+            continue;
+        }
+        // No transients to spill — drop the weakest cached local.
+        if resident_cache.is_empty() {
+            return Err(WasmError::internal(
+                "inline prefix: budget exceeded with nothing to evict",
+            ));
+        }
+        // Drop the highest-numbered cached local. This is a simpler heuristic
+        // than the old planner's `local_keep_key` scoring, but it's sufficient
+        // because cache eviction within a block is rare — it only fires when
+        // transient pressure + cache exceeds the budget with no transients left
+        // to spill. The evicted local will be re-ensured at the next block
+        // boundary by edge repair if needed.
+        let victim = *resident_cache.iter().next_back().unwrap();
+        resident_cache.remove(&victim);
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::LocalDropCache { slot: victim },
+        });
+    }
+}
+
+/// Fill spilled values to make at least `operand_count` values live.
+fn inline_fill_for_operands(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+    operand_count: u16,
+) -> Result<(), WasmError> {
+    let min_spill_depth = state.height().saturating_sub(operand_count);
+    if state.spill_depth() <= min_spill_depth {
+        return Ok(());
+    }
+    let fill_types = state.spilled_types_for_fill(min_spill_depth);
+    let fill_count = fill_types.len();
+    let base_slot = frame.operand_slot(min_spill_depth);
+    let mut reloaded = collections::Vec::with_capacity(fill_count);
+    for (offset, ty) in fill_types.iter().copied().enumerate() {
+        let dst = values.fresh_typed(ty);
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::Fill {
+                slot: base_slot.advance(offset as u16),
+                dst,
+            },
+        });
+        reloaded.push(dst);
+    }
+    state.fill_prefix(reloaded, fill_types)?;
+    Ok(())
+}
+
+/// Spill all live transient values to frame slots.
+fn inline_spill_all(state: &mut BlockState, frame: FrameLayoutPlan) -> Result<(), WasmError> {
+    if state.live().is_empty() {
+        return Ok(());
+    }
+    let count = state.live().len() as u16;
+    let base_slot = frame.operand_slot(state.spill_depth());
+    let spilled = state.spill_prefix(count)?;
+    for (offset, src) in spilled.into_iter().enumerate() {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::Spill {
+                slot: base_slot.advance(offset as u16),
+                src,
+            },
+        });
+    }
+    Ok(())
+}
+
+/// Spill all except the top `keep_top` live values.
+fn inline_spill_all_except_top(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    keep_top: u16,
+) -> Result<(), WasmError> {
+    let live_count = state.live().len();
+    let spill_count = live_count.saturating_sub(keep_top as usize);
+    if spill_count == 0 {
+        return Ok(());
+    }
+    let base_slot = frame.operand_slot(state.spill_depth());
+    let spilled = state.spill_prefix(spill_count as u16)?;
+    for (offset, src) in spilled.into_iter().enumerate() {
+        state.ops.push(SsaInst {
+            kind: SsaInstKind::Spill {
+                slot: base_slot.advance(offset as u16),
+                src,
+            },
+        });
+    }
+    Ok(())
+}
+
 fn lower_block_body_op(
     semantic: &SemanticProgram,
     semantic_index: usize,
@@ -474,14 +616,12 @@ fn lower_block_body_op(
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
-    lower_prefix_actions(
-        semantic_index,
-        planner,
+    apply_inline_prefix(
+        &semantic.ops[semantic_index].kind,
         state,
         frame,
         local_slot_types,
         resident_cache,
-        materialized_cache,
         values,
     )?;
     match &semantic.ops[semantic_index].kind {
@@ -535,10 +675,16 @@ fn lower_block_body_op(
             params,
             results,
         } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             lower_call_direct(
                 *callee,
                 *params,
                 *results,
+                rtypes,
                 frame,
                 state,
                 resident_cache,
@@ -552,11 +698,17 @@ fn lower_block_body_op(
             params,
             results,
         } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             lower_call_indirect(
                 *type_idx,
                 *table_idx,
                 *params,
                 *results,
+                rtypes,
                 frame,
                 state,
                 resident_cache,
@@ -750,6 +902,7 @@ fn lower_call_direct(
     callee: u32,
     params: u16,
     results: u16,
+    result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -763,7 +916,7 @@ fn lower_call_direct(
             results: FrameSpan::new(call_base, results),
         }),
     });
-    state.finish_call(params, results);
+    state.finish_call(params, results, result_types);
     resident_cache.clear();
     materialized_cache.clear();
 }
@@ -773,6 +926,7 @@ fn lower_call_indirect(
     table_idx: u32,
     params: u16,
     results: u16,
+    result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -789,7 +943,7 @@ fn lower_call_indirect(
             results: FrameSpan::new(call_base, results),
         }),
     });
-    state.finish_call(consumed, results);
+    state.finish_call(consumed, results, result_types);
     resident_cache.clear();
     materialized_cache.clear();
 }
@@ -859,14 +1013,12 @@ fn lower_block_terminator(
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredTerminator, WasmError> {
-    lower_prefix_actions(
-        semantic_index,
-        planner,
+    apply_inline_prefix(
+        &semantic.ops[semantic_index].kind,
         state,
         frame,
         local_slot_types,
         resident_cache,
-        materialized_cache,
         values,
     )?;
     match &semantic.ops[semantic_index].kind {
@@ -894,6 +1046,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -921,6 +1075,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -947,6 +1103,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -974,6 +1132,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -990,6 +1150,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1010,6 +1172,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1018,6 +1182,8 @@ fn lower_block_terminator(
                 *else_target,
                 state,
                 EdgeMapping::Identity,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1034,6 +1200,8 @@ fn lower_block_terminator(
                 *end_target,
                 state,
                 EdgeMapping::Identity,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1050,6 +1218,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1070,6 +1240,8 @@ fn lower_block_terminator(
                     stack_drop: *stack_drop,
                     payload: branch_payload(frame, state.height(), *stack_drop, *arity),
                 },
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1132,6 +1304,8 @@ fn lower_block_terminator(
                         stack_drop: *stack_drop,
                         payload: None,
                     },
+                    frame,
+                    values,
                     semantic_to_block,
                     block_params,
                     planner,
@@ -1140,6 +1314,8 @@ fn lower_block_terminator(
                     semantic_index,
                     semantic.ops.len(),
                     state,
+                    frame,
+                    values,
                     semantic_to_block,
                     block_params,
                     planner,
@@ -1179,6 +1355,8 @@ fn lower_block_terminator(
                         stack_drop: *stack_drop,
                         payload: branch_payload(frame, state.height(), *stack_drop, *arity),
                     },
+                    frame,
+                    values,
                     semantic_to_block,
                     block_params,
                     planner,
@@ -1187,6 +1365,8 @@ fn lower_block_terminator(
                     semantic_index,
                     semantic.ops.len(),
                     state,
+                    frame,
+                    values,
                     semantic_to_block,
                     block_params,
                     planner,
@@ -1208,6 +1388,8 @@ fn lower_block_terminator(
                         entry,
                         branch_payload(frame, state.height(), entry.stack_drop, entry.arity),
                         state,
+                        frame,
+                        values,
                         semantic_to_block,
                         block_params,
                         planner,
@@ -1224,10 +1406,16 @@ fn lower_block_terminator(
             params,
             results,
         } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             lower_call_direct(
                 *callee,
                 *params,
                 *results,
+                rtypes,
                 frame,
                 state,
                 resident_cache,
@@ -1243,6 +1431,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1254,11 +1444,17 @@ fn lower_block_terminator(
             params,
             results,
         } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             lower_call_indirect(
                 *type_idx,
                 *table_idx,
                 *params,
                 *results,
+                rtypes,
                 frame,
                 state,
                 resident_cache,
@@ -1274,6 +1470,8 @@ fn lower_block_terminator(
                 semantic_index,
                 semantic.ops.len(),
                 state,
+                frame,
+                values,
                 semantic_to_block,
                 block_params,
                 planner,
@@ -1320,8 +1518,8 @@ fn maybe_publish_live_window_for_targets(
     let max_target_spill_depth = targets
         .iter()
         .map(|target| planner.target_entry(target.index().as_usize()))
-        .filter(|entry| entry.transient.stack_height == state.height())
-        .map(|entry| entry.transient.spill_depth)
+        .filter(|entry| entry.stack_height == state.height())
+        .map(|entry| entry.spill_depth)
         .max()
         .unwrap_or(state.spill_depth());
     if max_target_spill_depth <= state.spill_depth() {
@@ -1344,27 +1542,34 @@ fn canonicalize_live_window_for_target(
     target: SemanticTarget,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
     planner: &JointPlanner,
 ) -> Result<(), WasmError> {
     let target_entry = planner.target_entry(target.index().as_usize());
-    if target_entry.transient.stack_height != state.height()
-        || target_entry.transient.spill_depth <= state.spill_depth()
-    {
+    if target_entry.stack_height != state.height() {
         return Ok(());
     }
-    let publish_count = target_entry
-        .transient
-        .spill_depth
-        .saturating_sub(state.spill_depth());
-    let base_slot = frame.operand_slot(state.spill_depth());
-    let spilled = state.spill_prefix(publish_count)?;
-    for (offset, value) in spilled.into_iter().enumerate() {
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: base_slot.advance(offset as u16),
-                src: value,
-            },
-        });
+    if target_entry.spill_depth > state.spill_depth() {
+        // Spill: target expects more values to be spilled.
+        let publish_count = target_entry.spill_depth.saturating_sub(state.spill_depth());
+        let base_slot = frame.operand_slot(state.spill_depth());
+        let spilled = state.spill_prefix(publish_count)?;
+        for (offset, value) in spilled.into_iter().enumerate() {
+            state.ops.push(SsaInst {
+                kind: SsaInstKind::Spill {
+                    slot: base_slot.advance(offset as u16),
+                    src: value,
+                },
+            });
+        }
+    } else if target_entry.spill_depth < state.spill_depth() {
+        // Fill: target expects more values to be live.
+        inline_fill_for_operands(
+            state,
+            frame,
+            values,
+            state.height().saturating_sub(target_entry.spill_depth),
+        )?;
     }
     Ok(())
 }
@@ -1372,7 +1577,9 @@ fn canonicalize_live_window_for_target(
 fn goto_next(
     semantic_index: usize,
     semantic_len: usize,
-    state: &BlockState,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
     semantic_to_block: &[SsaTarget],
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
@@ -1381,6 +1588,8 @@ fn goto_next(
         semantic_index,
         semantic_len,
         state,
+        frame,
+        values,
         semantic_to_block,
         block_params,
         planner,
@@ -1390,7 +1599,9 @@ fn goto_next(
 fn next_edge(
     semantic_index: usize,
     semantic_len: usize,
-    state: &BlockState,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
     semantic_to_block: &[SsaTarget],
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
@@ -1403,6 +1614,8 @@ fn next_edge(
         SemanticTarget::new(next),
         state,
         EdgeMapping::Identity,
+        frame,
+        values,
         semantic_to_block,
         block_params,
         planner,
@@ -1420,8 +1633,10 @@ enum EdgeMapping {
 
 fn edge_to_target(
     target: SemanticTarget,
-    state: &BlockState,
+    state: &mut BlockState,
     mapping: EdgeMapping,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
     semantic_to_block: &[SsaTarget],
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
@@ -1441,20 +1656,25 @@ fn edge_to_target(
             state.height().saturating_sub(stack_drop as u16)
         }
     };
-    if mapped_height != target_entry.transient.stack_height {
+    if mapped_height != target_entry.stack_height {
         return Err(WasmError::internal(
             "edge to semantic op computes stack height , but target expects",
         ));
     }
 
+    // Ensure target's required live values are in the live window.
+    let needed = target_entry.live_value_count();
+    if needed as usize > state.live().len() {
+        inline_fill_for_operands(state, frame, values, needed)?;
+    }
+
     let bindings = match mapping {
         EdgeMapping::Identity => {
-            let live_values =
-                state.top_values(target_entry.transient.live_value_count() as usize)?;
+            let live_values = state.top_values(target_entry.live_value_count() as usize)?;
             bind_values(target_params, &live_values)?
         }
         EdgeMapping::TakenBranch { payload, .. } => {
-            if target_entry.transient.live_value_count() == 0 {
+            if target_entry.live_value_count() == 0 {
                 if !target_params.is_empty() {
                     return Err(WasmError::internal(
                         "taken branch target expects no live values but still has params".into(),
@@ -1462,7 +1682,7 @@ fn edge_to_target(
                 }
                 collections::Vec::new()
             } else {
-                let live_needed = target_entry.transient.live_value_count() as usize;
+                let live_needed = target_entry.live_value_count() as usize;
                 let live_values = state.top_values(live_needed)?;
                 if payload.map(|span| span.count).unwrap_or(0) != live_needed as u16 {
                     return Err(WasmError::internal(
@@ -1483,7 +1703,9 @@ fn edge_to_target(
 fn br_table_edge(
     entry: &BrTableEntry,
     payload: Option<FrameSpan>,
-    state: &BlockState,
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
     semantic_to_block: &[SsaTarget],
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
@@ -1495,6 +1717,8 @@ fn br_table_edge(
             stack_drop: entry.stack_drop,
             payload,
         },
+        frame,
+        values,
         semantic_to_block,
         block_params,
         planner,
@@ -1525,8 +1749,8 @@ fn target_expects_canonical_payload(
     planner: &JointPlanner,
 ) -> Result<bool, WasmError> {
     let entry = planner.target_entry(target.index().as_usize());
-    Ok(entry.transient.live_value_count() == 0
-        && entry.transient.stack_height == state.height().saturating_sub(stack_drop as u16))
+    Ok(entry.live_value_count() == 0
+        && entry.stack_height == state.height().saturating_sub(stack_drop as u16))
 }
 
 fn publish_taken_branch_payload_at(

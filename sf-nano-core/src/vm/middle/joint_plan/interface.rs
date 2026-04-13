@@ -4,8 +4,6 @@
 //! lowering state. Every planner consultation should flow through these query
 //! and decision types so the boundary stays explicit.
 
-use crate::collections;
-
 use tracked_alloc::collections::BTreeSet;
 
 use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
@@ -26,38 +24,31 @@ pub(crate) struct TransientContract<'a> {
     pub live_types: &'a [ValueType],
 }
 
-impl TransientContract<'_> {
-    #[inline]
-    pub(crate) const fn live_value_count(&self) -> u16 {
-        self.stack_height.saturating_sub(self.spill_depth)
-    }
-}
-
 /// Chosen block-open boundary.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockOpenDecision<'a> {
     pub transient: TransientContract<'a>,
     pub cached_locals: &'a [FrameSlot],
+    /// Full semantic type stack at block entry.
+    /// Used by the rewriter to know types when filling spilled values inline.
+    pub stack_types: &'a [ValueType],
 }
 
 /// Target boundary facts for control-flow canonicalization.
+///
+/// Only `stack_height` and `spill_depth` are needed by the rewriter for
+/// branch target contracts. This avoids requiring a full `live_types` slice.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TargetEntryDecision<'a> {
-    pub transient: TransientContract<'a>,
+pub(crate) struct TargetEntryDecision {
+    pub stack_height: u16,
+    pub spill_depth: u16,
 }
 
-/// Authoritative planner decision before one semantic op executes.
-#[derive(Clone, Debug)]
-pub(crate) struct BeforeOpDecision<'a> {
-    pub transient: TransientContract<'a>,
-    pub drop_cached_locals: collections::Vec<FrameSlot>,
-}
-
-/// Query for the planner-owned pre-op boundary transition.
-#[derive(Clone, Debug)]
-pub(crate) struct BeforeOpQuery<'a> {
-    pub semantic_index: usize,
-    pub resident_cache: &'a BTreeSet<FrameSlot>,
+impl TargetEntryDecision {
+    #[inline]
+    pub(crate) const fn live_value_count(&self) -> u16 {
+        self.stack_height.saturating_sub(self.spill_depth)
+    }
 }
 
 /// Query for slot-vs-cache lowering of a local op.

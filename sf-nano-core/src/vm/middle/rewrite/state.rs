@@ -67,17 +67,31 @@ pub(super) struct BlockState {
     live: collections::Vec<SsaValue>,
     pub(super) live_types: collections::Vec<ValueType>,
     live_aliases: collections::Vec<Option<FrameSlot>>,
+    /// Full semantic type stack (spilled + live), maintained in parallel with
+    /// the live window. The rewriter needs this to know the types of spilled
+    /// values when filling them back into the live window.
+    ///
+    /// Invariant: `type_stack.len() == stack_height`, and
+    /// `type_stack[spill_depth..] == live_types`.
+    type_stack: collections::Vec<ValueType>,
     pub(super) ops: collections::Vec<SsaInst>,
 }
 
 impl BlockState {
     pub(super) fn from_entry(
         entry: TransientContract<'_>,
+        full_stack_types: &[ValueType],
         params: &[SsaValue],
         gp_unit_bytes: u8,
         gp_live_budget: u8,
         fp_live_budget: u8,
     ) -> Result<Self, WasmError> {
+        debug_assert!(
+            full_stack_types.len() >= entry.stack_height as usize,
+            "from_entry: stack_types.len()={} < stack_height={}",
+            full_stack_types.len(),
+            entry.stack_height,
+        );
         let state = Self {
             gp_unit_bytes,
             gp_live_budget,
@@ -87,6 +101,7 @@ impl BlockState {
             live: params.to_vec().into(),
             live_types: entry.live_types.to_vec().into(),
             live_aliases: collections::vec![None; params.len()],
+            type_stack: full_stack_types.to_vec().into(),
             ops: collections::Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
@@ -122,6 +137,7 @@ impl BlockState {
             .ok_or_else(|| WasmError::internal("transient underflow"))?;
         self.live_types.pop();
         self.live_aliases.pop();
+        self.type_stack.pop();
         self.stack_height = self.stack_height.saturating_sub(1);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(value)
@@ -138,6 +154,7 @@ impl BlockState {
         self.live_types.truncate(new_len);
         self.live_aliases.truncate(new_len);
         self.stack_height = self.stack_height.saturating_sub(count as u16);
+        self.type_stack.truncate(self.stack_height as usize);
         self.spill_depth = self.spill_depth.min(self.stack_height);
         Ok(())
     }
@@ -160,6 +177,7 @@ impl BlockState {
         debug_assert_eq!(results.len(), result_types.len());
         debug_assert_eq!(results.len(), result_aliases.len());
         self.stack_height = self.stack_height.saturating_add(results.len() as u16);
+        self.type_stack.extend_from_slice(&result_types);
         self.live.extend(results);
         self.live_types.extend(result_types);
         self.live_aliases.extend(result_aliases);
@@ -199,14 +217,41 @@ impl BlockState {
         let mut new_live_aliases = collections::vec![None; fill_count];
         new_live_aliases.extend(self.live_aliases.drain(..));
         self.live_aliases = new_live_aliases;
-        self.ensure_live_fit("prefix fill")
+        Ok(())
     }
 
-    pub(super) fn finish_call(&mut self, consumed: u16, produced: u16) {
-        self.stack_height = self
-            .stack_height
-            .saturating_sub(consumed)
-            .saturating_add(produced);
+    /// Return the types of spilled values at positions [new_spill..current_spill].
+    ///
+    /// Used by inline prefix fill to know the types of values being restored.
+    pub(super) fn spilled_types_for_fill(
+        &self,
+        new_spill_depth: u16,
+    ) -> collections::Vec<ValueType> {
+        let start = new_spill_depth as usize;
+        let end = self.spill_depth as usize;
+        if start >= end || start >= self.type_stack.len() {
+            return collections::Vec::new();
+        }
+        self.type_stack[start..end.min(self.type_stack.len())]
+            .to_vec()
+            .into()
+    }
+
+    pub(super) fn finish_call(&mut self, consumed: u16, produced: u16, result_types: &[ValueType]) {
+        let base = self.stack_height.saturating_sub(consumed) as usize;
+        self.type_stack.truncate(base);
+        self.type_stack.extend_from_slice(result_types);
+        debug_assert!(
+            result_types.len() >= produced as usize,
+            "finish_call: result_types.len()={} but produced={}",
+            result_types.len(),
+            produced,
+        );
+        // Pad with I64 if result_types is shorter (should not happen in practice).
+        for _ in result_types.len()..(produced as usize) {
+            self.type_stack.push(ValueType::I64);
+        }
+        self.stack_height = base as u16 + produced;
         self.spill_depth = self.stack_height;
         self.live.clear();
         self.live_types.clear();

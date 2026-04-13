@@ -20,15 +20,12 @@ use crate::{
 };
 
 use super::{
-    block_open::{
-        before_op_decision, block_open_decision, finalize_block_entry_cached_locals,
-        target_entry_decision,
-    },
+    block_open::{block_open_decision, finalize_block_entry_cached_locals, target_entry_decision},
     build,
     facts::FunctionPlan,
     interface::{
-        BeforeOpDecision, BeforeOpQuery, BlockOpenDecision, FunctionSetupDecision,
-        LocalAccessDecision, LocalAccessQuery, TargetEntryDecision,
+        BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
+        TargetEntryDecision,
     },
     local_access::decide_local_access,
     validate,
@@ -68,13 +65,8 @@ impl JointPlanner {
     }
 
     #[inline]
-    pub(crate) fn target_entry(&self, semantic_index: usize) -> TargetEntryDecision<'_> {
+    pub(crate) fn target_entry(&self, semantic_index: usize) -> TargetEntryDecision {
         target_entry_decision(&self.plan, semantic_index)
-    }
-
-    #[inline]
-    pub(crate) fn before_op<'a>(&'a self, query: BeforeOpQuery<'_>) -> BeforeOpDecision<'a> {
-        before_op_decision(&self.plan, query)
     }
 
     #[inline]

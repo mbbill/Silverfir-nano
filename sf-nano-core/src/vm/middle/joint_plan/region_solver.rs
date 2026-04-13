@@ -12,10 +12,8 @@ use crate::{
     value_type::ValueType,
     vm::{
         middle::{
-            budget::{count_live_bank_budget_units, gp_value_budget_units},
-            cfg::SemanticCfg,
-            frame::FrameSlot,
-            joint_plan::facts::{BlockLocalSummary, OpPlan},
+            budget::gp_value_budget_units, cfg::SemanticCfg, frame::FrameSlot,
+            joint_plan::facts::BlockLocalSummary,
         },
         wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
     },
@@ -85,7 +83,8 @@ pub(super) fn solve_public_cache_sets(
     gp_unit_bytes: u8,
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
-    op_plans: &[OpPlan],
+    block_peak_gp: &[usize],
+    block_peak_fp: &[usize],
     block_local_summaries: &[BlockLocalSummary],
 ) -> collections::Vec<collections::Vec<FrameSlot>> {
     let local_count = semantic.local_count as usize;
@@ -97,7 +96,7 @@ pub(super) fn solve_public_cache_sets(
     let local_meta = build_local_meta(&semantic.local_types, local_count, gp_unit_bytes);
     let block_weights = compute_block_weights(&regions);
     let block_call_counts = compute_block_call_counts(semantic, cfg);
-    let (peak_gp, peak_fp) = compute_block_peak_live_units(cfg, op_plans, gp_unit_bytes);
+    let (peak_gp, peak_fp) = (block_peak_gp, block_peak_fp);
 
     for region in &mut regions.nodes {
         let mut gp_headroom = 0usize;
@@ -562,70 +561,4 @@ fn compute_block_call_counts(
                 .count() as u32
         })
         .collect()
-}
-
-fn compute_block_peak_live_units(
-    cfg: &SemanticCfg,
-    op_plans: &[OpPlan],
-    gp_unit_bytes: u8,
-) -> (collections::Vec<usize>, collections::Vec<usize>) {
-    let mut peak_gp = collections::vec![0usize; cfg.blocks.len()];
-    let mut peak_fp = collections::vec![0usize; cfg.blocks.len()];
-
-    for (block_index, block) in cfg.blocks.iter().enumerate() {
-        for semantic_index in block.range.clone() {
-            let op_plan = &op_plans[semantic_index];
-            let (before_gp, before_fp) =
-                count_live_bank_budget_units(&op_plan.before.live_types, gp_unit_bytes);
-            peak_gp[block_index] = peak_gp[block_index].max(before_gp);
-            peak_fp[block_index] = peak_fp[block_index].max(before_fp);
-
-            let (after_gp, after_fp) =
-                count_live_bank_budget_units(&op_plan.after.live_types, gp_unit_bytes);
-            peak_gp[block_index] = peak_gp[block_index].max(after_gp);
-            peak_fp[block_index] = peak_fp[block_index].max(after_fp);
-        }
-    }
-
-    (peak_gp, peak_fp)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vm::middle::cfg::{CfgBlock, CfgBlockFlags, CfgBlockId, CfgTerminator, SemanticCfg};
-    use crate::vm::middle::joint_plan::facts::EntryState;
-
-    #[test]
-    fn block_peak_live_units_include_post_op_results() {
-        let cfg = SemanticCfg {
-            entry: CfgBlockId(0),
-            blocks: collections::vec![CfgBlock {
-                id: CfgBlockId(0),
-                range: 0..1,
-                preds: collections::Vec::new(),
-                succs: collections::Vec::new(),
-                terminator: CfgTerminator::Return { op_index: 0 },
-                flags: CfgBlockFlags {
-                    is_entry: true,
-                    ..CfgBlockFlags::default()
-                },
-            }],
-            semantic_to_block: collections::vec![CfgBlockId(0)],
-        };
-        let op_plans = collections::vec![OpPlan {
-            before: EntryState::default(),
-            after: EntryState {
-                stack_height: 1,
-                spill_depth: 0,
-                stack_types: collections::vec![ValueType::I64],
-                live_types: collections::vec![ValueType::I64],
-            },
-        }];
-
-        let (peak_gp, peak_fp) = compute_block_peak_live_units(&cfg, &op_plans, 8);
-
-        assert_eq!(peak_gp, collections::vec![1]);
-        assert_eq!(peak_fp, collections::vec![0]);
-    }
 }

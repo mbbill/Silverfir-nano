@@ -16,9 +16,8 @@ use crate::vm::{
         cfg::SemanticCfg,
         frame::FrameLayoutPlan,
         joint_plan::facts::{
-            BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockLocalSummary,
-            BlockStackValueInfo, BlockTransientRegion, EntryState, FirstAccessKind, LocalSlotScore,
-            TransientSymbolInfo,
+            BlockEntryStackRegion, BlockLocalInfo, BlockLocalSummary, BlockStackValueInfo,
+            BlockTransientRegion, EntryState, FirstAccessKind, LocalSlotScore, TransientSymbolInfo,
         },
     },
     wasm::{
@@ -72,68 +71,6 @@ pub(crate) fn analyze_block_entry_regions(
     }
 
     (local_summaries, stack_regions)
-}
-
-/// Reusable analyzer for on-demand full block-local analysis.
-///
-/// During the forward planning walk, call `analyze()` for the current block
-/// to get the full `BlockLocalRegion` with access offsets. The internal
-/// scratch buffer is reused across calls.
-pub(crate) struct BlockLocalAnalyzer {
-    scratch: collections::Vec<Option<BlockLocalInfo>>,
-    region: BlockLocalRegion,
-}
-
-impl BlockLocalAnalyzer {
-    pub(crate) fn new(local_count: usize) -> Self {
-        Self {
-            scratch: collections::vec![None::<BlockLocalInfo>; local_count],
-            region: BlockLocalRegion::default(),
-        }
-    }
-
-    /// Analyze a block and return the full region with access offsets.
-    pub(crate) fn analyze(
-        &mut self,
-        semantic: &SemanticProgram,
-        cfg: &SemanticCfg,
-        frame: FrameLayoutPlan,
-        block_index: usize,
-    ) -> &BlockLocalRegion {
-        self.reclaim();
-        let block_range = cfg.blocks[block_index].range.clone();
-        analyze_block_locals(semantic, cfg, frame, block_range, &mut self.scratch);
-
-        let mut ranked = collections::Vec::new();
-        for info in self.scratch.iter_mut().flatten() {
-            info.hot_score = score_local(info);
-            info.entry_hot_score = score_entry_local(info);
-            ranked.push((info.slot, info.hot_score));
-        }
-        ranked.sort_by_key(|(slot, score)| (core::cmp::Reverse(*score), slot.0));
-
-        self.region.ranked_slots = ranked.into_iter().map(|(slot, _)| slot).collect();
-        self.region.locals = core::mem::take(&mut self.scratch);
-        &self.region
-    }
-
-    /// Return the scratch buffer for reuse after the caller is done with the
-    /// region reference.
-    pub(crate) fn reclaim(&mut self) {
-        if self.region.locals.capacity() > 0 {
-            self.scratch = core::mem::take(&mut self.region.locals);
-            for entry in self.scratch.iter_mut() {
-                *entry = None;
-            }
-            self.region.ranked_slots.clear();
-        }
-    }
-
-    /// Access the most recently analyzed block's region.
-    #[inline]
-    pub(crate) fn current_region(&self) -> &BlockLocalRegion {
-        &self.region
-    }
 }
 
 /// Populate the scratch buffer with block-local analysis for one block.
@@ -747,17 +684,17 @@ mod tests {
         let region = &regions[0];
         assert_eq!(region.entry_stack_height, 1);
         assert_eq!(
-            region.info(0).unwrap().touch_count,
+            region.symbols.get(0).unwrap().touch_count,
             1,
             "entry symbol is read by add"
         );
         assert_eq!(
-            region.info(1).unwrap().touch_count,
+            region.symbols.get(1).unwrap().touch_count,
             1,
             "the local.get temp is consumed by add exactly once",
         );
         assert_eq!(
-            region.info(2).unwrap().touch_count,
+            region.symbols.get(2).unwrap().touch_count,
             2,
             "add result is touched by tee and drop"
         );
