@@ -149,42 +149,6 @@ pub fn into_alloc_vec<T>(value: Vec<T>) -> inner::Vec<T> {
     value
 }
 
-#[cfg(not(feature = "memprof"))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GlobalTimelinePoint {
-    pub time_ns: u64,
-    pub live_bytes: usize,
-}
-
-#[cfg(not(feature = "memprof"))]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GlobalAllocationProfile {
-    pub now_ns: u64,
-    pub peak_bytes: usize,
-    pub final_bytes: usize,
-    pub timeline: inner::Vec<GlobalTimelinePoint>,
-}
-
-#[cfg(not(feature = "memprof"))]
-#[inline]
-pub fn reset_global_tracking() {}
-
-#[cfg(not(feature = "memprof"))]
-#[inline]
-pub fn set_global_tracking_enabled(_enabled: bool) {}
-
-#[cfg(not(feature = "memprof"))]
-#[inline]
-pub fn global_tracking_enabled() -> bool {
-    false
-}
-
-#[cfg(not(feature = "memprof"))]
-#[inline]
-pub fn global_profile() -> GlobalAllocationProfile {
-    GlobalAllocationProfile::default()
-}
-
 pub struct TrackingAllocator<A> {
     inner: A,
 }
@@ -201,7 +165,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         let ptr = unsafe { self.inner.alloc(layout) };
         #[cfg(feature = "memprof")]
         if !ptr.is_null() {
-            record_global_delta(layout.size() as isize);
             record_context_allocation(ptr, layout.size());
         }
         ptr
@@ -211,7 +174,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         let ptr = unsafe { self.inner.alloc_zeroed(layout) };
         #[cfg(feature = "memprof")]
         if !ptr.is_null() {
-            record_global_delta(layout.size() as isize);
             record_context_allocation(ptr, layout.size());
         }
         ptr
@@ -221,7 +183,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         unsafe { self.inner.dealloc(ptr, layout) };
         #[cfg(feature = "memprof")]
         {
-            record_global_delta(-(layout.size() as isize));
             remove_unique_allocation(ptr as usize);
         }
     }
@@ -235,10 +196,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
         #[cfg(feature = "memprof")]
         if !new_ptr.is_null() {
-            let delta = new_size as isize - layout.size() as isize;
-            if delta != 0 {
-                record_global_delta(delta);
-            }
             record_context_reallocation(ptr, new_ptr, new_size);
         }
         new_ptr
@@ -354,30 +311,24 @@ impl AllocationDescriptor {
 }
 
 #[cfg(not(feature = "memprof"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProfileEventKind {
-    Create,
-    Update,
-    Remove,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AggregateEntry {
+    pub owner_kind: &'static str,
+    pub type_name: &'static str,
+    pub element_type: Option<&'static str>,
+    pub create_stack_id: u64,
+    pub count: usize,
+    pub total_bytes: usize,
+    pub largest_bytes: usize,
 }
 
 #[cfg(not(feature = "memprof"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProfileEvent {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AggregateSnapshot {
     pub time_ns: u64,
     pub total_bytes: usize,
     pub live_records: usize,
-    pub kind: ProfileEventKind,
-    pub id: u64,
-    pub owner_kind: Option<&'static str>,
-    pub type_name: Option<&'static str>,
-    pub element_type: Option<&'static str>,
-    pub len: Option<usize>,
-    pub capacity: Option<usize>,
-    pub size_bytes: Option<usize>,
-    pub ptr: Option<usize>,
-    pub create_stack_id: Option<u64>,
-    pub last_update_stack_id: Option<u64>,
+    pub entries: inner::Vec<AggregateEntry>,
 }
 
 #[cfg(not(feature = "memprof"))]
@@ -412,7 +363,7 @@ pub struct AllocationProfile {
     pub timeline: inner::Vec<TimelinePoint>,
     pub phases: inner::Vec<ProfilePhase>,
     pub stacks: inner::Vec<ProfileStack>,
-    pub events: inner::Vec<ProfileEvent>,
+    pub snapshots: inner::Vec<AggregateSnapshot>,
 }
 
 #[cfg(not(feature = "memprof"))]
@@ -569,30 +520,24 @@ impl AllocationDescriptor {
 }
 
 #[cfg(feature = "memprof")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProfileEventKind {
-    Create,
-    Update,
-    Remove,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AggregateEntry {
+    pub owner_kind: &'static str,
+    pub type_name: &'static str,
+    pub element_type: Option<&'static str>,
+    pub create_stack_id: u64,
+    pub count: usize,
+    pub total_bytes: usize,
+    pub largest_bytes: usize,
 }
 
 #[cfg(feature = "memprof")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProfileEvent {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AggregateSnapshot {
     pub time_ns: u64,
     pub total_bytes: usize,
     pub live_records: usize,
-    pub kind: ProfileEventKind,
-    pub id: u64,
-    pub owner_kind: Option<&'static str>,
-    pub type_name: Option<&'static str>,
-    pub element_type: Option<&'static str>,
-    pub len: Option<usize>,
-    pub capacity: Option<usize>,
-    pub size_bytes: Option<usize>,
-    pub ptr: Option<usize>,
-    pub create_stack_id: Option<u64>,
-    pub last_update_stack_id: Option<u64>,
+    pub entries: inner::Vec<AggregateEntry>,
 }
 
 #[cfg(feature = "memprof")]
@@ -627,23 +572,7 @@ pub struct AllocationProfile {
     pub timeline: inner::Vec<TimelinePoint>,
     pub phases: inner::Vec<ProfilePhase>,
     pub stacks: inner::Vec<ProfileStack>,
-    pub events: inner::Vec<ProfileEvent>,
-}
-
-#[cfg(feature = "memprof")]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GlobalTimelinePoint {
-    pub time_ns: u64,
-    pub live_bytes: usize,
-}
-
-#[cfg(feature = "memprof")]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GlobalAllocationProfile {
-    pub now_ns: u64,
-    pub peak_bytes: usize,
-    pub final_bytes: usize,
-    pub timeline: inner::Vec<GlobalTimelinePoint>,
+    pub snapshots: inner::Vec<AggregateSnapshot>,
 }
 
 #[cfg(feature = "memprof")]
@@ -664,22 +593,19 @@ impl StoredStack {
 }
 
 #[cfg(feature = "memprof")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct EventRecord {
-    time_ns: u64,
-    total_bytes: usize,
-    live_records: usize,
-    kind: ProfileEventKind,
-    id: u64,
-    owner_kind: Option<&'static str>,
-    type_name: Option<&'static str>,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AggregateKey {
+    owner_kind: &'static str,
+    type_name: &'static str,
     element_type: Option<&'static str>,
-    len: Option<usize>,
-    capacity: Option<usize>,
-    size_bytes: Option<usize>,
-    ptr: Option<usize>,
-    create_stack: Option<StackId>,
-    last_update_stack: Option<StackId>,
+    create_stack: StackId,
+}
+
+#[cfg(feature = "memprof")]
+#[derive(Clone, Debug, Default)]
+struct RunningAggregate {
+    count: usize,
+    total_bytes: usize,
 }
 
 #[cfg(feature = "memprof")]
@@ -699,17 +625,11 @@ struct ProfilerState {
     records: StdHashMap<u64, Record>,
     timeline: inner::Vec<TimelinePoint>,
     phases: inner::Vec<ProfilePhase>,
-    events: inner::Vec<EventRecord>,
-}
-
-#[cfg(feature = "memprof")]
-struct GlobalTrackerState {
-    start: std::time::Instant,
-    current_bytes: usize,
-    peak_bytes: usize,
-    sample_stride: u64,
-    since_sample: u64,
-    timeline: inner::Vec<GlobalTimelinePoint>,
+    aggregate: StdHashMap<AggregateKey, RunningAggregate>,
+    snapshots: inner::Vec<AggregateSnapshot>,
+    event_count: u64,
+    timeline_event_count: u64,
+    last_snapshot_total_bytes: usize,
 }
 
 #[cfg(feature = "memprof")]
@@ -724,35 +644,135 @@ impl Default for ProfilerState {
             records: StdHashMap::new(),
             timeline: inner::Vec::from([TimelinePoint::default()]),
             phases: inner::Vec::new(),
-            events: inner::Vec::new(),
+            aggregate: StdHashMap::new(),
+            snapshots: inner::Vec::new(),
+            event_count: 0,
+            timeline_event_count: 0,
+            last_snapshot_total_bytes: 0,
         }
     }
 }
 
+/// Snapshot the aggregate every this many events.
 #[cfg(feature = "memprof")]
-impl Default for GlobalTrackerState {
-    fn default() -> Self {
-        Self {
-            start: std::time::Instant::now(),
-            current_bytes: 0,
-            peak_bytes: 0,
-            sample_stride: 64,
-            since_sample: 0,
-            timeline: inner::Vec::from([GlobalTimelinePoint::default()]),
-        }
-    }
-}
+const SNAPSHOT_STRIDE: u64 = 5_000;
+
+/// Sample a timeline point every this many events.
+#[cfg(feature = "memprof")]
+const TIMELINE_STRIDE: u64 = 64;
+
+/// Force a snapshot when total_bytes changes by at least this much since the
+/// last snapshot, provided at least SIGNIFICANT_MIN_EVENTS events have elapsed.
+#[cfg(feature = "memprof")]
+const SIGNIFICANT_DELTA_BYTES: usize = 512 * 1024;
+
+/// Minimum events between significant-delta snapshots to avoid bursts.
+#[cfg(feature = "memprof")]
+const SIGNIFICANT_MIN_EVENTS: u64 = 100;
 
 #[cfg(feature = "memprof")]
-impl GlobalTrackerState {
-    fn reset(&mut self) {
-        self.start = std::time::Instant::now();
-        self.current_bytes = 0;
-        self.peak_bytes = 0;
-        self.sample_stride = 64;
-        self.since_sample = 0;
-        self.timeline.clear();
-        self.timeline.push(GlobalTimelinePoint::default());
+impl ProfilerState {
+    fn take_aggregate_snapshot(&mut self) {
+        let time_ns = elapsed_ns(self.start);
+        let total_bytes = self.total_bytes;
+        let live_records = self.records.len();
+        // Build largest_bytes per key by scanning records.
+        let mut largest: StdHashMap<AggregateKey, usize> = StdHashMap::new();
+        for record in self.records.values() {
+            let key = AggregateKey {
+                owner_kind: record.owner_kind,
+                type_name: record.type_name,
+                element_type: record.element_type,
+                create_stack: record.create_stack,
+            };
+            let entry = largest.entry(key).or_insert(0);
+            if record.size_bytes > *entry {
+                *entry = record.size_bytes;
+            }
+        }
+        let mut entries: inner::Vec<AggregateEntry> = self
+            .aggregate
+            .iter()
+            .filter(|(_, agg)| agg.count > 0)
+            .map(|(key, agg)| {
+                let largest_bytes = largest.get(key).copied().unwrap_or(0);
+                AggregateEntry {
+                    owner_kind: key.owner_kind,
+                    type_name: key.type_name,
+                    element_type: key.element_type,
+                    create_stack_id: key.create_stack,
+                    count: agg.count,
+                    total_bytes: agg.total_bytes,
+                    largest_bytes,
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes));
+        self.snapshots.push(AggregateSnapshot {
+            time_ns,
+            total_bytes,
+            live_records,
+            entries,
+        });
+        self.last_snapshot_total_bytes = total_bytes;
+    }
+
+    fn maybe_sample_timeline(&mut self) {
+        self.timeline_event_count += 1;
+        if self.timeline_event_count >= TIMELINE_STRIDE {
+            self.timeline_event_count = 0;
+            let time_ns = elapsed_ns(self.start);
+            self.timeline.push(TimelinePoint {
+                time_ns,
+                total_bytes: self.total_bytes,
+                live_records: self.records.len(),
+            });
+        }
+    }
+
+    fn maybe_take_snapshot(&mut self) {
+        self.event_count += 1;
+        if self.event_count >= SNAPSHOT_STRIDE {
+            self.event_count = 0;
+            self.take_aggregate_snapshot();
+        } else if self.event_count >= SIGNIFICANT_MIN_EVENTS {
+            let delta = self.total_bytes.abs_diff(self.last_snapshot_total_bytes);
+            if delta >= SIGNIFICANT_DELTA_BYTES {
+                self.event_count = 0;
+                self.take_aggregate_snapshot();
+            }
+        }
+    }
+
+    fn aggregate_add(&mut self, record: &Record) {
+        let key = AggregateKey {
+            owner_kind: record.owner_kind,
+            type_name: record.type_name,
+            element_type: record.element_type,
+            create_stack: record.create_stack,
+        };
+        let agg = self.aggregate.entry(key).or_default();
+        agg.count += 1;
+        agg.total_bytes += record.size_bytes;
+    }
+
+    fn aggregate_update(&mut self, key: &AggregateKey, old_size: usize, new_size: usize) {
+        if let Some(agg) = self.aggregate.get_mut(key) {
+            agg.total_bytes = agg.total_bytes.saturating_sub(old_size) + new_size;
+        }
+    }
+
+    fn aggregate_remove(&mut self, record: &Record) {
+        let key = AggregateKey {
+            owner_kind: record.owner_kind,
+            type_name: record.type_name,
+            element_type: record.element_type,
+            create_stack: record.create_stack,
+        };
+        if let Some(agg) = self.aggregate.get_mut(&key) {
+            agg.count = agg.count.saturating_sub(1);
+            agg.total_bytes = agg.total_bytes.saturating_sub(record.size_bytes);
+        }
     }
 }
 
@@ -761,17 +781,12 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "memprof")]
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "memprof")]
-static GLOBAL_TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "memprof")]
 static PROFILER: OnceLock<Mutex<ProfilerState>> = OnceLock::new();
-#[cfg(feature = "memprof")]
-static GLOBAL_TRACKER: OnceLock<Mutex<GlobalTrackerState>> = OnceLock::new();
 #[cfg(feature = "memprof")]
 static TRACKED_ALLOCATIONS: OnceLock<Mutex<StdHashMap<usize, AllocationHandle>>> = OnceLock::new();
 
 #[cfg(feature = "memprof")]
 std::thread_local! {
-    static GLOBAL_TRACKING_REENTRANT: Cell<bool> = const { Cell::new(false) };
     static TRACKING_INTERNAL_DEPTH: Cell<u32> = const { Cell::new(0) };
     static ALLOCATION_CONTEXT: Cell<Option<AllocationContext>> = const { Cell::new(None) };
 }
@@ -779,11 +794,6 @@ std::thread_local! {
 #[cfg(feature = "memprof")]
 fn profiler() -> &'static Mutex<ProfilerState> {
     PROFILER.get_or_init(|| Mutex::new(ProfilerState::default()))
-}
-
-#[cfg(feature = "memprof")]
-fn global_tracker() -> &'static Mutex<GlobalTrackerState> {
-    GLOBAL_TRACKER.get_or_init(|| Mutex::new(GlobalTrackerState::default()))
 }
 
 #[cfg(feature = "memprof")]
@@ -819,18 +829,6 @@ pub fn tracking_enabled() -> bool {
 }
 
 #[cfg(feature = "memprof")]
-#[inline]
-pub fn set_global_tracking_enabled(enabled: bool) {
-    GLOBAL_TRACKING_ENABLED.store(enabled, AtomicOrdering::Relaxed);
-}
-
-#[cfg(feature = "memprof")]
-#[inline]
-pub fn global_tracking_enabled() -> bool {
-    GLOBAL_TRACKING_ENABLED.load(AtomicOrdering::Relaxed)
-}
-
-#[cfg(feature = "memprof")]
 #[track_caller]
 fn capture_site() -> AllocBox<str> {
     let location = Location::caller();
@@ -844,15 +842,84 @@ fn capture_site() -> AllocBox<str> {
 }
 
 #[cfg(feature = "memprof")]
+#[track_caller]
 fn capture_stack_id() -> Option<StackId> {
     if !tracking_enabled() {
         return None;
     }
+    let site_key = capture_site();
     with_tracking_internal(|| {
-        let create_stack = capture_site();
         let mut profiler = profiler().lock().unwrap();
-        Some(intern_stack(&mut profiler, create_stack))
+        // Fast path: site already interned AND points to our code (not stdlib).
+        if let Some(&id) = profiler.stack_ids_by_text.get(site_key.as_ref()) {
+            return Some(id);
+        }
+        // Slow path: new site. Capture full backtrace for the display text
+        // and for a better dedup key if the caller location is in stdlib
+        // (meaning #[track_caller] broke at a closure boundary).
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let (bt_key, full_text) = format_backtrace(&backtrace);
+        // If the caller site is in our code, use it as the dedup key.
+        // If it's in stdlib (e.g. core::ops::function), use the backtrace
+        // key to disambiguate different .collect() call sites.
+        let key = if site_key.contains("sf-nano") || site_key.contains("sf_nano") {
+            site_key
+        } else {
+            bt_key
+        };
+        if let Some(&id) = profiler.stack_ids_by_text.get(key.as_ref()) {
+            return Some(id);
+        }
+        Some(intern_stack(&mut profiler, key, full_text))
     })
+}
+
+/// Maximum number of relevant frames to include in the dedup key.
+#[cfg(feature = "memprof")]
+const DEDUP_FRAMES: usize = 4;
+
+#[cfg(feature = "memprof")]
+fn is_noise_frame(frame: &str) -> bool {
+    frame.contains("tracked_alloc::")
+        || frame.contains("std::backtrace")
+        || frame.contains("__rust_begin_short_backtrace")
+        || frame.contains("__rust_end_short_backtrace")
+        || frame.contains("std::rt::lang_start")
+        || frame.contains("std::sys::")
+        || frame.contains("start_thread")
+        || frame.contains("_main")
+        || frame.contains("core::ops::function")
+        || frame.contains("alloc::vec::in_place_collect")
+        || frame.contains("alloc::vec::Vec<T,A>::extend_desugared")
+}
+
+/// Returns (dedup_key, full_display_text).
+///
+/// The dedup key is built from the first few non-noise function frames so
+/// that allocations from different call sites get separate groups even when
+/// `#[track_caller]` collapses (e.g. inside `.collect()`).
+#[cfg(feature = "memprof")]
+fn format_backtrace(backtrace: &std::backtrace::Backtrace) -> (AllocBox<str>, AllocBox<str>) {
+    let raw = alloc::format!("{backtrace}");
+    let mut key_parts = inner::Vec::<&str>::new();
+    let mut display_lines = inner::Vec::<&str>::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.parse::<usize>().is_ok() {
+            continue;
+        }
+        if is_noise_frame(trimmed) {
+            continue;
+        }
+        display_lines.push(trimmed);
+        // Use function-name frames (not "at file:line" frames) for the key.
+        if key_parts.len() < DEDUP_FRAMES && !trimmed.starts_with("at ") {
+            key_parts.push(trimmed);
+        }
+    }
+    let site_key: AllocBox<str> = key_parts.join(" <- ").into_boxed_str();
+    let full_text: AllocBox<str> = display_lines.join("\n").into_boxed_str();
+    (site_key, full_text)
 }
 
 #[cfg(feature = "memprof")]
@@ -897,14 +964,18 @@ fn current_allocation_context() -> Option<AllocationContext> {
 }
 
 #[cfg(feature = "memprof")]
-fn intern_stack(profiler: &mut ProfilerState, text: AllocBox<str>) -> StackId {
-    if let Some(&id) = profiler.stack_ids_by_text.get(text.as_ref()) {
+fn intern_stack(
+    profiler: &mut ProfilerState,
+    site_key: AllocBox<str>,
+    full_text: AllocBox<str>,
+) -> StackId {
+    if let Some(&id) = profiler.stack_ids_by_text.get(site_key.as_ref()) {
         return id;
     }
     let id = profiler.next_stack_id;
     profiler.next_stack_id = profiler.next_stack_id.saturating_add(1);
-    profiler.stack_ids_by_text.insert(text.clone(), id);
-    profiler.stacks.insert(id, StoredStack::new(text));
+    profiler.stack_ids_by_text.insert(site_key, id);
+    profiler.stacks.insert(id, StoredStack::new(full_text));
     id
 }
 
@@ -920,79 +991,6 @@ fn render_stack(profiler: &ProfilerState, stack_id: StackId) -> AllocBox<str> {
 #[cfg(feature = "memprof")]
 fn elapsed_ns(start: std::time::Instant) -> u64 {
     start.elapsed().as_nanos().min(u64::MAX as u128) as u64
-}
-
-#[cfg(feature = "memprof")]
-fn compact_global_timeline(global: &mut GlobalTrackerState) {
-    if global.timeline.len() <= 32_768 {
-        return;
-    }
-    let last_index = global.timeline.len().saturating_sub(1);
-    let mut compacted = inner::Vec::with_capacity(global.timeline.len() / 2 + 2);
-    for (index, point) in global.timeline.iter().copied().enumerate() {
-        if index == 0 || index == last_index || index % 2 == 0 {
-            compacted.push(point);
-        }
-    }
-    global.timeline = compacted;
-    global.sample_stride = global.sample_stride.saturating_mul(2);
-    global.since_sample = 0;
-}
-
-#[cfg(feature = "memprof")]
-fn push_global_sample(global: &mut GlobalTrackerState, force: bool) {
-    let point = GlobalTimelinePoint {
-        time_ns: elapsed_ns(global.start),
-        live_bytes: global.current_bytes,
-    };
-    let changed = global
-        .timeline
-        .last()
-        .map(|last| last.live_bytes != point.live_bytes || last.time_ns != point.time_ns)
-        .unwrap_or(true);
-    if force || changed {
-        global.timeline.push(point);
-        compact_global_timeline(global);
-    }
-    global.since_sample = 0;
-}
-
-#[cfg(feature = "memprof")]
-fn record_global_delta(delta_bytes: isize) {
-    if !global_tracking_enabled() {
-        return;
-    }
-    if tracking_internal_active() {
-        return;
-    }
-    GLOBAL_TRACKING_REENTRANT.with(|flag| {
-        if flag.get() {
-            return;
-        }
-        flag.set(true);
-        {
-            let mut global = global_tracker()
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            if delta_bytes >= 0 {
-                global.current_bytes = global.current_bytes.saturating_add(delta_bytes as usize);
-            } else {
-                global.current_bytes = global
-                    .current_bytes
-                    .saturating_sub(delta_bytes.unsigned_abs());
-            }
-            let hit_peak = global.current_bytes > global.peak_bytes;
-            if hit_peak {
-                global.peak_bytes = global.current_bytes;
-            }
-            global.since_sample = global.since_sample.saturating_add(1);
-            if hit_peak || global.current_bytes == 0 || global.since_sample >= global.sample_stride
-            {
-                push_global_sample(&mut global, hit_peak);
-            }
-        }
-        flag.set(false);
-    });
 }
 
 #[cfg(feature = "memprof")]
@@ -1170,50 +1168,37 @@ impl AllocationHandle {
                 .create_stack
                 .or_else(capture_stack_id)
                 .unwrap_or_else(|| {
-                    let create_stack = capture_site();
+                    let site_key = capture_site();
+                    let backtrace = std::backtrace::Backtrace::force_capture();
+                    let (bt_key, full_text) = format_backtrace(&backtrace);
+                    let key = if site_key.contains("sf-nano") || site_key.contains("sf_nano") {
+                        site_key
+                    } else {
+                        bt_key
+                    };
                     let mut profiler = profiler().lock().unwrap();
-                    intern_stack(&mut profiler, create_stack)
+                    if let Some(&id) = profiler.stack_ids_by_text.get(key.as_ref()) {
+                        return id;
+                    }
+                    intern_stack(&mut profiler, key, full_text)
                 });
             let mut profiler = profiler().lock().unwrap();
             profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
-            profiler.records.insert(
-                id,
-                Record {
-                    owner_kind: self.descriptor.owner_kind,
-                    type_name: self.descriptor.type_name,
-                    element_type: self.descriptor.element_type,
-                    len: state.len,
-                    capacity: state.capacity,
-                    size_bytes: state.size_bytes,
-                    ptr: state.ptr,
-                    create_stack,
-                    last_update_stack: None,
-                },
-            );
-            let time_ns = elapsed_ns(profiler.start);
-            let live_records = profiler.records.len();
-            let total_bytes = profiler.total_bytes;
-            profiler.timeline.push(TimelinePoint {
-                time_ns,
-                total_bytes,
-                live_records,
-            });
-            profiler.events.push(EventRecord {
-                time_ns,
-                total_bytes,
-                live_records,
-                kind: ProfileEventKind::Create,
-                id,
-                owner_kind: Some(self.descriptor.owner_kind),
-                type_name: Some(self.descriptor.type_name),
+            let record = Record {
+                owner_kind: self.descriptor.owner_kind,
+                type_name: self.descriptor.type_name,
                 element_type: self.descriptor.element_type,
                 len: state.len,
                 capacity: state.capacity,
-                size_bytes: Some(state.size_bytes),
-                ptr: Some(state.ptr),
-                create_stack: Some(create_stack),
+                size_bytes: state.size_bytes,
+                ptr: state.ptr,
+                create_stack,
                 last_update_stack: None,
-            });
+            };
+            profiler.aggregate_add(&record);
+            profiler.records.insert(id, record);
+            profiler.maybe_sample_timeline();
+            profiler.maybe_take_snapshot();
             self.id = Some(id);
         });
     }
@@ -1272,6 +1257,18 @@ impl AllocationHandle {
             let total_bytes = total_before
                 .saturating_sub(old_size_bytes)
                 .saturating_add(state.size_bytes);
+            let agg_key = {
+                let record = profiler
+                    .records
+                    .get(&id)
+                    .expect("tracked allocation exists");
+                AggregateKey {
+                    owner_kind: record.owner_kind,
+                    type_name: record.type_name,
+                    element_type: record.element_type,
+                    create_stack: record.create_stack,
+                }
+            };
             {
                 let record = profiler
                     .records
@@ -1283,30 +1280,10 @@ impl AllocationHandle {
                 record.ptr = state.ptr;
                 record.last_update_stack = None;
             };
-            let live_records = profiler.records.len();
             profiler.total_bytes = total_bytes;
-            let time_ns = elapsed_ns(profiler.start);
-            profiler.timeline.push(TimelinePoint {
-                time_ns,
-                total_bytes,
-                live_records,
-            });
-            profiler.events.push(EventRecord {
-                time_ns,
-                total_bytes,
-                live_records,
-                kind: ProfileEventKind::Update,
-                id,
-                owner_kind: None,
-                type_name: None,
-                element_type: None,
-                len: state.len,
-                capacity: state.capacity,
-                size_bytes: Some(state.size_bytes),
-                ptr: Some(state.ptr),
-                create_stack: None,
-                last_update_stack: None,
-            });
+            profiler.aggregate_update(&agg_key, old_size_bytes, state.size_bytes);
+            profiler.maybe_sample_timeline();
+            profiler.maybe_take_snapshot();
         });
     }
 
@@ -1320,30 +1297,9 @@ impl AllocationHandle {
                 return;
             };
             profiler.total_bytes = profiler.total_bytes.saturating_sub(record.size_bytes);
-            let time_ns = elapsed_ns(profiler.start);
-            let live_records = profiler.records.len();
-            let total_bytes = profiler.total_bytes;
-            profiler.timeline.push(TimelinePoint {
-                time_ns,
-                total_bytes,
-                live_records,
-            });
-            profiler.events.push(EventRecord {
-                time_ns,
-                total_bytes,
-                live_records,
-                kind: ProfileEventKind::Remove,
-                id,
-                owner_kind: None,
-                type_name: None,
-                element_type: None,
-                len: None,
-                capacity: None,
-                size_bytes: None,
-                ptr: None,
-                create_stack: None,
-                last_update_stack: None,
-            });
+            profiler.aggregate_remove(&record);
+            profiler.maybe_sample_timeline();
+            profiler.maybe_take_snapshot();
         });
     }
 }
@@ -1457,92 +1413,46 @@ pub fn profile() -> AllocationProfile {
         timeline: profiler.timeline.clone(),
         phases,
         stacks,
-        events: profiler
-            .events
-            .iter()
-            .map(|event| ProfileEvent {
-                time_ns: event.time_ns,
-                total_bytes: event.total_bytes,
-                live_records: event.live_records,
-                kind: event.kind,
-                id: event.id,
-                owner_kind: event.owner_kind,
-                type_name: event.type_name,
-                element_type: event.element_type,
-                len: event.len,
-                capacity: event.capacity,
-                size_bytes: event.size_bytes,
-                ptr: event.ptr,
-                create_stack_id: event.create_stack,
-                last_update_stack_id: event.last_update_stack,
-            })
-            .collect(),
-    }
-}
-
-#[cfg(feature = "memprof")]
-pub fn global_profile() -> GlobalAllocationProfile {
-    let global = global_tracker()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    GlobalAllocationProfile {
-        now_ns: elapsed_ns(global.start),
-        peak_bytes: global.peak_bytes,
-        final_bytes: global.current_bytes,
-        timeline: global.timeline.clone(),
+        snapshots: profiler.snapshots.clone(),
     }
 }
 
 #[cfg(feature = "memprof")]
 pub fn snapshot_at(time_ns: u64) -> RegistrySnapshot {
     let profiler = profiler().lock().unwrap();
-    let mut live = StdHashMap::<u64, RecordSnapshot>::new();
-    for event in &profiler.events {
-        if event.time_ns > time_ns {
-            break;
-        }
-        match event.kind {
-            ProfileEventKind::Create => {
-                let record = RecordSnapshot {
-                    id: event.id,
-                    owner_kind: event.owner_kind.expect("create owner kind"),
-                    type_name: event.type_name.expect("create type name"),
-                    element_type: event.element_type,
-                    len: event.len,
-                    capacity: event.capacity,
-                    size_bytes: event.size_bytes.expect("create size"),
-                    ptr: event.ptr.expect("create ptr"),
-                    create_stack: render_stack(
-                        &profiler,
-                        event.create_stack.expect("create stack present"),
-                    ),
-                    last_update_stack: None,
-                };
-                live.insert(event.id, record);
-            }
-            ProfileEventKind::Update => {
-                let Some(record) = live.get_mut(&event.id) else {
-                    continue;
-                };
-                record.len = event.len;
-                record.capacity = event.capacity;
-                record.size_bytes = event.size_bytes.expect("update size");
-                record.ptr = event.ptr.expect("update ptr");
-                if let Some(stack_id) = event.last_update_stack {
-                    record.last_update_stack = Some(render_stack(&profiler, stack_id));
-                }
-            }
-            ProfileEventKind::Remove => {
-                live.remove(&event.id);
-            }
-        }
-    }
-    let mut records: inner::Vec<RecordSnapshot> = live.into_values().collect();
+    // Find the last aggregate snapshot at or before the requested time.
+    let snap = profiler
+        .snapshots
+        .iter()
+        .rev()
+        .find(|s| s.time_ns <= time_ns);
+    let Some(snap) = snap else {
+        return RegistrySnapshot {
+            records: inner::Vec::new(),
+            total_bytes: 0,
+        };
+    };
+    // Synthesize RecordSnapshots from aggregate entries (one per group).
+    let mut records: inner::Vec<RecordSnapshot> = snap
+        .entries
+        .iter()
+        .map(|entry| RecordSnapshot {
+            id: 0,
+            owner_kind: entry.owner_kind,
+            type_name: entry.type_name,
+            element_type: entry.element_type,
+            len: None,
+            capacity: None,
+            size_bytes: entry.total_bytes,
+            ptr: 0,
+            create_stack: render_stack(&profiler, entry.create_stack_id),
+            last_update_stack: None,
+        })
+        .collect();
     sort_records(&mut records);
-    let total_bytes = records.iter().map(|record| record.size_bytes).sum();
     RegistrySnapshot {
+        total_bytes: snap.total_bytes,
         records,
-        total_bytes,
     }
 }
 
@@ -1558,7 +1468,11 @@ pub fn reset_tracking() {
     profiler.timeline.clear();
     profiler.timeline.push(TimelinePoint::default());
     profiler.phases.clear();
-    profiler.events.clear();
+    profiler.aggregate.clear();
+    profiler.snapshots.clear();
+    profiler.event_count = 0;
+    profiler.timeline_event_count = 0;
+    profiler.last_snapshot_total_bytes = 0;
     NEXT_ID.store(1, AtomicOrdering::Relaxed);
     tracked_allocations().lock().unwrap().clear();
     shared_allocations().lock().unwrap().clear();
@@ -1608,14 +1522,6 @@ pub fn phase_span_with_function(name: &'static str, function_index: Option<u32>)
         function_index,
         start_time_ns: elapsed_ns(profiler.start),
     }
-}
-
-#[cfg(feature = "memprof")]
-pub fn reset_global_tracking() {
-    let mut global = global_tracker()
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    global.reset();
 }
 
 #[cfg(feature = "memprof")]
@@ -3969,7 +3875,7 @@ mod tests {
 
     #[cfg(feature = "memprof")]
     #[test]
-    fn len_only_vec_updates_do_not_emit_profile_events() {
+    fn len_only_vec_updates_do_not_change_aggregate_bytes() {
         let _guard = tracking_test_lock()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -3977,12 +3883,11 @@ mod tests {
         reset_tracking();
 
         let mut values = Vec::<u8>::with_capacity(8);
-        let events_after_reserve = profile().events.len();
+        let bytes_after_reserve = snapshot().total_bytes;
         values.push(1);
         values.push(2);
         values.push(3);
-        let profile_after_pushes = profile();
-        assert_eq!(profile_after_pushes.events.len(), events_after_reserve);
+        assert_eq!(snapshot().total_bytes, bytes_after_reserve);
         assert_eq!(snapshot().records[0].len, Some(3));
 
         drop(values);
@@ -4108,10 +4013,10 @@ mod tests {
                 .with_ptr(0x1000),
         );
         let profile0 = profile();
-        let create_time = profile0.events.last().expect("create event").time_ns;
         assert_eq!(profile0.snapshot.records.len(), 1);
         assert_eq!(profile0.snapshot.records[0].owner_kind, "RuntimeMemory");
         assert_eq!(profile0.snapshot.records[0].type_name, "CodeBuffer");
+        assert_eq!(profile0.snapshot.records[0].size_bytes, 64);
 
         code.update(
             AllocationState::new(128)
@@ -4119,21 +4024,14 @@ mod tests {
                 .with_capacity(128)
                 .with_ptr(0x1000),
         );
-        let profile1 = profile();
-        let update_time = profile1.events.last().expect("update event").time_ns;
-        let create_snapshot = snapshot_at(create_time);
-        let update_snapshot = snapshot_at(update_time);
-        assert_eq!(create_snapshot.records[0].size_bytes, 64);
-        assert_eq!(update_snapshot.records[0].size_bytes, 128);
-        assert_eq!(update_snapshot.records[0].len, Some(32));
+        let snapshot1 = snapshot();
+        assert_eq!(snapshot1.records.len(), 1);
+        assert_eq!(snapshot1.records[0].size_bytes, 128);
+        assert_eq!(snapshot1.records[0].len, Some(32));
 
         code.remove();
         let profile2 = profile();
         assert!(profile2.snapshot.records.is_empty());
-        assert_eq!(
-            profile2.events.last().expect("remove event").kind,
-            ProfileEventKind::Remove
-        );
         set_tracking_enabled(false);
         reset_tracking();
     }

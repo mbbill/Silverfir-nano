@@ -1,13 +1,10 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 
-use tracked_alloc::{
-    self, AllocationProfile, GlobalAllocationProfile, ProfileEventKind, ProfilePhase, TimelinePoint,
-};
+use tracked_alloc::{self, AggregateSnapshot, AllocationProfile, ProfilePhase, TimelinePoint};
 
 pub struct Session {
     output_path: PathBuf,
@@ -17,8 +14,6 @@ pub struct Session {
 impl Session {
     pub fn new(output_path: Option<PathBuf>, command_line: &[String]) -> Self {
         tracked_alloc::reset_tracking();
-        tracked_alloc::reset_global_tracking();
-        tracked_alloc::set_global_tracking_enabled(true);
         tracked_alloc::set_tracking_enabled(true);
         Self {
             output_path: absolutize_report_path(output_path.unwrap_or_else(default_report_path)),
@@ -27,11 +22,9 @@ impl Session {
     }
 
     pub fn finish(self) -> Result<PathBuf, String> {
-        tracked_alloc::set_global_tracking_enabled(false);
         tracked_alloc::set_tracking_enabled(false);
-        let global_profile = tracked_alloc::global_profile();
         let profile = tracked_alloc::profile();
-        let document = ReportDocument::from_profile(profile, global_profile, &self.command_line);
+        let document = ReportDocument::from_profile(profile, &self.command_line);
         write_html_report(&self.output_path, &document)?;
         Ok(self.output_path)
     }
@@ -63,11 +56,7 @@ struct ReportDocument {
 }
 
 impl ReportDocument {
-    fn from_profile(
-        profile: AllocationProfile,
-        global_profile: GlobalAllocationProfile,
-        command_line: &[String],
-    ) -> Self {
+    fn from_profile(profile: AllocationProfile, command_line: &[String]) -> Self {
         let mut raw_peak_index = 0usize;
         let mut peak_bytes = 0usize;
         let mut peak_time_ns = 0u64;
@@ -80,13 +69,8 @@ impl ReportDocument {
         }
         let phase_peaks = compute_phase_peaks(&profile.timeline, &profile.phases);
         let compact_timeline = compact_timeline(&profile.timeline, raw_peak_index, &phase_peaks);
-        let sampled = sample_report_data(
-            &profile.events,
-            &compact_timeline.points,
-            &global_profile.timeline,
-        );
-        let timeline = sampled.timeline;
-        let snapshots = sampled.snapshots;
+        let timeline = build_report_timeline(&compact_timeline.points, &profile.snapshots);
+        let snapshots = build_report_snapshots(&profile.snapshots, &compact_timeline.points);
         let initial_index = if timeline.is_empty() {
             0
         } else {
@@ -97,12 +81,9 @@ impl ReportDocument {
             peak_time_ns,
             final_bytes: profile.snapshot.total_bytes,
             live_records: profile.snapshot.records.len(),
-            event_count: profile.events.len(),
+            snapshot_count: profile.snapshots.len(),
             phase_count: profile.phases.len(),
             final_time_ns: profile.now_ns,
-            global_peak_bytes: global_profile.peak_bytes,
-            global_final_bytes: global_profile.final_bytes,
-            global_final_time_ns: global_profile.now_ns,
         };
         let phases = profile
             .phases
@@ -138,7 +119,6 @@ impl ReportDocument {
 }
 
 const MAX_REPORT_TIMELINE_POINTS: usize = 1_024;
-const MAX_RECORDS_PER_SNAPSHOT: usize = 500;
 
 struct CompactedTimeline {
     points: Vec<TimelinePoint>,
@@ -148,32 +128,6 @@ struct CompactedTimeline {
 struct PhasePeakInfo {
     peak_time_ns: u64,
     peak_bytes: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Breakdown {
-    tracked_alloc_bytes: usize,
-    code_buffer_bytes: usize,
-    guard_page_bytes: usize,
-    runtime_other_bytes: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct LiveRecord {
-    owner_kind: &'static str,
-    type_name: &'static str,
-    element_type: Option<&'static str>,
-    len: Option<usize>,
-    capacity: Option<usize>,
-    size_bytes: usize,
-    ptr: usize,
-    create_stack_id: u64,
-    last_update_stack_id: Option<u64>,
-}
-
-struct SampledReportData {
-    timeline: Vec<ReportPoint>,
-    snapshots: Vec<ReportSnapshot>,
 }
 
 fn compact_timeline(
@@ -260,271 +214,103 @@ fn compute_phase_peaks(timeline: &[TimelinePoint], phases: &[ProfilePhase]) -> V
     peaks
 }
 
-fn sample_report_data(
-    events: &[tracked_alloc::ProfileEvent],
+fn build_report_timeline(
     timeline: &[TimelinePoint],
-    global_timeline: &[tracked_alloc::GlobalTimelinePoint],
-) -> SampledReportData {
+    snapshots: &[AggregateSnapshot],
+) -> Vec<ReportPoint> {
     let mut report_timeline = Vec::with_capacity(timeline.len());
-    let mut current_live = HashMap::<u64, LiveRecord>::new();
-    let mut breakdown = Breakdown::default();
-    let mut event_index = 0usize;
-    let mut global_index = 0usize;
-    let mut global_bytes = global_timeline
-        .first()
-        .map(|point| point.live_bytes)
-        .unwrap_or(0);
-    let mut snapshots = Vec::<ReportSnapshot>::new();
-    let mut last_snapshot_id = None;
-    let mut snapshot_dirty = true;
+    let mut snap_index = 0usize;
 
     for point in timeline {
-        while event_index < events.len() && events[event_index].time_ns <= point.time_ns {
-            let event = &events[event_index];
-            if apply_raw_event(&mut current_live, &mut breakdown, event) {
-                snapshot_dirty = true;
-            }
-            event_index += 1;
-        }
-
-        while global_index + 1 < global_timeline.len()
-            && global_timeline[global_index + 1].time_ns <= point.time_ns
+        // Advance to nearest snapshot at or before this timeline point.
+        while snap_index + 1 < snapshots.len() && snapshots[snap_index + 1].time_ns <= point.time_ns
         {
-            global_index += 1;
-            global_bytes = global_timeline[global_index].live_bytes;
+            snap_index += 1;
         }
 
-        let snapshot_id = if snapshot_dirty || last_snapshot_id.is_none() {
-            snapshots.push(build_snapshot(&current_live));
-            let snapshot_id = snapshots.len().saturating_sub(1);
-            last_snapshot_id = Some(snapshot_id);
-            snapshot_dirty = false;
-            snapshot_id
+        // Find the snapshot_id: index into the report snapshots vec (same order
+        // as profile snapshots since we convert 1:1).
+        let snapshot_id = if snapshots.is_empty() || snapshots[snap_index].time_ns > point.time_ns {
+            0
         } else {
-            last_snapshot_id.unwrap_or(0)
+            snap_index
         };
 
         report_timeline.push(ReportPoint {
             time_ns: point.time_ns,
             total_bytes: point.total_bytes,
             live_records: point.live_records,
-            global_bytes,
-            tracked_alloc_bytes: breakdown.tracked_alloc_bytes,
-            code_buffer_bytes: breakdown.code_buffer_bytes,
-            guard_page_bytes: breakdown.guard_page_bytes,
-            runtime_other_bytes: breakdown.runtime_other_bytes,
             snapshot_id,
         });
     }
 
-    SampledReportData {
-        timeline: report_timeline,
-        snapshots,
-    }
+    report_timeline
 }
 
-fn apply_raw_event(
-    current_live: &mut HashMap<u64, LiveRecord>,
-    breakdown: &mut Breakdown,
-    event: &tracked_alloc::ProfileEvent,
-) -> bool {
-    match event.kind {
-        ProfileEventKind::Create => {
-            let record = LiveRecord {
-                owner_kind: event.owner_kind.expect("create owner kind"),
-                type_name: event.type_name.expect("create type name"),
-                element_type: event.element_type,
-                len: event.len,
-                capacity: event.capacity,
-                size_bytes: event.size_bytes.expect("create size"),
-                ptr: event.ptr.expect("create ptr"),
-                create_stack_id: event.create_stack_id.expect("create stack"),
-                last_update_stack_id: event.last_update_stack_id,
-            };
-            apply_breakdown_delta(
-                breakdown,
-                allocation_category(record.owner_kind, record.type_name),
-                record.size_bytes as isize,
-            );
-            current_live.insert(event.id, record);
-            true
-        }
-        ProfileEventKind::Update => {
-            let Some(record) = current_live.get_mut(&event.id) else {
-                return false;
-            };
-            let mut changed = false;
-            if let Some(size_bytes) = event.size_bytes {
-                let delta = size_bytes as isize - record.size_bytes as isize;
-                apply_breakdown_delta(
-                    breakdown,
-                    allocation_category(record.owner_kind, record.type_name),
-                    delta,
-                );
-                record.size_bytes = size_bytes;
-                changed = true;
-            }
-            if record.len != event.len {
-                changed = true;
-            }
-            record.len = event.len;
-            if record.capacity != event.capacity {
-                changed = true;
-            }
-            record.capacity = event.capacity;
-            if let Some(ptr) = event.ptr {
-                if record.ptr != ptr {
-                    changed = true;
-                }
-                record.ptr = ptr;
-            }
-            if let Some(stack_id) = event.last_update_stack_id {
-                if record.last_update_stack_id != Some(stack_id) {
-                    changed = true;
-                }
-                record.last_update_stack_id = Some(stack_id);
-            }
-            changed
-        }
-        ProfileEventKind::Remove => {
-            let Some(record) = current_live.remove(&event.id) else {
-                return false;
-            };
-            apply_breakdown_delta(
-                breakdown,
-                allocation_category(record.owner_kind, record.type_name),
-                -(record.size_bytes as isize),
-            );
-            true
-        }
-    }
-}
-
-fn build_snapshot(current_live: &HashMap<u64, LiveRecord>) -> ReportSnapshot {
-    ReportSnapshot {
-        aggregates: aggregate_types(current_live),
-        records: largest_records(current_live),
-    }
-}
-
-fn allocation_category(owner_kind: &str, type_name: &str) -> &'static str {
-    if owner_kind == "RuntimeMemory" {
-        if type_name == "CodeBuffer" {
-            return "code_buffer";
-        }
-        if type_name == "GuardPageMemory" {
-            return "guard_page";
-        }
-        return "runtime_other";
-    }
-    "tracked_alloc"
-}
-
-fn apply_breakdown_delta(breakdown: &mut Breakdown, category: &str, delta: isize) {
-    match category {
-        "code_buffer" => {
-            breakdown.code_buffer_bytes = breakdown.code_buffer_bytes.saturating_add_signed(delta);
-        }
-        "guard_page" => {
-            breakdown.guard_page_bytes = breakdown.guard_page_bytes.saturating_add_signed(delta);
-        }
-        "runtime_other" => {
-            breakdown.runtime_other_bytes =
-                breakdown.runtime_other_bytes.saturating_add_signed(delta);
-        }
-        _ => {
-            breakdown.tracked_alloc_bytes =
-                breakdown.tracked_alloc_bytes.saturating_add_signed(delta);
-        }
-    }
-}
-
-fn aggregate_types(current_live: &HashMap<u64, LiveRecord>) -> Vec<ReportAggregate> {
-    let mut by_type = HashMap::<String, ReportAggregate>::new();
-    for record in current_live.values() {
-        let type_label = display_type_label(record);
-        let entry = by_type
-            .entry(type_label.clone())
-            .or_insert(ReportAggregate {
-                type_label,
-                total_bytes: 0,
-                count: 0,
-                largest_bytes: 0,
-            });
-        entry.total_bytes += record.size_bytes;
-        entry.count += 1;
-        entry.largest_bytes = entry.largest_bytes.max(record.size_bytes);
-    }
-    let mut aggregates = by_type.into_values().collect::<Vec<_>>();
-    aggregates.sort_by(|left, right| {
-        right
-            .total_bytes
-            .cmp(&left.total_bytes)
-            .then_with(|| left.type_label.cmp(&right.type_label))
-    });
-    aggregates
-}
-
-fn largest_records(current_live: &HashMap<u64, LiveRecord>) -> Vec<ReportRecord> {
-    let mut records = current_live.iter().collect::<Vec<_>>();
-    records.sort_by(|(left_id, left), (right_id, right)| {
-        right
-            .size_bytes
-            .cmp(&left.size_bytes)
-            .then_with(|| left_id.cmp(right_id))
-    });
-    records
-        .into_iter()
-        .take(MAX_RECORDS_PER_SNAPSHOT)
-        .map(|(_, record)| ReportRecord {
-            type_label: display_type_label(record),
-            len: record.len,
-            capacity: record.capacity,
-            size_bytes: record.size_bytes,
-            ptr: record.ptr,
-            create_stack_id: record.create_stack_id,
-            last_update_stack_id: record.last_update_stack_id,
+fn build_report_snapshots(
+    snapshots: &[AggregateSnapshot],
+    _timeline: &[TimelinePoint],
+) -> Vec<ReportSnapshot> {
+    snapshots
+        .iter()
+        .map(|snap| {
+            let aggregates = snap
+                .entries
+                .iter()
+                .map(|entry| ReportAggregate {
+                    type_label: aggregate_type_label(
+                        entry.owner_kind,
+                        entry.type_name,
+                        entry.element_type,
+                    ),
+                    total_bytes: entry.total_bytes,
+                    count: entry.count,
+                    largest_bytes: entry.largest_bytes,
+                    create_stack_id: entry.create_stack_id,
+                })
+                .collect();
+            ReportSnapshot { aggregates }
         })
         .collect()
 }
 
-fn display_type_label(record: &LiveRecord) -> String {
-    match record.owner_kind {
+fn aggregate_type_label(owner_kind: &str, type_name: &str, element_type: Option<&str>) -> String {
+    match owner_kind {
         "String" => "String".to_owned(),
-        "Vec" => match record.element_type {
+        "Vec" => match element_type {
             Some(element_type) => format!("Vec<{element_type}>"),
             None => "Vec".to_owned(),
         },
-        "BTreeSet" => match record.element_type {
+        "BTreeSet" => match element_type {
             Some(element_type) => format!("BTreeSet<{element_type}>"),
             None => "BTreeSet".to_owned(),
         },
-        "BTreeMap" => format!("BTreeMap<{}>", record.type_name),
+        "BTreeMap" => format!("BTreeMap<{type_name}>"),
         "Rc" => {
-            if record.type_name == "str" {
+            if type_name == "str" {
                 "Rc<str>".to_owned()
-            } else if record.type_name.starts_with('[') {
-                match record.element_type {
+            } else if type_name.starts_with('[') {
+                match element_type {
                     Some(element_type) => format!("Rc<[{element_type}]>"),
                     None => "Rc".to_owned(),
                 }
             } else {
-                format!("Rc<{}>", record.type_name)
+                format!("Rc<{type_name}>")
             }
         }
         "Box" => {
-            if record.type_name == "str" {
+            if type_name == "str" {
                 "Box<str>".to_owned()
-            } else if record.type_name.starts_with('[') {
-                match record.element_type {
+            } else if type_name.starts_with('[') {
+                match element_type {
                     Some(element_type) => format!("Box<[{element_type}]>"),
                     None => "Box".to_owned(),
                 }
             } else {
-                format!("Box<{}>", record.type_name)
+                format!("Box<{type_name}>")
             }
         }
-        _ => record.type_name.to_owned(),
+        _ => type_name.to_owned(),
     }
 }
 
@@ -578,12 +364,9 @@ struct ReportSummary {
     peak_time_ns: u64,
     final_bytes: usize,
     live_records: usize,
-    event_count: usize,
+    snapshot_count: usize,
     phase_count: usize,
     final_time_ns: u64,
-    global_peak_bytes: usize,
-    global_final_bytes: usize,
-    global_final_time_ns: u64,
 }
 
 #[derive(Serialize)]
@@ -591,11 +374,6 @@ struct ReportPoint {
     time_ns: u64,
     total_bytes: usize,
     live_records: usize,
-    global_bytes: usize,
-    tracked_alloc_bytes: usize,
-    code_buffer_bytes: usize,
-    guard_page_bytes: usize,
-    runtime_other_bytes: usize,
     snapshot_id: usize,
 }
 
@@ -619,7 +397,6 @@ struct ReportStack {
 #[derive(Serialize)]
 struct ReportSnapshot {
     aggregates: Vec<ReportAggregate>,
-    records: Vec<ReportRecord>,
 }
 
 #[derive(Serialize)]
@@ -628,20 +405,7 @@ struct ReportAggregate {
     total_bytes: usize,
     count: usize,
     largest_bytes: usize,
-}
-
-#[derive(Serialize)]
-struct ReportRecord {
-    type_label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    len: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    capacity: Option<usize>,
-    size_bytes: usize,
-    ptr: usize,
     create_stack_id: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_update_stack_id: Option<u64>,
 }
 
 const HTML_PREFIX: &str = r#"<!doctype html>
@@ -888,15 +652,6 @@ th, td {
 tbody tr:last-child td {
   border-bottom: none;
 }
-tbody tr.record-row {
-  cursor: pointer;
-}
-tbody tr.record-row:hover {
-  background: #18283d;
-}
-tbody tr.record-row.is-selected {
-  background: #1d3048;
-}
 .table-breakdown th:nth-child(1),
 .table-breakdown td:nth-child(1) {
   width: 56%;
@@ -915,79 +670,22 @@ tbody tr.record-row.is-selected {
   width: 20%;
   white-space: nowrap;
 }
-.table-records th:nth-child(1),
-.table-records td:nth-child(1) {
-  width: 58%;
+.group-header td {
+  background: #17263a;
+  padding: 10px 10px;
+  font-size: 13px;
 }
-.table-records th:nth-child(2),
-.table-records td:nth-child(2) {
-  width: 12%;
-  white-space: nowrap;
+.group-entry td:first-child {
+  padding-left: 20px;
+  color: #9fb2c9;
 }
-.table-records th:nth-child(3),
-.table-records td:nth-child(3),
-.table-records th:nth-child(4),
-.table-records td:nth-child(4) {
-  width: 7%;
-}
-.table-records th:nth-child(5),
-.table-records td:nth-child(5) {
-  width: 16%;
-  white-space: nowrap;
-}
-.inspector-window {
-  position: fixed;
-  top: 88px;
-  right: 24px;
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(70vh, 720px);
-  display: none;
-  flex-direction: column;
-  background: #142030;
-  border: 1px solid #223247;
-  border-radius: 8px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
-  z-index: 20;
-  overflow: hidden;
-}
-.inspector-window.is-open {
-  display: flex;
-}
-.inspector-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid #223247;
-  cursor: move;
-  user-select: none;
-}
-.inspector-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #dbe6f3;
-}
-.inspector-close {
-  border: 1px solid #2b435f;
-  background: #0f1720;
-  color: #dbe6f3;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font: inherit;
-  cursor: pointer;
-}
-.inspector-body {
-  padding: 12px;
-  overflow: auto;
-}
-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: #c7d7ea;
+.stack-trace {
+  margin-top: 4px;
+  padding-left: 12px;
+  font-size: 11px;
+  color: #6b839e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.5;
 }
 .muted {
   color: #8da3bc;
@@ -999,11 +697,7 @@ pre {
   .table-breakdown th:nth-child(2),
   .table-breakdown td:nth-child(2),
   .table-breakdown th:nth-child(4),
-  .table-breakdown td:nth-child(4),
-  .table-records th:nth-child(2),
-  .table-records td:nth-child(2),
-  .table-records th:nth-child(5),
-  .table-records td:nth-child(5) {
+  .table-breakdown td:nth-child(4) {
     white-space: normal;
   }
 }
@@ -1027,7 +721,7 @@ pre {
   <section class="tables">
     <div class="table-panel">
       <h2>Type Summary</h2>
-      <p class="section-note">Groups the live allocations at the selected time by type.</p>
+      <p class="section-note">Groups the live allocations at the selected time by creation site.</p>
       <table class="table-breakdown">
         <thead>
           <tr><th>Type</th><th>Total</th><th>Count</th><th>Largest</th></tr>
@@ -1035,28 +729,8 @@ pre {
         <tbody id="aggregate-body"></tbody>
       </table>
     </div>
-    <div class="table-panel">
-      <h2>Individual Allocations</h2>
-      <p class="section-note">Shows the largest live allocations at the selected time. Click a row to inspect it in a floating window.</p>
-      <table class="table-records">
-        <thead>
-          <tr><th>Type</th><th>Bytes</th><th>Len</th><th>Cap</th><th>Ptr</th></tr>
-        </thead>
-        <tbody id="records-body"></tbody>
-      </table>
-      <p class="muted" id="records-note"></p>
-    </div>
   </section>
 </main>
-<div class="inspector-window" id="record-inspector" aria-hidden="true">
-  <div class="inspector-header" id="record-inspector-header">
-    <div class="inspector-title">Allocation Inspector</div>
-    <button type="button" class="inspector-close" id="record-inspector-close">X</button>
-  </div>
-  <div class="inspector-body">
-    <pre id="record-detail">Click an allocation row to inspect its creation site and latest size-change site.</pre>
-  </div>
-</div>
 <script id="report-data" type="application/json">
 "#;
 
@@ -1074,12 +748,6 @@ const phaseNote = document.getElementById('phase-note');
 const phaseTimeline = document.getElementById('phase-timeline');
 const selectionSummary = document.getElementById('selection-summary');
 const aggregateBody = document.getElementById('aggregate-body');
-const recordsBody = document.getElementById('records-body');
-const recordsNote = document.getElementById('records-note');
-const recordInspector = document.getElementById('record-inspector');
-const recordInspectorHeader = document.getElementById('record-inspector-header');
-const recordInspectorClose = document.getElementById('record-inspector-close');
-const recordDetail = document.getElementById('record-detail');
 const snapshots = report.snapshots || [];
 const phaseStageOrder = [
   'sem_scan',
@@ -1100,8 +768,6 @@ const phaseStageOrder = [
 ];
 
 let selectedIndex = Math.max(0, Math.min(report.initial_index, report.timeline.length - 1));
-let selectedRecords = [];
-let inspectorDrag = null;
 const reportPhases = (report.phases || [])
   .map((phase, index) => ({
     ...phase,
@@ -1146,55 +812,8 @@ const curvePadding = {
   top: 12,
   bottom: 28,
 };
-const showCodeBufferSeries = report.timeline.some(
-  (point) => Number(point.code_buffer_bytes || 0) > 0
-);
-const showGuardPageSeries = report.timeline.some(
-  (point) => Number(point.guard_page_bytes || 0) > 0
-);
-const showRuntimeOtherSeries = report.timeline.some(
-  (point) => Number(point.runtime_other_bytes || 0) > 0
-);
-const showGlobalAllocatorSeries =
-  report.timeline.some((point) => Number(point.global_bytes || 0) > 0) ||
-  Number(report.summary.global_peak_bytes || 0) > 0;
 const curveSeriesMeta = [
-  { key: 'total_bytes', label: 'Tracked total', color: '#7cc5ff', width: 2.5, visible: true },
-  {
-    key: 'global_bytes',
-    label: 'Global allocator',
-    color: '#e5e7eb',
-    width: 2,
-    visible: showGlobalAllocatorSeries,
-  },
-  {
-    key: 'tracked_alloc_bytes',
-    label: 'Tracked alloc',
-    color: '#f59e0b',
-    width: 1.5,
-    visible: true,
-  },
-  {
-    key: 'code_buffer_bytes',
-    label: 'Code Buffer',
-    color: '#34d399',
-    width: 1.5,
-    visible: showCodeBufferSeries,
-  },
-  {
-    key: 'guard_page_bytes',
-    label: 'Guard Pages',
-    color: '#f87171',
-    width: 1.5,
-    visible: showGuardPageSeries,
-  },
-  {
-    key: 'runtime_other_bytes',
-    label: 'Runtime other',
-    color: '#c084fc',
-    width: 1.5,
-    visible: showRuntimeOtherSeries,
-  },
+  { key: 'total_bytes', label: 'Tracked total', color: '#f59e0b', width: 2.5, visible: true },
 ];
 const curveSeriesState = new Map(
   curveSeriesMeta
@@ -1225,57 +844,6 @@ function curveMetrics() {
     plotLeft: padLeft,
     plotRight: padLeft + plotWidth,
   };
-}
-
-function allocationCategory(record) {
-  if (record.owner_kind === 'RuntimeMemory') {
-    if (record.type_name === 'CodeBuffer') {
-      return 'code_buffer';
-    }
-    if (record.type_name === 'GuardPageMemory') {
-      return 'guard_page';
-    }
-    return 'runtime_other';
-  }
-  return 'tracked_alloc';
-}
-
-function emptyBreakdown() {
-  return {
-    tracked_alloc_bytes: 0,
-    code_buffer_bytes: 0,
-    guard_page_bytes: 0,
-    runtime_other_bytes: 0,
-  };
-}
-
-function applyBreakdownDelta(breakdown, category, deltaBytes) {
-  if (!deltaBytes) {
-    return;
-  }
-  switch (category) {
-    case 'code_buffer':
-      breakdown.code_buffer_bytes = Math.max(0, breakdown.code_buffer_bytes + deltaBytes);
-      break;
-    case 'guard_page':
-      breakdown.guard_page_bytes = Math.max(0, breakdown.guard_page_bytes + deltaBytes);
-      break;
-    case 'runtime_other':
-      breakdown.runtime_other_bytes = Math.max(0, breakdown.runtime_other_bytes + deltaBytes);
-      break;
-    default:
-      breakdown.tracked_alloc_bytes = Math.max(0, breakdown.tracked_alloc_bytes + deltaBytes);
-      break;
-  }
-}
-
-function breakdownTotal(breakdown) {
-  return (
-    breakdown.tracked_alloc_bytes +
-    breakdown.code_buffer_bytes +
-    breakdown.guard_page_bytes +
-    breakdown.runtime_other_bytes
-  );
 }
 
 function renderCurveLegend() {
@@ -1332,26 +900,6 @@ function currentMaxBytes() {
 }
 
 function selectedMarkerValue(point) {
-  const visibleSeries = enabledCurveSeries();
-  if (!visibleSeries.length) {
-    return null;
-  }
-  for (const series of visibleSeries) {
-    switch (series.key) {
-      case 'global_bytes':
-        return point.global_bytes;
-      case 'tracked_alloc_bytes':
-        return point.tracked_alloc_bytes;
-      case 'code_buffer_bytes':
-        return point.code_buffer_bytes;
-      case 'guard_page_bytes':
-        return point.guard_page_bytes;
-      case 'runtime_other_bytes':
-        return point.runtime_other_bytes;
-      default:
-        return point.total_bytes;
-    }
-  }
   return point.total_bytes;
 }
 
@@ -1714,10 +1262,8 @@ function renderSummaryStats() {
     ['Peak', formatBytes(report.summary.peak_bytes)],
     ['Peak Time', formatTime(report.summary.peak_time_ns)],
     ['Final', formatBytes(report.summary.final_bytes)],
-    ['Global Peak', formatBytes(report.summary.global_peak_bytes)],
-    ['Global Final', formatBytes(report.summary.global_final_bytes)],
     ['Live Records', report.summary.live_records],
-    ['Events', report.summary.event_count],
+    ['Snapshots', report.summary.snapshot_count],
     ['Phases', report.summary.phase_count || 0],
     ['End Time', formatTime(report.summary.final_time_ns)],
   ];
@@ -1731,82 +1277,17 @@ function renderSummaryStats() {
     .join('');
 }
 
-function renderRecordDetail(record) {
-  if (!record) {
-    recordDetail.textContent = 'No live allocations at this point.';
-    return;
-  }
-  const parts = [
-    `${record.type_label || 'unknown'}  ${formatBytes(record.size_bytes)}`,
-    '',
-    'Create site:',
-    stackText(record.create_stack_id),
-  ];
-  if (record.last_update_stack_id != null) {
-    parts.push('', 'Last size-change site:', stackText(record.last_update_stack_id));
-  }
-  recordDetail.textContent = parts.join('\n');
-}
-
-function hideInspector() {
-  for (const previous of recordsBody.querySelectorAll('tr.record-row.is-selected')) {
-    previous.classList.remove('is-selected');
-  }
-  recordInspector.classList.remove('is-open');
-  recordInspector.setAttribute('aria-hidden', 'true');
-}
-
-function openInspector() {
-  recordInspector.classList.add('is-open');
-  recordInspector.setAttribute('aria-hidden', 'false');
-}
-
-function selectRecordRow(row, record, options = {}) {
-  for (const previous of recordsBody.querySelectorAll('tr.record-row.is-selected')) {
-    previous.classList.remove('is-selected');
-  }
-  if (row) {
-    row.classList.add('is-selected');
-  }
-  renderRecordDetail(record);
-  if (record) {
-    openInspector();
-  }
-}
-
 function renderSelection(index) {
   selectedIndex = Math.max(0, Math.min(index, report.timeline.length - 1));
-  hideInspector();
   const point = report.timeline[selectedIndex] || { time_ns: 0, total_bytes: 0, live_records: 0 };
-  const snapshot = snapshots[Number(point.snapshot_id) || 0] || { aggregates: [], records: [] };
-  selectedRecords = snapshot.records || [];
+  const snapshot = snapshots[Number(point.snapshot_id) || 0] || { aggregates: [] };
   const aggregates = snapshot.aggregates || [];
-  const globalBytes = Number(point.global_bytes || 0);
-  const trackedAllocBytes = Number(point.tracked_alloc_bytes || 0);
-  const codeBufferBytes = Number(point.code_buffer_bytes || 0);
-  const guardPageBytes = Number(point.guard_page_bytes || 0);
-  const runtimeOtherBytes = Number(point.runtime_other_bytes || 0);
-  const untrackedGlobalGap = Math.max(0, globalBytes - trackedAllocBytes);
   const activePhases = activePhasesAtTimeNs(Number(point.time_ns) || 0);
 
   const selectionItems = [
     ['Selected Time', formatTime(point.time_ns)],
     ['Total Bytes', formatBytes(point.total_bytes)],
-    ['Global allocator', formatBytes(globalBytes)],
-    ['Tracked alloc', formatBytes(trackedAllocBytes)],
   ];
-  if (showGlobalAllocatorSeries) {
-    selectionItems.push(['Untracked heap gap', formatBytes(untrackedGlobalGap)]);
-  }
-  if (showCodeBufferSeries) {
-    selectionItems.push(['Code Buffer', formatBytes(codeBufferBytes)]);
-  }
-  if (showGuardPageSeries) {
-    selectionItems.push(['Guard Pages', formatBytes(guardPageBytes)]);
-  }
-  if (showRuntimeOtherSeries) {
-    selectionItems.push(['Runtime other', formatBytes(runtimeOtherBytes)]);
-  }
   if (activePhases.length) {
     selectionItems.push(['Active phases', activePhases.map(phaseLabel).join(', ')]);
   }
@@ -1821,59 +1302,40 @@ function renderSelection(index) {
     `)
     .join('');
 
-  aggregateBody.innerHTML = aggregates.length
-    ? aggregates
-        .map((entry) => `
-          <tr>
-            <td>${escapeHtml(entry.type_label)}</td>
-            <td>${escapeHtml(formatBytes(entry.total_bytes))}</td>
-            <td>${escapeHtml(entry.count)}</td>
-            <td>${escapeHtml(formatBytes(entry.largest_bytes))}</td>
-          </tr>
-        `)
-        .join('')
-    : '<tr><td colspan="4" class="muted">No live allocations at this point.</td></tr>';
-
-  const visibleRecords = selectedRecords.slice(0, 500);
-  recordsBody.innerHTML = visibleRecords.length
-    ? visibleRecords
-        .map((record, index) => `
-          <tr class="record-row" data-record-index="${index}">
-            <td>${escapeHtml(record.type_label || 'unknown')}</td>
-            <td>${escapeHtml(formatBytes(record.size_bytes))}</td>
-            <td>${escapeHtml(record.len == null ? '-' : record.len)}</td>
-            <td>${escapeHtml(record.capacity == null ? '-' : record.capacity)}</td>
-            <td>${escapeHtml(pointerText(record.ptr))}</td>
-          </tr>
-        `)
-        .join('')
-    : '<tr><td colspan="5" class="muted">No live allocations at this point.</td></tr>';
-
-  const recordsNoteParts = [];
-  if (Number(point.live_records || 0) > visibleRecords.length) {
-    recordsNoteParts.push(
-      `Showing the largest ${visibleRecords.length} of ${point.live_records} live allocations.`
-    );
+  // Group aggregates by create_stack_id.
+  const groups = new Map();
+  for (const entry of aggregates) {
+    const key = entry.create_stack_id;
+    if (!groups.has(key)) {
+      groups.set(key, { entries: [], totalBytes: 0, totalCount: 0 });
+    }
+    const group = groups.get(key);
+    group.entries.push(entry);
+    group.totalBytes += entry.total_bytes;
+    group.totalCount += entry.count;
   }
-  if (visibleRecords.length) {
-    recordsNoteParts.push('Click a row to inspect it in the floating window.');
-  }
-  recordsNote.textContent = recordsNoteParts.join(' ');
+  // Sort groups by total bytes descending.
+  const sortedGroups = [...groups.entries()].sort((a, b) => b[1].totalBytes - a[1].totalBytes);
 
-  for (const row of recordsBody.querySelectorAll('tr.record-row')) {
-    row.addEventListener('click', () => {
-      const index = Number(row.getAttribute('data-record-index'));
-      const record = visibleRecords[index];
-      if (!record) {
-        return;
+  if (!sortedGroups.length) {
+    aggregateBody.innerHTML = '<tr><td colspan="4" class="muted">No live allocations at this point.</td></tr>';
+  } else {
+    let html = '';
+    for (const [stackId, group] of sortedGroups) {
+      const fullStack = stackText(stackId);
+      const stackLines = fullStack.split('\n');
+      const siteLine = stackLines[0] || '(unknown)';
+      const traceLines = stackLines.slice(1).filter(l => l.trim());
+      let headerContent = `<strong>${escapeHtml(formatBytes(group.totalBytes))}</strong> &mdash; <span class="muted">${escapeHtml(siteLine)}</span>`;
+      if (traceLines.length) {
+        headerContent += `<div class="stack-trace">${traceLines.map(l => escapeHtml(l)).join('<br>')}</div>`;
       }
-      selectRecordRow(row, record);
-    });
-  }
-
-  if (!visibleRecords.length) {
-    hideInspector();
-    renderRecordDetail(null);
+      html += `<tr class="group-header"><td colspan="4">${headerContent}</td></tr>`;
+      for (const entry of group.entries) {
+        html += `<tr class="group-entry"><td>&nbsp;&nbsp;${escapeHtml(entry.type_label)}</td><td>${escapeHtml(formatBytes(entry.total_bytes))}</td><td>${escapeHtml(entry.count)}</td><td>${escapeHtml(formatBytes(entry.largest_bytes))}</td></tr>`;
+      }
+    }
+    aggregateBody.innerHTML = html;
   }
 
   renderPhaseTimeline();
@@ -2000,45 +1462,6 @@ canvas.addEventListener('click', (event) => {
   const timeNs = Math.max(0, Math.min(1, ratio)) * maxTimelineTimeNs;
   renderSelection(nearestTimelineIndex(timeNs));
 });
-
-recordInspectorClose.addEventListener('click', () => {
-  hideInspector();
-});
-
-recordInspectorHeader.addEventListener('pointerdown', (event) => {
-  if (event.target === recordInspectorClose) {
-    return;
-  }
-  const rect = recordInspector.getBoundingClientRect();
-  inspectorDrag = {
-    offsetX: event.clientX - rect.left,
-    offsetY: event.clientY - rect.top,
-  };
-  recordInspectorHeader.setPointerCapture(event.pointerId);
-});
-
-recordInspectorHeader.addEventListener('pointermove', (event) => {
-  if (!inspectorDrag) {
-    return;
-  }
-  const maxLeft = Math.max(0, window.innerWidth - recordInspector.offsetWidth);
-  const maxTop = Math.max(0, window.innerHeight - recordInspector.offsetHeight);
-  const left = Math.max(0, Math.min(maxLeft, event.clientX - inspectorDrag.offsetX));
-  const top = Math.max(0, Math.min(maxTop, event.clientY - inspectorDrag.offsetY));
-  recordInspector.style.left = `${left}px`;
-  recordInspector.style.top = `${top}px`;
-  recordInspector.style.right = 'auto';
-});
-
-function endInspectorDrag(event) {
-  if (inspectorDrag) {
-    inspectorDrag = null;
-    recordInspectorHeader.releasePointerCapture(event.pointerId);
-  }
-}
-
-recordInspectorHeader.addEventListener('pointerup', endInspectorDrag);
-recordInspectorHeader.addEventListener('pointercancel', endInspectorDrag);
 
 window.addEventListener('resize', () => drawCurve());
 
